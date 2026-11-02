@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <!-- Thin Vulkan 1.3 layer over Brutal.Vulkan: the device and swapchain, textures, meshes, shaders, glTF models and skeletons. -->
+    <PropertyGroup>
+        <RootNamespace>RailWerkz.Vulkan</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="../RailWerkz.Core/RailWerkz.Core.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="Ahwoo.Brutal.Vulkan" />
+        <PackageReference Include="Ahwoo.Brutal.Vulkan.Abstractions" />
+        <PackageReference Include="Ahwoo.Brutal.Stb" />
+        <PackageReference Include="Ahwoo.Brutal.Gltf" />
+    </ItemGroup>
+</Project>

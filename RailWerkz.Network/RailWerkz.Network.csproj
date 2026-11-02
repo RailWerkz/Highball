@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <!-- Sessions over Brutal.RakNet and the byte-level message helpers. -->
+    <PropertyGroup>
+        <RootNamespace>RailWerkz.Network</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="../RailWerkz.Core/RailWerkz.Core.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="Ahwoo.Brutal.RakNet" />
+        <PackageReference Include="Ahwoo.Brutal.Strings" />
+    </ItemGroup>
+</Project>

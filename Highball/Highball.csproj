@@ -1,0 +1,53 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+    <!-- Highball: the train simulator. -->
+    <PropertyGroup>
+        <OutputType>WinExe</OutputType>
+        <RootNamespace>Highball</RootNamespace>
+        <AssemblyName>Highball</AssemblyName>
+        <ServerGarbageCollection>false</ServerGarbageCollection>
+        <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+        <TieredPGO>true</TieredPGO>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="../RailWerkz.Core/RailWerkz.Core.csproj" />
+        <ProjectReference Include="../RailWerkz.Vulkan/RailWerkz.Vulkan.csproj" />
+        <ProjectReference Include="../RailWerkz.Network/RailWerkz.Network.csproj" />
+        <ProjectReference Include="../RailWerkz.UI/RailWerkz.UI.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="Ahwoo.Brutal.Glfw" />
+        <PackageReference Include="Ahwoo.Brutal.ImGui.Backends" />
+    </ItemGroup>
+    <!-- Content travels with the build, so the game runs from bin/ as well as from the repository. -->
+    <ItemGroup>
+        <None Include="$(RwRoot)Content/**/*" LinkBase="Content" CopyToOutputDirectory="PreserveNewest" />
+        <!-- BRUTAL's logo, shown at startup as its licence requires. -->
+        <None Include="$(RwRoot)Vendor/Brutal/*.png" LinkBase="Content/Vendor/Brutal" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+    <!-- GLSL in Content/Shaders compiles to SPIR-V beside it in the output (name.vert -> name.vert.spv), with glslc
+         from the Vulkan SDK (VULKAN_SDK, else the newest install under C:\VulkanSDK, for IDEs started before the SDK
+         was installed) or the PATH. -->
+    <PropertyGroup>
+        <Glslc Condition="'$(VULKAN_SDK)' != '' And Exists('$(VULKAN_SDK)/Bin/glslc.exe')">$(VULKAN_SDK)/Bin/glslc.exe</Glslc>
+    </PropertyGroup>
+    <ItemGroup Condition="'$(Glslc)' == ''">
+        <GlslcInstall Include="$(SystemDrive)/VulkanSDK/*/Bin/glslc.exe" />
+    </ItemGroup>
+    <ItemGroup>
+        <!-- Shared includes: a change to one rebuilds every shader. -->
+        <GlslInclude Include="$(RwRoot)Content/Shaders/**/*.glsl" />
+        <GlslShader Include="$(RwRoot)Content/Shaders/**/*.vert;$(RwRoot)Content/Shaders/**/*.frag;$(RwRoot)Content/Shaders/**/*.comp;$(RwRoot)Content/Shaders/**/*.geom;$(RwRoot)Content/Shaders/**/*.tesc;$(RwRoot)Content/Shaders/**/*.tese" />
+    </ItemGroup>
+    <Target Name="CompileShaders" AfterTargets="Build" Condition="'@(GlslShader)' != ''" Inputs="@(GlslShader);@(GlslInclude)" Outputs="@(GlslShader->'$(OutDir)Content/Shaders/%(RecursiveDir)%(Filename)%(Extension).spv')">
+        <!-- Batched over the installs, so the last (newest version, in name order) wins. -->
+        <PropertyGroup Condition="'$(Glslc)' == '' And '@(GlslcInstall)' != ''">
+            <GlslcFound>%(GlslcInstall.FullPath)</GlslcFound>
+        </PropertyGroup>
+        <PropertyGroup>
+            <Glslc Condition="'$(Glslc)' == ''">$(GlslcFound)</Glslc>
+            <Glslc Condition="'$(Glslc)' == ''">glslc</Glslc>
+        </PropertyGroup>
+        <MakeDir Directories="@(GlslShader->'$(OutDir)Content/Shaders/%(RecursiveDir)')" />
+        <Exec Command="&quot;$(Glslc)&quot; --target-env=vulkan1.3 -O -I &quot;$(RwRoot)Content/Shaders&quot; &quot;%(GlslShader.FullPath)&quot; -o &quot;$(OutDir)Content/Shaders/%(GlslShader.RecursiveDir)%(GlslShader.Filename)%(GlslShader.Extension).spv&quot;" />
+    </Target>
+</Project>

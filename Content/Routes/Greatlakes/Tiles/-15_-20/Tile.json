@@ -1,0 +1,12 @@
+{
+  "I": -15,
+  "J": -20,
+  "Samples": 1001,
+  "Spacing": 2,
+  "CoverCells": 200,
+  "MinHeight": 180.32216,
+  "MaxHeight": 190.66733,
+  "Roads": "NONE",
+  "Rails": "\u002BYARDS",
+  "Built": "2026-11-02 12:01:00Z"
+}

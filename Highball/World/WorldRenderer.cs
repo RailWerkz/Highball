@@ -1,0 +1,268 @@
+using System.Runtime.InteropServices;
+using Brutal;
+using Brutal.VulkanApi;
+using Brutal.VulkanApi.Abstractions;
+using Highball.App;
+using RailWerkz.Vulkan;
+
+namespace Highball.World;
+
+/// Draws the world: the sky, then the terrain, roads and rails, into an HDR target (RenderWorld, before the present pass), then maps
+/// that onto the screen with a filmic curve (Composite, inside the present pass, under the interface).
+public sealed unsafe class WorldRenderer : IDisposable
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TerrainPush
+    {
+        public float4x4 ViewProjection;
+        public float4 Offset;
+        public float4 Camera;
+        public float4 Sun;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SkyPush
+    {
+        public float4 Right;
+        public float4 Up;
+        public float4 Forward;
+        public float4 Sun;
+        public float4 Camera;
+    }
+
+    private const VkShaderStageFlags Stages = VkShaderStageFlags.VertexBit | VkShaderStageFlags.FragmentBit;
+
+    private readonly RenderTarget _target = new();
+    private readonly VkPipelineLayout _layout;
+    private readonly VkPipelineLayout _terrainLayout;
+    private readonly GroundTextures _ground = new();
+    private readonly VkPipeline _sky;
+    private readonly VkPipeline _terrain;
+    private readonly VkPipeline _terrainWire;
+    private readonly VkPipeline _line;
+    private readonly VkPipeline _lineWire;
+    private readonly VkPipeline _part;
+    private readonly VkPipeline _partWire;
+    private readonly VkDescriptorSetLayout _tonemapSetLayout;
+    private readonly VkPipelineLayout _tonemapLayout;
+    private readonly VkPipeline _tonemap;
+    private VkDescriptorPool _pool;
+    private VkDescriptorSet _tonemapSet;
+    private int _targetVersion = -1;
+
+    /// Unit vector towards the sun.
+    public float3 Sun => Sky.SunDirection;
+
+    /// The sky and the light it gives; switch it with Sky.Use.
+    public Sky Sky { get; } = new(RailWerkz.Core.Settings.Settings.Current.Skybox);
+    public float Exposure { get; set; } = 1f;
+    public bool Wireframe { get; set; }
+
+    public WorldRenderer()
+    {
+        using var fullscreen = Shader.Load("fullscreen.vert");
+        using var sky = Shader.Load("sky.frag");
+        using var terrainVert = Shader.Load("terrain.vert");
+        using var terrainFrag = Shader.Load("terrain.frag");
+        using var tonemap = Shader.Load("tonemap.frag");
+        using var lineVert = Shader.Load("line.vert");
+        using var lineFrag = Shader.Load("line.frag");
+        using var partVert = Shader.Load("part.vert");
+        using var partFrag = Shader.Load("part.frag");
+
+        // One layout for every world pipeline: push constants, and a texture at set 0 for those that sample one.
+        _layout = Pipelines.Layout(128, TextureBinding.SetLayout, Sky.SetLayout);
+        _sky = Pipelines.Create(new PipelineDesc { Vertex = fullscreen, Fragment = sky, Layout = _layout, Cull = VkCullModeFlags.None, DepthTest = false, DepthWrite = false });
+        _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout);
+        var terrain = new PipelineDesc { Vertex = terrainVert, Fragment = terrainFrag, Layout = _terrainLayout, Attributes = TerrainVertex.Layout, Stride = Marshal.SizeOf<TerrainVertex>() };
+        _terrain = Pipelines.Create(terrain);
+        _terrainWire = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = terrainVert, Fragment = terrainFrag, Layout = _terrainLayout, Attributes = TerrainVertex.Layout, Stride = terrain.Stride, Wireframe = true,
+        });
+
+        // Lines are open ribbons and parapets seen from either side, so nothing's culled.
+        var stride = Marshal.SizeOf<LineVertex>();
+        _line = Pipelines.Create(new PipelineDesc { Vertex = lineVert, Fragment = lineFrag, Layout = _layout, Attributes = LineVertex.Layout, Stride = stride, Cull = VkCullModeFlags.None });
+        _lineWire = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = lineVert, Fragment = lineFrag, Layout = _layout, Attributes = LineVertex.Layout, Stride = stride, Cull = VkCullModeFlags.None, Wireframe = true,
+        });
+        // Models placed as instances (ties, tie plates). Mirrored instances flip their winding, so nothing's culled.
+        var part = new PipelineDesc
+        {
+            Vertex = partVert, Fragment = partFrag, Layout = _layout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(),
+            InstanceAttributes = TieInstance.Layout, InstanceStride = Marshal.SizeOf<TieInstance>(), Cull = VkCullModeFlags.None,
+        };
+        _part = Pipelines.Create(part);
+        _partWire = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = partVert, Fragment = partFrag, Layout = _layout, Attributes = Mesh.VertexLayout, Stride = part.Stride,
+            InstanceAttributes = TieInstance.Layout, InstanceStride = part.InstanceStride, Cull = VkCullModeFlags.None, Wireframe = true,
+        });
+
+        var binding = new VkDescriptorSetLayoutBinding
+        {
+            Binding = 0,
+            DescriptorType = VkDescriptorType.CombinedImageSampler,
+            DescriptorCount = 1,
+            StageFlags = VkShaderStageFlags.FragmentBit,
+        };
+        var setLayout = new VkDescriptorSetLayoutCreateInfo { BindingCount = 1, Bindings = &binding };
+        _tonemapSetLayout = Gpu.Device.CreateDescriptorSetLayout(in setLayout, Gpu.Device.VkAllocator);
+        _tonemapLayout = Pipelines.Layout(16, _tonemapSetLayout);
+        _tonemap = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = fullscreen, Fragment = tonemap, Layout = _tonemapLayout, Cull = VkCullModeFlags.None, DepthTest = false, DepthWrite = false,
+            RenderPass = Gpu.PresentPass, ColorFormat = Gpu.SwapchainFormat,
+        });
+    }
+
+    private static float3 Normalize(float3 v) => v / MathF.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
+
+    /// Records the world into the HDR target. Outside any render pass.
+    public void Render(CommandBuffer cmd, int2 size, Camera camera, Terrain? terrain, NetworkMeshes? network)
+    {
+        _target.Resize(size);
+        var aspect = size.X / (float)size.Y;
+        var camPos = new float4((float)camera.X, (float)camera.Y, (float)camera.Z, 0f);
+        var sun = new float4(Sun, 0f);
+
+        _target.Begin(cmd, new float4(0f, 0f, 0f, 1f));
+
+        var tanY = MathF.Tan(camera.FieldOfView * 0.5f);
+        var sky = new SkyPush
+        {
+            Right = new float4(camera.Right * (tanY * aspect), 0f),
+            Up = new float4(camera.Up * tanY, 0f),
+            Forward = new float4(camera.Forward, 0f),
+            Sun = sun,
+            Camera = camPos,
+        };
+        var skyScope = Profiler.Sample("Sky");
+        cmd.BindPipeline(VkPipelineBindPoint.Graphics, _sky);
+        Sky.Bind(cmd, _layout);
+        cmd.PushConstants(_layout, Stages, ByteSize.Zero, sky);
+        cmd.Draw(3, 1, 0, 0);
+
+        skyScope.Dispose();
+
+        if (terrain is not null)
+        {
+            using var _ = Profiler.Sample("Terrain");
+            var push = new TerrainPush { ViewProjection = camera.ViewProjection(aspect), Camera = camPos, Sun = sun };
+            cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _terrainWire : _terrain);
+            Sky.Bind(cmd, _terrainLayout);
+            _ground.Binding.Bind(cmd, _terrainLayout);
+            terrain.Draw(cmd, camera.X, camera.Y, camera.Z, offset =>
+            {
+                push.Offset = new float4(offset, 0f);
+                cmd.PushConstants(_terrainLayout, Stages, ByteSize.Zero, push);
+            });
+        }
+
+        if (network is not null)
+        {
+            var push = new TerrainPush
+            {
+                ViewProjection = camera.ViewProjection(aspect),
+                Camera = new float4(camPos.X, camPos.Y, camPos.Z, network.NearRadius),
+                Sun = sun,
+            };
+            void Push(float3 offset)
+            {
+                push.Offset = new float4(offset, 0f);
+                cmd.PushConstants(_layout, Stages, ByteSize.Zero, push);
+            }
+
+            using (Profiler.Sample("Roads and rails"))
+            {
+                cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _lineWire : _line);
+                Sky.Bind(cmd, _layout);
+                network.BindBallast(cmd, _layout);
+                network.DrawLines(cmd, camera.X, camera.Y, camera.Z, Push);
+            }
+
+            using (Profiler.Sample("Ties and plates"))
+            {
+                cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _partWire : _part);
+                network.DrawParts(cmd, _layout, camera.X, camera.Y, camera.Z, Push);
+            }
+        }
+
+        _target.End(cmd);
+    }
+
+    /// Draws the tonemapped world over the screen. Inside the present pass, before the interface.
+    public void Composite(CommandBuffer cmd)
+    {
+        if (_target.Version != _targetVersion)
+            RefreshSet();
+
+        var size = Gpu.Extent;
+        cmd.SetViewport(0, [new VkViewport { X = 0f, Y = 0f, Width = size.X, Height = size.Y, MinDepth = 0f, MaxDepth = 1f }]);
+        cmd.SetScissor(0, [new VkRect2D(size.X, size.Y)]);
+        cmd.BindPipeline(VkPipelineBindPoint.Graphics, _tonemap);
+        cmd.BindDescriptorSets(VkPipelineBindPoint.Graphics, _tonemapLayout, 0, [_tonemapSet], []);
+        cmd.PushConstants(_tonemapLayout, Stages, ByteSize.Zero, new float4(Exposure, 0f, 0f, 0f));
+        cmd.Draw(3, 1, 0, 0);
+    }
+
+    /// The target was remade: a new set pointing at it, from a pool of its own, since the old one may still be in use
+    /// by a frame in flight.
+    private void RefreshSet()
+    {
+        FreeSet();
+        var size = new VkDescriptorPoolSize { Type = VkDescriptorType.CombinedImageSampler, DescriptorCount = 1 };
+        var pool = new VkDescriptorPoolCreateInfo { MaxSets = 1, PoolSizeCount = 1, PoolSizes = &size };
+        _pool = Gpu.Device.CreateDescriptorPool(in pool, Gpu.Device.VkAllocator);
+
+        var layout = _tonemapSetLayout;
+        var allocate = new VkDescriptorSetAllocateInfo { DescriptorPool = _pool, DescriptorSetCount = 1, SetLayouts = &layout };
+        var sets = new VkDescriptorSet[1];
+        Gpu.Device.AllocateDescriptorSets(in allocate, sets);
+        _tonemapSet = sets[0];
+
+        var image = new VkDescriptorImageInfo { Sampler = _target.Sampler, ImageView = _target.ColorView, ImageLayout = VkImageLayout.ShaderReadOnlyOptimal };
+        var write = new VkWriteDescriptorSet
+        {
+            DstSet = _tonemapSet,
+            DstBinding = 0,
+            DescriptorCount = 1,
+            DescriptorType = VkDescriptorType.CombinedImageSampler,
+            ImageInfo = &image,
+        };
+        Gpu.Device.UpdateDescriptorSets([write], []);
+        _targetVersion = _target.Version;
+    }
+
+    private void FreeSet()
+    {
+        if (_pool.IsNull())
+            return;
+
+        var pool = _pool;
+        _pool = default;
+        _tonemapSet = default;
+        Gpu.Defer(() => Gpu.Device.DestroyDescriptorPool(pool, Gpu.Device.VkAllocator));
+    }
+
+    public void Dispose()
+    {
+        FreeSet();
+        _target.Dispose();
+        Pipelines.Destroy(_sky, default);
+        Pipelines.Destroy(_terrain, default);
+        Pipelines.Destroy(_terrainWire, _terrainLayout);
+        _ground.Dispose();
+        Pipelines.Destroy(_line, default);
+        Pipelines.Destroy(_lineWire, default);
+        Pipelines.Destroy(_part, default);
+        Pipelines.Destroy(_partWire, default);
+        Pipelines.Destroy(default, _layout);
+        Sky.Dispose();
+        Pipelines.Destroy(_tonemap, _tonemapLayout);
+        var setLayout = _tonemapSetLayout;
+        Gpu.Defer(() => Gpu.Device.DestroyDescriptorSetLayout(setLayout, Gpu.Device.VkAllocator));
+    }
+}

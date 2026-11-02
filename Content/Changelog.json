@@ -1,0 +1,13 @@
+[
+  {
+    "version": "0.0.1",
+    "date": "2026-11-01",
+    "changes": [
+      "RailWerkz framework: Core, Vulkan, Network and UI libraries",
+      "Main menu, single player, multiplayer, route builder, options and credits screens",
+      "Settings saved to %APPDATA%/Highball",
+      "Routes read from Content/Routes",
+      "BRUTAL logo shown at startup"
+    ]
+  }
+]

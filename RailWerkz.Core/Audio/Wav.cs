@@ -1,0 +1,100 @@
+using System.Buffers.Binary;
+
+namespace RailWerkz.Core.Audio;
+
+/// PCM sound data in memory: 16-bit, mono or stereo.
+public sealed class Sound(short[] samples, int channels, int sampleRate)
+{
+    public short[] Samples { get; } = samples;
+    public int Channels { get; } = channels;
+    public int SampleRate { get; } = sampleRate;
+    public float Duration => Samples.Length / (float)(Channels * SampleRate);
+}
+
+/// Reads RIFF WAV files: 8/16-bit PCM and 32-bit float (the M61 loops), converted to 16-bit.
+public static class Wav
+{
+    public static Sound Load(string path)
+    {
+        var data = File.ReadAllBytes(path);
+
+        if (data.Length < 12 || BinaryPrimitives.ReadUInt32BigEndian(data) != 0x52494646) // "RIFF"
+            throw new InvalidDataException($"{Path.GetFileName(path)} is not a WAV file");
+
+        int format = 1, channels = 1, rate = 44100, bits = 16;
+        var offset = 12;
+        ReadOnlySpan<byte> pcm = default;
+
+        while (offset + 8 <= data.Length)
+        {
+            var id = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(offset));
+            var size = (int)BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset + 4));
+            var body = offset + 8;
+            size = Math.Min(size, data.Length - body);
+
+            if (id == 0x666D7420) // "fmt "
+            {
+                format = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(body));
+                channels = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(body + 2));
+                rate = (int)BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(body + 4));
+                bits = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(body + 14));
+
+                if (format == 0xFFFE && size >= 26) // WAVE_FORMAT_EXTENSIBLE: the real format is in the sub-format GUID
+                    format = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(body + 24));
+            }
+            else if (id == 0x64617461) // "data"
+            {
+                pcm = data.AsSpan(body, size);
+            }
+
+            offset = body + size + (size & 1);
+        }
+
+        short[] samples;
+
+        if (format == 3 && bits == 32)
+        {
+            samples = new short[pcm.Length / 4];
+            for (var i = 0; i < samples.Length; i++)
+                samples[i] = (short)Math.Clamp(BinaryPrimitives.ReadSingleLittleEndian(pcm[(i * 4)..]) * 32767f, -32768f, 32767f);
+        }
+        else if (format == 1 && bits == 16)
+        {
+            samples = new short[pcm.Length / 2];
+            for (var i = 0; i < samples.Length; i++)
+                samples[i] = BinaryPrimitives.ReadInt16LittleEndian(pcm[(i * 2)..]);
+        }
+        else if (format == 1 && bits == 8)
+        {
+            samples = new short[pcm.Length];
+            for (var i = 0; i < samples.Length; i++)
+                samples[i] = (short)((pcm[i] - 128) << 8);
+        }
+        else if (format == 1 && bits == 24)
+        {
+            samples = new short[pcm.Length / 3];
+            for (var i = 0; i < samples.Length; i++)
+                samples[i] = (short)(pcm[i * 3 + 1] | (pcm[i * 3 + 2] << 8));
+        }
+        else
+        {
+            throw new NotSupportedException($"{Path.GetFileName(path)}: WAV format {format}, {bits}-bit isn't supported");
+        }
+
+        // OpenAL only spatializes mono; everything above stereo is folded down.
+        if (channels > 2)
+        {
+            var frames = samples.Length / channels;
+            var stereo = new short[frames * 2];
+            for (var f = 0; f < frames; f++)
+            {
+                stereo[f * 2] = samples[f * channels];
+                stereo[f * 2 + 1] = samples[f * channels + 1];
+            }
+            samples = stereo;
+            channels = 2;
+        }
+
+        return new Sound(samples, channels, rate);
+    }
+}

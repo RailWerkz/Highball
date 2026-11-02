@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <!-- Time, content paths, logging, settings, maths, OpenAL audio and music streaming. -->
+    <PropertyGroup>
+        <RootNamespace>RailWerkz.Core</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+        <Compile Include="$(RwRoot)Vendor/FastNoiseLite/*.cs" LinkBase="Vendor/FastNoiseLite" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="Ahwoo.Brutal.Core" />
+        <PackageReference Include="Ahwoo.Brutal.Numerics" />
+        <PackageReference Include="Ahwoo.Brutal.OpenAl" />
+        <PackageReference Include="NLayer" />
+    </ItemGroup>
+</Project>

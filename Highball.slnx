@@ -1,0 +1,9 @@
+﻿<Solution>
+  <Folder Name="/RailWerkz/">
+    <Project Path="RailWerkz.Core/RailWerkz.Core.csproj" />
+    <Project Path="RailWerkz.Network/RailWerkz.Network.csproj" />
+    <Project Path="RailWerkz.Vulkan/RailWerkz.Vulkan.csproj" />
+    <Project Path="RailWerkz.UI/RailWerkz.UI.csproj" />
+  </Folder>
+  <Project Path="Highball/Highball.csproj" />
+</Solution>

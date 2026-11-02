@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <!-- The interface toolkit: an animation engine after ImAnim, the palette, fonts and the draw-list widgets. -->
+    <PropertyGroup>
+        <RootNamespace>RailWerkz.UI</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="../RailWerkz.Core/RailWerkz.Core.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="Ahwoo.Brutal.ImGui" />
+    </ItemGroup>
+</Project>

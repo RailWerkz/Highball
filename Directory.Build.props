@@ -1,0 +1,16 @@
+<Project>
+    <!-- Every project here: .NET 10, unsafe (BRUTAL's interop is pointer-based), nullable on. -->
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <LangVersion>latest</LangVersion>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+        <NoWarn>$(NoWarn);CS1591;CS8981</NoWarn>
+        <Company>RailWerkz</Company>
+        <Product>Highball</Product>
+        <Version>0.0.1</Version>
+        <RwRoot>$(MSBuildThisFileDirectory)</RwRoot>
+    </PropertyGroup>
+</Project>

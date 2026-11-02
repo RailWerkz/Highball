@@ -1,0 +1,12 @@
+{
+  "I": 2,
+  "J": -5,
+  "Samples": 1001,
+  "Spacing": 2,
+  "CoverCells": 200,
+  "MinHeight": 176.27252,
+  "MaxHeight": 185.23238,
+  "Roads": "MAIN",
+  "Rails": "MAIN",
+  "Built": "2026-11-02 08:19:57Z"
+}

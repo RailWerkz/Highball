@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+publish/
+__pycache__/
+*.pyc
+*.blend1

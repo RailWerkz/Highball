@@ -1,0 +1,19 @@
+﻿<Project>
+    <!-- BRUTAL ships as NuGet packages with its native libraries bundled (Windows x64, Linux x64, macOS arm64). -->
+    <ItemGroup>
+        <PackageVersion Include="Ahwoo.Brutal.Core" Version="2026.10.1" />
+        <PackageVersion Include="Ahwoo.Brutal.Numerics" Version="2026.10.1" />
+        <PackageVersion Include="Ahwoo.Brutal.Strings" Version="2026.10.1" />
+        <PackageVersion Include="Ahwoo.Brutal.Glfw" Version="2026.10.4" />
+        <PackageVersion Include="Ahwoo.Brutal.Vulkan" Version="2026.10.2" />
+        <PackageVersion Include="Ahwoo.Brutal.Vulkan.Abstractions" Version="2026.10.2" />
+        <PackageVersion Include="Ahwoo.Brutal.ImGui" Version="2026.10.2" />
+        <PackageVersion Include="Ahwoo.Brutal.ImGui.Backends" Version="2026.10.2" />
+        <PackageVersion Include="Ahwoo.Brutal.OpenAl" Version="2026.10.2" />
+        <PackageVersion Include="Ahwoo.Brutal.RakNet" Version="2026.10.2" />
+        <PackageVersion Include="Ahwoo.Brutal.Stb" Version="2026.10.2" />
+        <PackageVersion Include="Ahwoo.Brutal.Gltf" Version="2026.10.2" />
+        <!-- Managed MP3 decoder for the music (OpenAL plays PCM, it does not read files). -->
+        <PackageVersion Include="NLayer" Version="3.0.0" />
+    </ItemGroup>
+</Project>
