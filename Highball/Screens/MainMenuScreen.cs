@@ -50,7 +50,13 @@ public sealed class MainMenuScreen : MenuScreen
         }
     }
 
-    /// Centred on the window, but never up into the wordmark or down into the key hints.
+    public override void Draw(ImDrawListPtr draw, float2 size)
+    {
+        base.Draw(draw, size);
+        Canvas.Text(draw, Heavy, S(34f), new float2(MenuX(size), MenuTop(size) - S(70f)), Style.Text, "HIGHBALL", Align.Right);
+    }
+
+    /// Centred on the window, but never up into the title or down into the key hints.
     protected override float MenuTop(float2 size)
     {
         var height = Menu.ListHeight;

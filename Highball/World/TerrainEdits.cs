@@ -248,11 +248,13 @@ public sealed partial class TerrainSource
     }
 
     /// Whether any edit hasn't been written yet.
-    public bool Unsaved => _tiles.Values.Any(t => t.EditsDirty || t.CoverDirty);
+    public bool Unsaved => TrackEdits.Unsaved || _tiles.Values.Any(t => t.EditsDirty || t.CoverDirty);
 
     /// Writes every changed tile's height offsets and land cover.
     public void SaveEdits()
     {
+        if (TrackEdits.Unsaved)
+            TrackEdits.Save(_route);
         foreach (var tile in _tiles.Values)
         {
             var folder = _route.TileFolder(tile.Id);

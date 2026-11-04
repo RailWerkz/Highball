@@ -84,8 +84,25 @@ public sealed class NetworkWay
     public Dictionary<string, string> Tags { get; set; } = [];
 }
 
-/// Every road and rail way of a route, keyed by OpenStreetMap id: Network.json.gz in the route's folder. Each build
-/// merges what it fetched into this, so a line that runs on into a newly built tile stays one line.
+/// One OpenStreetMap node on the rail lines that's tagged as something itself: a switch (railway=switch, with what kind
+/// in railway:switch and which way it turns in railway:turnout_side) or a crossing of two tracks (railway=railway_crossing).
+public sealed class NetworkNode
+{
+    public long Id { get; set; }
+    public double Lat { get; set; }
+    public double Lon { get; set; }
+    public Dictionary<string, string> Tags { get; set; } = [];
+
+    /// The railway= values worth a node of its own.
+    public static bool Wanted(string railway) => railway is "switch" or "railway_crossing";
+
+    /// The tags kept on such a node: its railway:* tags, and its ref and name.
+    public static bool Kept(string key) => key.StartsWith("railway", StringComparison.Ordinal) || key is "ref" or "name";
+}
+
+/// Every road and rail way of a route, keyed by OpenStreetMap id: Network.json.gz in the route's folder, with the tagged
+/// rail nodes in Nodes.json.gz. Each build merges what it fetched into this, so a line that runs on into a newly built
+/// tile stays one line.
 public sealed class RouteNetwork
 {
     /// The tags worth keeping: names and numbers, track and lane counts, gauge, power, speed, structures.
@@ -99,7 +116,23 @@ public sealed class RouteNetwork
     /// doesn't put them back as they were.
     public const string EditedTag = "highball:edited";
 
+    /// Set on what's left of an OpenStreetMap way taken out by hand (no nodes, so nothing draws it), so fetching
+    /// OpenStreetMap again doesn't put it back.
+    public const string RemovedTag = "highball:removed";
+
+    /// Set on a yard's map ways once it's cleared to be laid by hand: they aren't built, only followed. Its value says
+    /// whether the way had been edited before, for when it's put back.
+    public const string GuideTag = "highball:guide";
+
+    /// Set on track laid by hand along a guide: it's already what it should be, so it isn't fitted.
+    public const string ExactTag = "highball:exact";
+
+    public static bool IsGuide(NetworkWay way) => way.Tags.ContainsKey(GuideTag);
+
     public Dictionary<long, NetworkWay> Ways { get; } = [];
+
+    /// The switches and crossings tagged on the rail lines, by node id.
+    public Dictionary<long, NetworkNode> Nodes { get; } = [];
 
     /// Changed since it was loaded or saved.
     public bool Unsaved { get; private set; }
@@ -108,19 +141,34 @@ public sealed class RouteNetwork
     public int Version { get; private set; }
 
     private static string PathIn(RouteInfo route) => Path.Combine(route.Folder, "Network.json.gz");
+    private static string NodesIn(RouteInfo route) => Path.Combine(route.Folder, "Nodes.json.gz");
 
-    public void Merge(IEnumerable<NetworkWay> ways)
+    public void Merge(IEnumerable<NetworkWay> ways, IEnumerable<NetworkNode>? nodes = null)
     {
         foreach (var way in ways)
             if (!Ways.TryGetValue(way.Id, out var mine) || !mine.Tags.ContainsKey(EditedTag))
                 Ways[way.Id] = way;
+        foreach (var node in nodes ?? [])
+            Nodes[node.Id] = node;
         Version++;
     }
 
-    /// Puts a way in (replacing any with its id), or takes one out (way null).
+    /// Takes out every way as fetched from OpenStreetMap, keeping those edited or laid by hand.
+    public void DropFetched()
+    {
+        foreach (var id in Ways.Where(w => !w.Value.Tags.ContainsKey(EditedTag)).Select(w => w.Key).ToList())
+            Ways.Remove(id);
+        Nodes.Clear();
+        Version++;
+    }
+
+    /// Puts a way in (replacing any with its id), or takes one out (way null). One of OpenStreetMap's (a positive id)
+    /// is left as a marker that it was taken out.
     public void Set(long id, NetworkWay? way)
     {
-        if (way is null)
+        if (way is null && id > 0)
+            Ways[id] = new NetworkWay { Id = id, Tags = new Dictionary<string, string> { [EditedTag] = "yes", [RemovedTag] = "yes" } };
+        else if (way is null)
             Ways.Remove(id);
         else
             Ways[id] = way;
@@ -142,8 +190,10 @@ public sealed class RouteNetwork
     {
         Directory.CreateDirectory(route.Folder);
         using var file = File.Create(PathIn(route));
-        using var gzip = new GZipStream(file, CompressionLevel.SmallestSize);
-        JsonSerializer.Serialize(gzip, Ways.Values.ToList());
+        using (var gzip = new GZipStream(file, CompressionLevel.SmallestSize))
+            JsonSerializer.Serialize(gzip, Ways.Values.ToList());
+        using (var nodes = new GZipStream(File.Create(NodesIn(route)), CompressionLevel.SmallestSize))
+            JsonSerializer.Serialize(nodes, Nodes.Values.ToList());
         Unsaved = false;
     }
 
@@ -154,8 +204,14 @@ public sealed class RouteNetwork
         if (!File.Exists(path))
             return network;
 
-        using var gzip = new GZipStream(File.OpenRead(path), CompressionMode.Decompress);
-        network.Merge(JsonSerializer.Deserialize<List<NetworkWay>>(gzip) ?? []);
+        using (var gzip = new GZipStream(File.OpenRead(path), CompressionMode.Decompress))
+            network.Merge(JsonSerializer.Deserialize<List<NetworkWay>>(gzip) ?? []);
+        if (File.Exists(NodesIn(route)))
+        {
+            using var nodes = new GZipStream(File.OpenRead(NodesIn(route)), CompressionMode.Decompress);
+            network.Merge([], JsonSerializer.Deserialize<List<NetworkNode>>(nodes) ?? []);
+        }
+
         return network;
     }
 }

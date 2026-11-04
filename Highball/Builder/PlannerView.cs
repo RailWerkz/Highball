@@ -1,22 +1,19 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using Brutal.ImGuiApi;
-using Highball.App;
 using Highball.Routes;
-using Highball.Screens;
 using RailWerkz.Core.Logging;
 using RailWerkz.Core.Settings;
 using RailWerkz.UI;
-using RailWerkz.UI.Anim;
 using static RailWerkz.UI.Style;
 
 namespace Highball.Builder;
 
-/// The Route Builder's map: the route's tiles over OpenStreetMap, picked by dragging across them, and built at the
-/// road and rail detail chosen in the panel. The first area picked fixes the route's origin and its tile grid; every
+/// The builder's Planner: the route's tiles over OpenStreetMap, picked by dragging across them, and built at the road
+/// and rail detail chosen in the side panel. The first area picked fixes the route's origin and its tile grid; every
 /// later area lands on the same grid, so the route grows outward in one piece.
-public sealed class RouteEditorScreen : MenuScreen
+public sealed class PlannerView : IDisposable
 {
     private enum DragMode { Replace, Add, Remove }
 
@@ -24,11 +21,11 @@ public sealed class RouteEditorScreen : MenuScreen
 
     private const double MinSelectZoom = 9.0;
     private const int MaxSelectSide = 40;
-    private const float PanelWidth = 472f;
 
     private static readonly HttpClient Http = CreateClient();
 
     private readonly RouteInfo _route;
+    private readonly Action<string> _notify;
     private RouteNetwork _network;
     private readonly RouteGenerator _generator = new();
     private readonly MapView _map = new();
@@ -45,34 +42,43 @@ public sealed class RouteEditorScreen : MenuScreen
     private TileId _dragFrom;
     private TileId _dragTo;
 
-    private bool _searching;
-    private string _search = "";
-    private string _lastSearch = "";
+    private readonly ImInputString _search = new(128, ""u8);
     private volatile string? _searchResult;
     private GeoPoint? _pendingLook;
 
     private List<Line> _lines = [];
+    private List<World.TrackLayouts.Marker> _layouts = [];
     private readonly Dictionary<(bool Rail, int Class), double> _lengths = [];
     private int _linesVersion = -1;
     private float2[] _scratch = new float2[256];
 
-    public RouteEditorScreen(RouteInfo route) : base(route.Name.ToUpperInvariant())
+    public HashSet<TileId> Built => _built;
+    public bool Building => _generator.Running;
+    /// Goes up every time a build finishes, so a 3D view of the old tiles knows to open them again.
+    public int BuildVersion => _generator.Version;
+
+    public PlannerView(RouteInfo route, Action<string> notify)
     {
         _route = route;
+        _notify = notify;
         _network = RouteNetwork.Load(route);
         _built = route.BuiltTiles();
+        _layouts = World.TrackLayouts.LoadMarkers(route);
 
-        Menu.Look = MenuLook.Rows;
-        Menu.RowWidth = PanelWidth - 32f;
-        Menu.ShowHeader = false;
-        Menu.Add(new MenuItem { Label = "Go to", Value = () => _searching ? Tail(_search) + "_" : Tail(_lastSearch), OnSelect = () => { _searching = true; _search = ""; } })
-            .Add(new MenuItem { Label = "Roads", Value = () => Detail.RoadLevels[_roadLevel].Name, OnChange = d => _roadLevel = Math.Clamp(_roadLevel + d, 0, Detail.RoadLevels.Length - 1) })
-            .Add(new MenuItem { Label = "Rails", Value = () => Detail.RailLevels[_railLevel].Name, OnChange = d => _railLevel = Math.Clamp(_railLevel + d, 0, Detail.RailLevels.Length - 1), SeparatorAfter = true })
-            .Add(new MenuItem { Label = "Build", Value = () => $"{_selected.Count} TILE{(_selected.Count == 1 ? "" : "S")}", OnSelect = Build, Enabled = () => _selected.Count > 0 && !_generator.Running })
-            .Add(new MenuItem { Label = "Cancel build", OnSelect = _generator.Cancel, Enabled = () => _generator.Running })
-            .Add(new MenuItem { Label = "Clear selection", OnSelect = _selected.Clear, Enabled = () => _selected.Count > 0, SeparatorAfter = true })
-            .Add(new MenuItem { Label = "View 3D", OnSelect = View3D, Enabled = () => _built.Count > 0 && !_generator.Running, SeparatorAfter = true })
-            .Add(new MenuItem { Label = "Back", OnSelect = Back });
+        // The detail the route was last built at.
+        if (_built.Count > 0)
+        {
+            try
+            {
+                var info = RouteTile.LoadInfo(route.TileFolder(_built.First()));
+                _roadLevel = Math.Max(0, Array.FindIndex(Detail.RoadLevels, l => l.Name == info.Roads));
+                _railLevel = Math.Max(0, Array.FindIndex(Detail.RailLevels, l => l.Name == info.Rails));
+            }
+            catch (Exception e)
+            {
+                Log.Warn($"Route {route.Name}: {e.Message}");
+            }
+        }
 
         if (route.Projection is { } projection)
         {
@@ -84,6 +90,18 @@ public sealed class RouteEditorScreen : MenuScreen
         else
         {
             _map.LookAt(new GeoPoint(39.5, -98.35), 4.5);
+        }
+
+        if (App.DevTools.Look is { } look)
+        {
+            App.DevTools.Look = null;
+            _map.LookAt(new GeoPoint(look.Lat, look.Lon), look.Zoom);
+        }
+
+        if (App.DevTools.Regenerate)
+        {
+            App.DevTools.Regenerate = false;
+            Regenerate();
         }
 
         if (App.DevTools.Select is { } select)
@@ -103,27 +121,38 @@ public sealed class RouteEditorScreen : MenuScreen
     private static HttpClient CreateClient()
     {
         var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("Highball-RouteBuilder", typeof(RouteEditorScreen).Assembly.GetName().Version?.ToString(3) ?? "0"));
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("Highball-RouteBuilder", typeof(PlannerView).Assembly.GetName().Version?.ToString(3) ?? "0"));
         return client;
     }
 
-    private static string Tail(string text) => text.Length > 12 ? text[^12..] : text;
-
-    protected override void Back()
+    public void Dispose()
     {
         _generator.Cancel();
-        base.Back();
+        _map.Dispose();
     }
 
-    public override void Exit() => _map.Dispose();
-
-    /// Back from the 3D view, which saves any track it edited: read the network again so a later build merges into
-    /// that, not the copy from before.
-    public override void Resume()
+    /// The 3D Editor saved the track it edited: read the network again so a later build merges into that, not the
+    /// copy from before.
+    public void ReloadNetwork()
     {
         _network = RouteNetwork.Load(_route);
         _linesVersion = -1;
     }
+
+    /// The junctions as the Editor last laid them (it writes them whenever it lays the track).
+    public void ReloadTurnouts() => _layouts = World.TrackLayouts.LoadMarkers(_route);
+
+    /// The middle of the map in route metres, if it's over a built tile.
+    public RoutePoint? Centre()
+    {
+        if (_route.Projection is null)
+            return null;
+        var centre = _route.Projection.Forward(MapView.FromMercator(_map.CenterX, _map.CenterY));
+        return _built.Contains(_route.Grid!.TileAt(centre)) ? centre : null;
+    }
+
+    /// Centres the map on a point in route metres, keeping the zoom.
+    public void LookAt(RoutePoint point) => _map.LookAt(_route.Projection!.Inverse(point), _map.Zoom);
 
     private void Build()
     {
@@ -140,18 +169,28 @@ public sealed class RouteEditorScreen : MenuScreen
         });
     }
 
-    /// Flies over the built terrain, starting above the middle of the map if that's built, else the middle of the route.
-    private void View3D()
+    /// Every built tile again at the detail now chosen, the roads and rail fetched afresh in place of the old (track
+    /// edited by hand stays).
+    private void Regenerate()
     {
-        var centre = _route.Projection!.Forward(MapView.FromMercator(_map.CenterX, _map.CenterY));
-        HighballApp.Instance.Push(new RouteViewScreen(_route, _built.Contains(_route.Grid!.TileAt(centre)) ? centre : null));
+        if (_route.Grid is null || _built.Count == 0)
+            return;
+
+        _generator.Start(new RouteGenerator.Request
+        {
+            Route = _route,
+            Network = _network,
+            Tiles = [.. _built],
+            RoadLevel = _roadLevel,
+            RailLevel = _railLevel,
+            ReplaceNetwork = true,
+        });
     }
 
     // --- Going to a place: "lat, lon" directly, anything else through Nominatim. ---
 
     private void RunSearch(string text)
     {
-        _lastSearch = text.Trim();
         var parts = text.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 2 && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var lat) &&
             double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var lon) && Math.Abs(lat) <= 90 && Math.Abs(lon) <= 180)
@@ -186,7 +225,8 @@ public sealed class RouteEditorScreen : MenuScreen
         });
     }
 
-    public override void Update(float dt)
+    /// Every frame, shown or not, so a build finishing while the 3D Editor is up still lands.
+    public void Update()
     {
         if (_pendingLook is { } look)
         {
@@ -197,7 +237,7 @@ public sealed class RouteEditorScreen : MenuScreen
         if (_searchResult is { } message)
         {
             _searchResult = null;
-            Notify(message);
+            _notify(message);
         }
 
         // A build that just finished: show what it made, and drop the selection it built.
@@ -209,43 +249,163 @@ public sealed class RouteEditorScreen : MenuScreen
 
         if (_wasRunning && !_generator.Running)
         {
-            Notify(_generator.Status);
+            _notify(_generator.Status);
             if (_generator.Status.StartsWith("Built"))
                 _selected.Clear();
         }
 
         _wasRunning = _generator.Running;
+    }
 
-        if (!_searching)
-        {
-            Menu.Update();
-            return;
-        }
+    public (string Key, string Action)[] Hints =>
+        [("LMB", "Select"), ("SHIFT", "Add"), ("CTRL", "Remove"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("TAB", "2D Editor"), ("ESC", "Exit")];
 
-        if (Keyboard.Edit(ref _search, 64))
+    public string Attribution => MapTiles.Attribution;
+
+    // --- Menus and the side panel (ImGui). ---
+
+    public void MenuEdit()
+    {
+        if (ImGui.MenuItem("Clear Selection", "", false, _selected.Count > 0))
+            _selected.Clear();
+    }
+
+    public void Panel()
+    {
+        ImGui.SeparatorText("Go To"u8);
+        ImGui.SetNextItemWidth(-1f);
+        if (ImGui.InputTextWithHint("##goto"u8, "Place, or lat, lon"u8, _search, ImGuiInputTextFlags.EnterReturnsTrue) && _search.ToString().Trim() is { Length: > 0 } text)
+            RunSearch(text);
+
+        ImGui.SeparatorText("Detail"u8);
+        Level("Roads"u8, ref _roadLevel, Detail.RoadLevels.Select(l => l.Name).ToArray());
+        Level("Rails"u8, ref _railLevel, Detail.RailLevels.Select(l => l.Name).ToArray());
+
+        ImGui.SeparatorText("Build"u8);
+        ImGui.Text($"{_selected.Count} tile{(_selected.Count == 1 ? "" : "s")} selected");
+        ImGui.BeginDisabled(_selected.Count == 0 || _generator.Running);
+        if (ImGui.Button("Build"u8))
+            Build();
+        ImGui.EndDisabled();
+        ImGui.SameLine(0f, -1f);
+        ImGui.BeginDisabled(!_generator.Running);
+        if (ImGui.Button("Cancel"u8))
+            _generator.Cancel();
+        ImGui.EndDisabled();
+        ImGui.SameLine(0f, -1f);
+        ImGui.BeginDisabled(_selected.Count == 0);
+        if (ImGui.Button("Clear Selection"u8))
+            _selected.Clear();
+        ImGui.EndDisabled();
+        ImGui.BeginDisabled(_built.Count == 0 || _generator.Running);
+        if (ImGui.Button($"Regenerate {_built.Count} Built Tile{(_built.Count == 1 ? "" : "s")}"))
+            Regenerate();
+        ImGui.EndDisabled();
+
+        if (_generator.Running)
+            ImGui.ProgressBar(_generator.Progress, new float2(-1f, 0f), ImString.Null);
+        if (_generator.Status.Length > 0)
+            ImGui.TextWrapped(_generator.Status);
+
+        Key();
+    }
+
+    private static void Level(ImString label, ref int level, string[] names)
+    {
+        ImGui.SetNextItemWidth(-80f);
+        if (ImGui.BeginCombo(label, names[level], ImGuiComboFlags.None))
         {
-            _searching = false;
-            if (_search.Trim().Length > 0)
-                RunSearch(_search);
-        }
-        else if (ImGui.IsKeyPressed(ImGuiKey.Escape))
-        {
-            _searching = false;
-            Sfx.Back();
+            for (var i = 0; i < names.Length; i++)
+                if (ImGui.Selectable(names[i], i == level, ImGuiSelectableFlags.None, null))
+                    level = i;
+            ImGui.EndCombo();
         }
     }
 
-    protected override (string Key, string Action)[] HintKeys() => _searching
-        ? [("ENTER", "Go"), ("ESC", "Cancel")]
-        : [("LMB", "Select"), ("SHIFT", "Add"), ("CTRL", "Remove"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("ESC", "Back")];
+    /// What's on the map, by class, with how much of it there is.
+    private void Key()
+    {
+        var rows = _lengths.Where(e => e.Value >= 50.0).OrderByDescending(e => e.Key.Rail).ThenBy(e => e.Key.Class).ToList();
+        if (rows.Count == 0 && _layouts.Count == 0)
+            return;
+
+        ImGui.SeparatorText("On the Map"u8);
+        var imperial = Settings.Current.Units == UnitSystem.Imperial;
+        if (!ImGui.BeginTable("key"u8, 3, ImGuiTableFlags.None))
+            return;
+
+        ImGui.TableSetupColumn("##swatch"u8, ImGuiTableColumnFlags.WidthFixed, 34f, default);
+        ImGui.TableSetupColumn("##class"u8, ImGuiTableColumnFlags.WidthStretch, 0f, default);
+        ImGui.TableSetupColumn("##length"u8, ImGuiTableColumnFlags.WidthFixed, 0f, default);
+
+        foreach (var ((rail, cls), metres) in rows)
+        {
+            var (color, _) = LineStyle(rail, cls);
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            var swatch = new float4(color.R, color.G, color.B, 1f);
+            ImGui.ColorButton($"##{rail}{cls}", swatch, ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoBorder, new float2(28f, 6f));
+            ImGui.TableNextColumn();
+            ImGui.Text($"{(rail ? "Rail" : "Road")} {(rail ? ((RailClass)cls).ToString() : ((RoadClass)cls).ToString())}");
+            ImGui.TableNextColumn();
+            ImGui.Text(imperial ? $"{metres / 1609.344:0.0} mi" : $"{metres / 1000.0:0.0} km");
+        }
+
+        var sample = new World.TrackLayouts.Marker(0, 0, World.JunctionKind.Turnout, 10, true, null);
+        foreach (var (label, count, marker) in (ReadOnlySpan<(string, int, World.TrackLayouts.Marker)>)
+                 [
+                     ("Switch", _layouts.Count(l => l.Kind is World.JunctionKind.Turnout or World.JunctionKind.TwoAtOneNode && l.Issue is null), sample),
+                     ("Crossover or ladder link", _layouts.Count(l => l.Kind is World.JunctionKind.Crossover or World.JunctionKind.LadderLink && l.Issue is null),
+                         sample with { Kind = World.JunctionKind.Crossover }),
+                     ("Needs fixing", _layouts.Count(l => l.Issue is not null), sample with { Kind = World.JunctionKind.Unknown, Modelled = false, Issue = "" }),
+                 ])
+        {
+            if (count == 0)
+                continue;
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            var at = ImGui.GetCursorScreenPos() + new float2(S(14f), ImGui.GetTextLineHeight() * 0.5f);
+            Junction(ImGui.GetWindowDrawList(), at, marker);
+            ImGui.Dummy(new float2(S(28f), ImGui.GetTextLineHeight()));
+            ImGui.TableNextColumn();
+            ImGui.Text(label);
+            ImGui.TableNextColumn();
+            ImGui.Text($"{count}");
+        }
+
+        ImGui.EndTable();
+        Issues();
+    }
+
+    /// Every junction that needs fixing by hand, with why; clicking one goes to it.
+    private void Issues()
+    {
+        var issues = _layouts.Where(l => l.Issue is not null).ToList();
+        if (issues.Count == 0)
+            return;
+
+        ImGui.SeparatorText($"Needs Fixing ({issues.Count})");
+        for (var i = 0; i < issues.Count; i++)
+        {
+            var issue = issues[i];
+            if (ImGui.Selectable($"{World.TrackLayouts.Name(issue.Kind, issue.Number)}##issue{i}", false, ImGuiSelectableFlags.None, default))
+                _map.LookAt(new GeoPoint(issue.Lat, issue.Lon), Math.Max(_map.Zoom, 17.0));
+            ImGui.Indent();
+            ImGui.PushTextWrapPos(0f);
+            ImGui.TextDisabled(issue.Issue!);
+            ImGui.PopTextWrapPos();
+            ImGui.Unindent();
+        }
+    }
 
     // --- Drawing. ---
 
-    public override void Draw(ImDrawListPtr draw, float2 size)
+    /// The map over the whole window; area is the part of it not under the menu bar or footer, where the pointer is
+    /// the map's.
+    public void Draw(ImDrawListPtr draw, float2 size, float top, float bottom)
     {
-        var panelLeft = size.X - S(40f) - S(PanelWidth);
         var mouse = ImGui.GetIO().MousePos;
-        var hovered = !Keyboard.PointerBlocked && mouse.X < panelLeft - S(24f) && mouse.X >= 0f && mouse.Y >= 0f && mouse.Y < size.Y;
+        var hovered = !Keyboard.PointerBlocked && mouse.X >= 0f && mouse.X < size.X && mouse.Y >= top && mouse.Y < bottom;
 
         _map.Draw(draw, new float2(0f, 0f), size);
         _map.Input(hovered);
@@ -258,18 +418,8 @@ public sealed class RouteEditorScreen : MenuScreen
         }
 
         DrawNetwork(draw, size);
+        DrawTurnouts(draw, size, hovered, mouse);
         Select(hovered, mouse);
-
-        // The panel's ground, and the wordmark's.
-        Canvas.HGradient(draw, new float2(panelLeft - S(120f), 0f), new float2(panelLeft - S(24f), size.Y), Background.WithAlpha(0f), Background.WithAlpha(0.9f));
-        draw.AddRectFilled(new float2(panelLeft - S(24f), 0f), size, Background.WithAlpha(0.9f));
-        Canvas.VGradient(draw, new float2(0f, 0f), new float2(panelLeft - S(24f), S(110f)), Background.WithAlpha(0.85f), Background.WithAlpha(0f));
-        DrawFrame(draw, size);
-
-        DrawPanel(draw, size, panelLeft);
-        Canvas.Hints(draw, new float2(S(110f), size.Y - S(40f)), HintKeys());
-        Canvas.Text(draw, Regular, S(12f), new float2(panelLeft - S(36f), size.Y - S(30f)), TextDim, MapTiles.Attribution, Align.Right);
-        DrawToast(draw, size);
     }
 
     private float2 Corner(int i, int j)
@@ -360,7 +510,7 @@ public sealed class RouteEditorScreen : MenuScreen
         {
             if (_map.Zoom < MinSelectZoom)
             {
-                Notify("Zoom in to pick tiles");
+                _notify("Zoom in to pick tiles");
                 return;
             }
 
@@ -468,6 +618,60 @@ public sealed class RouteEditorScreen : MenuScreen
             _ => _map.Zoom >= 12.0,
         };
 
+    /// A junction's marker: a diamond for a switch, a square for a crossover, a circle for anything else; filled orange
+    /// where it's drawn with models, red where it needs fixing.
+    private static void Junction(ImDrawListPtr draw, float2 at, World.TrackLayouts.Marker marker)
+    {
+        var fill = marker.Issue is not null ? Stop : marker.Modelled ? Caution : default;
+        var edge = fill.A > 0f ? new Rgba(0f, 0f, 0f, 0.8f) : Clear;
+        var r = S(5f);
+        switch (marker.Kind)
+        {
+            case World.JunctionKind.Turnout or World.JunctionKind.TwoAtOneNode:
+            {
+                var (a, b, c, d) = (at + new float2(0f, -r), at + new float2(r, 0f), at + new float2(0f, r), at + new float2(-r, 0f));
+                if (fill.A > 0f)
+                    draw.AddQuadFilled(a, b, c, d, fill);
+                draw.AddQuad(a, b, c, d, edge, S(1.2f));
+                break;
+            }
+            case World.JunctionKind.Crossover or World.JunctionKind.LadderLink:
+                r *= 0.85f;
+                if (fill.A > 0f)
+                    draw.AddRectFilled(at - new float2(r, r), at + new float2(r, r), fill);
+                draw.AddRect(at - new float2(r, r), at + new float2(r, r), edge, 0f, ImDrawFlags.None, S(1.2f));
+                break;
+            default:
+                if (fill.A > 0f)
+                    draw.AddCircleFilled(at, r, fill, 16);
+                draw.AddCircle(at, r, edge, 16, S(1.2f));
+                break;
+        }
+    }
+
+    /// The junctions, once zoomed in far enough to tell them apart; hovering one says what it is and what's wrong.
+    private void DrawTurnouts(ImDrawListPtr draw, float2 size, bool hovered, float2 mouse)
+    {
+        if (_layouts.Count == 0 || _map.Zoom < 13.0)
+            return;
+
+        World.TrackLayouts.Marker? under = null;
+        var nearest = S(8f) * S(8f);
+        foreach (var marker in _layouts.OrderBy(l => l.Issue is not null))
+        {
+            var at = _map.ToScreen(new GeoPoint(marker.Lat, marker.Lon));
+            if (at.X < -10f || at.Y < -10f || at.X > size.X + 10f || at.Y > size.Y + 10f)
+                continue;
+            Junction(draw, at, marker);
+            var d = (at - mouse).LengthSquared();
+            if (hovered && d < nearest)
+                (nearest, under) = (d, marker);
+        }
+
+        if (under is { } hover)
+            ImGui.SetTooltip(World.TrackLayouts.Name(hover.Kind, hover.Number) + (hover.Modelled ? ", modelled" : "") + (hover.Issue is { } why ? $"\n{why}" : ""));
+    }
+
     private void DrawNetwork(ImDrawListPtr draw, float2 size)
     {
         if (_network.Version != _linesVersion)
@@ -500,60 +704,6 @@ public sealed class RouteEditorScreen : MenuScreen
 
             var (color, width) = LineStyle(line.Rail, line.Class);
             draw.AddPolyline(_scratch.AsSpan(0, count), color, ImDrawFlags.None, S(width));
-        }
-    }
-
-    // --- The panel. ---
-
-    private void DrawPanel(ImDrawListPtr draw, float2 size, float left)
-    {
-        var top = S(44f);
-        Canvas.Text(draw, Heavy, S(28f), new float2(left, top), Style.Text, _route.Name.ToUpperInvariant());
-
-        var origin = _route.Grid is null
-            ? "ORIGIN NOT SET"
-            : string.Create(CultureInfo.InvariantCulture, $"ORIGIN {_route.Origin.Latitude:0.00000}, {_route.Origin.Longitude:0.00000}");
-        Canvas.Text(draw, Mono, S(13f), new float2(left, top + S(42f)), TextDim, origin);
-        Canvas.Text(draw, Mono, S(13f), new float2(left, top + S(62f)), TextDim, $"BUILT {_built.Count} TILE{(_built.Count == 1 ? "" : "S")}");
-
-        var bottom = Menu.Draw(draw, left + S(16f), top + S(110f));
-        var y = bottom + S(30f);
-
-        if (_generator.Running)
-        {
-            Canvas.SegmentBar(draw, new float2(left, y), new float2(left + S(PanelWidth), y + S(10f)), _generator.Progress, Accent, 32);
-            y += S(22f);
-        }
-
-        if (_generator.Status.Length > 0)
-        {
-            foreach (var line in Canvas.Wrap(_generator.Status, Mono, S(13f), S(PanelWidth)))
-            {
-                Canvas.Text(draw, Mono, S(13f), new float2(left, y), _generator.Running ? Style.Text : TextDim, line);
-                y += S(19f);
-            }
-
-            y += S(14f);
-        }
-
-        DrawKey(draw, left, y);
-    }
-
-    /// What's on the map, by class, with how much of it there is.
-    private void DrawKey(ImDrawListPtr draw, float left, float y)
-    {
-        var imperial = Settings.Current.Units == UnitSystem.Imperial;
-        var rows = _lengths.Where(e => e.Value >= 50.0).OrderByDescending(e => e.Key.Rail).ThenBy(e => e.Key.Class).ToList();
-
-        foreach (var ((rail, cls), metres) in rows)
-        {
-            var (color, width) = LineStyle(rail, cls);
-            draw.AddLine(new float2(left, y + S(9f)), new float2(left + S(28f), y + S(9f)), color, S(width));
-            var name = rail ? ((RailClass)cls).ToString() : ((RoadClass)cls).ToString();
-            Canvas.Spaced(draw, Medium, S(12f), new float2(left + S(42f), y + S(2f)), TextDim, $"{(rail ? "RAIL" : "ROAD")} {name.ToUpperInvariant()}", 0.08f);
-            var amount = imperial ? $"{metres / 1609.344:0.0} MI" : $"{metres / 1000.0:0.0} KM";
-            Canvas.Text(draw, Mono, S(13f), new float2(left + S(PanelWidth), y + S(1f)), Style.Text, amount, Align.Right);
-            y += S(22f);
         }
     }
 }

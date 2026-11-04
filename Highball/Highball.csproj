@@ -16,6 +16,7 @@
     </ItemGroup>
     <ItemGroup>
         <PackageReference Include="Ahwoo.Brutal.Glfw" />
+        <PackageReference Include="Ahwoo.Brutal.Concurrency" />
         <PackageReference Include="Ahwoo.Brutal.ImGui.Backends" />
     </ItemGroup>
     <!-- Content travels with the build, so the game runs from bin/ as well as from the repository. -->

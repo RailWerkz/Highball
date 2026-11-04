@@ -16,8 +16,16 @@ namespace Highball.App;
 ///   --camera LAT LON HEIGHT YAW PITCH               with --view, start there: metres above ground, degrees (yaw 0 north)
 ///   --sculpt TOOL STEPS                             with --view, once loaded, apply a tool (raise, lower, smooth, flatten,
 ///                                                   paint) STEPS times at the middle of the screen
+///   --fly SPEED                                     with --view, fly straight ahead at SPEED metres a second, logging the
+///                                                   frame times and the terrain left waiting every second
 ///   --panels                                        with --view, open the Frame Statistics and Profiler windows
 ///   --skybox NAME                                   with --view, show that sky (a file name in Textures/Skyboxes, or Procedural)
+///   --throw LAT LON                                 with --view or --view2d, once loaded, throw the switch nearest there
+///   --profilestats                                  with --view or --view2d, log how the rail profiles came out
+///   --clean                                         with --view or --view2d, no overlays (track grades)
+///   --tool N                                        with --view or --view2d, start with tool N (its number key)
+///   --trackop LAT LON RADIUS OP                     with --view or --view2d, once loaded, select the control points within
+///                                                   RADIUS metres and apply OP (select, straighten, smooth, simplify, join)
 ///   --lay LAT LON LAT LON                           with --view, once loaded, lay track between two points (branching off
 ///                                                   any track within 20 m of the first)
 ///   --shot SECONDS FILE.png [SECONDS FILE.png ...]  save the screen at those times
@@ -37,8 +45,19 @@ public static class DevTools
     /// Tiles to pick and build on opening the route editor (--select), read once by it.
     public static (double Lat, double Lon, int Size)? Select { get; set; }
 
+    /// --regenerate: the Planner regenerates every built tile as it opens.
+    public static bool Regenerate { get; set; }
+    /// Scripted Shape tool steps, one per finished rebuild: move,LAT,LON,EAST,NORTH; straighten,LAT,LON (from the handle there to the next but one); remove,LAT,LON; reset,LAT,LON; undo; redo; save; clearyard,LAT,LON; restoreyard,LAT,LON; follow,LAT,LON,LAT,LON...; view,LAT,LON,HEIGHT.
+    public static Queue<string>? ShapeOps { get; set; }
+    /// Solve the track again on opening, rather than use what's saved with the route.
+    public static bool Refit { get; private set; }
+
+    /// --look LAT LON ZOOM: where the Planner's map opens.
+    public static (double Lat, double Lon, double Zoom)? Look { get; set; }
+
     private static string? _route;
     private static bool _view;
+    private static bool _view2D;
 
     /// Open the 3D view's Frame Statistics and Profiler windows (--panels).
     public static bool Panels { get; set; }
@@ -49,11 +68,36 @@ public static class DevTools
     /// Scripted track in the 3D view (--lay), read once by it.
     public static (double Lat0, double Lon0, double Lat1, double Lon1)? Lay { get; set; }
 
+    /// A switch to throw in the editors (--throw), read once by them.
+    public static (double Lat, double Lon)? ThrowAt { get; set; }
+
+    /// --switch LAT LON SIZE: picks the switch nearest there with the Switches tool, and sets its size (-1 automatic, 0 as
+    /// mapped, else a frog number).
+    public static (double Lat, double Lon, int Size)? SwitchAt { get; set; }
+
+    /// Log the rail profiles' statistics once the terrain opens (--profilestats).
+    public static bool ProfileStats { get; private set; }
+
+    /// Where to write the audit of the track, once a route's open (TrackAudit).
+    public static string? AuditFile { get; set; }
+
+    /// No overlays in the editors (--clean).
+    public static bool Clean { get; private set; }
+
+    /// The editors' first tool (--tool), read once by them.
+    public static int? Tool { get; set; }
+
+    /// A scripted selection and operation on it in the editors (--trackop), read once by them.
+    public static (double Lat, double Lon, double Radius, string Op)? TrackOp { get; set; }
+
     /// A scripted stroke in the 3D view (--sculpt), read once by it.
     public static (string Tool, int Steps)? Sculpt { get; set; }
 
     /// Where the 3D view starts (--camera), read once by it.
     public static (double Lat, double Lon, float Height, float Yaw, float Pitch)? Camera { get; set; }
+
+    /// --fly: metres a second straight ahead, for testing streaming.
+    public static float? FlySpeed { get; private set; }
 
     public static bool NoVSync { get; private set; }
     public static bool SkipSplash { get; private set; }
@@ -62,6 +106,9 @@ public static class DevTools
 #else
     public static bool Validation { get; private set; }
 #endif
+
+    /// A settings file to read and write instead of the player's, for testing what's saved.
+    public static string? SettingsFile { get; private set; }
 
     public static void Parse(string[] args)
     {
@@ -75,6 +122,9 @@ public static class DevTools
                 case "--tab" when i + 1 < args.Length:
                     Tab = args[++i];
                     break;
+                case "--settingsfile" when i + 1 < args.Length:
+                    SettingsFile = args[++i];
+                    break;
                 case "--route" when i + 1 < args.Length:
                     _route = args[++i];
                     break;
@@ -83,14 +133,58 @@ public static class DevTools
                     Select = (double.Parse(args[i + 1], culture), double.Parse(args[i + 2], culture), int.Parse(args[i + 3], culture));
                     i += 3;
                     break;
+                case "--look" when i + 3 < args.Length:
+                    var invariant = System.Globalization.CultureInfo.InvariantCulture;
+                    Look = (double.Parse(args[i + 1], invariant), double.Parse(args[i + 2], invariant), double.Parse(args[i + 3], invariant));
+                    i += 3;
+                    break;
+                case "--shapeops" when i + 1 < args.Length:
+                    ShapeOps = new Queue<string>((args[++i].StartsWith('@') ? File.ReadAllText(args[i][1..]) : args[i]).Split(';', StringSplitOptions.RemoveEmptyEntries));
+                    break;
+                case "--refit":
+                    Refit = true;
+                    break;
+                case "--regenerate":
+                    Regenerate = true;
+                    break;
                 case "--view":
                     _view = true;
+                    break;
+                case "--view2d":
+                    _view2D = true;
                     break;
                 case "--panels":
                     Panels = true;
                     break;
                 case "--skybox" when i + 1 < args.Length:
                     Skybox = args[++i];
+                    break;
+                case "--throw" when i + 2 < args.Length:
+                    var w = System.Globalization.CultureInfo.InvariantCulture;
+                    ThrowAt = (double.Parse(args[i + 1], w), double.Parse(args[i + 2], w));
+                    i += 2;
+                    break;
+                case "--switch" when i + 3 < args.Length:
+                    var v = System.Globalization.CultureInfo.InvariantCulture;
+                    SwitchAt = (double.Parse(args[i + 1], v), double.Parse(args[i + 2], v), int.Parse(args[i + 3], v));
+                    i += 3;
+                    break;
+                case "--audit" when i + 1 < args.Length:
+                    AuditFile = args[++i];
+                    break;
+                case "--profilestats":
+                    ProfileStats = true;
+                    break;
+                case "--clean":
+                    Clean = true;
+                    break;
+                case "--tool" when i + 1 < args.Length:
+                    Tool = int.Parse(args[++i]);
+                    break;
+                case "--trackop" when i + 4 < args.Length:
+                    var t = System.Globalization.CultureInfo.InvariantCulture;
+                    TrackOp = (double.Parse(args[i + 1], t), double.Parse(args[i + 2], t), double.Parse(args[i + 3], t), args[i + 4]);
+                    i += 4;
                     break;
                 case "--lay" when i + 4 < args.Length:
                     var g = System.Globalization.CultureInfo.InvariantCulture;
@@ -105,6 +199,9 @@ public static class DevTools
                     var c = System.Globalization.CultureInfo.InvariantCulture;
                     Camera = (double.Parse(args[i + 1], c), double.Parse(args[i + 2], c), float.Parse(args[i + 3], c), float.Parse(args[i + 4], c), float.Parse(args[i + 5], c));
                     i += 5;
+                    break;
+                case "--fly" when i + 1 < args.Length:
+                    FlySpeed = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
                     break;
                 case "--novsync":
                     NoVSync = true;
@@ -130,7 +227,9 @@ public static class DevTools
         }
 
         // Test runs never touch the player's settings.
-        if (Shots.Count > 0 || _quitAt < double.MaxValue)
+        if (SettingsFile is not null)
+            Settings.FileOverride = SettingsFile;
+        else if (Shots.Count > 0 || _quitAt < double.MaxValue)
             Settings.ReadOnly = true;
     }
 
@@ -157,9 +256,10 @@ public static class DevTools
         {
             _route = null;
             var route = Routes.RouteInfo.All().FirstOrDefault(r => r.Id.Equals(name, StringComparison.OrdinalIgnoreCase)) ?? Routes.RouteInfo.Create(name);
-            app.Push(new Builder.RouteEditorScreen(route));
-            if (_view)
-                app.Push(new Builder.RouteViewScreen(route));
+            var builder = new Builder.BuilderScreen(route);
+            app.Push(builder);
+            if (_view || _view2D)
+                builder.Show(_view2D ? Builder.BuilderScreen.Mode.Editor2D : Builder.BuilderScreen.Mode.Editor3D);
         }
     }
 

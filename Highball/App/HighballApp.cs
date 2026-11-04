@@ -68,8 +68,14 @@ public sealed class HighballApp : IDisposable
 
         Glfw.WindowHint(GlfwWindowHint.ClientApi, Glfw.Constants.GLFW_NO_API);
         Glfw.WindowHint(GlfwWindowHint.ScaleToMonitor, 1);
+        // (Hidden until it's where it was left; test runs always open the same.)
+        var restore = !Settings.ReadOnly && Settings.Current.WindowWidth > 0;
+        if (restore)
+            Glfw.WindowHint(GlfwWindowHint.Visible, 0);
 
         _window = Glfw.CreateWindow(new GlfwWindow.CreateInfo { Title = Title, Size = _windowedSize });
+        if (restore)
+            RestoreWindow();
 
         var names = Glfw.GetRequiredInstanceExtensions(out var count);
         var extensions = new List<string>();
@@ -123,6 +129,53 @@ public sealed class HighballApp : IDisposable
         Tween.ReduceMotion = Settings.Current.ReduceMotion;
     }
 
+    /// The window as it was last left, if that's still on a screen.
+    private void RestoreWindow()
+    {
+        var s = Settings.Current;
+        _windowedSize = new int2(Math.Max(s.WindowWidth, MinWindow), Math.Max(s.WindowHeight, MinWindow));
+        _window.Size = _windowedSize;
+        if (OnAScreen(s.WindowX, s.WindowY))
+        {
+            _windowedPosition = new int2(s.WindowX, s.WindowY);
+            _window.Position = _windowedPosition;
+        }
+
+        if (s.WindowMaximized)
+            _window.Maximize();
+        _window.Visible = true;
+    }
+
+    /// Whether a window placed here would have its title bar on one of the screens.
+    private static unsafe bool OnAScreen(int x, int y)
+    {
+        foreach (var monitor in Glfw.GetMonitors())
+        {
+            monitor.GetMonitorWorkArea(out var at, out var size);
+            if (x + MinWindow > at.X && x < at.X + size.X - MinWindow && y >= at.Y - MinWindow && y < at.Y + size.Y - MinWindow)
+                return true;
+        }
+
+        return false;
+    }
+
+    private const int MinWindow = 200;
+
+    /// Keeps the window's place while it's an ordinary window, to go back to from fullscreen and to save.
+    private void TrackWindow()
+    {
+        if (_window.IsFullscreen || _window.IsMaximised || _window.IsIconified)
+            return;
+        (_windowedSize, _windowedPosition) = (_window.Size, _window.Position);
+    }
+
+    private void SaveWindow()
+    {
+        var s = Settings.Current;
+        (s.WindowWidth, s.WindowHeight, s.WindowX, s.WindowY) = (_windowedSize.X, _windowedSize.Y, _windowedPosition.X, _windowedPosition.Y);
+        s.WindowMaximized = _window.IsMaximised;
+    }
+
     public void SetFullscreen(bool fullscreen)
     {
         unsafe
@@ -130,8 +183,6 @@ public sealed class HighballApp : IDisposable
             var monitor = Glfw.PInvoke.GetPrimaryMonitor();
             if (fullscreen && !_window.IsFullscreen && !monitor.IsNull())
             {
-                _windowedSize = _window.Size;
-                _windowedPosition = _window.Position;
                 var mode = Glfw.PInvoke.GetVideoMode(monitor);
                 _window.SetFullscreen(monitor, new int2(mode->Width, mode->Height), mode->RefreshRate);
             }
@@ -217,6 +268,7 @@ public sealed class HighballApp : IDisposable
         while (!_quit && !_window.ShouldClose)
         {
             Glfw.PollEvents();
+            TrackWindow();
             Input.BeginFrame();
             Time.Tick();
 
@@ -321,6 +373,7 @@ public sealed class HighballApp : IDisposable
 
     public void Dispose()
     {
+        SaveWindow();
         foreach (var screen in _screens)
             screen.Exit();
 

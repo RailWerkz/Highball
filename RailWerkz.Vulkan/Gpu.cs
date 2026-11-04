@@ -431,6 +431,7 @@ public static unsafe class Gpu
         Device.ResetFences([frame.Fence]);
         frame.Cmd.Reset(VkCommandBufferResetFlags.None);
         frame.Cmd.Begin(VkCommandBufferUsageFlags.OneTimeSubmitBit);
+        Buffers.FlushUploads(frame.Cmd);
         return true;
     }
 
@@ -497,6 +498,8 @@ public static unsafe class Gpu
         else if (result != VkResult.Success)
             throw new InvalidOperationException($"Vulkan: present failed ({result})");
 
+        _frames[_frame].Garbage.AddRange(_deferred);
+        _deferred.Clear();
         _frame = (_frame + 1) % FramesInFlight;
     }
 
@@ -541,8 +544,13 @@ public static unsafe class Gpu
         done(pixels, Extent.X, Extent.Y);
     }
 
-    /// Releases something once the GPU can no longer be using it (after this frame slot's fence next signals).
-    public static void Defer(Action release) => _frames[_frame].Garbage.Add(release);
+    /// What's been let go since the last frame was submitted: handed to that next frame's slot when it is, since the
+    /// frames already in flight may still be using it.
+    private static readonly List<Action> _deferred = [];
+
+    /// Releases something once the GPU can no longer be using it: once the next frame submitted (and so every frame
+    /// before it) has finished.
+    public static void Defer(Action release) => _deferred.Add(release);
 
     /// Records commands, runs them, and waits: for uploads at load time.
     public static void Submit(Action<CommandBuffer> record)
@@ -589,6 +597,9 @@ public static unsafe class Gpu
     public static void Flush()
     {
         WaitIdle();
+        foreach (var release in _deferred)
+            release();
+        _deferred.Clear();
         foreach (var frame in _frames)
         {
             if (frame is null)
@@ -606,6 +617,9 @@ public static unsafe class Gpu
             return;
 
         Device.WaitIdle();
+        foreach (var release in _deferred)
+            release();
+        _deferred.Clear();
         foreach (var frame in _frames)
         {
             if (frame is null)

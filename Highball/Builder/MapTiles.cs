@@ -13,7 +13,7 @@ namespace Highball.Builder;
 /// its tile policy asks), cached on disk under the user's data folder, and kept as textures while they're on screen.
 public sealed class MapTiles : IDisposable
 {
-    public const string Attribution = "Â© OpenStreetMap contributors";
+    public const string Attribution = "© OpenStreetMap contributors";
     private const string Url = "https://tile.openstreetmap.org/{0}/{1}/{2}.png";
     private const int MaxTextures = 320;
     private const int UploadsPerFrame = 6;

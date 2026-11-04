@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
+using Highball.App;
 using RailWerkz.Vulkan;
 
 namespace Highball.World;
@@ -28,12 +30,23 @@ public struct TerrainVertex(float3 position, float3 normal, float4 cover, float4
 /// the finer one keeps only the vertices the coarse one also has and fans the row of quads inside onto them, so both
 /// sides of the seam are the same straight segments. Since every level's grid nests in the next, that works for any
 /// difference in level, and the stitched index lists are shared by every patch with the same edge ratios.
+///
+/// Patches are built on BRUTAL's job system (a JobStream), nearest first: each batch is the nearest of what's wanted
+/// when the last one finishes, so what's no longer wanted is never built. Ahead of a moving camera, the patches and full
+/// heights it's heading into are asked for too, as far ahead as it'll be in LookAhead seconds.
 public sealed class Terrain : IDisposable
 {
     public const int Quads = 64;
     public const int MaxLevel = 8;
     private const int FullLevels = 3;
-    private const int MaxUploadsPerFrame = 12;
+    private const int MinUploadsPerFrame = 4;
+    private const double UploadBudgetMs = 3.0;
+    private const double LookAhead = 2.5;
+    private const double MaxLookAhead = 6000.0;
+    /// Patches held before the least recently used start going, a few a frame: freeing a GPU buffer takes a fraction
+    /// of a millisecond, so letting hundreds go at once stalls a frame.
+    private const int MaxPatches = 1200;
+    private const int EvictionsPerFrame = 8;
 
     private readonly record struct Key(int Level, int X, int Z);
 
@@ -48,17 +61,31 @@ public sealed class Terrain : IDisposable
         public long Used;
     }
 
-    private sealed record Built(Key Key, float3 Origin, TerrainVertex[] Vertices, bool[]? Valid);
+    /// Epoch: the edit count when the build started, so an edit made while it ran still leaves the patch stale.
+    private sealed record Built(Key Key, float3 Origin, TerrainVertex[] Vertices, bool[]? Valid, int Epoch);
 
     private readonly TerrainSource _source;
     private readonly Dictionary<Key, Patch> _patches = [];
-    private readonly HashSet<Key> _building = [];
-    /// Patches whose ground has been edited since they were built: kept on screen until their rebuild arrives.
-    private readonly HashSet<Key> _stale = [];
+    /// Patches whose ground has been edited since they were built, with the edit count then: kept on screen until a
+    /// rebuild started after that edit arrives.
+    private readonly Dictionary<Key, int> _stale = [];
+    private int _epoch;
     private readonly ConcurrentQueue<Built> _built = new();
     private readonly Dictionary<int, (BufferEx Buffer, int Count)> _sharedIndices = [];
     private readonly Dictionary<Key, int> _leaves = [];
-    private readonly List<Key> _drawList = [];
+    private readonly List<(Patch Patch, BufferEx Indices, int Count)> _drawList = [];
+
+    /// This frame's wanted patches, each with how soon it's needed (metres from the camera, plus a margin for the ones
+    /// asked for early), and the ones being built (until what's built is taken in).
+    private readonly Dictionary<Key, double> _requests = [];
+    private readonly HashSet<Key> _inFlight = [];
+    private readonly JobStream _jobs = new("Terrain", 0.6);
+    private int _waiting;
+
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private (double X, double Y, double Z, double Time)? _last;
+    private (double X, double Y, double Z) _velocity;
+    private (double X, double Y, double Z) _camera;
     private long _frame;
 
     /// How many vertex spacings away a patch must be before it's drawn that coarse; higher is finer.
@@ -67,7 +94,10 @@ public sealed class Terrain : IDisposable
     public TerrainSource Source => _source;
     public int PatchCount => _patches.Count;
     public int DrawnPatches => _drawList.Count;
-    public int Building => _building.Count;
+    /// Patches drawn coarser than the camera wants, waiting for their children to be built.
+    public int Waiting { get; private set; }
+
+    public int Building => _inFlight.Count + _waiting;
 
     public Terrain(TerrainSource source) => _source = source;
 
@@ -88,33 +118,85 @@ public sealed class Terrain : IDisposable
     public void Update(double cx, double cy, double cz)
     {
         _frame++;
-        _source.Want(cx, cz, DetailFactor * SpacingOf(FullLevels) * 1.6);
+        _camera = (cx, cy, cz);
+        var (ax, ay, az) = Ahead(cx, cy, cz);
+        _source.Want(cx, cz, ax, az, DetailFactor * SpacingOf(FullLevels) * 1.6);
 
-        for (var n = 0; n < MaxUploadsPerFrame && _built.TryDequeue(out var built); n++)
+        var budget = Stopwatch.StartNew();
+        for (var n = 0; (n < MinUploadsPerFrame || budget.Elapsed.TotalMilliseconds < UploadBudgetMs) && _built.TryDequeue(out var built); n++)
         {
-            _building.Remove(built.Key);
+            _inFlight.Remove(built.Key);
+            if (built.Vertices is null)
+                continue;
+            if (_stale.TryGetValue(built.Key, out var edited) && edited <= built.Epoch)
+                _stale.Remove(built.Key);
             if (_patches.Remove(built.Key, out var old))
                 Release(old);
 
-            var mesh = Mesh.Create<TerrainVertex>(built.Vertices, TerrainVertex.Layout);
+            var mesh = Mesh.Create<TerrainVertex>(built.Vertices, TerrainVertex.Layout, later: true);
             _patches[built.Key] = new Patch { Key = built.Key, Origin = built.Origin, Mesh = mesh, Valid = built.Valid, Used = _frame };
         }
 
         _leaves.Clear();
+        Waiting = 0;
         if (_source.Tiles.Count > 0)
         {
             var rootSize = SamplesOf(MaxLevel);
             for (var z = TerrainSource.FloorDiv(_source.MinGz, rootSize); z * rootSize < _source.MaxGz; z++)
+            {
                 for (var x = TerrainSource.FloorDiv(_source.MinGx, rootSize); x * rootSize < _source.MaxGx; x++)
-                    Select(new Key(MaxLevel, x, z), cx, cy, cz);
+                {
+                    Select(new Key(MaxLevel, x, z), cx, cy, cz, false);
+                    if (ax != cx || az != cz)
+                        Select(new Key(MaxLevel, x, z), ax, ay, az, true);
+                }
+            }
         }
+
+        _waiting = _requests.Keys.Count(k => !_inFlight.Contains(k));
+        if (!_jobs.Busy && _waiting > 0)
+        {
+            var batch = _requests.Where(r => !_inFlight.Contains(r.Key)).OrderBy(r => r.Value).Take(_jobs.BatchSize).Select(r => r.Key).ToList();
+            _inFlight.UnionWith(batch);
+            var epoch = _epoch;
+            _jobs.TryRun(batch.Select(k => ((Brutal.Concurrency.Jobs.IJob)new Job("terrain patch", () => BuildInto(k, epoch)), 1)));
+        }
+
+        _requests.Clear();
 
         _drawList.Clear();
         foreach (var key in _leaves.Keys)
-            if (_patches.ContainsKey(key))
-                _drawList.Add(key);
+            if (_patches.TryGetValue(key, out var patch) && Indices(patch) is { Count: > 0 } indices)
+                _drawList.Add((patch, indices.Buffer, indices.Count));
 
         Evict();
+    }
+
+    /// Where the camera will be in LookAhead seconds at its recent speed, at most MaxLookAhead away. A jump (placing
+    /// the camera, not flying it) starts the speed again from rest.
+    private (double X, double Y, double Z) Ahead(double cx, double cy, double cz)
+    {
+        var now = _clock.Elapsed.TotalSeconds;
+        if (_last is { } last && now > last.Time)
+        {
+            var dt = now - last.Time;
+            var (vx, vy, vz) = ((cx - last.X) / dt, (cy - last.Y) / dt, (cz - last.Z) / dt);
+            if (Math.Sqrt(vx * vx + vz * vz) * dt > 2000.0)
+                _velocity = default;
+            else
+            {
+                var t = Math.Min(1.0, dt * 4.0);
+                _velocity = (_velocity.X + (vx - _velocity.X) * t, _velocity.Y + (vy - _velocity.Y) * t, _velocity.Z + (vz - _velocity.Z) * t);
+            }
+        }
+
+        _last = (cx, cy, cz, now);
+        var (ox, oy, oz) = (_velocity.X * LookAhead, _velocity.Y * LookAhead, _velocity.Z * LookAhead);
+        var length = Math.Sqrt(ox * ox + oz * oz);
+        if (length < 50.0)
+            return (cx, cy, cz);
+        var scale = Math.Min(1.0, MaxLookAhead / length);
+        return (cx + ox * scale, cy + oy * scale, cz + oz * scale);
     }
 
     private double Distance(Key k, double cx, double cy, double cz)
@@ -128,11 +210,18 @@ public sealed class Terrain : IDisposable
         return Math.Sqrt(dx * dx + dy * dy + dz * dz);
     }
 
-    private void Select(Key k, double cx, double cy, double cz)
+    /// Walks the quadtree from k for a camera at (cx, cy, cz). Ahead: for where the camera's heading, so it only asks
+    /// for patches (and keeps the ones it would use) and draws nothing.
+    private void Select(Key k, double cx, double cy, double cz, bool ahead)
     {
         var (x0, z0, x1, z1) = Rect(k);
         if (!_source.AnyBuilt(x0, z0, x1, z1))
             return;
+
+        // Every patch the walk passes through is kept, not just the ones drawn: a parent is needed again the moment
+        // its children are too far away to want.
+        if (_patches.TryGetValue(k, out var patch))
+            patch.Used = _frame;
 
         var distance = Distance(k, cx, cy, cz);
         var wantSplit = k.Level > 0 && distance < DetailFactor * SpacingOf(k.Level);
@@ -141,25 +230,23 @@ public sealed class Terrain : IDisposable
         if (k.Level > 0 && distance < DetailFactor * SpacingOf(k.Level) * 1.5)
             foreach (var child in Children(k))
                 if (CanBuild(child))
-                    Request(child);
+                    Request(child, DetailFactor * SpacingOf(child.Level) * 0.5);
 
-        if (wantSplit && Children(k).All(c => !Covers(c) || (_patches.ContainsKey(c) && CanBuild(c))))
+        if (wantSplit && (ahead || Children(k).All(c => !Covers(c) || (_patches.ContainsKey(c) && CanBuild(c)))))
         {
             foreach (var child in Children(k))
-                Select(child, cx, cy, cz);
+                if (!ahead || CanBuild(child))
+                    Select(child, cx, cy, cz, ahead);
             return;
         }
 
-        if (_patches.TryGetValue(k, out var patch))
-        {
-            patch.Used = _frame;
-            if (_stale.Contains(k))
-                Request(k);
-        }
-        else
-            Request(k);
+        Request(k, ahead ? DetailFactor * SpacingOf(k.Level) * 0.5 : 0.0);
 
+        if (ahead)
+            return;
         _leaves[k] = k.Level;
+        if (wantSplit)
+            Waiting++;
     }
 
     private bool Covers(Key k)
@@ -188,21 +275,39 @@ public sealed class Terrain : IDisposable
         return _source.FullReady(x0 - step, z0 - step, x1 + step, z1 + step);
     }
 
-    private void Request(Key k)
+    /// Asks for k to be built (or built again, if its ground was edited), as if it were margin metres further from the
+    /// camera than it is.
+    private void Request(Key k, double margin)
     {
-        if ((_patches.ContainsKey(k) && !_stale.Contains(k)) || !_building.Add(k))
+        if (_patches.ContainsKey(k) && !_stale.ContainsKey(k))
             return;
 
-        _stale.Remove(k);
-        Task.Run(() => _built.Enqueue(Build(k)));
+        var priority = Distance(k, _camera.X, _camera.Y, _camera.Z) + margin;
+        if (!_requests.TryGetValue(k, out var existing) || priority < existing)
+            _requests[k] = priority;
+    }
+
+    /// A job: builds a patch, handing back an empty one if that fails so it's asked for again.
+    private void BuildInto(Key key, int epoch)
+    {
+        try
+        {
+            _built.Enqueue(Build(key, epoch));
+        }
+        catch
+        {
+            _built.Enqueue(new Built(key, default, null!, null, epoch));
+            throw;
+        }
     }
 
     private void Evict()
     {
-        if (_patches.Count < 1500)
+        if (_patches.Count <= MaxPatches)
             return;
 
-        foreach (var patch in _patches.Values.Where(p => _frame - p.Used > 120).OrderBy(p => p.Used).Take(_patches.Count - 1200).ToList())
+        var count = Math.Min(EvictionsPerFrame, _patches.Count - MaxPatches);
+        foreach (var patch in _patches.Values.Where(p => p.Used != _frame).OrderBy(p => p.Used).Take(count).ToList())
         {
             Release(patch);
             _patches.Remove(patch.Key);
@@ -221,18 +326,19 @@ public sealed class Terrain : IDisposable
     /// again from the edited ground.
     public void Invalidate(int gx0, int gz0, int gx1, int gz1)
     {
+        var epoch = ++_epoch;
         foreach (var key in _patches.Keys)
         {
             var (x0, z0, x1, z1) = Rect(key);
             var step = 1 << key.Level;
             if (x1 + step >= gx0 && x0 - step <= gx1 && z1 + step >= gz0 && z0 - step <= gz1)
-                _stale.Add(key);
+                _stale[key] = epoch;
         }
     }
 
     // --- Building a patch (worker threads). ---
 
-    private Built Build(Key k)
+    private Built Build(Key k, int epoch)
     {
         var (x0, z0, _, _) = Rect(k);
         var step = 1 << k.Level;
@@ -262,12 +368,12 @@ public sealed class Terrain : IDisposable
                 var hd = _source.TryHeight(gx, gz + step, out var d) ? d : h;
                 var normal = Normalize(new float3(hl - hr, 2f * spacing, hu - hd));
 
-                vertices[z * width + x] = new TerrainVertex(new float3(x * spacing, h, z * spacing), normal, _source.Cover(gx, gz, spacing),
-                    _source.Materials(gx, gz, spacing));
+                var (cover, materials) = _source.Ground(gx, gz, spacing);
+                vertices[z * width + x] = new TerrainVertex(new float3(x * spacing, h, z * spacing), normal, cover, materials);
             }
         }
 
-        return new Built(k, origin, vertices, valid);
+        return new Built(k, origin, vertices, valid, epoch);
     }
 
     private static float3 Normalize(float3 v) => v / MathF.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
@@ -298,12 +404,31 @@ public sealed class Terrain : IDisposable
         return 0;
     }
 
+    /// The patch's index list for its neighbours this frame: shared by every whole patch with the same edge ratios, or
+    /// its own when some of its vertices are off the route. Made when first needed and uploaded with the frame.
+    private (BufferEx Buffer, int Count) Indices(Patch patch)
+    {
+        var ratios = Ratios(patch.Key);
+        var cache = patch.Valid is null ? _sharedIndices : patch.OwnIndices ??= [];
+        if (cache.TryGetValue(ratios, out var indices))
+            return indices;
+
+        var list = Triangulate(ratios, patch.Valid);
+        indices = list.Length > 0 ? (Buffers.UploadLater(MemoryMarshal.AsBytes(list), VkBufferUsageFlags.IndexBufferBit, "terrain.indices"), list.Length) : (default, 0);
+        cache[ratios] = indices;
+        return indices;
+    }
+
+    /// Room for any stitching: the full grid, plus the fans along all four edges.
+    private readonly uint[] _triangles = new uint[Quads * Quads * 6 + 4 * (Quads + 1) * 6];
+
     /// The triangles of a 64 x 64 grid with its edges stitched to the given ratios, skipping any that touch an invalid
-    /// vertex. Counter-clockwise seen from above.
-    private static uint[] Triangulate(int ratios, bool[]? valid)
+    /// vertex, written into _triangles (main thread). Counter-clockwise seen from above.
+    private ReadOnlySpan<uint> Triangulate(int ratios, bool[]? valid)
     {
         const int width = Quads + 1;
-        var indices = new List<uint>(Quads * Quads * 6);
+        var indices = _triangles;
+        var count = 0;
         var north = 1 << (ratios & 7);
         var south = 1 << ((ratios >> 3) & 7);
         var west = 1 << ((ratios >> 6) & 7);
@@ -319,10 +444,9 @@ public sealed class Terrain : IDisposable
                 return;
             if (valid is not null && (!valid[az * width + ax] || !valid[bz * width + bx] || !valid[cz * width + cx]))
                 return;
-            if (turn < 0)
-                indices.AddRange([At(ax, az), At(bx, bz), At(cx, cz)]);
-            else
-                indices.AddRange([At(ax, az), At(cx, cz), At(bx, bz)]);
+            indices[count++] = At(ax, az);
+            indices[count++] = turn < 0 ? At(bx, bz) : At(cx, cz);
+            indices[count++] = turn < 0 ? At(cx, cz) : At(bx, bz);
         }
 
         var x0 = west > 1 ? 1 : 0;
@@ -339,25 +463,22 @@ public sealed class Terrain : IDisposable
             }
         }
 
-        // DeathFromAbove's zip: walk the coarse vertices along the edge and the grid row one in together, advancing
-        // whichever side's next segment is centred first.
+        // DeathFromAbove's zip: walk the coarse vertices along the edge (every ratio-th one) and the grid row one in
+        // together, advancing whichever side's next segment is centred first.
         void Stitch(int ratio, Func<int, int, (int X, int Z)> place, int innerFrom, int innerTo)
         {
-            var edge = new List<int>();
-            for (var t = 0; t <= Quads; t += ratio)
-                edge.Add(t);
-
+            var edges = Quads / ratio + 1;
             var i = 0;
             var j = innerFrom;
-            while (i < edge.Count - 1 || j < innerTo)
+            while (i < edges - 1 || j < innerTo)
             {
-                var advanceEdge = j >= innerTo || (i < edge.Count - 1 && edge[i] + edge[i + 1] <= j + j + 1);
-                var (ex, ez) = place(edge[i], 0);
+                var advanceEdge = j >= innerTo || (i < edges - 1 && ratio * i + ratio * (i + 1) <= j + j + 1);
+                var (ex, ez) = place(ratio * i, 0);
                 var (ix, iz) = place(j, 1);
 
                 if (advanceEdge)
                 {
-                    var (nx, nz) = place(edge[i + 1], 0);
+                    var (nx, nz) = place(ratio * (i + 1), 0);
                     Triangle(ex, ez, ix, iz, nx, nz);
                     i++;
                 }
@@ -375,7 +496,7 @@ public sealed class Terrain : IDisposable
         if (west > 1) Stitch(west, (t, d) => (d, t), z0, z1);
         if (east > 1) Stitch(east, (t, d) => (Quads - d, t), z0, z1);
 
-        return [.. indices];
+        return indices.AsSpan(0, count);
     }
 
     // --- Drawing. ---
@@ -383,40 +504,8 @@ public sealed class Terrain : IDisposable
     /// Draws the chosen patches. The pipeline is bound; push writes each patch's origin relative to the camera.
     public void Draw(CommandBuffer cmd, double cx, double cy, double cz, Action<float3> push)
     {
-        foreach (var key in _drawList)
+        foreach (var (patch, indices, count) in _drawList)
         {
-            var patch = _patches[key];
-            var ratios = Ratios(key);
-            BufferEx indices;
-            int count;
-
-            if (patch.Valid is null)
-            {
-                if (!_sharedIndices.TryGetValue(ratios, out var shared))
-                {
-                    var list = Triangulate(ratios, null);
-                    shared = (Buffers.Upload(MemoryMarshal.AsBytes(list.AsSpan()), VkBufferUsageFlags.IndexBufferBit, "terrain.indices"), list.Length);
-                    _sharedIndices[ratios] = shared;
-                }
-
-                (indices, count) = shared;
-            }
-            else
-            {
-                patch.OwnIndices ??= [];
-                if (!patch.OwnIndices.TryGetValue(ratios, out var own))
-                {
-                    var list = Triangulate(ratios, patch.Valid);
-                    own = list.Length > 0 ? (Buffers.Upload(MemoryMarshal.AsBytes(list.AsSpan()), VkBufferUsageFlags.IndexBufferBit, "terrain.indices"), list.Length) : (default, 0);
-                    patch.OwnIndices[ratios] = own;
-                }
-
-                (indices, count) = own;
-            }
-
-            if (count == 0)
-                continue;
-
             push(new float3((float)(patch.Origin.X - cx), (float)-cy, (float)(patch.Origin.Z - cz)));
             patch.Mesh.DrawWith(cmd, indices, count);
         }
@@ -430,6 +519,8 @@ public sealed class Terrain : IDisposable
 
     public void Dispose()
     {
+        _jobs.Dispose();
+
         foreach (var patch in _patches.Values)
         {
             patch.Mesh.Dispose();

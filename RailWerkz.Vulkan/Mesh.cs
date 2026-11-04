@@ -60,7 +60,8 @@ public sealed class Mesh : IDisposable
     public static Mesh Create(ReadOnlySpan<Vertex> vertices, ReadOnlySpan<uint> indices) =>
         Create(vertices, VertexLayout, indices);
 
-    public static Mesh Create<T>(ReadOnlySpan<T> vertices, VertexAttribute[] layout, ReadOnlySpan<uint> indices = default)
+    /// later: copied at the start of the next frame (Buffers.UploadLater) instead of waiting for the GPU now.
+    public static Mesh Create<T>(ReadOnlySpan<T> vertices, VertexAttribute[] layout, ReadOnlySpan<uint> indices = default, bool later = false)
         where T : unmanaged
     {
         var mesh = new Mesh
@@ -71,9 +72,11 @@ public sealed class Mesh : IDisposable
             IndexCount = indices.Length,
         };
 
-        mesh._vertices = Buffers.Upload(MemoryMarshal.AsBytes(vertices), VkBufferUsageFlags.VertexBufferBit, "mesh.vertices");
+        BufferEx upload(ReadOnlySpan<byte> data, VkBufferUsageFlags usage, string name) =>
+            later ? Buffers.UploadLater(data, usage, name) : Buffers.Upload(data, usage, name);
+        mesh._vertices = upload(MemoryMarshal.AsBytes(vertices), VkBufferUsageFlags.VertexBufferBit, "mesh.vertices");
         if (!indices.IsEmpty)
-            mesh._indices = Buffers.Upload(MemoryMarshal.AsBytes(indices), VkBufferUsageFlags.IndexBufferBit, "mesh.indices");
+            mesh._indices = upload(MemoryMarshal.AsBytes(indices), VkBufferUsageFlags.IndexBufferBit, "mesh.indices");
         return mesh;
     }
 

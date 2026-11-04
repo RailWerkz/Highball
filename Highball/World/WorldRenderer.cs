@@ -36,19 +36,20 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly VkPipelineLayout _layout;
     private readonly VkPipelineLayout _terrainLayout;
     private readonly GroundTextures _ground = new();
-    private readonly VkPipeline _sky;
-    private readonly VkPipeline _terrain;
-    private readonly VkPipeline _terrainWire;
-    private readonly VkPipeline _line;
-    private readonly VkPipeline _lineWire;
-    private readonly VkPipeline _part;
-    private readonly VkPipeline _partWire;
+    private VkPipeline _sky;
+    private VkPipeline _terrain;
+    private VkPipeline _terrainWire;
+    private VkPipeline _line;
+    private VkPipeline _lineWire;
+    private VkPipeline _part;
+    private VkPipeline _partWire;
     private readonly VkDescriptorSetLayout _tonemapSetLayout;
     private readonly VkPipelineLayout _tonemapLayout;
     private readonly VkPipeline _tonemap;
     private VkDescriptorPool _pool;
     private VkDescriptorSet _tonemapSet;
     private int _targetVersion = -1;
+    private VkSampleCountFlags _pipelineSamples;
 
     /// Unit vector towards the sun.
     public float3 Sun => Sky.SunDirection;
@@ -60,20 +61,44 @@ public sealed unsafe class WorldRenderer : IDisposable
 
     public WorldRenderer()
     {
+        // One layout for every world pipeline: push constants, and a texture at set 0 for those that sample one.
+        _layout = Pipelines.Layout(128, TextureBinding.SetLayout, Sky.SetLayout);
+        _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout);
+        CreateWorldPipelines();
+
+        using var fullscreen = Shader.Load("fullscreen.vert");
+        using var tonemap = Shader.Load("tonemap.frag");
+        var binding = new VkDescriptorSetLayoutBinding
+        {
+            Binding = 0,
+            DescriptorType = VkDescriptorType.CombinedImageSampler,
+            DescriptorCount = 1,
+            StageFlags = VkShaderStageFlags.FragmentBit,
+        };
+        var setLayout = new VkDescriptorSetLayoutCreateInfo { BindingCount = 1, Bindings = &binding };
+        _tonemapSetLayout = Gpu.Device.CreateDescriptorSetLayout(in setLayout, Gpu.Device.VkAllocator);
+        _tonemapLayout = Pipelines.Layout(16, _tonemapSetLayout);
+        _tonemap = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = fullscreen, Fragment = tonemap, Layout = _tonemapLayout, Cull = VkCullModeFlags.None, DepthTest = false, DepthWrite = false,
+            RenderPass = Gpu.PresentPass, ColorFormat = Gpu.SwapchainFormat,
+        });
+    }
+
+    /// The pipelines that draw into the target, which are made for its samples per pixel.
+    private void CreateWorldPipelines()
+    {
+        _pipelineSamples = RenderTarget.Samples;
         using var fullscreen = Shader.Load("fullscreen.vert");
         using var sky = Shader.Load("sky.frag");
         using var terrainVert = Shader.Load("terrain.vert");
         using var terrainFrag = Shader.Load("terrain.frag");
-        using var tonemap = Shader.Load("tonemap.frag");
         using var lineVert = Shader.Load("line.vert");
         using var lineFrag = Shader.Load("line.frag");
         using var partVert = Shader.Load("part.vert");
         using var partFrag = Shader.Load("part.frag");
 
-        // One layout for every world pipeline: push constants, and a texture at set 0 for those that sample one.
-        _layout = Pipelines.Layout(128, TextureBinding.SetLayout, Sky.SetLayout);
         _sky = Pipelines.Create(new PipelineDesc { Vertex = fullscreen, Fragment = sky, Layout = _layout, Cull = VkCullModeFlags.None, DepthTest = false, DepthWrite = false });
-        _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout);
         var terrain = new PipelineDesc { Vertex = terrainVert, Fragment = terrainFrag, Layout = _terrainLayout, Attributes = TerrainVertex.Layout, Stride = Marshal.SizeOf<TerrainVertex>() };
         _terrain = Pipelines.Create(terrain);
         _terrainWire = Pipelines.Create(new PipelineDesc
@@ -100,22 +125,17 @@ public sealed unsafe class WorldRenderer : IDisposable
             Vertex = partVert, Fragment = partFrag, Layout = _layout, Attributes = Mesh.VertexLayout, Stride = part.Stride,
             InstanceAttributes = TieInstance.Layout, InstanceStride = part.InstanceStride, Cull = VkCullModeFlags.None, Wireframe = true,
         });
+    }
 
-        var binding = new VkDescriptorSetLayoutBinding
-        {
-            Binding = 0,
-            DescriptorType = VkDescriptorType.CombinedImageSampler,
-            DescriptorCount = 1,
-            StageFlags = VkShaderStageFlags.FragmentBit,
-        };
-        var setLayout = new VkDescriptorSetLayoutCreateInfo { BindingCount = 1, Bindings = &binding };
-        _tonemapSetLayout = Gpu.Device.CreateDescriptorSetLayout(in setLayout, Gpu.Device.VkAllocator);
-        _tonemapLayout = Pipelines.Layout(16, _tonemapSetLayout);
-        _tonemap = Pipelines.Create(new PipelineDesc
-        {
-            Vertex = fullscreen, Fragment = tonemap, Layout = _tonemapLayout, Cull = VkCullModeFlags.None, DepthTest = false, DepthWrite = false,
-            RenderPass = Gpu.PresentPass, ColorFormat = Gpu.SwapchainFormat,
-        });
+    private void DestroyWorldPipelines()
+    {
+        Pipelines.Destroy(_sky, default);
+        Pipelines.Destroy(_terrain, default);
+        Pipelines.Destroy(_terrainWire, default);
+        Pipelines.Destroy(_line, default);
+        Pipelines.Destroy(_lineWire, default);
+        Pipelines.Destroy(_part, default);
+        Pipelines.Destroy(_partWire, default);
     }
 
     private static float3 Normalize(float3 v) => v / MathF.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
@@ -123,6 +143,12 @@ public sealed unsafe class WorldRenderer : IDisposable
     /// Records the world into the HDR target. Outside any render pass.
     public void Render(CommandBuffer cmd, int2 size, Camera camera, Terrain? terrain, NetworkMeshes? network)
     {
+        if (_pipelineSamples != RenderTarget.Samples)
+        {
+            DestroyWorldPipelines();
+            CreateWorldPipelines();
+        }
+
         _target.Resize(size);
         var aspect = size.X / (float)size.Y;
         var camPos = new float4((float)camera.X, (float)camera.Y, (float)camera.Z, 0f);
@@ -251,14 +277,9 @@ public sealed unsafe class WorldRenderer : IDisposable
     {
         FreeSet();
         _target.Dispose();
-        Pipelines.Destroy(_sky, default);
-        Pipelines.Destroy(_terrain, default);
-        Pipelines.Destroy(_terrainWire, _terrainLayout);
+        DestroyWorldPipelines();
+        Pipelines.Destroy(default, _terrainLayout);
         _ground.Dispose();
-        Pipelines.Destroy(_line, default);
-        Pipelines.Destroy(_lineWire, default);
-        Pipelines.Destroy(_part, default);
-        Pipelines.Destroy(_partWire, default);
         Pipelines.Destroy(default, _layout);
         Sky.Dispose();
         Pipelines.Destroy(_tonemap, _tonemapLayout);

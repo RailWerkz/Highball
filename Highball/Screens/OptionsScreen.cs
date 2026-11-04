@@ -33,6 +33,7 @@ public sealed class OptionsScreen : MenuScreen
 
         var graphics = NewTab("Graphics")
             .Add(new MenuItem { Label = "Quality", Value = () => Qualities[Math.Clamp(s.Quality, 0, 3)], OnChange = d => s.Quality = Math.Clamp(s.Quality + d, 0, 3) })
+            .Add(new MenuItem { Label = "Anti-aliasing (MSAA)", Value = () => s.Msaa <= 1 ? "OFF" : $"{s.Msaa}x", OnChange = d => s.Msaa = StepMsaa(s.Msaa, d) })
             .Add(new MenuItem { Label = "View distance", Value = () => Distance(s.ViewDistance), Meter = () => (s.ViewDistance - MetersPerMile) / (20000f - MetersPerMile), OnChange = d => s.ViewDistance = StepDistance(s.ViewDistance, d) })
             .Add(new MenuItem { Label = "Field of view", Value = () => $"{s.FieldOfView:0}°", Meter = () => (s.FieldOfView - 40f) / 50f, OnChange = d => s.FieldOfView = Math.Clamp(s.FieldOfView + d * 5f, 40f, 90f) });
 
@@ -56,6 +57,14 @@ public sealed class OptionsScreen : MenuScreen
     }
 
     private Menu NewTab(string name) => new(name) { Look = MenuLook.Rows, RowWidth = 680f, OnBack = Back, ShowHeader = false };
+
+    /// The next sample count the GPU can do.
+    private static int StepMsaa(int value, int direction)
+    {
+        var steps = ((int[])[1, 2, 4, 8]).Where(RailWerkz.Vulkan.RenderTarget.Supported).ToArray();
+        var at = Math.Max(Array.IndexOf(steps, value), 0);
+        return steps[(at + direction + steps.Length) % steps.Length];
+    }
 
     private static string OnOff(bool on) => on ? "ON" : "OFF";
 
@@ -141,7 +150,6 @@ public sealed class OptionsScreen : MenuScreen
 
     public override void Draw(ImDrawListPtr draw, float2 size)
     {
-        DrawFrame(draw, size);
         var left = S(110f);
         var top = MenuTop(size);
         Canvas.Text(draw, Heavy, S(34f), new float2(left, top), Style.Text, Menu.Title);

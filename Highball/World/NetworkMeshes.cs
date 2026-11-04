@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
+using Highball.App;
 using Highball.Routes;
 using RailWerkz.Core.Utils;
 using RailWerkz.Vulkan;
@@ -21,7 +22,8 @@ public struct LineVertex(float3 position, float3 normal, float4 data)
     public static readonly VertexAttribute[] Layout = [new(0, 3, 0), new(1, 3, 12), new(2, 4, 24)];
 }
 
-/// One placed part (a tie, a tie plate): where it stands relative to its chunk and a random tint, and the way it faces.
+/// One placed part (a tie, a tie plate): where it stands relative to its chunk and a random tint, the way it faces,
+/// and how much longer across it is than as made (0: as made; a turnout's long timbers).
 [StructLayout(LayoutKind.Sequential)]
 public struct TieInstance(float4 positionRandom, float4 forward)
 {
@@ -32,7 +34,7 @@ public struct TieInstance(float4 positionRandom, float4 forward)
 }
 
 /// The materials line.frag knows.
-public enum LineMaterial { Ballast, Rail, Asphalt, Gravel, Concrete }
+public enum LineMaterial { Ballast, Rail, Asphalt, Gravel, Concrete, Painted }
 
 /// The roads and rails in 3D, built from NetworkLines in square chunks on worker threads and streamed by distance.
 /// Each chunk has a far mesh (ballast beds, roads, bridges: drawn out to FarRadius) and a near one (rails, and the
@@ -42,7 +44,7 @@ public enum LineMaterial { Ballast, Rail, Asphalt, Gravel, Concrete }
 /// Every shape is a cross-section swept along the line's centreline at its formation height: the ballast a
 /// trapezoid with 1:1.5 shoulders, the rail a 136 lb profile, roads a crowned-flat deck with gravel shoulders,
 /// bridges a concrete deck with parapets and piers down to the ground.
-public sealed class NetworkMeshes : IDisposable
+public sealed partial class NetworkMeshes : IDisposable
 {
     public const float ChunkSize = 500f;
     public float NearRadius { get; set; } = 1000f;
@@ -52,6 +54,9 @@ public sealed class NetworkMeshes : IDisposable
     private const int MaxUploadsPerFrame = 4;
 
     private const float TieSpacing = 0.495f;   // 19.5 in
+    private const float TieLength = 2.5908f;   // 8 ft 6 in
+    /// How long a switch takes to throw, seconds.
+    private const float ThrowTime = 3f;
     private const float TieRise = 0.02f;       // tie top above the crib ballast
     private const float PlateDepth = 0.014f;   // the plate's rail seat above the tie
     private const float RoadRise = 0.06f;
@@ -102,6 +107,8 @@ public sealed class NetworkMeshes : IDisposable
     private readonly Dictionary<ChunkKey, List<Run>> _runs = [];
     private readonly Dictionary<ChunkKey, Chunk> _chunks = [];
     private readonly HashSet<(ChunkKey, bool)> _building = [];
+    private readonly Dictionary<(ChunkKey, bool), double> _wanted = [];
+    private readonly JobStream _jobs = new("Line chunks", 0.4);
     private readonly ConcurrentQueue<Built> _built = new();
     private readonly List<(ChunkKey Key, bool Near)> _drawList = [];
     private readonly Model _tie;
@@ -112,9 +119,42 @@ public sealed class NetworkMeshes : IDisposable
     private readonly TextureBinding _plateTexture;
     private readonly TextureBinding _ballastTexture;
     private readonly Texture2D? _fallback;
+    /// The switch kit's parts, right and left hand (Tools/Blender/turnouts.py); none if the files aren't there.
+    private readonly Dictionary<int, Dictionary<string, Model.Part>> _kits = [];
     private long _frame;
 
+    // Turnouts: each one's blades (a mesh of their own, made again while they move), and where every switch's blades
+    // are (0 normal, 1 reverse) and are going, by node, kept through rebuilds.
+    private sealed class Switch
+    {
+        public required Turnout Turnout { get; set; }
+        public required ChunkKey Key { get; set; }
+        public Mesh? Blades;
+        public float BuiltAt = -1f;
+    }
+
+    private readonly Dictionary<long, Switch> _switches = [];
+    private readonly Dictionary<ChunkKey, List<Turnout>> _turnoutsByChunk = [];
+    private readonly Dictionary<ChunkKey, List<CrossingAssembly>> _assembliesByChunk = [];
+    private IReadOnlyList<PlacedObject> _objects = [];
+    private RouteProjection? _objectProjection;
+    private readonly Dictionary<ChunkKey, List<PlacedAt>> _objectsByChunk = [];
+    private readonly Dictionary<long, PlacedObject> _handThrows = [];
+    private readonly Dictionary<PlacedKind, Dictionary<string, Model.Part>> _objectModels = [];
+
+    /// A placed object where it is: its height's found on the main thread, where the ground's safe to read.
+    private sealed record PlacedAt(PlacedObject Object, double X, double Z, float Y, CrossingDeck? Deck);
+
+    /// The paints line.frag knows, by the name a placed model's parts use.
+    private static readonly string[] Paints = ["Black", "White", "Galv", "Yellow", "Red", "Green", "Concrete"];
+    private readonly Dictionary<long, float> _position = [];
+    private readonly Dictionary<long, float> _target = [];
+    private readonly HashSet<ChunkKey> _nearKeys = [];
+    private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+    private double _lastUpdate;
+
     public int DrawnChunks => _drawList.Count;
+    public int Turnouts => _switches.Count;
     public int Building => _building.Count;
 
     public NetworkMeshes(TerrainSource source)
@@ -130,11 +170,60 @@ public sealed class NetworkMeshes : IDisposable
         _tieTexture = new TextureBinding(_tie.Surfaces[0].Texture ?? (_fallback = Texture2D.Solid(new byte4(40, 32, 26, 255))));
         _plateTexture = new TextureBinding(_plate.Surfaces[0].Texture ?? (_fallback ??= Texture2D.Solid(new byte4(60, 36, 24, 255))));
         _ballastTexture = new TextureBinding(_ballast);
+        try
+        {
+            _kits[1] = Model.LoadParts("Track/switch_kit_r.glb");
+            _kits[-1] = Model.LoadParts("Track/switch_kit_l.glb");
+            _objectModels[PlacedKind.Signal] = Model.LoadParts("Track/signal.glb");
+            _objectModels[PlacedKind.HandThrow] = Model.LoadParts("Track/hand_throw.glb");
+            _objectModels[PlacedKind.GradeCrossing] = Model.LoadParts("Track/crossing_mast.glb");
+        }
+        catch (Exception e)
+        {
+            RailWerkz.Core.Logging.Log.Warn($"Switch kit: {e.Message}; switches are built without castings or machines");
+        }
     }
 
-    /// Every segment goes to the chunk its midpoint is in; consecutive ones in the same chunk make a run.
+    private Dictionary<string, Model.Part>? KitFor(Turnout t) => _kits.GetValueOrDefault(t.Side > 0 ? 1 : -1);
+
+    /// Every segment goes to the chunk its midpoint is in; consecutive ones in the same chunk make a run. Each turnout
+    /// goes to the chunk its point of switch is in.
     private void FindRuns()
     {
+        _turnoutsByChunk.Clear();
+        _assembliesByChunk.Clear();
+        foreach (var assembly in _lines.CrossingAssemblies)
+        {
+            var key = KeyAt(assembly.X, assembly.Z);
+            if (!_assembliesByChunk.TryGetValue(key, out var list))
+                _assembliesByChunk[key] = list = [];
+            list.Add(assembly);
+        }
+
+        var seen = new HashSet<long>();
+        foreach (var turnout in _lines.Turnouts)
+        {
+            var key = KeyAt(turnout.X, turnout.Z);
+            if (!_turnoutsByChunk.TryGetValue(key, out var list))
+                _turnoutsByChunk[key] = list = [];
+            list.Add(turnout);
+            seen.Add(turnout.Node);
+            if (_switches.TryGetValue(turnout.Node, out var existing))
+            {
+                existing.Turnout = turnout;
+                existing.Key = key;
+                existing.BuiltAt = -1f;
+            }
+            else
+                _switches[turnout.Node] = new Switch { Turnout = turnout, Key = key };
+        }
+
+        foreach (var (node, gone) in _switches.Where(s => !seen.Contains(s.Key)).ToList())
+        {
+            gone.Blades?.Dispose();
+            _switches.Remove(node);
+        }
+
         _runs.Clear();
         foreach (var line in _lines.Lines)
         {
@@ -166,6 +255,8 @@ public sealed class NetworkMeshes : IDisposable
     {
         _lines = lines;
         FindRuns();
+        if (_objectProjection is { } projection)
+            SetObjects(_objects, [], projection);
 
         foreach (var (x0, z0, x1, z1) in areas)
         {
@@ -189,6 +280,43 @@ public sealed class NetworkMeshes : IDisposable
         }
     }
 
+    /// Takes the route's placed objects in, and builds again the chunks of those in changed (world metres).
+    public void SetObjects(IReadOnlyList<PlacedObject> objects, IEnumerable<(double X, double Z)> changed, RouteProjection projection)
+    {
+        (_objects, _objectProjection) = (objects, projection);
+        _objectsByChunk.Clear();
+        _handThrows.Clear();
+        foreach (var o in objects)
+        {
+            var p = projection.Forward(new GeoPoint(o.Lat, o.Lon));
+            var (x, z) = (p.East, -p.North);
+            if (o.Kind == PlacedKind.HandThrow && o.Node is { } node)
+            {
+                _handThrows[node] = o;
+                continue;
+            }
+
+            var key = KeyAt(x, z);
+            if (!_objectsByChunk.TryGetValue(key, out var list))
+                _objectsByChunk[key] = list = [];
+            list.Add(new PlacedAt(o, x, z, _source.HeightAt(x, z), o.Kind == PlacedKind.GradeCrossing ? Deck(o, x, z) : null));
+        }
+
+        foreach (var sw in _switches.Values)
+            sw.BuiltAt = -1f;
+        foreach (var (x, z) in changed)
+        {
+            var a = KeyAt(x - 80.0, z - 80.0);
+            var b = KeyAt(x + 80.0, z + 80.0);
+            for (var kz = a.Z; kz <= b.Z; kz++)
+                for (var kx = a.X; kx <= b.X; kx++)
+                {
+                    _stale.Add((new ChunkKey(kx, kz), false));
+                    _stale.Add((new ChunkKey(kx, kz), true));
+                }
+        }
+    }
+
     private void AddRun(ChunkKey key, Run run)
     {
         if (!_runs.TryGetValue(key, out var list))
@@ -205,25 +333,28 @@ public sealed class NetworkMeshes : IDisposable
     public void Update(double cx, double cy, double cz)
     {
         _frame++;
+        var now = _clock.Elapsed.TotalSeconds;
+        var dt = (float)Math.Min(0.25, now - _lastUpdate);
+        _lastUpdate = now;
         for (var n = 0; n < MaxUploadsPerFrame && _built.TryDequeue(out var built); n++)
         {
             _building.Remove((built.Key, built.Near));
             if (!_chunks.TryGetValue(built.Key, out var chunk))
                 _chunks[built.Key] = chunk = new Chunk { Used = _frame };
 
-            var mesh = built.Indices.Length > 0 ? Mesh.Create<LineVertex>(built.Vertices, LineVertex.Layout, built.Indices) : null;
+            var mesh = built.Indices.Length > 0 ? Mesh.Create<LineVertex>(built.Vertices, LineVertex.Layout, built.Indices, later: true) : null;
             if (built.Near)
             {
                 chunk.Near?.Dispose();
                 chunk.Near = mesh;
                 Release(chunk.Ties);
                 chunk.Ties = built.Ties.Length > 0
-                    ? Buffers.Upload(MemoryMarshal.AsBytes(built.Ties.AsSpan()), VkBufferUsageFlags.VertexBufferBit, "network.ties")
+                    ? Buffers.UploadLater(MemoryMarshal.AsBytes(built.Ties.AsSpan()), VkBufferUsageFlags.VertexBufferBit, "network.ties")
                     : default;
                 chunk.TieCount = built.Ties.Length;
                 Release(chunk.Plates);
                 chunk.Plates = built.Plates.Length > 0
-                    ? Buffers.Upload(MemoryMarshal.AsBytes(built.Plates.AsSpan()), VkBufferUsageFlags.VertexBufferBit, "network.plates")
+                    ? Buffers.UploadLater(MemoryMarshal.AsBytes(built.Plates.AsSpan()), VkBufferUsageFlags.VertexBufferBit, "network.plates")
                     : default;
                 chunk.PlateCount = built.Plates.Length;
                 chunk.TieCells = built.TieCells;
@@ -251,14 +382,14 @@ public sealed class NetworkMeshes : IDisposable
 
             // Stale chunks keep drawing what they have until their rebuild comes in.
             if (chunk is null || !chunk.HasFar || _stale.Contains((key, false)))
-                Request(key, false);
+                Request(key, false, distance);
             if (chunk is { HasFar: true } && distance < FarRadius)
                 _drawList.Add((key, false));
 
             if (distance < NearRadius * 1.2)
             {
                 if (chunk is null || !chunk.HasNear || _stale.Contains((key, true)))
-                    Request(key, true);
+                    Request(key, true, distance);
                 if (chunk is { HasNear: true } && distance < NearRadius)
                     _drawList.Add((key, true));
             }
@@ -266,7 +397,68 @@ public sealed class NetworkMeshes : IDisposable
                 DropNear(chunk);
         }
 
+        StartBuilds();
         Evict();
+        Swing(dt);
+    }
+
+    // --- Switches. ---
+
+    /// Throws the switch nearest (x, z), if there's one within the given distance: its blades swing over to the other
+    /// route over ThrowTime. Returns the turnout thrown.
+    public Turnout? Throw(double x, double z, double within)
+    {
+        var nearest = _switches.Values.Select(s => s.Turnout).Where(t => Math.Abs(t.X - x) < within && Math.Abs(t.Z - z) < within)
+            .MinBy(t => (t.X - x) * (t.X - x) + (t.Z - z) * (t.Z - z));
+        if (nearest is null)
+            return null;
+        _target[nearest.Node] = _target.GetValueOrDefault(nearest.Node) > 0.5f ? 0f : 1f;
+        return nearest;
+    }
+
+    /// Whether a switch is set (or going) for its reverse route.
+    public bool Reversed(long node) => _target.GetValueOrDefault(node) > 0.5f;
+
+    /// Moves every moving switch's blades on, and makes the blades of the switches in near chunks that need it.
+    private void Swing(float dt)
+    {
+        foreach (var (node, target) in _target)
+        {
+            var position = _position.GetValueOrDefault(node);
+            if (position != target)
+                _position[node] = target > position ? MathF.Min(target, position + dt / ThrowTime) : MathF.Max(target, position - dt / ThrowTime);
+        }
+
+        _nearKeys.Clear();
+        foreach (var (key, near) in _drawList)
+            if (near)
+                _nearKeys.Add(key);
+
+        foreach (var (node, sw) in _switches)
+        {
+            if (!_nearKeys.Contains(sw.Key))
+            {
+                if (sw.Blades is not null && !_chunks.ContainsKey(sw.Key))
+                {
+                    sw.Blades.Dispose();
+                    sw.Blades = null;
+                    sw.BuiltAt = -1f;
+                }
+
+                continue;
+            }
+
+            var position = _position.GetValueOrDefault(node);
+            if (sw.Blades is not null && sw.BuiltAt == position)
+                continue;
+            sw.Blades?.Dispose();
+            var builder = new Builder { Origin = OriginOf(sw.Key) };
+            Blades(builder, sw.Turnout, position);
+            if (KitFor(sw.Turnout) is { } parts)
+                KitMoving(builder, sw.Turnout, parts, position, _handThrows.GetValueOrDefault(node), _objectModels.GetValueOrDefault(PlacedKind.HandThrow));
+            sw.Blades = Mesh.Create<LineVertex>([.. builder.Vertices], LineVertex.Layout, [.. builder.Indices], later: true);
+            sw.BuiltAt = position;
+        }
     }
 
     private static double Distance(ChunkKey k, double cx, double cy, double cz)
@@ -278,15 +470,36 @@ public sealed class NetworkMeshes : IDisposable
         return Math.Sqrt(dx * dx + dz * dz);
     }
 
-    private void Request(ChunkKey key, bool near)
+    /// Asks for a chunk to be built (again), distance metres from the camera.
+    private void Request(ChunkKey key, bool near, double distance)
     {
-        if (!_building.Add((key, near)))
+        if (_building.Contains((key, near)))
             return;
+        var priority = near ? distance : distance + NearRadius;
+        if (!_wanted.TryGetValue((key, near), out var existing) || priority < existing)
+            _wanted[(key, near)] = priority;
+    }
 
-        _stale.Remove((key, near));
-        var runs = _runs[key];
-        var lines = _lines;
-        Task.Run(() => _built.Enqueue(near ? BuildNear(key, runs, lines) : BuildFar(key, runs, lines)));
+    /// Hands the nearest wanted chunks to the job system once its last batch is done.
+    private void StartBuilds()
+    {
+        if (_wanted.Count > 0 && !_jobs.Busy)
+        {
+            var lines = _lines;
+            var batch = _wanted.OrderBy(w => w.Value).Take(_jobs.BatchSize).Select(w => w.Key).ToList();
+            var jobs = new List<(Brutal.Concurrency.Jobs.IJob, int)>();
+            foreach (var (key, near) in batch)
+            {
+                _building.Add((key, near));
+                _stale.Remove((key, near));
+                var runs = _runs[key];
+                jobs.Add((new Job("line chunk", () => _built.Enqueue(near ? BuildNear(key, runs, lines) : BuildFar(key, runs, lines))), near ? 4 : 1));
+            }
+
+            _jobs.TryRun(jobs);
+        }
+
+        _wanted.Clear();
     }
 
     private void DropNear(Chunk chunk)
@@ -304,7 +517,8 @@ public sealed class NetworkMeshes : IDisposable
 
     private void Evict()
     {
-        foreach (var (key, chunk) in _chunks.Where(c => _frame - c.Value.Used > 300).ToList())
+        // A few a frame: freeing GPU buffers takes a fraction of a millisecond each.
+        foreach (var (key, chunk) in _chunks.Where(c => _frame - c.Value.Used > 300).Take(4).ToList())
         {
             chunk.Far?.Dispose();
             DropNear(chunk);
@@ -441,8 +655,64 @@ public sealed class NetworkMeshes : IDisposable
             var slope = (h - walk) * NetworkLine.BallastSlope;
             var f = MathF.Max(line.Formation - 0.5f, w + slope + 0.3f);
             var gravel = Code(LineMaterial.Gravel);
-            Sweep(builder, line, first, last, [(-f, walk), (-w - slope, walk), (-w, h), (w, h), (w + slope, walk), (f, walk)],
-                e => e is 0 or 4 ? gravel : ballast, (_, _, _) => railOffset);
+            float Edge(int e) => e is 0 or 4 ? gravel : ballast;
+            (float, float)[] Section(float left, float right, float drop = 0f) =>
+                [(-f - left, walk), (-w - left - slope, walk), (-w - left, h - drop), (w + right, h - drop), (w + right + slope, walk), (f + right, walk)];
+
+            var zones = line.TurnoutZones.Where(z => z.Ballast.To > z.Ballast.From).ToList();
+            if (zones.Count == 0)
+            {
+                Sweep(builder, line, first, last, Section(0f, 0f), Edge, (_, _, _) => railOffset);
+                return;
+            }
+
+            // Through a turnout the normal route's bed widens out to the reverse route's far side. The reverse route lays its own
+            // bed all the same, just under it where they overlap, so whatever the turnouts around do there's always ballast
+            // under the track.
+            var widen = zones.Where(z => z.Normal).ToList();
+            var under = zones.Where(z => !z.Normal).Select(z => z.Ballast).ToList();
+            var depth = 0.003f * (1 + line.Index % 5);
+            var at = new List<float> { line.S[first], line.S[last] };
+            foreach (var s in line.S)
+                if (s > line.S[first] && s < line.S[last])
+                    at.Add(s);
+            foreach (var zone in widen)
+            {
+                for (var s = zone.Ballast.From; s <= zone.Ballast.To; s += Turnout.SpreadStep)
+                    at.Add(s);
+                at.Add(zone.Ballast.From - 0.001f);
+                at.Add(zone.Ballast.To);
+                at.Add(zone.Ballast.To + 0.001f);
+            }
+
+            foreach (var (from, to) in under)
+                at.AddRange((float[])[from - 0.5f, from, to, to + 0.5f]);
+
+            var rings = new List<(float3, float3, float, float, (float, float)[])>();
+            foreach (var s in at.Where(s => s >= line.S[first] && s <= line.S[last]).Order().Distinct())
+            {
+                var (left, right) = (0f, 0f);
+                foreach (var zone in widen)
+                {
+                    if (s < zone.Ballast.From || s > zone.Ballast.To)
+                        continue;
+                    var t = zone.Turnout;
+                    var extra = t.SpreadAt(MathF.Abs(s - t.Normal.Start));
+                    if (t.Side * t.Normal.Direction > 0)
+                        right = MathF.Max(right, extra);
+                    else
+                        left = MathF.Max(left, extra);
+                }
+
+                var drop = 0f;
+                foreach (var (from, to) in under)
+                    drop = MathF.Max(drop, depth * Math.Clamp(MathF.Min(s - from + 0.5f, to + 0.5f - s) / 0.5f, 0f, 1f));
+                var (center, across) = FrameAt(line, s, builder.Origin);
+                rings.Add((center, across, s % Wrap, 0f, Section(left, right, drop)));
+            }
+
+            SweepRings(builder, rings, Edge, (_, _) => railOffset, 0f);
+
             return;
         }
 
@@ -592,6 +862,19 @@ public sealed class NetworkMeshes : IDisposable
         var builder = new Builder { Origin = OriginOf(key) };
         var ties = new List<TieInstance>();
         var plates = new List<TieInstance>();
+        if (_turnoutsByChunk.TryGetValue(key, out var turnouts))
+            foreach (var turnout in turnouts)
+            {
+                TurnoutRails(builder, turnout);
+                if (KitFor(turnout) is { } parts)
+                    KitFixed(builder, turnout, parts, _handThrows.GetValueOrDefault(turnout.Node), _objectModels.GetValueOrDefault(PlacedKind.HandThrow));
+            }
+        if (_assembliesByChunk.TryGetValue(key, out var assemblies))
+            foreach (var assembly in assemblies)
+                DiamondBuild(builder, assembly);
+        if (_objectsByChunk.TryGetValue(key, out var placed))
+            foreach (var o in placed)
+                PlacedModel(builder, o);
         foreach (var run in runs)
         {
             var line = lines.Lines[run.Line];
@@ -609,8 +892,17 @@ public sealed class NetworkMeshes : IDisposable
                 for (var track = 0; track < line.Tracks; track++)
                 {
                     var o = line.TrackOffset(track);
-                    foreach (var side in (float[])[-1f, 1f])
-                        Sweep(builder, line, first, last, RailProfile, _ => rail, (_, _, y) => y, o + side * railOffset, baseY);
+                    foreach (var side in (int[])[-1, 1])
+                    {
+                        // A turnout's own rail is left out where it takes over (single track only, so track 0).
+                        var cuts = line.TurnoutZones.Where(z => z.RailSide == side || z.RailSide == 0).Select(z => z.Rails)
+                            .Concat(line.RailCuts.Where(c => c.Side == side).Select(c => (c.From, c.To))).ToList();
+                        if (cuts.Count == 0)
+                            Sweep(builder, line, first, last, RailProfile, _ => rail, (_, _, y) => y, o + side * railOffset, baseY);
+                        else
+                            foreach (var (from, to) in Pieces(line.S[first], line.S[last], cuts))
+                                SweepLine(builder, line, from, to, o + side * railOffset, baseY);
+                    }
 
                     if (!line.Embedded)
                         Ties(ties, plates, line, first, last, o, railOffset, builder.Origin, track);
@@ -622,6 +914,377 @@ public sealed class NetworkMeshes : IDisposable
         var (sortedPlates, plateCells) = ByCell(plates);
         return new Built(key, true, [.. builder.Vertices], [.. builder.Indices], sortedTies, sortedPlates, tieCells, plateCells);
     }
+
+    /// What's left of [from, to] once the cuts are taken out.
+    private static List<(float From, float To)> Pieces(float from, float to, List<(float From, float To)> cuts)
+    {
+        var pieces = new List<(float, float)> { (from, to) };
+        foreach (var (a, b) in cuts)
+        {
+            var next = new List<(float, float)>();
+            foreach (var (p, q) in pieces)
+            {
+                if (b <= p || a >= q)
+                {
+                    next.Add((p, q));
+                    continue;
+                }
+
+                if (a > p)
+                    next.Add((p, a));
+                if (b < q)
+                    next.Add((b, q));
+            }
+
+            pieces = next;
+        }
+
+        return pieces.Where(p => p.Item2 - p.Item1 > 0.05f).ToList();
+    }
+
+    /// A centreline frame anywhere along a line: the point (relative to origin) and the horizontal right.
+    private static (float3 Center, float3 Right) FrameAt(NetworkLine line, float s, float3 origin)
+    {
+        var leg = new Leg(line, 0, 1);
+        var (x, z, y, _, _, rx, rz) = leg.At(s);
+        return (new float3((float)(x - origin.X), y, (float)(z - origin.Z)), new float3(rx, 0f, rz));
+    }
+
+    /// A rail from one distance along a line to another, offset across it, the ends exactly where asked.
+    private static void SweepLine(Builder builder, NetworkLine line, float from, float to, float offset, float rise)
+    {
+        var rings = new List<(float3, float3, float, float, (float, float)[])>();
+        void Ring(float s)
+        {
+            var (center, right) = FrameAt(line, s, builder.Origin);
+            rings.Add((center, right, s % Wrap, offset, RailProfile));
+        }
+
+        Ring(from);
+        foreach (var s in line.S)
+            if (s > from + 0.01f && s < to - 0.01f)
+                Ring(s);
+        Ring(to);
+        SweepRings(builder, rings, Code(LineMaterial.Rail), rise);
+    }
+
+    /// Sweeps a section through rings: each its centre (relative to the origin), right, distance along (for the
+    /// texture), offset across, and section (all with the same number of points), rise above the centre.
+    private static void SweepRings(Builder builder, List<(float3 Center, float3 Right, float V, float Offset, (float U, float Y)[] Section)> rings, float code, float rise) =>
+        SweepRings(builder, rings, _ => code, (_, y) => y, rise);
+
+    /// As above, code(edge) picking each edge's material and value(u, y) its Data.w.
+    private static void SweepRings(Builder builder, List<(float3 Center, float3 Right, float V, float Offset, (float U, float Y)[] Section)> rings,
+        Func<int, float> code, Func<float, float, float> value, float rise)
+    {
+        if (rings.Count < 2)
+            return;
+        var edges = rings[0].Section.Length - 1;
+        var start = (uint)builder.Vertices.Count;
+        foreach (var (center, right, v, offset, section) in rings)
+        {
+            for (var e = 0; e < edges; e++)
+            {
+                var (u0, y0) = section[e];
+                var (u1, y1) = section[e + 1];
+                var du = u1 - u0;
+                var dy = y1 - y0;
+                var len = MathF.Max(MathF.Sqrt(du * du + dy * dy), 1e-6f);
+                var normal = right * (-dy / len) + new float3(0f, du / len, 0f);
+                builder.Add(center + right * (offset + u0) + new float3(0f, rise + y0, 0f), normal, new float4(offset + u0, v, code(e), value(u0, y0)));
+                builder.Add(center + right * (offset + u1) + new float3(0f, rise + y1, 0f), normal, new float4(offset + u1, v, code(e), value(u1, y1)));
+            }
+        }
+
+        var ring = (uint)(edges * 2);
+        for (var p = 0; p < rings.Count - 1; p++)
+        {
+            for (var e = 0; e < edges; e++)
+            {
+                var a = start + (uint)p * ring + (uint)e * 2;
+                builder.Quad(a, a + 1, a + ring, a + ring + 1);
+            }
+        }
+    }
+
+    private static readonly float RailRise = NetworkLine.BallastHeight + TieRise + PlateDepth;
+
+    /// Rings along a leg from one distance to another about every step metres, offset across it by offset(s), with
+    /// section(s).
+    private static List<(float3, float3, float, float, (float, float)[])> LegRings(Leg leg, float from, float to, float step, float3 origin,
+        Func<float, float> offset, Func<float, (float U, float Y)[]> section)
+    {
+        var rings = new List<(float3, float3, float, float, (float, float)[])>();
+        var count = Math.Max(1, (int)MathF.Ceiling((to - from) / step));
+        for (var k = 0; k <= count; k++)
+        {
+            var s = from + (to - from) * k / count;
+            var (x, z, y, _, _, rx, rz) = leg.At(s);
+            rings.Add((new float3((float)(x - origin.X), y, (float)(z - origin.Z)), new float3(rx, 0f, rz), leg.LineS(s) % Wrap, offset(s), section(s)));
+        }
+
+        return rings;
+    }
+
+    /// A turnout's fixed rails, swept along its routes: the closure rails from the blades' heels to the frog, each running
+    /// on as a wing rail past the crossing (from where its gauge face comes within a flangeway of the other route's gauge
+    /// line, it follows that line a flangeway off, flaring away at its end); the frog's two point rails, from where the gauge
+    /// lines are the frog point's width apart, planed down to one V between the gauge lines until they're full rails at the
+    /// crossing; and a guard rail inside each route's outer rail facing the frog, its ends flared in.
+    private static void TurnoutRails(Builder builder, Turnout t)
+    {
+        var rail = Code(LineMaterial.Rail);
+        var h = Turnout.RailOffset;
+        var side = t.Side;
+        var gauge = 2f * (h - RailHeadHalf);
+        var (fn, fr) = (t.FrogNormal, t.FrogReverse);
+        float SpreadOn(float s) => t.SpreadAt(s);
+        float SpreadOff(float s) => t.SpreadAt(s * fn / fr);
+        float Wing(float spread, float past) => MathF.Max(0f, spread - gauge + Turnout.Flangeway) + 0.03f * MathF.Pow(MathF.Max(0f, past - 1f) / 0.5f, 2f);
+
+        SweepRings(builder, LegRings(t.Normal, t.BladeLength, fn + 1.5f, 0.5f, builder.Origin,
+            s => side * (h + Wing(SpreadOn(s), s - fn)), _ => RailProfile), rail, RailRise);
+        SweepRings(builder, LegRings(t.Reverse, t.BladeLength, fr + 1.5f, 0.5f, builder.Origin,
+            s => -side * (h + Wing(SpreadOff(s), s - fr)), _ => RailProfile), rail, RailRise);
+
+        var point = t.BladeLength;
+        while (point < fn && SpreadOn(point) < gauge + FrogPoint)
+            point += 0.1f;
+        (float U, float Y)[] Planed(float spread, int keep)
+        {
+            var k = Math.Clamp((spread - gauge) / (2f * RailHeadHalf), 0.05f, 1f);
+            return [.. RailProfile.Select(p => (p.U * k + keep * RailHeadHalf * (1f - k), p.Y))];
+        }
+
+        SweepRings(builder, LegRings(t.Normal, point, fn + Turnout.FrogGapAfter, 0.2f, builder.Origin, _ => side * h, s => Planed(SpreadOn(s), -side)), rail, RailRise);
+        SweepRings(builder, LegRings(t.Reverse, point * fr / fn, fr + Turnout.FrogGapAfter, 0.2f, builder.Origin, _ => -side * h, s => Planed(SpreadOff(s), side)), rail, RailRise);
+
+        var half = Turnout.GuardLength * 0.5f;
+        float Flare(float s, float centre) => 0.05f * MathF.Max(0f, (MathF.Abs(s - centre) - (half - 0.6f)) / 0.6f);
+        var guard = RailProfile.Select(p => (p.U, p.Y * 0.92f)).ToArray();
+        SweepRings(builder, LegRings(t.Normal, fn - half, fn + half, 0.3f, builder.Origin,
+            s => -side * (h - Turnout.GuardOffset - Flare(s, fn)), _ => guard), rail, RailRise);
+        SweepRings(builder, LegRings(t.Reverse, fr - half, fr + half, 0.3f, builder.Origin,
+            s => side * (h - Turnout.GuardOffset - Flare(s, fr)), _ => guard), rail, RailRise);
+    }
+
+    /// The frog point's blunt tip: how far apart the gauge lines are where the point rails begin.
+    private const float FrogPoint = 0.0127f;
+
+    /// A blade's section t of the way from its tip (0) to its heel (1): planed thin and low at the tip, the full rail at
+    /// the heel. away: which way (across) is its stock rail, which the planing keeps the blade's back to.
+    private static (float U, float Y)[] BladeSection(float t, int away)
+    {
+        var thin = 0.3f + 0.7f * MathF.Sqrt(t);
+        var low = 0.82f + 0.18f * t;
+        return [.. RailProfile.Select(p => (p.U * thin + away * 0.0373f * (1f - thin), p.Y * low))];
+    }
+
+    /// A turnout's two blades with the switch at position (0 normal, 1 reverse): the straight blade inside the curved
+    /// stock rail, closed against it for the normal route, and the curved blade inside the straight stock rail, closed
+    /// for the reverse; each pivots at its heel, swinging Throw at its tip.
+    private static void Blades(Builder builder, Turnout t, float position)
+    {
+        var rail = Code(LineMaterial.Rail);
+        var h = Turnout.RailOffset;
+        var side = t.Side;
+        var length = t.BladeLength;
+        SweepRings(builder, LegRings(t.Normal, 0f, length, 0.4f, builder.Origin,
+            s => side * (h - (Turnout.Inset + Turnout.Throw * position) * (1f - s / length)), s => BladeSection(s / length, side)), rail, RailRise);
+        SweepRings(builder, LegRings(t.Reverse, 0f, length, 0.4f, builder.Origin,
+            s => -side * (h - (Turnout.Inset + Turnout.Throw * (1f - position)) * (1f - s / length)), s => BladeSection(s / length, -side)), rail, RailRise);
+    }
+
+    // --- The switch kit: parts from Blender, fitted to each switch's routes. ---
+
+    private const float KitRailBase = TieRise + PlateDepth;
+
+    /// Where the stretchers are along the blades, the machine across from its route, and the first stretcher's the rod goes to.
+    private static readonly float[] Stretchers = [0.6f, 1.5f];
+    private const float MachineOff = 0.85f;
+
+    /// A point on a route, offset across it, on its ballast.
+    private static float3 On(Leg leg, float s, float offset, float3 origin)
+    {
+        var (x, z, y, _, _, rx, rz) = leg.At(s);
+        return new float3((float)(x + rx * offset - origin.X), y + NetworkLine.BallastHeight, (float)(z + rz * offset - origin.Z));
+    }
+
+    /// What doesn't move: the point machine, and the frog casting across the V the two routes' rails make.
+    private static void KitFixed(Builder builder, Turnout t, Dictionary<string, Model.Part> parts, PlacedObject? handThrow, Dictionary<string, Model.Part>? handModel)
+    {
+        if (handThrow is not null && handModel is not null)
+        {
+            var (at, face) = HandThrowAt(t, handThrow, builder.Origin);
+            foreach (var (name, part) in handModel.Where(p => p.Key.StartsWith("Fixed_")))
+                Upright(builder, part, at, face, PaintOf(name), 0f);
+        }
+        else if (parts.TryGetValue("Machine", out var machine))
+            Stand(builder, t, machine, Code(LineMaterial.Concrete));
+        if (parts.TryGetValue("FrogCasting", out var casting))
+            Casting(builder, t, casting, Code(LineMaterial.Rail));
+    }
+
+    /// What moves with the blades at position (0 normal, 1 reverse): each stretcher between the two blades, and the throw
+    /// rod from the machine to the first of them.
+    private static void KitMoving(Builder builder, Turnout t, Dictionary<string, Model.Part> parts, float position, PlacedObject? handThrow, Dictionary<string, Model.Part>? handModel)
+    {
+        var machineSide = handThrow is { Opposite: true } && handModel is not null ? -1 : 1;
+        if (handThrow is not null && handModel is not null)
+        {
+            var (at, face) = HandThrowAt(t, handThrow, builder.Origin);
+            foreach (var (name, part) in handModel.Where(p => p.Key.StartsWith("Moving_")))
+                Upright(builder, part, at, face, PaintOf(name), position * MathF.PI * 0.5f);
+        }
+
+        var rail = Code(LineMaterial.Rail);
+        var h = Turnout.RailOffset;
+        var side = t.Side;
+        float3 Blade(Leg leg, int across, float s, float opened) =>
+            On(leg, s, across * (h - (Turnout.Inset + Turnout.Throw * opened) * (1f - s / t.BladeLength)), builder.Origin);
+
+        foreach (var s in Stretchers)
+            if (parts.TryGetValue("Stretcher", out var stretcher))
+                Bar(builder, stretcher, rail, Blade(t.Normal, side, s, position), Blade(t.Reverse, -side, s, 1f - position));
+        if (parts.TryGetValue("ThrowRod", out var rod))
+            Bar(builder, rod, rail, On(t.Normal, Stretchers[0], -side * machineSide * (h + MachineOff), builder.Origin), Blade(t.Normal, side, Stretchers[0], position));
+    }
+
+    /// Where a switch's hand throw stands: beside its first stretcher, on the side away from the diverging route unless it's
+    /// set opposite, facing across the track.
+    private static (float3 At, float3 Face) HandThrowAt(Turnout t, PlacedObject o, float3 origin)
+    {
+        var side = t.Side * (o.Opposite ? 1 : -1);
+        var (_, _, _, _, _, rx, rz) = t.Normal.At(Stretchers[0]);
+        return (On(t.Normal, Stretchers[0], side * (Turnout.RailOffset + MachineOff), origin) - new float3(0f, NetworkLine.BallastHeight, 0f), new float3(rx * side, 0f, rz * side));
+    }
+
+    private static float PaintOf(string name)
+    {
+        var at = Array.IndexOf(Paints, name[(name.IndexOf('_') + 1)..]);
+        return Code(LineMaterial.Painted, Math.Max(at, 0));
+    }
+
+    /// A placed model's part stood upright at a place, its +z along face, turned about its own origin by spin.
+    private static void Upright(Builder builder, Model.Part part, float3 at, float3 face, float code, float spin)
+    {
+        var (cos, sin) = (MathF.Cos(spin), MathF.Sin(spin));
+        var right = new float3(face.Z, 0f, -face.X);
+        var start = (uint)builder.Vertices.Count;
+        foreach (var vertex in part.Vertices)
+        {
+            var (p, n) = (vertex.Position, vertex.Normal);
+            var (px, pz) = (p.X * cos - p.Z * sin, p.X * sin + p.Z * cos);
+            var (nx, nz) = (n.X * cos - n.Z * sin, n.X * sin + n.Z * cos);
+            builder.Add(at + right * px + face * pz + new float3(0f, p.Y, 0f), right * nx + face * nz + new float3(0f, n.Y, 0f), new float4(p.X, p.Y, code, 0f));
+        }
+
+        foreach (var index in part.Indices)
+            builder.Indices.Add(start + index);
+    }
+
+    private void PlacedModel(Builder builder, PlacedAt placed)
+    {
+        var o = placed.Object;
+        var angle = o.Heading * Math.PI / 180.0;
+        var face = new float3((float)Math.Cos(angle), 0f, (float)Math.Sin(angle));
+        var at = new float3((float)(placed.X - builder.Origin.X), placed.Y, (float)(placed.Z - builder.Origin.Z));
+        if (!_objectModels.TryGetValue(o.Kind, out var parts))
+            return;
+        if (o.Kind == PlacedKind.Signal)
+        {
+            foreach (var (name, part) in parts)
+                Upright(builder, part, at, face, PaintOf(name), 0f);
+            return;
+        }
+
+        // A grade crossing: its deck, and its masts.
+        if (placed.Deck is not { } deck)
+            return;
+        var from = new float3((float)(placed.X - builder.Origin.X), 0f, (float)(placed.Z - builder.Origin.Z));
+        var surface = Code(LineMaterial.Asphalt);
+        foreach (var q in deck.Quads)
+            Face(builder, [from + q.A, from + q.B, from + q.C, from + q.D], from + q.Inside, surface, 0f);
+        foreach (var (mx, mz, y, toward) in deck.Masts)
+        {
+            var mast = new float3((float)(mx - builder.Origin.X), y, (float)(mz - builder.Origin.Z));
+            foreach (var (name, part) in parts)
+                Upright(builder, part, mast, toward, PaintOf(name), 0f);
+        }
+    }
+
+    /// A part stood as it is on a turnout's normal route: its across (model x) along the route's right, its along (model -z)
+    /// as distance along the route, its up on the route's ballast, so it follows the track.
+    private static void Stand(Builder builder, Turnout t, Model.Part part, float code)
+    {
+        var start = (uint)builder.Vertices.Count;
+        foreach (var vertex in part.Vertices)
+        {
+            var p = vertex.Position;
+            var (x, z, y, fx, fz, rx, rz) = t.Normal.At(MathF.Max(-p.Z, 0f));
+            var (right, forward) = (new float3(rx, 0f, rz), new float3(fx, 0f, fz));
+            var position = new float3((float)(x - builder.Origin.X), y + NetworkLine.BallastHeight + p.Y, (float)(z - builder.Origin.Z)) + right * p.X;
+            var n = vertex.Normal;
+            builder.Add(position, right * n.X + new float3(0f, n.Y, 0f) - forward * n.Z, new float4(p.X, t.Normal.LineS(MathF.Max(-p.Z, 0f)) % Wrap, code, p.Y - KitRailBase));
+        }
+
+        foreach (var index in part.Indices)
+            builder.Indices.Add(start + index);
+    }
+
+    /// A part from -1 to 1 in model x, stretched from one point to the other; its y and z as they are.
+    private static void Bar(Builder builder, Model.Part part, float code, float3 a, float3 b)
+    {
+        var (dx, dz) = (b.X - a.X, b.Z - a.Z);
+        var length = MathF.Max(MathF.Sqrt(dx * dx + dz * dz), 1e-3f);
+        var across = new float3(dx / length, 0f, dz / length);
+        var forward = new float3(across.Z, 0f, -across.X);
+        var start = (uint)builder.Vertices.Count;
+        foreach (var vertex in part.Vertices)
+        {
+            var p = vertex.Position;
+            var t = (p.X + 1f) * 0.5f;
+            var position = a + (b - a) * t + new float3(0f, p.Y, 0f) - forward * p.Z;
+            var n = vertex.Normal;
+            builder.Add(position, across * n.X + new float3(0f, n.Y, 0f) - forward * n.Z, new float4(p.X, 0f, code, p.Y - KitRailBase));
+        }
+
+        foreach (var index in part.Indices)
+            builder.Indices.Add(start + index);
+    }
+
+    /// The frog casting: its along (model -z) along the line between the two routes from the frog, its x from -1 to 1 across
+    /// as wide as the rails on it have parted there, so it fits the frog's angle.
+    private static void Casting(Builder builder, Turnout t, Model.Part part, float code)
+    {
+        var h = Turnout.RailOffset;
+        var start = (uint)builder.Vertices.Count;
+        foreach (var vertex in part.Vertices)
+        {
+            var p = vertex.Position;
+            var l = -p.Z;
+            var a = On(t.Normal, t.FrogNormal + l, t.Side * h, builder.Origin);
+            var b = On(t.Reverse, t.FrogReverse + l, -t.Side * h, builder.Origin);
+            var (_, _, _, _, _, nx, nz) = t.Normal.At(t.FrogNormal + l);
+            var (_, _, _, _, _, ox, oz) = t.Reverse.At(t.FrogReverse + l);
+            var (ax, az) = (nx + ox, nz + oz);
+            var length = MathF.Max(MathF.Sqrt(ax * ax + az * az), 1e-3f);
+            var across = new float3(ax / length, 0f, az / length);
+            var forward = new float3(across.Z, 0f, -across.X);
+            var middle = (a + b) * 0.5f;
+            var (ex, ez) = (a.X - b.X, a.Z - b.Z);
+            var width = CastingEdge + MathF.Sqrt(ex * ex + ez * ez) * 0.5f;
+            var n = vertex.Normal;
+            builder.Add(middle + across * (p.X * width) + new float3(0f, p.Y, 0f), across * n.X + new float3(0f, n.Y, 0f) - forward * n.Z,
+                new float4(p.X * width, t.Normal.LineS(t.FrogNormal + l) % Wrap, code, p.Y - KitRailBase));
+        }
+
+        foreach (var index in part.Indices)
+            builder.Indices.Add(start + index);
+    }
+
+    /// How far the frog casting reaches past the rails on it, either side.
+    private const float CastingEdge = 0.16f;
 
     /// Parts sorted by the cell of the chunk they stand in, and where each cell's run starts.
     private static (TieInstance[] Sorted, int[] Starts) ByCell(List<TieInstance> parts)
@@ -644,6 +1307,35 @@ public sealed class NetworkMeshes : IDisposable
 
     /// Ties along a track, and a plate under each rail on each (turned round on the left rail, so both plates' field
     /// shoulders face outward).
+    /// What a line's tie at s is under a turnout: a long timber if the line's that turnout's normal route, carried by the normal
+    /// route's timber if it's the reverse route and that timber really is there there (the normal route may itself be giving way to
+    /// another turnout's), or a plain tie of its own (null) otherwise. So a tie's only ever left out for one that exists.
+    internal static TurnoutZone? TieZone(NetworkLine line, float s, int depth = 0)
+    {
+        TurnoutZone? normal = null;
+        foreach (var zone in line.TurnoutZones)
+        {
+            if (s < zone.Timbers.From || s > zone.Timbers.To)
+                continue;
+            if (zone.Normal)
+                normal ??= zone;
+            else if (depth < 4 && Carried(zone, line, s, depth))
+                return zone;
+        }
+
+        return normal;
+    }
+
+    private static bool Carried(TurnoutZone zone, NetworkLine line, float s, int depth)
+    {
+        var t = zone.Turnout;
+        var (x, z, _, _, _, _, _) = t.Reverse.At(MathF.Abs(s - t.Reverse.Start));
+        if (Turnout.Offset(t.Normal, x, z) is not { } at)
+            return false;
+        var along = t.Normal.LineS(at.S);
+        return !t.Normal.Line.TieCuts.Any(c => along >= c.From && along <= c.To) && TieZone(t.Normal.Line, along, depth + 1) is { Normal: true } carrier && carrier.Turnout == t;
+    }
+
     private static void Ties(List<TieInstance> ties, List<TieInstance> plates, NetworkLine line, int first, int last, float offset, float railOffset,
         float3 origin, int track)
     {
@@ -669,8 +1361,29 @@ public sealed class NetworkMeshes : IDisposable
                 var y = line.Y[p] + dy * t + NetworkLine.BallastHeight;
                 var position = new float3(x, y, z) + right * offset;
                 var random = MathEx.Hash((uint)line.Index * 7919u + (uint)track, (uint)MathF.Round(s / TieSpacing));
-                ties.Add(new TieInstance(new float4(position, random), new float4(forward, 0f)));
                 var seat = position + new float3(0f, TieRise, 0f);
+
+                // Through a turnout: the normal route's ties are long timbers reaching under the reverse route too,
+                // with its plates; the reverse route lays none of its own.
+                var zone = TieZone(line, s);
+                if (zone is { Normal: false } || line.TieCuts.Any(c => s >= c.From && s <= c.To))
+                {
+                    s += TieSpacing;
+                    continue;
+                }
+
+                if (zone?.Turnout is { } timbered)
+                {
+                    var spread = timbered.SpreadAt(MathF.Abs(s - timbered.Normal.Start));
+                    var across = right * (timbered.Side * timbered.Normal.Direction);
+                    ties.Add(new TieInstance(new float4(position + across * (spread * 0.5f), random), new float4(forward, (TieLength + spread) / TieLength)));
+                    foreach (var u in (ReadOnlySpan<float>)[spread - railOffset, spread + railOffset])
+                        if (MathF.Abs(u - railOffset) > 0.25f && MathF.Abs(u + railOffset) > 0.25f)
+                            plates.Add(new TieInstance(new float4(seat + across * u, random), new float4(u > spread ? forward * (timbered.Side * timbered.Normal.Direction) : -forward * (timbered.Side * timbered.Normal.Direction), 0f)));
+                }
+                else
+                    ties.Add(new TieInstance(new float4(position, random), new float4(forward, 0f)));
+
                 plates.Add(new TieInstance(new float4(seat + right * railOffset, random), new float4(forward, 0f)));
                 plates.Add(new TieInstance(new float4(seat - right * railOffset, random), new float4(-forward, 0f)));
                 s += TieSpacing;
@@ -694,6 +1407,15 @@ public sealed class NetworkMeshes : IDisposable
             var origin = OriginOf(key);
             push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
             mesh.Draw(cmd);
+        }
+
+        foreach (var sw in _switches.Values)
+        {
+            if (sw.Blades is null || !_nearKeys.Contains(sw.Key))
+                continue;
+            var origin = OriginOf(sw.Key);
+            push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
+            sw.Blades.Draw(cmd);
         }
     }
 
@@ -760,6 +1482,9 @@ public sealed class NetworkMeshes : IDisposable
 
     public void Dispose()
     {
+        _jobs.Dispose();
+        foreach (var sw in _switches.Values)
+            sw.Blades?.Dispose();
         foreach (var chunk in _chunks.Values)
         {
             chunk.Far?.Dispose();

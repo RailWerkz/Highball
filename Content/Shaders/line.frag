@@ -24,6 +24,11 @@ const int Rail = 1;
 const int Asphalt = 2;
 const int Gravel = 3;
 const int Concrete = 4;
+const int Painted = 5;
+
+// NetworkMeshes.Paints: what a placed model's parts are painted.
+const vec3 Paints[7] = vec3[](vec3(0.018), vec3(0.62, 0.62, 0.60), vec3(0.26, 0.27, 0.28), vec3(0.60, 0.42, 0.05),
+    vec3(0.50, 0.02, 0.015), vec3(0.02, 0.32, 0.12), vec3(0.30, 0.29, 0.26));
 
 const vec3 Steel = vec3(0.40, 0.40, 0.40);
 const vec3 Rust = vec3(0.075, 0.048, 0.032);
@@ -69,7 +74,7 @@ void main()
     float pixel = max(length(dFdx(world)), length(dFdy(world))) + 1e-4;
     float uPixel = max(fwidth(u), 1e-4);
 
-    if (material == Rail && dist > nearRadius)
+    if ((material == Rail || material == Painted) && dist > nearRadius)
         discard;
 
     vec3 albedo = vec3(0.2);
@@ -169,6 +174,12 @@ void main()
     {
         float stain = fbm(tex * 0.5 + world.y * 0.7, pixel * 0.7);
         albedo = vec3(0.22, 0.215, 0.20) * (0.75 + 0.4 * stain);
+    }
+    else if (material == Painted)
+    {
+        albedo = Paints[clamp(style, 0, 6)];
+        specular = style == 2 ? 0.2 : 0.08;
+        gloss = 40.0;
     }
 
     float direct = max(dot(n, sun), 0.0);

@@ -28,6 +28,38 @@ public static class Buffers
         return staging;
     }
 
+    private static readonly List<(BufferEx Staging, BufferEx Buffer, int Size)> Pending = [];
+
+    /// A device-local buffer that will hold data once the next frame starts: the copy is recorded at the top of that
+    /// frame's commands instead of waiting for the GPU here. Main thread only, and not for drawing before that frame.
+    public static BufferEx UploadLater(ReadOnlySpan<byte> data, VkBufferUsageFlags usage, string name)
+    {
+        var buffer = Create(data.Length, usage | VkBufferUsageFlags.TransferDstBit, MemoryPreference.PreferGpu, name);
+        Pending.Add((Staging(data, name + ".staging"), buffer, data.Length));
+        return buffer;
+    }
+
+    /// Records the copies UploadLater asked for, then one barrier so the frame's vertex and index reads see them.
+    internal static void FlushUploads(CommandBuffer cmd)
+    {
+        if (Pending.Count == 0)
+            return;
+
+        foreach (var (staging, buffer, size) in Pending)
+        {
+            cmd.CopyBuffer(staging.VkBuffer, buffer.VkBuffer, ByteSize.Of(size));
+            Gpu.Defer(staging.Dispose);
+        }
+
+        Pending.Clear();
+        var barrier = new VkMemoryBarrier
+        {
+            SrcAccessMask = VkAccessFlags.TransferWriteBit,
+            DstAccessMask = VkAccessFlags.VertexAttributeReadBit | VkAccessFlags.IndexReadBit,
+        };
+        cmd.PipelineBarrier(VkPipelineStageFlags.TransferBit, VkPipelineStageFlags.VertexInputBit, VkDependencyFlags.None, [barrier], [], []);
+    }
+
     /// A device-local buffer filled with data (waits for the copy).
     public static BufferEx Upload(ReadOnlySpan<byte> data, VkBufferUsageFlags usage, string name)
     {

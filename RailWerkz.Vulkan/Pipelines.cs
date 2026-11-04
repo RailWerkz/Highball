@@ -67,7 +67,7 @@ public static unsafe class Pipelines
                 FrontFace = VkFrontFace.CounterClockwise,
                 LineWidth = 1f,
             };
-            var multisample = new VkPipelineMultisampleStateCreateInfo { RasterizationSamples = VkSampleCountFlags._1Bit };
+            var multisample = new VkPipelineMultisampleStateCreateInfo { RasterizationSamples = desc.RenderPass.IsNull() ? RenderTarget.Samples : VkSampleCountFlags._1Bit };
             var depth = new VkPipelineDepthStencilStateCreateInfo
             {
                 DepthTestEnable = new Bool32(desc.DepthTest),

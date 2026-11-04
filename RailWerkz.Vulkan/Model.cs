@@ -568,6 +568,66 @@ public sealed class Model : IDisposable
     }
 
     // Floats, or integers (as their values, or scaled to 0-1 when the accessor is normalised).
+    /// One named piece of a model kept on the CPU: its triangles in model space (node transforms applied) and where its
+    /// node's origin is, for a part that's moved about it.
+    public sealed record Part(string Name, Vertex[] Vertices, uint[] Indices, float3 Origin);
+
+    /// Every node with a mesh in a glTF file, by name, as CPU-side triangles: for models taken apart and built into other
+    /// meshes (bent along track, posed piece by piece) rather than drawn whole.
+    public static Dictionary<string, Part> LoadParts(string relativePath)
+    {
+        using var loader = new GltfLoader(ContentPath.Model(relativePath));
+        var gltf = loader.GltfJson;
+        var parts = new Dictionary<string, Part>();
+
+        void AddNode(int nodeIndex, float4x4 parent)
+        {
+            var node = gltf.Nodes[nodeIndex];
+            var trs = float4x4.CreateScale(node.Scale) * float4x4.CreateFromQuaternion(node.Rotation) * float4x4.CreateTranslation(node.Translation);
+            var world = node.Matrix * trs * parent;
+
+            if (node.Mesh is { } meshIndex)
+            {
+                var vertices = new List<Vertex>();
+                var indices = new List<uint>();
+                foreach (var primitive in gltf.Meshes![meshIndex].Primitives)
+                {
+                    if (primitive.Mode != MeshPrimitive.ModeEnum.Triangles)
+                        continue;
+                    var positions = ReadVec(loader, primitive.Attributes["POSITION"], 3);
+                    var count = positions.Length / 3;
+                    var normals = primitive.Attributes.TryGetValue("NORMAL", out var n) ? ReadVec(loader, n, 3) : null;
+                    var uvs = primitive.Attributes.TryGetValue("TEXCOORD_0", out var t) ? ReadVec(loader, t, 2) : null;
+                    var ids = primitive.Indices is { } i ? ReadIndices(loader, i) : [.. Enumerable.Range(0, count).Select(x => (uint)x)];
+                    var first = (uint)vertices.Count;
+                    for (var v = 0; v < count; v++)
+                    {
+                        var p = MathEx.TransformPoint(new float3(positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]), world);
+                        var nn = normals is null
+                            ? new float3(0f, 1f, 0f)
+                            : MathEx.Normalize(MathEx.TransformDirection(new float3(normals[v * 3], normals[v * 3 + 1], normals[v * 3 + 2]), world));
+                        vertices.Add(new Vertex(p, nn, uvs is null ? default : new float2(uvs[v * 2], uvs[v * 2 + 1])));
+                    }
+
+                    indices.AddRange(ids.Select(id => first + id));
+                }
+
+                var name = node.Name ?? $"node{nodeIndex}";
+                parts[name] = new Part(name, [.. vertices], [.. indices], new float3(world.M41, world.M42, world.M43));
+            }
+
+            foreach (var child in node.Children ?? [])
+                AddNode(child, world);
+        }
+
+        if ((gltf.Scene ?? (gltf.Scenes?.Length > 0 ? 0 : null)) is { } scene)
+            foreach (var root in gltf.Scenes![scene].Nodes ?? [])
+                AddNode(root, float4x4.Identity);
+
+        Log.Info($"Model parts {relativePath}: {string.Join(", ", parts.Keys)}");
+        return parts;
+    }
+
     private static float[] ReadVec(GltfLoader loader, int accessorIndex, int components)
     {
         var accessor = loader.GltfJson.Accessors[accessorIndex];

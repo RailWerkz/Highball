@@ -35,7 +35,7 @@ public sealed class NewRouteScreen : MenuScreen
     private void Create()
     {
         var route = RouteInfo.Create(_name);
-        HighballApp.Instance.Replace(new RouteEditorScreen(route));
+        HighballApp.Instance.Replace(new BuilderScreen(route));
     }
 
     public override void Update(float dt)
@@ -64,21 +64,64 @@ public sealed class NewRouteScreen : MenuScreen
         : [("ENTER", "Select"), ("ESC", "Back")];
 }
 
-/// Every route on disk, to open in the editor.
+/// Every route on disk: Enter opens one in the editor, Del deletes it (once confirmed).
 public sealed class OpenRouteScreen : MenuScreen
 {
+    private readonly List<RouteInfo> _routes = RouteInfo.All();
+
     public OpenRouteScreen() : base("OPEN ROUTE")
     {
-        var routes = RouteInfo.All();
-        for (var i = 0; i < routes.Count; i++)
+        for (var i = 0; i < _routes.Count; i++)
         {
-            var route = routes[i];
-            Menu.Add(new MenuItem { Label = route.Name.ToUpperInvariant(), OnSelect = () => HighballApp.Instance.Replace(new RouteEditorScreen(route)), SeparatorAfter = i == routes.Count - 1 });
+            var route = _routes[i];
+            Menu.Add(new MenuItem { Label = route.Name.ToUpperInvariant(), OnSelect = () => HighballApp.Instance.Replace(new BuilderScreen(route)), SeparatorAfter = i == _routes.Count - 1 });
         }
 
-        if (routes.Count == 0)
+        if (_routes.Count == 0)
             Menu.Add(new MenuItem { Label = "NO ROUTES", Enabled = () => false, SeparatorAfter = true });
 
         Menu.Add(new MenuItem { Label = "BACK", OnSelect = Back });
+    }
+
+    public override void Update(float dt)
+    {
+        Menu.Update();
+        if (ImGui.IsKeyPressed(ImGuiKey.Delete) && Menu.Selected < _routes.Count && _routes.Count > 0)
+            HighballApp.Instance.Push(new DeleteRouteScreen(_routes[Menu.Selected]));
+    }
+
+    protected override (string Key, string Action)[] HintKeys() => _routes.Count > 0
+        ? [("ENTER", "Open"), ("DEL", "Delete"), ("ESC", "Back")]
+        : [("ESC", "Back")];
+}
+
+/// Deletes a route's folder (its tiles, network and everything built), once confirmed.
+public sealed class DeleteRouteScreen : MenuScreen
+{
+    public DeleteRouteScreen(RouteInfo route) : base($"DELETE {route.Name.ToUpperInvariant()}?")
+    {
+        // Cancel first, so the highlight starts on it and a stray Enter deletes nothing.
+        Menu.Add(new MenuItem { Label = "CANCEL", OnSelect = Back })
+            .Add(new MenuItem { Label = "DELETE", OnSelect = () => Delete(route) });
+    }
+
+    private static void Delete(RouteInfo route)
+    {
+        try
+        {
+            // Only ever a route's own folder, straight under the routes root.
+            if (route.Id.Length == 0 || Path.GetDirectoryName(Path.GetFullPath(route.Folder)) != Path.GetFullPath(RouteInfo.Root).TrimEnd(Path.DirectorySeparatorChar))
+                throw new InvalidOperationException($"{route.Folder} isn't a route folder");
+            Directory.Delete(route.Folder, true);
+            RailWerkz.Core.Logging.Log.Info($"Route {route.Name} deleted from {route.Folder}");
+        }
+        catch (Exception e)
+        {
+            RailWerkz.Core.Logging.Log.Error($"Route {route.Name}: couldn't delete: {e.Message}");
+        }
+
+        // Back to the list, read again.
+        HighballApp.Instance.Pop();
+        HighballApp.Instance.Replace(new OpenRouteScreen());
     }
 }

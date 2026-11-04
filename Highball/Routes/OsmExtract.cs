@@ -326,7 +326,7 @@ public static class OsmExtract
 
     /// Every way the classes take in, from a whole extract, with its points; then only those touching the box are
     /// kept. Two passes: the ways and the nodes they need, then those nodes' positions.
-    public static List<NetworkWay> Read(string path, RoadClass[] roads, RailClass[] rails,
+    public static (List<NetworkWay> Ways, List<NetworkNode> Nodes) Read(string path, RoadClass[] roads, RailClass[] rails,
         (double South, double West, double North, double East) box, Action<string> say, CancellationToken token)
     {
         var blobs = Blobs(path);
@@ -359,19 +359,22 @@ public static class OsmExtract
                 say($"Reading ways ({done * 100 / blobs.Count}%)");
         });
 
-        // The nodes those ways need, sorted for lookup.
+        // The nodes those ways need, sorted for lookup; and of those on rail lines, the ones tagged switch or crossing.
         var needed = ways.SelectMany(w => w.Refs).Distinct().ToArray();
         Array.Sort(needed);
         var lat = new double[needed.Length];
         var lon = new double[needed.Length];
         var found = new bool[needed.Length];
+        var railNodes = ways.Where(w => w.Rail).SelectMany(w => w.Refs).ToHashSet();
+        var tagged = new System.Collections.Concurrent.ConcurrentDictionary<long, Dictionary<string, string>>();
+        _switchesSeen = 0;
         done = 0;
 
         // Pass 2: node positions.
         Parallel.ForEach(blobs, new ParallelOptions { CancellationToken = token }, blob =>
         {
             var data = Inflate(path, blob.Offset, blob.Length);
-            var (_, granularity, latOffset, lonOffset, groups) = Block(data);
+            var (strings, granularity, latOffset, lonOffset, groups) = Block(data);
             foreach (var (start, length) in groups)
             {
                 var group = new Proto(data.AsSpan(start, length));
@@ -379,9 +382,9 @@ public static class OsmExtract
                 {
                     var (field, wire) = group.Tag();
                     if (field == 2)
-                        ParseDense(group.Bytes(), granularity, latOffset, lonOffset, needed, lat, lon, found);
+                        ParseDense(group.Bytes(), strings, granularity, latOffset, lonOffset, needed, lat, lon, found, railNodes, tagged);
                     else if (field == 1)
-                        ParseNode(group.Bytes(), granularity, latOffset, lonOffset, needed, lat, lon, found);
+                        ParseNode(group.Bytes(), strings, granularity, latOffset, lonOffset, needed, lat, lon, found, railNodes, tagged);
                     else
                         group.Skip(wire);
                 }
@@ -413,7 +416,30 @@ public static class OsmExtract
                 result.Add(new NetworkWay { Id = way.Id, Rail = way.Rail, Class = way.Class, Nodes = [.. nodes], Lat = [.. wayLat], Lon = [.. wayLon], Tags = way.Tags });
         }
 
-        return result;
+        Log.Info($"OSM extract: {_switchesSeen} switches and crossings tagged in the extract, {tagged.Count} on the lines read");
+        var railNodesKept = new List<NetworkNode>();
+        foreach (var (id, tags) in tagged)
+        {
+            var i = Array.BinarySearch(needed, id);
+            if (i >= 0 && found[i] && lat[i] >= box.South && lat[i] <= box.North && lon[i] >= box.West && lon[i] <= box.East)
+                railNodesKept.Add(new NetworkNode { Id = id, Lat = lat[i], Lon = lon[i], Tags = tags });
+        }
+
+        return (result, railNodesKept);
+    }
+
+    private static int _switchesSeen;
+
+    /// Keeps a rail line's node's tags if it's a switch or crossing.
+    private static void Tagged(long id, Dictionary<string, string> tags, HashSet<long> railNodes,
+        System.Collections.Concurrent.ConcurrentDictionary<long, Dictionary<string, string>> tagged)
+    {
+        if (!NetworkNode.Wanted(tags.GetValueOrDefault("railway", "")))
+            return;
+        Interlocked.Increment(ref _switchesSeen);
+        if (!railNodes.Contains(id))
+            return;
+        tagged[id] = tags.Where(t => NetworkNode.Kept(t.Key)).ToDictionary(t => t.Key, t => t.Value);
     }
 
     private static Way? ParseWay(ReadOnlySpan<byte> bytes, string[] strings, RoadClass[] roads, RailClass[] rails)
@@ -478,9 +504,10 @@ public static class OsmExtract
         found[i] = true;
     }
 
-    private static void ParseDense(ReadOnlySpan<byte> bytes, long granularity, long latOffset, long lonOffset, long[] needed, double[] lat, double[] lon, bool[] found)
+    private static void ParseDense(ReadOnlySpan<byte> bytes, string[] strings, long granularity, long latOffset, long lonOffset, long[] needed, double[] lat,
+        double[] lon, bool[] found, HashSet<long> railNodes, System.Collections.Concurrent.ConcurrentDictionary<long, Dictionary<string, string>> tagged)
     {
-        ReadOnlySpan<byte> ids = default, lats = default, lons = default;
+        ReadOnlySpan<byte> ids = default, lats = default, lons = default, keysVals = default;
         var p = new Proto(bytes);
         while (p.More)
         {
@@ -490,6 +517,7 @@ public static class OsmExtract
                 case 1: ids = p.Bytes(); break;
                 case 8: lats = p.Bytes(); break;
                 case 9: lons = p.Bytes(); break;
+                case 10: keysVals = p.Bytes(); break;
                 default: p.Skip(wire); break;
             }
         }
@@ -497,6 +525,7 @@ public static class OsmExtract
         var a = new Proto(ids);
         var b = new Proto(lats);
         var c = new Proto(lons);
+        var kv = new Proto(keysVals);
         long id = 0, la = 0, lo = 0;
         while (a.More)
         {
@@ -504,12 +533,28 @@ public static class OsmExtract
             la += b.Signed();
             lo += c.Signed();
             Store(id, la, lo, granularity, latOffset, lonOffset, needed, lat, lon, found);
+
+            // Each node's tags as key, value string indices, ended by a 0.
+            Dictionary<string, string>? tags = null;
+            while (kv.More)
+            {
+                var key = (int)kv.Varint();
+                if (key == 0)
+                    break;
+                var value = (int)kv.Varint();
+                (tags ??= [])[strings[key]] = strings[value];
+            }
+
+            if (tags is not null)
+                Tagged(id, tags, railNodes, tagged);
         }
     }
 
-    private static void ParseNode(ReadOnlySpan<byte> bytes, long granularity, long latOffset, long lonOffset, long[] needed, double[] lat, double[] lon, bool[] found)
+    private static void ParseNode(ReadOnlySpan<byte> bytes, string[] strings, long granularity, long latOffset, long lonOffset, long[] needed, double[] lat,
+        double[] lon, bool[] found, HashSet<long> railNodes, System.Collections.Concurrent.ConcurrentDictionary<long, Dictionary<string, string>> tagged)
     {
         long id = 0, la = 0, lo = 0;
+        ReadOnlySpan<byte> keys = default, values = default;
         var p = new Proto(bytes);
         while (p.More)
         {
@@ -517,6 +562,8 @@ public static class OsmExtract
             switch (field)
             {
                 case 1: id = p.Signed(); break;
+                case 2: keys = p.Bytes(); break;
+                case 3: values = p.Bytes(); break;
                 case 8: la = p.Signed(); break;
                 case 9: lo = p.Signed(); break;
                 default: p.Skip(wire); break;
@@ -524,5 +571,12 @@ public static class OsmExtract
         }
 
         Store(id, la, lo, granularity, latOffset, lonOffset, needed, lat, lon, found);
+        var tags = new Dictionary<string, string>();
+        var k = new Proto(keys);
+        var v = new Proto(values);
+        while (k.More && v.More)
+            tags[strings[(int)k.Varint()]] = strings[(int)v.Varint()];
+        if (tags.Count > 0)
+            Tagged(id, tags, railNodes, tagged);
     }
 }

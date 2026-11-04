@@ -4,7 +4,7 @@ layout(location = 0) in vec3 inPosition; // the model: x across the track, y up,
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inUv;
 layout(location = 3) in vec4 inPlace;    // where this one stands relative to the chunk, and a random tint
-layout(location = 4) in vec4 inForward;  // the way its z faces
+layout(location = 4) in vec4 inForward;  // the way its z faces, and how much longer across it is (0: as made)
 
 layout(location = 0) out vec3 vRelative;
 layout(location = 1) out vec3 vNormal;
@@ -26,7 +26,8 @@ void main()
     vec3 up = cross(right, forward);
     mat3 basis = mat3(right, up, forward);
 
-    vec3 relative = inPlace.xyz + basis * inPosition + pc.offset.xyz;
+    vec3 model = vec3(inPosition.x * (inForward.w > 0.0 ? inForward.w : 1.0), inPosition.yz);
+    vec3 relative = inPlace.xyz + basis * model + pc.offset.xyz;
     vRelative = relative;
     vNormal = basis * inNormal;
     vUv = inUv;

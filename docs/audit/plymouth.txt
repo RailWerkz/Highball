@@ -1,0 +1,21 @@
+# PLYMOUTH YARD: 4 to fix, 4 to know about
+    2  FIX   Tracks cross with no junction
+    1  FIX   Tracks too close together
+    1  FIX   Switches on top of one another
+    4  note  Road crosses track with no grade crossing
+
+## Tracks cross with no junction
+42.382638,-83.467589  Two tracks pass through each other at 0.3 degrees
+42.383738,-83.467885  Two tracks pass through each other at 0.8 degrees
+
+## Tracks too close together
+42.383157,-83.467812  Under 3.2 m apart for 32 m; 3.6 m apart on the map
+
+## Switches on top of one another
+42.382825,-83.467692  Their rails overlap for 6 m
+
+## Road crosses track with no grade crossing
+42.377544,-83.465139  No crossing placed
+42.380772,-83.459598  No crossing placed
+42.380750,-83.460809  No crossing placed
+42.380742,-83.462009  No crossing placed

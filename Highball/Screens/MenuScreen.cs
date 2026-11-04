@@ -7,7 +7,7 @@ using static RailWerkz.UI.Style;
 
 namespace Highball.Screens;
 
-/// The frame every menu shares: the wordmark, the menu, panels on the right, key hints along the bottom, and a
+/// The frame every menu shares: the menu, panels on the right, key hints along the bottom, and a
 /// toast for short notices.
 public abstract class MenuScreen : Screen
 {
@@ -47,7 +47,6 @@ public abstract class MenuScreen : Screen
 
     public override void Draw(ImDrawListPtr draw, float2 size)
     {
-        DrawFrame(draw, size);
         Menu.Draw(draw, MenuX(size), MenuTop(size));
         DrawRight(draw, size);
         Canvas.Hints(draw, new float2(S(110f), size.Y - S(40f)), HintKeys());
@@ -58,16 +57,6 @@ public abstract class MenuScreen : Screen
 
     /// Panels to the right of the menu.
     protected virtual void DrawRight(ImDrawListPtr draw, float2 size) { }
-
-    /// The wordmark: an accent block, HIGHBALL, and RAILWERKZ under it.
-    public static void DrawFrame(ImDrawListPtr draw, float2 size)
-    {
-        var top = S(44f);
-        var left = S(110f);
-        draw.AddRectFilled(new float2(left, top + S(4f)), new float2(left + S(6f), top + S(40f)), Accent);
-        Canvas.Spaced(draw, Heavy, S(26f), new float2(left + S(20f), top), Style.Text, "HIGHBALL", 0.16f);
-        Canvas.Spaced(draw, Medium, S(11f), new float2(left + S(21f), top + S(31f)), TextDim, "RAILWERKZ", 0.42f);
-    }
 
     protected void DrawToast(ImDrawListPtr draw, float2 size)
     {

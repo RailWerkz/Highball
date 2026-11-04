@@ -55,6 +55,9 @@ public sealed partial class TerrainSource
     public int MinGz { get; }
     public int MaxGz { get; }
 
+    /// The lines shaped by hand.
+    public required TrackEdits TrackEdits { get; init; }
+
     private TerrainSource(RouteInfo route, List<Tile> tiles)
     {
         _route = route;
@@ -84,7 +87,10 @@ public sealed partial class TerrainSource
         var ids = built.ToArray();
         var tiles = new Tile?[ids.Length];
         var network = RouteNetwork.Load(route);
-        var lines = NetworkLines.Build(network.Ways.Values, route, built);
+        if (App.DevTools.Refit)
+            NetworkLines.ForgetSolved(route);
+        var edits = TrackEdits.Load(route);
+        var lines = NetworkLines.Build(network.Ways.Values, route, built, edits.Snapshot());
 
         Parallel.For(0, ids.Length, i =>
         {
@@ -103,6 +109,8 @@ public sealed partial class TerrainSource
         });
 
         lines.FinishProfiles();
+        lines.FindLayouts(network.Nodes);
+        TrackLayouts.SaveMarkers(route, lines.Layouts);
 
         Parallel.For(0, ids.Length, i =>
         {
@@ -121,7 +129,7 @@ public sealed partial class TerrainSource
             }
         });
 
-        var source = new TerrainSource(route, [.. tiles.OfType<Tile>()]) { Lines = lines, Network = network };
+        var source = new TerrainSource(route, [.. tiles.OfType<Tile>()]) { Lines = lines, Network = network, TrackEdits = edits };
         Log.Info($"Terrain: {source._tiles.Count} tiles and {lines.Lines.Count} lines opened in {watch.ElapsedMilliseconds} ms");
         return source;
     });
@@ -150,14 +158,18 @@ public sealed partial class TerrainSource
     /// The route's roads and rails, which the heights have been reshaped to carry.
     public NetworkLines? Lines { get; private set; }
 
+    /// The signals, hand throws and grade crossings placed on the route.
+    public List<PlacedObject> Objects { get; } = [];
+
     /// The ways they were made from, as edited.
     public RouteNetwork Network { get; private init; } = new();
 
     // --- Full heights near the camera. ---
 
-    /// Asks for the full heights of every built tile within radius metres of (x, z), and lets the others go once more
-    /// than MaxFull are held. Main thread, once a frame.
-    public void Want(double x, double z, double radius)
+    /// Asks for the full heights of every built tile within radius metres of (x, z), or of (aheadX, aheadZ) where the
+    /// camera's heading, nearest the camera first, and lets the others go once more than MaxFull are held. Main
+    /// thread, once a frame.
+    public void Want(double x, double z, double aheadX, double aheadZ, double radius)
     {
         _clock++;
         while (_loaded.TryDequeue(out var done))
@@ -167,14 +179,17 @@ public sealed partial class TerrainSource
         }
 
         var size = Quads * Spacing;
-        foreach (var tile in _tiles.Values)
+        double DistanceTo(Tile tile, double px, double pz)
         {
             var x0 = tile.Id.I * size;
             var z0 = -(tile.Id.J + 1) * size;
-            var dx = Math.Max(0.0, Math.Max(x0 - x, x - (x0 + size)));
-            var dz = Math.Max(0.0, Math.Max(z0 - z, z - (z0 + size)));
-            if (dx * dx + dz * dz > radius * radius)
-                continue;
+            var dx = Math.Max(0.0, Math.Max(x0 - px, px - (x0 + size)));
+            var dz = Math.Max(0.0, Math.Max(z0 - pz, pz - (z0 + size)));
+            return Math.Sqrt(dx * dx + dz * dz);
+        }
+
+        foreach (var tile in _tiles.Values.Where(t => DistanceTo(t, x, z) <= radius || DistanceTo(t, aheadX, aheadZ) <= radius).OrderBy(t => DistanceTo(t, x, z)))
+        {
 
             tile.Used = _clock;
             if (tile.Full is null && tile.Loading is null)
@@ -333,12 +348,22 @@ public sealed partial class TerrainSource
         return top + (bottom - top) * tz;
     }
 
-    /// The WorldCover classes around a sample, averaged into a colour over a square radius metres across, and how
-    /// much of it is forest.
-    public float4 Cover(int gx, int gz, float radius) => SampleCover(gx, gz, radius, Palette);
+    /// The WorldCover classes around a sample, averaged over a square radius metres across: the ground colour (and
+    /// how much of it is forest), and how much of each ground texture it calls for (grass, bare earth, water).
+    public (float4 Cover, float4 Materials) Ground(int gx, int gz, float radius)
+    {
+        if (!Canonical(gx, gz, out _, out _, out _))
+            return default;
 
-    /// How much of each ground texture the cover around a sample calls for: grass, bare earth, water (none).
-    public float4 Materials(int gx, int gz, float radius) => SampleCover(gx, gz, radius, MaterialsOf);
+        var x = gx * Spacing;
+        var z = gz * Spacing;
+        x += WarpLarge * (ValueNoise(x / 140f, z / 140f) * 2f - 1f) + WarpSmall * (ValueNoise(x / 35f + 17.3f, z / 35f) * 2f - 1f);
+        z += WarpLarge * (ValueNoise(x / 140f + 41.7f, z / 140f + 9.1f) * 2f - 1f) + WarpSmall * (ValueNoise(x / 35f, z / 35f + 63.2f) * 2f - 1f);
+
+        var (localCover, localMaterials) = Blend(x, z, MathF.Max(radius, LocalRadius), 3);
+        var (regionalCover, regionalMaterials) = Blend(x, z, MathF.Max(radius, RegionalRadius), 2);
+        return (localCover + (regionalCover - localCover) * RegionalShare, localMaterials + (regionalMaterials - localMaterials) * RegionalShare);
+    }
 
     // How the land cover is blended into the ground: biomes rather than the 10 m cells it comes in. Each class's
     // patch is softened over LocalRadius, its edges pushed about by noise so they wander instead of stepping, and the
@@ -349,27 +374,14 @@ public sealed partial class TerrainSource
     private const float WarpLarge = 22f;
     private const float WarpSmall = 7f;
 
-    private float4 SampleCover(int gx, int gz, float radius, Func<byte, float4> map)
+    /// Tent-weighted averages of the cover's colour and textures around (x, z) world metres, over (2n + 1)^2 points
+    /// out to radius, read across tile edges; points off the built tiles don't count.
+    private (float4 Cover, float4 Materials) Blend(float x, float z, float radius, int n)
     {
-        if (!Canonical(gx, gz, out _, out _, out _))
-            return default;
-
-        var x = gx * Spacing;
-        var z = gz * Spacing;
-        x += WarpLarge * (ValueNoise(x / 140f, z / 140f) * 2f - 1f) + WarpSmall * (ValueNoise(x / 35f + 17.3f, z / 35f) * 2f - 1f);
-        z += WarpLarge * (ValueNoise(x / 140f + 41.7f, z / 140f + 9.1f) * 2f - 1f) + WarpSmall * (ValueNoise(x / 35f, z / 35f + 63.2f) * 2f - 1f);
-
-        var local = Blend(x, z, MathF.Max(radius, LocalRadius), 3, map);
-        var regional = Blend(x, z, MathF.Max(radius, RegionalRadius), 2, map);
-        return local + (regional - local) * RegionalShare;
-    }
-
-    /// A tent-weighted average of the cover around (x, z) world metres, over (2n + 1)^2 points out to radius, read
-    /// across tile edges; points off the built tiles don't count.
-    private float4 Blend(float x, float z, float radius, int n, Func<byte, float4> map)
-    {
-        var sum = default(float4);
+        var cover = default(float4);
+        var materials = default(float4);
         var weights = 0f;
+        Tile? last = null;
         for (var j = -n; j <= n; j++)
         {
             for (var i = -n; i <= n; i++)
@@ -377,26 +389,34 @@ public sealed partial class TerrainSource
                 var u = (float)i / n;
                 var v = (float)j / n;
                 var w = MathF.Max(0f, 1f - MathF.Sqrt(u * u + v * v) * 0.8f);
-                if (w <= 0f || CoverAt(x + u * radius, z + v * radius) is not { } cover)
+                if (w <= 0f || CoverAt(x + u * radius, z + v * radius, ref last) is not { } c)
                     continue;
-                sum += map(cover) * w;
+                cover += Palette(c) * w;
+                materials += MaterialsOf(c) * w;
                 weights += w;
             }
         }
 
-        return weights > 0f ? sum / weights : default;
+        return weights > 0f ? (cover / weights, materials / weights) : default;
     }
 
-    /// The cover class of the 10 m cell under a point, from whichever tile it's in.
-    private byte? CoverAt(float x, float z)
+    /// The cover class of the 10 m cell under a point, from whichever tile it's in; last is the tile the previous
+    /// point fell in, tried first.
+    private byte? CoverAt(float x, float z, ref Tile? last)
     {
         var cellSize = Quads * Spacing / CoverCells;
         var cx = (int)MathF.Floor(x / cellSize);
         var cz = (int)MathF.Floor(z / cellSize);
         var i = FloorDiv(cx, CoverCells);
         var k = FloorDiv(cz, CoverCells);
-        if (!_tiles.TryGetValue(new TileId(i, -k - 1), out var tile))
-            return null;
+        var tile = last;
+        if (tile is null || tile.Id.I != i || tile.Id.J != -k - 1)
+        {
+            if (!_tiles.TryGetValue(new TileId(i, -k - 1), out tile))
+                return null;
+            last = tile;
+        }
+
         return tile.Cover[(cz - k * CoverCells) * CoverCells + (cx - i * CoverCells)];
     }
 

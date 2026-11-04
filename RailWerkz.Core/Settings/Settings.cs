@@ -16,6 +16,12 @@ public sealed class Settings
     // Display
     public string Accent { get; set; } = "SIGNAL";
     public bool Fullscreen { get; set; }
+    /// The window as it was last left, when not fullscreen or maximized; no width until there's been one.
+    public int WindowWidth { get; set; }
+    public int WindowHeight { get; set; }
+    public int WindowX { get; set; }
+    public int WindowY { get; set; }
+    public bool WindowMaximized { get; set; }
     public bool VSync { get; set; } = true;
     public float UiScale { get; set; } = 1f;
     public bool ReduceMotion { get; set; }
@@ -25,6 +31,8 @@ public sealed class Settings
     public float ViewDistance { get; set; } = 8000f;
     public float FieldOfView { get; set; } = 60f;
     public string Skybox { get; set; } = "Procedural";
+    /// Samples per pixel in the 3D view: 1 (off), 2, 4 or 8.
+    public int Msaa { get; set; } = 4;
 
     // Audio
     public float MasterVolume { get; set; } = 0.8f;
@@ -55,7 +63,10 @@ public sealed class Settings
 
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true, Converters = { new JsonStringEnumConverter() } };
 
-    private static string FilePath => Path.Combine(ContentPath.UserData, "Settings.json");
+    /// Another settings file instead of the player's (--settingsfile, for testing).
+    public static string? FileOverride { get; set; }
+
+    private static string FilePath => FileOverride ?? Path.Combine(ContentPath.UserData, "Settings.json");
 
     public static Settings Current { get; private set; } = new();
 

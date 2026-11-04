@@ -25,6 +25,10 @@ public sealed class RouteGenerator
         public required List<TileId> Tiles { get; init; }
         public int RoadLevel { get; init; }
         public int RailLevel { get; init; }
+
+        /// Drop every way fetched from OpenStreetMap before merging what this build fetches (ways edited by hand
+        /// stay), so a route regenerated at less detail loses what it no longer asks for.
+        public bool ReplaceNetwork { get; init; }
     }
 
     public const string Attribution = "Elevation: AWS Terrain Tiles (SRTM, NED, GMTED and others). Land cover: ESA WorldCover 2021, CC BY 4.0. Roads and rail: (c) OpenStreetMap contributors, ODbL.";
@@ -164,15 +168,18 @@ public sealed class RouteGenerator
             elevation.Trim();
         }
 
-        if (roads.Classes.Length + rails.Classes.Length > 0)
+        if (roads.Classes.Length + rails.Classes.Length > 0 || r.ReplaceNetwork)
         {
             token.ThrowIfCancellationRequested();
             Say("Asking OpenStreetMap for roads and rail", 0.82f);
-            var ways = await OpenStreetMap(route, tiles, roads.Classes, rails.Classes, token);
-            r.Network.Merge(ways);
+            var (ways, nodes) = roads.Classes.Length + rails.Classes.Length > 0 ? await OpenStreetMap(route, tiles, roads.Classes, rails.Classes, token) : ([], []);
+            token.ThrowIfCancellationRequested();
+            if (r.ReplaceNetwork)
+                r.Network.DropFetched();
+            r.Network.Merge(ways, nodes);
             r.Network.Save(route);
             Version++;
-            Say($"{ways.Count(w => w.Rail)} rail lines, {ways.Count(w => !w.Rail)} roads", 0.98f);
+            Say($"{ways.Count(w => w.Rail)} rail lines, {ways.Count(w => !w.Rail)} roads, {nodes.Count} switches and crossings tagged", 0.98f);
         }
 
         Progress = 1f;
@@ -486,7 +493,7 @@ public sealed class RouteGenerator
 
     /// Every wanted way touching the tiles, whole: from Geofabrik's regional extracts, or from Overpass if those
     /// can't be had.
-    private async Task<List<NetworkWay>> OpenStreetMap(RouteInfo route, List<TileId> tiles, RoadClass[] roads, RailClass[] rails, CancellationToken token)
+    private async Task<(List<NetworkWay> Ways, List<NetworkNode> Nodes)> OpenStreetMap(RouteInfo route, List<TileId> tiles, RoadClass[] roads, RailClass[] rails, CancellationToken token)
     {
         try
         {
@@ -501,7 +508,7 @@ public sealed class RouteGenerator
 
     /// The smallest Geofabrik region under each corner of the selection (more than one where it crosses a border),
     /// each downloaded once and read for the part of the selection it holds.
-    private async Task<List<NetworkWay>> FromExtracts(RouteInfo route, List<TileId> tiles, RoadClass[] roads, RailClass[] rails, CancellationToken token)
+    private async Task<(List<NetworkWay> Ways, List<NetworkNode> Nodes)> FromExtracts(RouteInfo route, List<TileId> tiles, RoadClass[] roads, RailClass[] rails, CancellationToken token)
     {
         var grid = route.Grid!;
         var projection = route.Projection!;
@@ -516,6 +523,7 @@ public sealed class RouteGenerator
 
         var box = Bounds(corners);
         var found = new Dictionary<long, NetworkWay>();
+        var foundNodes = new Dictionary<long, NetworkNode>();
         var r = 0;
         foreach (var group in byRegion)
         {
@@ -526,17 +534,19 @@ public sealed class RouteGenerator
                     0.82f + 0.08f * (total > 0 ? done / (float)total : 0f)), token);
 
             var label = $"{region.Name} ({++r} of {byRegion.Count})";
-            var ways = await Task.Run(() => OsmExtract.Read(path, roads, rails, box, s => Say($"{label}: {s}", 0.9f), token), token);
+            var (ways, nodes) = await Task.Run(() => OsmExtract.Read(path, roads, rails, box, s => Say($"{label}: {s}", 0.9f), token), token);
             foreach (var way in ways)
                 found[way.Id] = way;
+            foreach (var node in nodes)
+                foundNodes[node.Id] = node;
         }
 
-        return [.. found.Values];
+        return ([.. found.Values], [.. foundNodes.Values]);
     }
 
     /// Every wanted way touching the tiles, whole, from the public Overpass servers. Big selections are asked for in
     /// pieces of about 20 km.
-    private async Task<List<NetworkWay>> FromOverpass(RouteInfo route, List<TileId> tiles, RoadClass[] roads, RailClass[] rails, CancellationToken token)
+    private async Task<(List<NetworkWay> Ways, List<NetworkNode> Nodes)> FromOverpass(RouteInfo route, List<TileId> tiles, RoadClass[] roads, RailClass[] rails, CancellationToken token)
     {
         var grid = route.Grid!;
         var projection = route.Projection!;
@@ -545,6 +555,7 @@ public sealed class RouteGenerator
         var highways = roads.SelectMany(Detail.HighwayValues).ToList();
         var railways = RailwayValues(rails).ToList();
         var found = new Dictionary<long, NetworkWay>();
+        var foundNodes = new Dictionary<long, NetworkNode>();
 
         for (var c = 0; c < chunks.Count; c++)
         {
@@ -556,7 +567,8 @@ public sealed class RouteGenerator
 
             // Exact matches rather than one regular expression (Overpass answers those from its index), and a short
             // server timeout: busy servers turn away queries that ask for a long slot.
-            var parts = string.Concat(highways.Select(v => $"way[highway={v}]({box});")) + string.Concat(railways.Select(v => $"way[railway={v}]({box});"));
+            var parts = string.Concat(highways.Select(v => $"way[highway={v}]({box});")) + string.Concat(railways.Select(v => $"way[railway={v}]({box});")) +
+                        (railways.Count > 0 ? $"node[railway=switch]({box});node[railway=railway_crossing]({box});" : "");
             var query = $"[out:json][timeout:90];({parts});out body geom;";
 
             Say($"OpenStreetMap: area {c + 1} of {chunks.Count}", 0.82f + 0.15f * c / chunks.Count);
@@ -572,17 +584,37 @@ public sealed class RouteGenerator
                 await File.WriteAllTextAsync(cache, json, token);
             }
 
-            Parse(json, roads, rails, found);
+            Parse(json, roads, rails, found, foundNodes);
         }
 
-        return [.. found.Values];
+        // Only the switches and crossings on the lines fetched.
+        var railNodes = found.Values.Where(w => w.Rail).SelectMany(w => w.Nodes).ToHashSet();
+        return ([.. found.Values], [.. foundNodes.Values.Where(n => railNodes.Contains(n.Id))]);
     }
 
-    private static void Parse(string json, RoadClass[] roads, RailClass[] rails, Dictionary<long, NetworkWay> found)
+    private static void Parse(string json, RoadClass[] roads, RailClass[] rails, Dictionary<long, NetworkWay> found, Dictionary<long, NetworkNode> foundNodes)
     {
         using var document = JsonDocument.Parse(json);
         foreach (var element in document.RootElement.GetProperty("elements"u8).EnumerateArray())
         {
+            if (element.GetProperty("type"u8).GetString() == "node" && element.TryGetProperty("tags"u8, out var nodeTags))
+            {
+                var nodeKept = new Dictionary<string, string>();
+                foreach (var tag in nodeTags.EnumerateObject())
+                    if (NetworkNode.Kept(tag.Name) && tag.Value.GetString() is { } value)
+                        nodeKept[tag.Name] = value;
+                if (NetworkNode.Wanted(nodeKept.GetValueOrDefault("railway", "")))
+                {
+                    var nodeId = element.GetProperty("id"u8).GetInt64();
+                    foundNodes[nodeId] = new NetworkNode
+                    {
+                        Id = nodeId, Lat = element.GetProperty("lat"u8).GetDouble(), Lon = element.GetProperty("lon"u8).GetDouble(), Tags = nodeKept,
+                    };
+                }
+
+                continue;
+            }
+
             if (element.GetProperty("type"u8).GetString() != "way" || !element.TryGetProperty("geometry"u8, out var geometry))
                 continue;
 

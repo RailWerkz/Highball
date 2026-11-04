@@ -1,0 +1,165 @@
+# BARSTOW: 23 to fix, 108 to know about
+    6  FIX   Kink
+    3  FIX   No room for a switch
+    3  FIX   Wiggle
+    3  FIX   Tracks cross with no junction
+    3  FIX   Tracks mapped too close together
+    3  FIX   Tracks too close together
+    1  FIX   Switches on top of one another
+   89  note  Off the mapped line
+   17  note  Far above or below the ground
+    2  note  Not shaped like a switch
+    1  note  Road crosses track with no grade crossing
+
+## Kink
+34.890195,-117.085930  2.9 degrees over 3 m
+34.893779,-117.000100  1.6 degrees over 3 m
+34.878997,-117.107970  1.7 degrees over 3 m
+34.895909,-117.067392  2.7 degrees over 3 m
+34.885458,-117.093048  2.9 degrees over 3 m
+34.889534,-117.086351  3.3 degrees over 3 m
+
+## No room for a switch
+34.893678,-117.068469  No room for a standard switch [node 54629881 (would make one; fit: ok, not fitted): line 770 heading 77 length 25; line 772 heading -112 length 243; line 772 heading 64 length 402]
+34.897597,-117.050385  No room for a standard switch: the diverging track ends 25 m past the points, and no curve onto the mapped track is gentle enough [node 54632891 (would make one; fit: the diverging track ends 25 m past the points, and no curve onto the mapped track is gentle enough, not fitted): line 1076 heading 65 length 25; line 1080 heading 55 length 27; line 1081 heading -115 length 39]
+34.896921,-117.050935  No room for a standard switch: the diverging track ends 21 m past the points, and no curve onto the mapped track is gentle enough [node 1575019106 (would make one; fit: the diverging track ends 21 m past the points, and no curve onto the mapped track is gentle enough, not fitted): line 1090 heading -93 length 43; line 1091 heading 95 length 19; line 1092 heading 86 length 21]
+
+## Wiggle
+34.885537,-117.092944  Curves one way then the other, 147 m radius
+34.885783,-117.092710  Curves one way then the other, 78 m radius
+34.886040,-117.092415  Curves one way then the other, 72 m radius
+
+## Tracks cross with no junction
+34.897182,-117.047158  Two tracks pass through each other at 0.1 degrees
+34.891703,-117.080022  Two tracks pass through each other at 0.5 degrees
+34.892393,-117.075578  Two tracks pass through each other at 0.9 degrees
+
+## Tracks mapped too close together
+34.885930,-117.092601  Under 3.2 m apart for 17 m; 2.6 m apart on the map
+34.899751,-117.045453  Under 3.2 m apart for 325 m; 2.9 m apart on the map
+34.900326,-117.047518  Under 3.2 m apart for 907 m; 2.0 m apart on the map
+
+## Tracks too close together
+34.900566,-117.043272  Under 3.2 m apart for 26 m; 4.3 m apart on the map
+34.899492,-117.042876  Under 3.2 m apart for 20 m; 4.1 m apart on the map
+34.898714,-117.044436  Under 3.2 m apart for 24 m; 4.6 m apart on the map
+
+## Switches on top of one another
+34.892250,-117.078925  Their rails overlap for 2 m
+
+## Off the mapped line
+34.890110,-117.081298  2.4 m from the map
+34.898681,-117.049484  2.0 m from the map
+34.900110,-117.045344  2.1 m from the map
+34.900225,-117.044888  2.2 m from the map
+34.900306,-117.044524  1.8 m from the map
+34.900620,-117.043120  2.4 m from the map
+34.898156,-117.050221  1.9 m from the map
+34.900704,-117.042725  2.6 m from the map
+34.898606,-117.044251  2.4 m from the map
+34.901178,-117.040362  2.2 m from the map
+34.901075,-117.040780  1.8 m from the map
+34.900784,-117.042386  2.0 m from the map
+34.900882,-117.041968  2.2 m from the map
+34.900638,-117.040746  2.0 m from the map
+34.900559,-117.040872  1.8 m from the map
+34.900159,-117.041665  2.2 m from the map
+34.900390,-117.041213  2.8 m from the map
+34.899904,-117.042162  2.3 m from the map
+34.889837,-117.083562  2.6 m from the map
+34.899525,-117.042773  2.3 m from the map
+34.897175,-117.049999  1.9 m from the map
+34.898745,-117.044335  2.7 m from the map
+34.897098,-117.049989  1.9 m from the map
+34.896950,-117.047827  1.8 m from the map
+34.898882,-117.044059  2.6 m from the map
+34.894117,-117.072950  2.3 m from the map
+34.890245,-117.082919  2.2 m from the map
+34.894332,-117.072380  1.9 m from the map
+34.891867,-117.079638  2.0 m from the map
+34.892601,-117.076896  2.7 m from the map
+34.890718,-117.081368  2.0 m from the map
+34.891983,-117.079556  2.0 m from the map
+34.892325,-117.075848  2.4 m from the map
+34.892596,-117.076322  2.3 m from the map
+34.891864,-117.078851  1.9 m from the map
+34.892913,-117.075077  1.9 m from the map
+34.891777,-117.078525  2.5 m from the map
+34.890457,-117.082239  2.0 m from the map
+34.893116,-117.074993  1.8 m from the map
+34.892550,-117.078083  2.8 m from the map
+34.892980,-117.077100  2.0 m from the map
+34.892706,-117.076887  2.2 m from the map
+34.897138,-117.054772  2.0 m from the map
+34.897443,-117.053863  2.5 m from the map
+34.899063,-117.049111  2.6 m from the map
+34.898578,-117.050545  2.4 m from the map
+34.898832,-117.049809  1.9 m from the map
+34.896607,-117.061288  1.9 m from the map
+34.899480,-117.048234  2.5 m from the map
+34.896850,-117.061360  2.6 m from the map
+34.902480,-117.037671  2.9 m from the map
+34.896656,-117.062785  1.9 m from the map
+34.901646,-117.040547  2.6 m from the map
+34.896572,-117.064842  2.5 m from the map
+34.903802,-117.028073  2.0 m from the map
+34.903099,-117.017460  2.7 m from the map
+34.902369,-117.014966  2.3 m from the map
+34.903615,-117.034078  1.8 m from the map
+34.902349,-117.016122  2.4 m from the map
+34.902358,-117.015482  2.4 m from the map
+34.903549,-117.028814  2.1 m from the map
+34.901704,-117.021479  1.8 m from the map
+34.903798,-117.028846  2.0 m from the map
+34.902127,-117.009342  2.9 m from the map
+34.902319,-117.018024  2.2 m from the map
+34.903760,-117.029793  2.2 m from the map
+34.902974,-117.025043  2.1 m from the map
+34.902328,-117.017466  2.2 m from the map
+34.903362,-117.020410  2.8 m from the map
+34.902028,-117.008954  2.6 m from the map
+34.903531,-117.026966  1.8 m from the map
+34.902336,-117.016783  2.3 m from the map
+34.903408,-117.029196  2.3 m from the map
+34.903092,-117.018095  2.9 m from the map
+34.899911,-117.041110  2.4 m from the map
+34.896434,-117.053292  2.0 m from the map
+34.896541,-117.049586  2.7 m from the map
+34.896476,-117.049905  2.0 m from the map
+34.900221,-117.040689  2.4 m from the map
+34.903978,-117.016030  1.9 m from the map
+34.893779,-117.074032  2.6 m from the map
+34.892297,-117.078541  1.9 m from the map
+34.890778,-117.082452  2.0 m from the map
+34.901412,-117.038954  2.0 m from the map
+34.896902,-117.052531  2.6 m from the map
+34.902042,-117.023010  2.0 m from the map
+34.901979,-117.039770  1.9 m from the map
+34.896418,-117.061768  1.8 m from the map
+34.895646,-117.069605  1.8 m from the map
+
+## Far above or below the ground
+34.903680,-117.032559  13 m
+34.903233,-117.034815  27 m
+34.902605,-117.010556  8 m
+34.900684,-117.005274  9 m
+34.900728,-117.005265  7 m
+34.902640,-117.010539  6 m
+34.903529,-117.034509  6 m
+34.903495,-117.034332  10 m
+34.902570,-117.010566  7 m
+34.900541,-117.005137  8 m
+34.900497,-117.005162  9 m
+34.903346,-117.034634  22 m
+34.903680,-117.032559  13 m
+34.903729,-117.032630  9 m
+34.903495,-117.034332  10 m
+34.903449,-117.034572  12 m
+34.903531,-117.034515  6 m
+
+## Not shaped like a switch
+34.885176,-116.985694  Not shaped like a switch [node 3435753297 (no frog within 250 m, or too close; fit: the straight route ends 34 m past the points, before the two routes part, not fitted): line 765 heading 106 length 34; line 928 heading -73 length 37; line 929 heading 107 length 36]
+34.897586,-117.050252  Not shaped like a switch [node 1575005127 (no frog within 250 m, or too close; fit: the diverging track ends 19 m past the points, and no curve onto the mapped track is gentle enough, not fitted): line 1077 heading -108 length 50; line 1078 heading 84 length 19; line 1079 heading 69 length 22]
+
+## Road crosses track with no grade crossing
+34.904193,-117.014992  No crossing placed

@@ -12,23 +12,29 @@ public sealed partial class TerrainSource
 {
     /// Rebuilds the lines from the network as it is now. Only lines that came out different (or that the junctions
     /// they meet pulled to a new height) cost anything: their ground is sampled again and the tiles they reach are
-    /// reshaped again.
-    public Task<NetworkChange> RebuildNetwork()
+    /// reshaped again. solveAgain: the saved track's thrown away and it's worked out afresh and saved.
+    public Task<NetworkChange> RebuildNetwork(bool solveAgain = false)
     {
         var ways = Network.Ways.Values.ToList(); // edits replace ways rather than change them, so this is a snapshot
+        var tagged = new Dictionary<long, NetworkNode>(Network.Nodes);
         var previous = Lines!;
+        var shapes = TrackEdits.Snapshot();
         var built = _tiles.Keys.ToHashSet();
         var samples = Samples;
 
         return Task.Run(() =>
         {
-            var lines = NetworkLines.Build(ways, _route, built);
+            if (solveAgain)
+                NetworkLines.ForgetSolved(_route);
+            var lines = NetworkLines.Build(ways, _route, built, shapes);
             Parallel.ForEach(lines.AdoptGround(previous), id =>
             {
                 var data = RouteTile.Load(_route.TileFolder(id));
                 lines.SampleGround(id, data.Heights, samples);
             });
             lines.FinishProfiles();
+            lines.FindLayouts(tagged);
+            TrackLayouts.SaveMarkers(_route, lines.Layouts);
 
             var old = new Dictionary<long, NetworkLine>();
             foreach (var line in previous.Lines)
@@ -72,11 +78,20 @@ public sealed partial class TerrainSource
 
     private static bool SameProfile(NetworkLine a, NetworkLine b)
     {
-        if (a.Count != b.Count)
+        if (a.Count != b.Count || a.TurnoutZones.Count != b.TurnoutZones.Count || !a.RailCuts.SequenceEqual(b.RailCuts) || !a.TieCuts.SequenceEqual(b.TieCuts))
             return false;
         for (var i = 0; i < a.Count; i++)
-            if (MathF.Abs(a.Y[i] - b.Y[i]) > 0.01f)
+            if (MathF.Abs(a.Y[i] - b.Y[i]) > 0.01f || Math.Abs(a.X[i] - b.X[i]) > 0.01 || Math.Abs(a.Z[i] - b.Z[i]) > 0.01)
                 return false;
+
+        // A switch resized or no longer a switch changes what its lines build, though the track itself may not move.
+        for (var i = 0; i < a.TurnoutZones.Count; i++)
+        {
+            var (za, zb) = (a.TurnoutZones[i], b.TurnoutZones[i]);
+            if (za.Turnout.Node != zb.Turnout.Node || za.Turnout.Number != zb.Turnout.Number || za.Rails != zb.Rails || za.Timbers != zb.Timbers || za.Ballast != zb.Ballast)
+                return false;
+        }
+
         return true;
     }
 

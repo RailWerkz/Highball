@@ -52,6 +52,9 @@ public sealed class RouteTile
         File.WriteAllText(Path.Combine(folder, "Tile.json"), JsonSerializer.Serialize(Meta, Options));
     }
 
+    /// Just Tile.json: what the tile is and how it was made.
+    public static Info LoadInfo(string folder) => JsonSerializer.Deserialize<Info>(File.ReadAllText(Path.Combine(folder, "Tile.json")))!;
+
     public static RouteTile Load(string folder)
     {
         var meta = JsonSerializer.Deserialize<Info>(File.ReadAllText(Path.Combine(folder, "Tile.json")))!;
