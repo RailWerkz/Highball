@@ -210,7 +210,13 @@ public sealed partial class NetworkLines
         var projection = route.Projection!;
         var tileSize = route.Grid!.TileSize;
 
-        // (A yard cleared to be laid by hand is only a guide, and isn't built.)
+        // Mapped track isn't built: it's only a guide to lay track along, marked on the ground where the track would go. The marks are
+        // lines like any road, so no switch, signal or train ever sees them.
+        var marks = network.Where(w => w.Rail && RouteNetwork.IsGuide(w)).Select(w => new NetworkWay
+        {
+            Id = w.Id, Rail = false, Class = (int)RoadClass.Service, Nodes = w.Nodes, Lat = w.Lat, Lon = w.Lon,
+            Tags = new Dictionary<string, string>(w.Tags) { [RouteNetwork.TrackMarkTag] = "yes", ["surface"] = "gravel", ["lanes"] = "1" },
+        }).ToList();
         network = network.Where(w => !RouteNetwork.IsGuide(w)).ToList();
 
         // One track splitting into three at a node becomes switches one after another, as real track does.
@@ -218,6 +224,25 @@ public sealed partial class NetworkLines
 
         // Crossovers laid out to a real design first, on the ways (their switch points slide along the tracks).
         var crossovers = CrossoverFitting.Apply(network, route, chosen);
+
+        // (Marks don't join anything: each keeps to its own mapped line.)
+        foreach (var chain in Chains(marks))
+        {
+            var (mx, mz, ms, mn) = Resample(chain, projection);
+            var at = -1;
+            for (var i = 0; i <= mx.Count; i++)
+            {
+                var inside = i < mx.Count && built.Contains(new TileId((int)Math.Floor(mx[i] / tileSize), (int)Math.Floor(-mz[i] / tileSize)));
+                if (inside && at < 0)
+                    at = i;
+                else if (!inside && at >= 0)
+                {
+                    if (i - at >= 2)
+                        lines.Add(chain, mx, mz, ms, mn, at, i);
+                    at = -1;
+                }
+            }
+        }
 
         // Nodes more than one chain runs through (junctions) stay exactly where they are when a line is evened out.
         var chains = Chains(crossovers.Ways).ToList();
@@ -546,6 +571,9 @@ public sealed partial class NetworkLines
 
     // Evening out a rail line's alignment: the stretch the smoothing reaches over, how far from a junction or an end
     // it takes to come in fully, and the most it may move the track.
+    /// How wide a mapped track's mark on the ground is: narrow enough that tracks side by side stay apart.
+    private const float TrackMarkWidth = 2.8f;
+
     private const int AlignStride = 5;
     private const int AlignPasses = 30;
     private const double AlignEase = 30.0;
@@ -682,7 +710,7 @@ public sealed partial class NetworkLines
             }), 1, 7);
             var laneWidth = roadClass switch { RoadClass.Highway => 3.6f, RoadClass.Major => 3.4f, RoadClass.Minor => 3.2f, RoadClass.Local => 3.0f, _ => 2.5f };
             var shoulders = roadClass switch { RoadClass.Highway => 4.2f, RoadClass.Major => 1.0f, RoadClass.Minor => 0.6f, _ => 0f };
-            var width = roadClass == RoadClass.Service ? (Tag("highway") == "track" ? 3f : 4f) : lanes * laneWidth + shoulders;
+            var width = chain.Tags.ContainsKey(RouteNetwork.TrackMarkTag) ? TrackMarkWidth : roadClass == RoadClass.Service ? (Tag("highway") == "track" ? 3f : 4f) : lanes * laneWidth + shoulders;
             var surface = Tag("surface");
             line = new NetworkLine
             {
@@ -691,7 +719,7 @@ public sealed partial class NetworkLines
                 Nodes = nodes.Where(n => n.Point >= from && n.Point < to).Select(n => (n.Node, n.Point - from)).ToList(),
                 Width = width, Lanes = lanes, Oneway = oneway,
                 Unpaved = Tag("highway") == "track" || surface is "unpaved" or "gravel" or "dirt" or "ground" or "compacted" or "fine_gravel" or "grass" or "sand" or "earth",
-                Formation = width * 0.5f + 1.5f,
+                Formation = chain.Tags.ContainsKey(RouteNetwork.TrackMarkTag) ? width * 0.5f + 1f : width * 0.5f + 1.5f,
             };
         }
 

@@ -273,19 +273,23 @@ was worked out about its switches. After that the route opens to what's saved, s
 code changed. It's solved again only if the map data, a hand-picked switch size or the built tiles changed, on an edit
 (of the map data, with Edit Track or the Pen), with File > Solve Track Again, or with `--refit`.
 
+## Mapped track is a mark on the ground
+
+Mapped track isn't built. Everything else is generated (terrain, roads, bridges, cover), and each mapped track is a 2.8 m strip of
+gravel on the ground where it would go, in 2D and 3D, with no rails, ties, switches, signals or trains. The strips are lines like
+roads, so nothing that works on track sees them. Track only exists once it's laid by hand, and mapped ways are all guides to lay
+it along. The fitting that used to build mapped track is on the `generation` branch as it last stood; the same code still fits
+hand-laid track.
+
+In the 2D Editor, the side panel's Background picks Off, Map (OpenStreetMap) or Satellite (USGS aerial imagery, US only, sharpest
+at zoom 16), laid over the ground at the opacity set. Tiles are cached under the user's data folder. The Planner shows the same choice.
+
 ## Laying yards by hand
 
-The Lay Yard tool (=) lists the route's yards (connected groups of tracks OpenStreetMap marks as yard). Clear to Lay by Hand
-takes one out of the built track: its map ways stay as guides, drawn on the ground, and aren't fitted, signalled or built.
-Generate puts it back. With the tool, click along a guide: the shortest way along the guides between clicks comes out as
-straights and curves, fitted as the solved track is, and Enter lays it. A click right at a guide's node that's on built
-track joins there, and one on built track joins into it. Laid track is left exactly as laid by the fitting, and a guide fades
-where track runs along it, with the side panel saying how much is done. Clicks off any guide go straight between them.
-
-Where a yard is too big to clear at once, Shift-drag marks an area on the ground (a Shift-click drops it), and the panel's
-buttons clear or generate only the yard tracks, sidings, spurs and crossovers inside it; main lines stay. A track over the
-area's edge is cut there into two ways (at a junction or point if one is near, and never leaving a piece under 30 m), and the
-piece left built ends at the cut, where a click on a guide's node joins it.
+With the Lay Yard tool (=), click along a guide: the shortest way along the guides between clicks comes out as straights and
+curves, fitted as hand-laid track is, and Enter lays it. A click right at a guide's node that's on built track joins there, and one
+on built track joins into it. Laid track is left exactly as laid by the fitting, and a guide fades where track runs along it, with the
+side panel saying how much is done. Clicks off any guide go straight between them.
 
 A click on built track, or on a guide within 2.5 m of it, joins it there, so a branch comes off a track you've already laid
 as a real switch. The path is led off along the track it leaves (and on to one it arrives at) by a curve no tighter than

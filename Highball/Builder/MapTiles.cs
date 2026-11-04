@@ -9,12 +9,25 @@ using RailWerkz.Vulkan;
 
 namespace Highball.Builder;
 
-/// The map's background: OpenStreetMap's standard raster tiles, fetched two at a time with a proper User-Agent (as
-/// its tile policy asks), cached on disk under the user's data folder, and kept as textures while they're on screen.
+/// What a map shows behind everything: OpenStreetMap's map, or the USGS's aerial imagery (public domain, US only).
+public enum MapBackground { Map, Satellite }
+
+/// The map's background: raster tiles fetched two at a time with a proper User-Agent (as OpenStreetMap's tile policy asks), cached
+/// on disk under the user's data folder, and kept as textures while they're on screen.
 public sealed class MapTiles : IDisposable
 {
-    public const string Attribution = "© OpenStreetMap contributors";
-    private const string Url = "https://tile.openstreetmap.org/{0}/{1}/{2}.png";
+    /// What every map shows.
+    public static MapBackground Background { get; set; }
+
+    public static string Attribution => Background == MapBackground.Satellite ? "Imagery: U.S. Geological Survey" : "© OpenStreetMap contributors";
+
+    /// The closest tiles there are of what's showing (the imagery stops short of the map, in places).
+    public static int MaxZoom => Background == MapBackground.Satellite ? 16 : 19;
+
+    private static string UrlOf(MapBackground source, int z, int x, int y) => source == MapBackground.Satellite
+        ? $"https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}"
+        : $"https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+
     private const int MaxTextures = 320;
     private const int UploadsPerFrame = 6;
 
@@ -29,8 +42,8 @@ public sealed class MapTiles : IDisposable
     private static readonly HttpClient Http = CreateClient();
     private static readonly SemaphoreSlim Lanes = new(2);
 
-    private readonly Dictionary<(int Z, int X, int Y), Entry> _entries = [];
-    private readonly ConcurrentQueue<((int Z, int X, int Y) Key, byte[]? Pixels, int Width, int Height)> _loaded = new();
+    private readonly Dictionary<(MapBackground Source, int Z, int X, int Y), Entry> _entries = [];
+    private readonly ConcurrentQueue<((MapBackground Source, int Z, int X, int Y) Key, byte[]? Pixels, int Width, int Height)> _loaded = new();
     private int _frame;
 
     private static HttpClient CreateClient()
@@ -81,7 +94,7 @@ public sealed class MapTiles : IDisposable
             return null;
         x = ((x % n) + n) % n;
 
-        var key = (z, x, y);
+        var key = (Background, z, x, y);
         if (!_entries.TryGetValue(key, out var entry))
         {
             _entries[key] = entry = new Entry();
@@ -92,18 +105,18 @@ public sealed class MapTiles : IDisposable
         return entry.Texture is not null ? entry.Ref : null;
     }
 
-    private async Task Load((int Z, int X, int Y) key)
+    private async Task Load((MapBackground Source, int Z, int X, int Y) key)
     {
         try
         {
-            var folder = Path.Combine(ContentPath.UserData, "TileCache", "osm", key.Z.ToString(), key.X.ToString());
-            var path = Path.Combine(folder, $"{key.Y}.png");
+            var folder = Path.Combine(ContentPath.UserData, "TileCache", key.Source == MapBackground.Satellite ? "usgs" : "osm", key.Z.ToString(), key.X.ToString());
+            var path = Path.Combine(folder, $"{key.Y}.{(key.Source == MapBackground.Satellite ? "jpg" : "png")}");
             if (!File.Exists(path))
             {
                 await Lanes.WaitAsync();
                 try
                 {
-                    var bytes = await Http.GetByteArrayAsync(string.Format(Url, key.Z, key.X, key.Y));
+                    var bytes = await Http.GetByteArrayAsync(UrlOf(key.Source, key.Z, key.X, key.Y));
                     Directory.CreateDirectory(folder);
                     await File.WriteAllBytesAsync(path, bytes);
                 }

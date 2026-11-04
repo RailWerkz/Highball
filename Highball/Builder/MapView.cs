@@ -101,7 +101,7 @@ public sealed class MapView : IDisposable
         _tiles.BeginFrame();
         draw.AddRectFilled(min, max, Style.Background);
 
-        var z = (int)Math.Clamp(Math.Round(Zoom), 0, MaxZoom);
+        var z = (int)Math.Clamp(Math.Round(Zoom), 0, MapTiles.MaxZoom);
         var n = 1 << z;
         var tilePixels = WorldPixels / n;
         var topLeft = ToMercatorAt(min);

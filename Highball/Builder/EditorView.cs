@@ -898,8 +898,6 @@ public sealed class EditorView : IDisposable
         var blocked = Blocked;
         var mouse = Input.MousePosition;
         var shift = Input.Key(GlfwKey.LeftShift) || Input.Key(GlfwKey.RightShift);
-        if (BoxUpdate(mouse, !blocked && _rebuild is null && shift && Input.MouseDown(GlfwMouseButton.Left), Input.Mouse(GlfwMouseButton.Left)))
-            return;
 
         if (_yard.Mode != YardMode.Follow)
         {
@@ -1049,46 +1047,6 @@ public sealed class EditorView : IDisposable
         if (guides.GuideLength > 0.0)
             ImGui.Text($"Guides laid: {Far(guides.DoneLength)} of {Far(guides.GuideLength)}");
 
-        ImGui.BeginDisabled(_rebuild is not null);
-        if (_area is not null && _areaFrom is null)
-        {
-            ImGui.SeparatorText("Selected area");
-            ImGui.Text($"{Far(_areaLength.Built)} built, {Far(_areaLength.Cleared)} cleared");
-            ImGui.BeginDisabled(_areaLength.Built <= 0.0);
-            if (ImGui.Button("Clear to Lay by Hand##box"))
-                BoxSet(true);
-            ImGui.EndDisabled();
-            ImGui.BeginDisabled(_areaLength.Cleared <= 0.0);
-            if (ImGui.Button("Generate##box"))
-                BoxSet(false);
-            ImGui.EndDisabled();
-            if (ImGui.Button("Drop Selection##box"))
-                _area = null;
-        }
-
-        ImGui.SeparatorText($"Yards ({guides.Areas.Count})");
-        for (var i = 0; i < guides.Areas.Count; i++)
-        {
-            var area = guides.Areas[i];
-            if (ImGui.Selectable($"{Far(area.Length)}, {area.Junctions} junctions##yard{i}", false, ImGuiSelectableFlags.None, default))
-            {
-                if (_topDown)
-                    MoveTo(new RoutePoint(area.X, -area.Z));
-                else
-                {
-                    (_camera.X, _camera.Z, _camera.Pitch) = (area.X, area.Z + 150.0, -0.7f);
-                    _camera.Y = _terrain!.Source.HeightAt(area.X, area.Z) + 180.0;
-                }
-            }
-
-            if (ImGui.Button(area.Cleared ? $"Generate##yard{i}" : $"Clear to Lay by Hand##yard{i}"))
-            {
-                _follow.Clear();
-                Committed(_tracks!.SetGuide(area.Ways, !area.Cleared));
-            }
-        }
-
-        ImGui.EndDisabled();
     }
 
     // --- Shaping track. ---
@@ -1115,6 +1073,49 @@ public sealed class EditorView : IDisposable
         _redo.Clear();
         RebuildNetwork();
     }
+
+    private readonly MapTiles _backgroundTiles = new();
+    private bool _showBackground;
+    private float _backgroundOpacity = 0.7f;
+
+    /// The map or satellite picture laid over the ground in the 2D view, each tile where its corners fall on the ground.
+    private void DrawBackground(ImDrawListPtr draw)
+    {
+        if (!_topDown || !_showBackground || _terrain is null || _route.Projection is not { } projection)
+            return;
+        _backgroundTiles.BeginFrame();
+
+        // The tile size nearest a pixel of it to a pixel of screen.
+        var size = ImGui.GetIO().DisplaySize;
+        var centre = projection.Inverse(new RoutePoint(_camera.X, -_camera.Z));
+        var (cx, cy) = MapView.ToMercator(centre);
+        if (Pick(size * 0.5f) is not { } middle || Pick(size * 0.5f + new float2(S(100f), 0f)) is not { } beside)
+            return;
+        var metresPerPixel = Math.Sqrt(Math.Pow(beside.X - middle.X, 2.0) + Math.Pow(beside.Z - middle.Z, 2.0)) / S(100f);
+        var cosine = Math.Cos(centre.Lat * Math.PI / 180.0);
+        var zoom = Math.Clamp((int)Math.Round(Math.Log2(40075016.0 * cosine / (256.0 * Math.Max(metresPerPixel, 0.01)))), 2, MapTiles.MaxZoom);
+        var n = 1 << zoom;
+        var reach = 0.6 * (Math.Max(size.X, size.Y) * metresPerPixel) / (40075016.0 * cosine);
+        var (x0, x1) = ((int)Math.Floor((cx - reach) * n), (int)Math.Floor((cx + reach) * n));
+        var (y0, y1) = ((int)Math.Floor((cy - reach) * n), (int)Math.Floor((cy + reach) * n));
+        if ((x1 - x0 + 1) * (y1 - y0 + 1) > BackgroundMaxTiles)
+            return;
+
+        var tint = new Rgba(1f, 1f, 1f, _backgroundOpacity);
+        float2? Corner(int x, int y)
+        {
+            var p = projection.Forward(MapView.FromMercator(x / (double)n, y / (double)n));
+            return ProjectGround(p.East, -p.North);
+        }
+
+        for (var y = y0; y <= y1; y++)
+            for (var x = x0; x <= x1; x++)
+                if (_backgroundTiles.Get(zoom, x, y) is { } texture && Corner(x, y) is { } a && Corner(x + 1, y) is { } b && Corner(x + 1, y + 1) is { } c && Corner(x, y + 1) is { } d)
+                    draw.AddImageQuad(texture, a, b, c, d, new float2(0f, 0f), new float2(1f, 0f), new float2(1f, 1f), new float2(0f, 1f), tint);
+    }
+
+
+    private const int BackgroundMaxTiles = 200;
 
     /// A scripted Shape tool step (--shapeops), for testing.
     private void ShapeOp(TerrainSource source, string op)
@@ -1359,6 +1360,10 @@ public sealed class EditorView : IDisposable
                 break;
             }
 
+            case "background":
+                (_showBackground, MapTiles.Background, _backgroundOpacity) = (parts[1] != "off", parts[1] == "satellite" ? MapBackground.Satellite : MapBackground.Map, 1f);
+                SetTopDown(true);
+                break;
             case "yardlist":
             {
                 var (lx, lz) = At(1);
@@ -1905,6 +1910,7 @@ public sealed class EditorView : IDisposable
             return;
         }
 
+        DrawBackground(draw);
         if (_tool == Tool.Circuits)
             _circuitEditor?.Draw(draw, _camera.X, _camera.Z, ViewReach, ProjectGround,
                 !_topDown || _camera.Y - _terrain.Source.HeightAt(_camera.X, _camera.Z) < 5000.0);
@@ -2151,6 +2157,24 @@ public sealed class EditorView : IDisposable
             ImGui.Text(imperial
                 ? string.Create(CultureInfo.InvariantCulture, $"Speed {_speed * 2.23694f:0} mph")
                 : string.Create(CultureInfo.InvariantCulture, $"Speed {_speed * 3.6f:0} km/h"));
+
+        if (_topDown)
+        {
+            ImGui.SeparatorText("Background"u8);
+            if (ImGui.RadioButton("Off"u8, !_showBackground))
+                _showBackground = false;
+            ImGui.SameLine(0f, -1f);
+            if (ImGui.RadioButton("Map"u8, _showBackground && MapTiles.Background == MapBackground.Map))
+                (_showBackground, MapTiles.Background) = (true, MapBackground.Map);
+            ImGui.SameLine(0f, -1f);
+            if (ImGui.RadioButton("Satellite"u8, _showBackground && MapTiles.Background == MapBackground.Satellite))
+                (_showBackground, MapTiles.Background) = (true, MapBackground.Satellite);
+            if (_showBackground)
+            {
+                ImGui.SliderFloat("Opacity"u8, ref _backgroundOpacity, 0.1f, 1f, "%.1f"u8, ImGuiSliderFlags.None);
+                ImGui.TextDisabled(MapTiles.Attribution);
+            }
+        }
 
         ImGui.SeparatorText("Tool"u8);
         ImGui.Text(_tool switch
@@ -2544,8 +2568,8 @@ public sealed class EditorView : IDisposable
                 Tool.Look => [("0-9", "Pick a tool")],
                 Tool.Switches => [("LMB", "Pick a switch"), ("DRAG", "Move points, curve end or crossover"), ("CTRL+Z", "Undo")],
                 Tool.Place => [("LMB", "Place, pick, drag"), ("R", "Turn"), ("V", "Turn round or other side"), ("DEL", "Delete"), ("CTRL+Z", "Undo")],
-                Tool.Follow when _yard.Mode != YardMode.Follow => [("LMB", "Pick a track, then lay"), ("SHIFT+DRAG", "Select area"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
-                Tool.Follow => [("LMB", "Click a guide or track"), ("SHIFT+DRAG", "Select area"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove click"), ("CTRL+Z", "Undo")],
+                Tool.Follow when _yard.Mode != YardMode.Follow => [("LMB", "Pick a track, then lay"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
+                Tool.Follow => [("LMB", "Click a guide or track"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove click"), ("CTRL+Z", "Undo")],
                 Tool.Shape => [("LMB", "Select, drag handle"), ("SHIFT+LMB", "Mark handles"), ("L", "Straighten"), ("DEL", "Remove handle"), ("ALT", "No snap"), ("CTRL+Z", "Undo")],
                 Tool.Paint => [("LMB", "Paint"), ("P", "Cover"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
                 Tool.Track => [("LMB", "Select, drag"), ("SHIFT", "Add"), ("L", "Straighten"), ("K", "Smooth"), ("J", "Join"), ("DEL", "Delete")],

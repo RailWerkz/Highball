@@ -127,7 +127,10 @@ public sealed class RouteNetwork
     /// Set on track laid by hand along a guide: it's already what it should be, so it isn't fitted.
     public const string ExactTag = "highball:exact";
 
-    public static bool IsGuide(NetworkWay way) => way.Tags.ContainsKey(GuideTag);
+    public static bool IsGuide(NetworkWay way) => way.Tags.ContainsKey(GuideTag) || (way.Rail && way.Id > 0 && !way.Tags.ContainsKey(ExactTag));
+
+    /// A mapped track's mark on the ground, drawn where the track would go until it's laid by hand.
+    public const string TrackMarkTag = "highball:trackmark";
 
     public Dictionary<long, NetworkWay> Ways { get; } = [];
 
