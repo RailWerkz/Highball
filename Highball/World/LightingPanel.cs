@@ -26,6 +26,12 @@ public sealed class LightingPanel
         _latitude = latitude;
         _longitude = longitude;
 
+        if (DevTools.CloudCoverage is { } coverage)
+        {
+            DevTools.CloudCoverage = null;
+            Settings.Current.CloudCoverage = coverage;
+        }
+
         if (DevTools.SkyTime is { } time)
         {
             DevTools.SkyTime = null;
@@ -62,6 +68,7 @@ public sealed class LightingPanel
     {
         var s = Settings.Current;
         var sky = _renderer.Sky;
+        _renderer.Clouds.Coverage = s.CloudCoverage;
         if (sky.Name == Sky.Procedural)
         {
             var key = (sky.Name, sky.Version, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour);
@@ -140,6 +147,10 @@ public sealed class LightingPanel
         }
 
         ImGui.NewLine();
+
+        var coverage = s.CloudCoverage;
+        if (ImGui.SliderFloat("Clouds"u8, ref coverage, 0f, 1f))
+            s.CloudCoverage = coverage;
 
         var hour = s.SkyHour;
         if (ImGui.SliderFloat("Time"u8, ref hour, 0f, 23.99f))

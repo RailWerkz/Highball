@@ -1,4 +1,6 @@
-// The sun's shadows, from SunShadows (set 2). Positions are relative to the camera, as everywhere in the world shaders.
+// The sun's shadows, from SunShadows (set 2), and the clouds' (set 3). Positions are relative to the camera, as everywhere in the
+// world shaders.
+#include "clouds.glsl"
 
 layout(set = 2, binding = 0) uniform ShadowUniforms
 {
@@ -30,8 +32,9 @@ float shadowInCascade(int cascade, vec3 relative, vec3 n, float nl)
     return lit / 9.0;
 }
 
-// How much of the sun reaches a point, 0 to 1. Cascades blend over the last tenth of their reach, and the last fades out.
-float sunShadow(vec3 relative, vec3 n, vec3 sun)
+// How much of the sun reaches a point past what's on the ground. Cascades blend over the last tenth of their reach, and the
+// last fades out.
+float groundShadow(vec3 relative, vec3 n, vec3 sun)
 {
     if (shadow.forward.w < 0.5)
         return 1.0;
@@ -55,4 +58,10 @@ float sunShadow(vec3 relative, vec3 n, vec3 sun)
     }
 
     return 1.0;
+}
+
+// How much of the sun reaches a point, 0 to 1.
+float sunShadow(vec3 relative, vec3 n, vec3 sun)
+{
+    return groundShadow(relative, n, sun) * cloudSunShadow(relative);
 }

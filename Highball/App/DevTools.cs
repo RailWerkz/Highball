@@ -14,6 +14,7 @@ namespace Highball.App;
 ///                                                   csx (the game's SD40) or source (its source file, with PBR maps)
 ///   --orbit YAW PITCH DISTANCE                      with --menu lighting, where the camera starts (degrees, metres)
 ///   --skytime YYYY-MM-DD HOUR                       the procedural sky's date and time, in hours on the route's clock
+///   --clouds COVERAGE                               how much of the procedural sky is cloud, 0 to 1
 ///   --tab NAME                                      with --menu options, open on that tab: display, graphics, audio, simulation
 ///   --route NAME                                    open that route in the Route Builder (made if there isn't one)
 ///   --select LAT LON N                              with --route, pick N x N tiles there and build them
@@ -48,6 +49,9 @@ public static class DevTools
 
     /// The lighting test scene's first time of day and model (--lighting), read once by it.
     public static (string Preset, string? Model)? Lighting { get; set; }
+
+    /// How much of the sky is cloud (--clouds), read once by the lighting window.
+    public static float? CloudCoverage { get; set; }
 
     /// The procedural sky's date and time (--skytime), read once by the lighting window.
     public static (int Year, int Month, int Day, float Hour)? SkyTime { get; set; }
@@ -142,6 +146,9 @@ public static class DevTools
                 case "--lighting" when i + 1 < args.Length:
                     var preset = args[++i];
                     Lighting = (preset, i + 1 < args.Length && !args[i + 1].StartsWith('-') ? args[++i] : null);
+                    break;
+                case "--clouds" when i + 1 < args.Length:
+                    CloudCoverage = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
                     break;
                 case "--skytime" when i + 2 < args.Length:
                     var date = DateTime.ParseExact(args[i + 1], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);

@@ -1,0 +1,39 @@
+#version 450
+// How much sun gets through the clouds to the ground round the camera, seen from above. A cheap stand-in for Kitten Space Agency's
+// shadow volume, enough for shadows drifting over the land. Red is the light that's left.
+
+#include "Clouds/CloudData.glsl"
+#include "Clouds/CloudDensity.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D result;
+
+#define STEPS 8
+
+void main()
+{
+    ivec2 size = imageSize(result);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec3 ground = vec3((uv.x * 2.0 - 1.0) * clouds.frame.w, 0.0, (uv.y * 2.0 - 1.0) * clouds.frame.w);
+    vec3 sun = clouds.sun.xyz;
+
+    float start = max(SphereHits(ground, sun, EarthRadius + clouds.layer.x).y, 0.0);
+    float end = SphereHits(ground, sun, EarthRadius + clouds.layer.y).y;
+    float step = max(end - start, 0.0) / float(STEPS);
+
+    float total = 0.0;
+    for (int i = 0; i < STEPS; i++)
+    {
+        float dimensional, noiseDepth;
+        total += step * CloudDensity(ground + sun * (start + (float(i) + 0.5) * step), 2.0, dimensional, noiseDepth);
+    }
+
+    // Light scattered through a cloud still arrives: an overcast sky doesn't throw black shadows.
+    float lit = BeerAbsorptionMultipleScattering(total);
+    imageStore(result, pixel, vec4(mix(0.22, 1.0, lit), 0.0, 0.0, 1.0));
+}

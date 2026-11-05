@@ -1,0 +1,177 @@
+#version 450
+// Volumetric clouds, adapted from Kitten Space Agency's RaymarchCloud: a dithered march through the layer with a shorter one
+// towards the sun at each step, at half the screen's size. Where theirs upscales with motion vectors, this blends with last
+// frame's along the view, which is enough for something kilometres away. Colour is what the clouds add; alpha is how much of the
+// sky behind them still shows.
+
+#include "Clouds/CloudData.glsl"
+#include "Clouds/CloudDensity.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D result;
+layout(set = 0, binding = 1) uniform sampler2D history;
+
+#define MAX_STEPS 64
+#define LIGHT_STEPS 5
+#define LIGHT_DISTANCE 1800.0
+#define EARLY_EXIT 0.004
+#define CLOUD_BRIGHTNESS 4.0
+#define HAZE_DISTANCE 70000.0
+#define MAX_DISTANCE 140000.0
+#define GOLDEN_RATIO 0.61803398875
+
+// Noise that changes every pixel and frame, which the blend with last frame averages out.
+float Dither(vec2 pixel, float frame)
+{
+    pixel += 5.588238 * mod(frame, 64.0);
+    return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+}
+
+float DensityToLight(vec3 position, vec3 sun, float lod, float dither)
+{
+    float toTop = SphereHits(position, sun, EarthRadius + clouds.layer.y).y;
+    if (toTop <= 0.0)
+        return 0.0;
+
+    float step = min(LIGHT_DISTANCE, toTop) / float(LIGHT_STEPS);
+    float total = 0.0;
+    float travelled = 0.0;
+    for (int i = 0; i < LIGHT_STEPS; i++)
+    {
+        float size = i == 0 ? step * dither : step;
+        travelled += size;
+        float dimensional, noiseDepth;
+        total += size * CloudDensity(position + sun * travelled, lod + 1.0, dimensional, noiseDepth);
+    }
+
+    return total;
+}
+
+vec4 Raymarch(vec3 direction, vec2 pixel)
+{
+    float eyeRadius = EarthRadius + clouds.offset.w;
+    float bottom = EarthRadius + clouds.layer.x;
+    float top = EarthRadius + clouds.layer.y;
+
+    vec2 inner = SphereHits(vec3(0.0), direction, bottom);
+    vec2 outer = SphereHits(vec3(0.0), direction, top);
+    if (outer.y <= 0.0)
+        return vec4(0.0, 0.0, 0.0, 1.0);
+
+    // The stretch of this ray that's inside the layer, from under it, inside it or above it.
+    float start, end;
+    if (eyeRadius < bottom)
+    {
+        start = inner.y;
+        end = outer.y;
+    }
+    else if (eyeRadius < top)
+    {
+        start = 0.0;
+        end = inner.x > 0.0 ? inner.x : outer.y;
+    }
+    else
+    {
+        start = outer.x;
+        end = inner.x > 0.0 ? inner.x : outer.y;
+    }
+
+    end = min(end, MAX_DISTANCE);
+    if (start >= end)
+        return vec4(0.0, 0.0, 0.0, 1.0);
+
+    vec3 sun = clouds.sun.xyz;
+    float direct, indirect;
+    GetPhaseFunctions(dot(direction, sun), direct, indirect);
+
+    float dither = Dither(pixel, clouds.frame.x);
+    float lightDither = fract(dither + GOLDEN_RATIO);
+
+    vec3 light = vec3(0.0);
+    vec3 skyLit = vec3(0.0);
+    float transmittance = 1.0;
+    float distanceSum = 0.0;
+    float weightSum = 0.0;
+    float travelled = start;
+
+    for (int i = 0; i < MAX_STEPS && travelled < end; i++)
+    {
+        // Longer steps further away, where they show least.
+        float size = min(120.0 + travelled * 0.012, 1600.0);
+        if (i == 0)
+            size *= dither;
+        travelled = min(travelled + size, end);
+
+        float lod = clamp(log2(travelled / 3000.0 + 1.0), 0.0, 4.0);
+        vec3 position = direction * travelled;
+        float dimensional, noiseDepth;
+        float density = CloudDensity(position, lod, dimensional, noiseDepth);
+        if (density <= 0.0)
+            continue;
+
+        float toLight = DensityToLight(position, sun, lod, lightDither);
+        lightDither = fract(lightDither + GOLDEN_RATIO);
+
+        float through = BeerAbsorption(density * size);
+        float weight = transmittance * (1.0 - through);
+        float edge = GetMultipleScatteringEdgeEffect(dimensional, noiseDepth);
+        float scattered = BeerAbsorption(toLight) * direct + BeerAbsorptionMultipleScattering(toLight) * indirect * edge;
+
+        light += vec3(scattered) * weight;
+        skyLit += vec3(BeerAbsorptionMultipleScattering(dimensional * 3.0)) * weight;
+        transmittance *= through;
+        distanceSum += travelled * weight;
+        weightSum += weight;
+
+        if (transmittance <= EARLY_EXIT)
+        {
+            light += vec3(scattered) * transmittance;
+            transmittance = 0.0;
+            break;
+        }
+    }
+
+    if (weightSum <= 0.0)
+        return vec4(0.0, 0.0, 0.0, 1.0);
+
+    // Skylight, a little desaturated: without light bouncing between clouds, pure sky colour overpowers them.
+    vec3 sky = clouds.zenith.rgb * 0.9 + clouds.horizon.rgb * 0.45;
+    sky = mix(vec3(dot(sky, vec3(0.2126, 0.7152, 0.0722))), sky, 0.6);
+    vec3 color = light * clouds.sunColor.rgb * CLOUD_BRIGHTNESS + skyLit * sky * 1.6;
+
+    // Far clouds sink into the haze along the horizon.
+    float haze = 1.0 - exp(-(distanceSum / weightSum) / HAZE_DISTANCE);
+    color = mix(color, clouds.horizon.rgb * (1.0 - transmittance), haze);
+    transmittance = mix(transmittance, 1.0, haze * haze);
+
+    return vec4(color, transmittance);
+}
+
+void main()
+{
+    ivec2 size = imageSize(result);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    vec3 direction = normalize(clouds.forward.xyz + ndc.x * clouds.right.xyz + ndc.y * clouds.up.xyz);
+
+    vec4 current = Raymarch(direction, vec2(pixel));
+
+    // Where this direction was on screen last frame. Clouds are far enough away that only the camera's turning matters.
+    if (clouds.frame.z > 0.5)
+    {
+        vec4 clip = clouds.previousViewProjection * vec4(direction, 1.0);
+        if (clip.w > 0.0)
+        {
+            vec2 previous = vec2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+            if (all(greaterThanEqual(previous, vec2(0.0))) && all(lessThanEqual(previous, vec2(1.0))))
+                current = mix(current, textureLod(history, previous, 0.0), 0.9);
+        }
+    }
+
+    imageStore(result, pixel, current);
+}

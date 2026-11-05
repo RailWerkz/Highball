@@ -43,6 +43,9 @@ public sealed unsafe class Sky : IDisposable
     /// Counts the times the sky was switched, so whoever sets the sun knows to set it again.
     public int Version { get; private set; }
     public float3 SunDirection { get; private set; }
+    public float3 SunColor { get; private set; }
+    public float3 Zenith { get; private set; }
+    public float3 Horizon { get; private set; }
 
     /// How bright this sky makes the world relative to the middle of a clear day, for exposing by: 1 for a skybox, whose
     /// picture is exposed already.
@@ -161,6 +164,9 @@ public sealed unsafe class Sky : IDisposable
     private void Apply(in Uniforms uniforms)
     {
         SunDirection = uniforms.SunDirection.XYZ;
+        SunColor = uniforms.SunColor.XYZ;
+        Zenith = uniforms.Zenith.XYZ;
+        Horizon = uniforms.Horizon.XYZ;
 
         _uniforms = Buffers.Upload(MemoryMarshal.AsBytes(new ReadOnlySpan<Uniforms>(in uniforms)), VkBufferUsageFlags.UniformBufferBit, "sky.uniforms");
 

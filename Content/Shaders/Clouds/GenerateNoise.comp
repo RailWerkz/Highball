@@ -1,0 +1,39 @@
+#version 450
+// The tiling noise clouds are carved from, adapted from Kitten Space Agency's GenerateWorleyNoise: several octaves of
+// cellular noise, inverted so it billows. Red is the broad shape, green the same with its cells half the size.
+
+#include "Clouds/Cellular3D.glsl"
+
+#define OCTAVES 5
+#define PERSISTENCE 0.57
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(set = 0, binding = 0, rgba8) uniform writeonly image3D resultImage;
+
+float Billows(vec3 uv, float frequency)
+{
+    float total = 0.0;
+    float amplitude = 1.0;
+    float result = 0.0;
+    for (int i = 0; i < OCTAVES; i++)
+    {
+        result += cellular(uv * frequency, frequency).r * amplitude;
+        total += amplitude;
+        amplitude *= PERSISTENCE;
+        frequency *= 2.0;
+    }
+
+    // The sum of many octaves bunches up in the middle: spread it back over 0..1.
+    return smoothstep(0.2, 0.75, 1.0 - result / total);
+}
+
+void main()
+{
+    ivec3 size = imageSize(resultImage);
+    ivec3 voxel = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(voxel, size)))
+        return;
+
+    vec3 uv = (vec3(voxel) + 0.5) / vec3(size);
+    imageStore(resultImage, voxel, vec4(Billows(uv, 4.0), Billows(uv, 8.0), 0.0, 1.0));
+}

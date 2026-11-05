@@ -78,6 +78,9 @@ This scene and the terrain use physically based light (`Content/Shaders/lighting
 shadows (`Content/Shaders/shadows.glsl`, `SunShadows`); terrain and whole models cast them, track and roads don't yet.
 `--noshadows` turns them off, to see what they cost.
 
+The procedural sky has volumetric clouds (`Highball/World/Clouds.cs`, `Content/Shaders/Clouds/`), adapted from Kitten Space
+Agency's cloud shaders. `--clouds COVERAGE` sets how much of the sky they cover.
+
 ## Licences
 
 BRUTAL: see `Vendor/BRUTAL_LICENSE.txt` and `Vendor/BRUTAL_NOTICE.txt`. FastNoiseLite and NLayer: MIT. JetBrains

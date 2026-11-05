@@ -49,6 +49,7 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly VkPipelineLayout _modelLayout;
     private readonly GroundTextures _ground = new();
     private readonly SunShadows _shadows = new();
+    private readonly Clouds _clouds = new();
     private VkPipeline _sky;
     private VkPipeline _terrain;
     private VkPipeline _terrainWire;
@@ -73,13 +74,14 @@ public sealed unsafe class WorldRenderer : IDisposable
     public float Exposure { get; set; } = 1f;
     public bool Wireframe { get; set; }
     public bool Shadows { get => _shadows.Enabled; set => _shadows.Enabled = value; }
+    public Clouds Clouds => _clouds;
 
     public WorldRenderer()
     {
         // One layout for every world pipeline: push constants, and a texture at set 0 for those that sample one.
-        _layout = Pipelines.Layout(128, TextureBinding.SetLayout, Sky.SetLayout, SunShadows.SetLayout);
-        _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout, SunShadows.SetLayout);
-        _modelLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(2), Sky.SetLayout, SunShadows.SetLayout);
+        _layout = Pipelines.Layout(128, TextureBinding.SetLayout, Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
+        _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
+        _modelLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(2), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
         CreateWorldPipelines();
 
         using var fullscreen = Shader.Load("fullscreen.vert");
@@ -180,6 +182,8 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         using (Profiler.Sample("Sun shadows"))
             _shadows.Render(cmd, camera, aspect, Sun, terrain, models);
+        using (Profiler.Sample("Clouds"))
+            _clouds.Render(cmd, size, camera, aspect, Sky);
 
         _target.Begin(cmd, new float4(0f, 0f, 0f, 1f));
 
@@ -195,6 +199,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         var skyScope = Profiler.Sample("Sky");
         cmd.BindPipeline(VkPipelineBindPoint.Graphics, _sky);
         Sky.Bind(cmd, _layout);
+        _clouds.Bind(cmd, _layout);
         cmd.PushConstants(_layout, Stages, ByteSize.Zero, sky);
         cmd.Draw(3, 1, 0, 0);
 
@@ -207,6 +212,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _terrainWire : _terrain);
             Sky.Bind(cmd, _terrainLayout);
             _shadows.Bind(cmd, _terrainLayout);
+            _clouds.Bind(cmd, _terrainLayout);
             _ground.Binding.Bind(cmd, _terrainLayout);
             terrain.Draw(cmd, camera.X, camera.Y, camera.Z, offset =>
             {
@@ -234,6 +240,7 @@ public sealed unsafe class WorldRenderer : IDisposable
                 cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _lineWire : _line);
                 Sky.Bind(cmd, _layout);
                 _shadows.Bind(cmd, _layout);
+                _clouds.Bind(cmd, _layout);
                 network.BindBallast(cmd, _layout);
                 network.DrawLines(cmd, camera.X, camera.Y, camera.Z, Push);
             }
@@ -259,6 +266,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         cmd.BindPipeline(VkPipelineBindPoint.Graphics, _model);
         Sky.Bind(cmd, _modelLayout);
         _shadows.Bind(cmd, _modelLayout);
+        _clouds.Bind(cmd, _modelLayout);
         var viewProjection = camera.ViewProjection(aspect);
 
         foreach (var draw in models)
@@ -345,6 +353,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         Pipelines.Destroy(default, _modelLayout);
         _ground.Dispose();
         _shadows.Dispose();
+        _clouds.Dispose();
         Pipelines.Destroy(default, _layout);
         Sky.Dispose();
         Pipelines.Destroy(_tonemap, _tonemapLayout);

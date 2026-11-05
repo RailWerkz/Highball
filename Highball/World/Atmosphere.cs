@@ -35,7 +35,7 @@ public static class Atmosphere
 
     private static readonly float3 Rayleigh = new(5.8e-6f, 13.5e-6f, 33.1e-6f);
     private const float RayleighHeight = 8000f;
-    private const float Mie = 6e-6f;
+    private const float Mie = 11e-6f;
     private const float MieHeight = 1200f;
     private const float MieShape = 0.76f;
     private static readonly float3 Ozone = new(0.65e-6f, 1.881e-6f, 0.085e-6f);

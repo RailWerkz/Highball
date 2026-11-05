@@ -122,6 +122,20 @@ public static unsafe class Pipelines
         }
     }
 
+    /// A compute pipeline.
+    public static VkPipeline CreateCompute(Shader shader, VkPipelineLayout layout)
+    {
+        fixed (byte* main = "main\0"u8)
+        {
+            var info = new VkComputePipelineCreateInfo
+            {
+                Stage = new VkPipelineShaderStageCreateInfo { Stage = VkShaderStageFlags.ComputeBit, Module = shader.Module, Name = main },
+                Layout = layout,
+            };
+            return Gpu.Device.CreateComputePipeline(default, info, Gpu.Device.VkAllocator);
+        }
+    }
+
     /// Viewport and scissor over the whole target. The viewport is flipped (negative height) so +Y is up in clip space,
     /// as in every other API; depth runs 0..1.
     public static void SetViewport(CommandBuffer cmd, int2 size)
