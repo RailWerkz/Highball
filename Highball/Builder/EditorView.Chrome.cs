@@ -310,7 +310,7 @@ public sealed partial class EditorView
         }
     }
 
-    /// How many tracks to lay beside a track, and how far apart. They go on whichever side of it the pointer is.
+    /// How many tracks to lay, and how far apart: beside a track, on whichever side of it the pointer is, or on open ground.
     private void ParallelPanel()
     {
         var imperial = Settings.Current.Units == UnitSystem.Imperial;
@@ -323,7 +323,7 @@ public sealed partial class EditorView
 
         if (_parallel.Plan is not { } plan)
         {
-            ImGui.TextDisabled(_parallel.Anchor is null ? "Click a track where they start" : "Click level with where they end");
+            ImGui.TextDisabled(_parallel.Anchor is null ? "Click where they start" : "Click where they end");
             return;
         }
 

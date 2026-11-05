@@ -14,7 +14,8 @@ public sealed record YardPlan(List<PlannedWay> Ways, string Summary, string? Pro
     public static YardPlan Refused(string why) => new([], "", why, 0);
 }
 
-/// Laying a yard from built track, in two clicks. Parallel: the stretch of a track to run beside. Crossover: a place on each
+/// Laying a yard, in two clicks. Parallel: the stretch of a track to run beside, or from one place on open ground to another
+/// with no track needed, the tracks centred on that line. Crossover: a place on each
 /// of two tracks, the difference between them saying which way it leans. Ladder: where the lead leaves a track, then where
 /// the yard tracks end and on which side.
 public sealed class YardTool
@@ -59,7 +60,10 @@ public sealed class YardTool
     public int Tracks = 4;
 
     /// How many to lay at once with Parallel, the first beside the track and each of the others beside the last.
-    public int ParallelTracks = 1;
+    public int ParallelTracks = 2;
+
+    /// Started on open ground rather than on a track.
+    private bool _free;
 
     public static YardTool ForParallel() => new() { Mode = YardMode.Parallel };
 
@@ -77,13 +81,20 @@ public sealed class YardTool
         Clear();
     }
 
-    public void Clear() => (Anchor, Plan, _pointer, _key) = (null, null, null, null);
+    public void Clear() => (Anchor, Plan, _pointer, _key, _free) = (null, null, null, null, false);
 
-    /// A click with no anchor yet: starts on the track there, if there is one.
+    /// A click with no anchor yet: starts on the track there, if there is one; Parallel can start anywhere.
     public bool Start(TrackEditor tracks, double x, double z)
     {
+        _free = false;
         if (tracks.TrackNear(x, z, OnTrack, AtPoint) is not { } on)
-            return false;
+        {
+            if (Mode != YardMode.Parallel)
+                return false;
+            (Anchor, _free, _key) = ((new LayPoint(x, z), (1.0, 0.0)), true, null);
+            return true;
+        }
+
         Anchor = on;
         if (Mode == YardMode.Ladder && tracks.LooseEndNear(x, z, LooseEndSnap) is { } end && tracks.LeavingEnd(end) is { } leaving)
         {
@@ -111,7 +122,7 @@ public sealed class YardTool
         _key = key;
         Plan = Mode switch
         {
-            YardMode.Parallel => Parallel(tracks, lines, anchor, at, length),
+            YardMode.Parallel => _free ? FreeParallel(tracks, anchor.Point, at, length) : Parallel(tracks, lines, anchor, at, length),
             YardMode.Crossover => Crossover(tracks, anchor, at, length),
             YardMode.Ladder => Ladder(tracks, anchor, at, length),
             _ => null,
@@ -168,6 +179,30 @@ public sealed class YardTool
         var (dx, dz) = (b.X - a.X, b.Z - a.Z);
         var length = Math.Max(Math.Sqrt(dx * dx + dz * dz), 1e-9);
         return (dx / length, dz / length);
+    }
+
+    /// Straight tracks side by side on open ground, centred on the line between the two clicks.
+    private YardPlan FreeParallel(TrackEditor tracks, LayPoint from, (double X, double Z) to, Func<double, string> length)
+    {
+        var (dx, dz) = (to.X - from.X, to.Z - from.Z);
+        var along = Math.Sqrt(dx * dx + dz * dz);
+        if (along < ShortestParallel)
+            return YardPlan.Refused($"Shorter than {length(ShortestParallel)}");
+
+        var (ux, uz) = (dx / along, dz / along);
+        var steps = Math.Max(2, (int)Math.Ceiling(along / SampleStep));
+        var ways = new List<PlannedWay>(ParallelTracks);
+        var blocked = false;
+        for (var t = 0; t < ParallelTracks; t++)
+        {
+            var off = (t - (ParallelTracks - 1) * 0.5) * Spacing;
+            var path = Enumerable.Range(0, steps + 1).Select(k => (X: from.X + dx * k / steps - uz * off, Z: from.Z + dz * k / steps + ux * off)).ToList();
+            blocked = blocked || tracks.RunsInto(path, Math.Min(RunClearance, Spacing - 0.4), false, false);
+            ways.Add(new PlannedWay([.. path.Select(p => new LayPoint(p.X, p.Z))]));
+        }
+
+        var summary = $"{ParallelTracks} track{(ParallelTracks == 1 ? "" : "s")}, {length(along)} long, {length(Spacing)} apart";
+        return new YardPlan(ways, summary, blocked ? "Runs into another track" : null, 0);
     }
 
     private YardPlan Parallel(TrackEditor tracks, NetworkLines lines, (LayPoint Point, (double X, double Z) Runs) anchor, (double X, double Z) at, Func<double, string> length)
