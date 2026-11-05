@@ -2,7 +2,7 @@
 
 layout(set = OCCLUSION_SET, binding = OCCLUSION_BINDING) uniform OcclusionUniforms
 {
-    vec4 right;   // across the view, scaled to its edge
+    vec4 right;   // across the view, scaled to its edge; w: which frame, for the noise
     vec4 up;      // up the view, scaled to its edge
     vec4 forward; // w: the near distance
 } occlusion;

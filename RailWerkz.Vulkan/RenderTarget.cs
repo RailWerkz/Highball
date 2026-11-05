@@ -114,7 +114,7 @@ public sealed unsafe class RenderTarget : IDisposable
     public void Begin(CommandBuffer cmd, float4 clear)
     {
         Gpu.Barrier(cmd, _color.VkImage, Subresources.Full(VkImageAspectFlags.ColorBit), VkImageLayout.Undefined, VkImageLayout.ColorAttachmentOptimal,
-            VkPipelineStageFlags.FragmentShaderBit, VkPipelineStageFlags.ColorAttachmentOutputBit, VkAccessFlags.ShaderReadBit, VkAccessFlags.ColorAttachmentWriteBit);
+            VkPipelineStageFlags.ComputeShaderBit | VkPipelineStageFlags.FragmentShaderBit, VkPipelineStageFlags.ColorAttachmentOutputBit, VkAccessFlags.ShaderReadBit, VkAccessFlags.ColorAttachmentWriteBit);
         if (Multisampled)
             Gpu.Barrier(cmd, _samplesColor.VkImage, Subresources.Full(VkImageAspectFlags.ColorBit), VkImageLayout.Undefined, VkImageLayout.ColorAttachmentOptimal,
                 VkPipelineStageFlags.ColorAttachmentOutputBit, VkPipelineStageFlags.ColorAttachmentOutputBit, VkAccessFlags.ColorAttachmentWriteBit, VkAccessFlags.ColorAttachmentWriteBit);
@@ -221,7 +221,7 @@ public sealed unsafe class RenderTarget : IDisposable
     {
         cmd.EndRendering();
         Gpu.Barrier(cmd, _color.VkImage, Subresources.Full(VkImageAspectFlags.ColorBit), VkImageLayout.ColorAttachmentOptimal, VkImageLayout.ShaderReadOnlyOptimal,
-            VkPipelineStageFlags.ColorAttachmentOutputBit, VkPipelineStageFlags.FragmentShaderBit, VkAccessFlags.ColorAttachmentWriteBit, VkAccessFlags.ShaderReadBit);
+            VkPipelineStageFlags.ColorAttachmentOutputBit, VkPipelineStageFlags.ComputeShaderBit | VkPipelineStageFlags.FragmentShaderBit, VkAccessFlags.ColorAttachmentWriteBit, VkAccessFlags.ShaderReadBit);
     }
 
     private void Release()

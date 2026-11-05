@@ -40,8 +40,8 @@ void main()
         n = -n;
 
     Surface s;
-    // A rock's map is detail over its average, as on the ground, so its colour is all its tint's.
-    s.albedo = pc.shape.w > 1.5 ? map.rgb / max(textureLod(albedoMap, vec2(0.5), 16.0).rgb, vec3(0.01)) * vTint : map.rgb * vTint;
+    // A rock's map is only brightness over its average, as its colours would speckle once divided, so its colour is all its tint's.
+    s.albedo = pc.shape.w > 1.5 ? vec3(dot(map.rgb, vec3(0.333)) / max(dot(textureLod(albedoMap, vec2(0.5), 16.0).rgb, vec3(0.333)), 0.01)) * vTint : map.rgb * vTint;
     s.metallic = 0.0;
     s.roughness = 0.85;
     s.normal = n;

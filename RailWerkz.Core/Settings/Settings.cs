@@ -46,6 +46,12 @@ public sealed class Settings
     /// Grass, shrubs, trees and rocks over the terrain.
     public bool Vegetation { get; set; } = true;
     public bool AmbientOcclusion { get; set; } = true;
+    public bool TemporalAA { get; set; } = true;
+    public bool Bloom { get; set; } = true;
+    public bool GodRays { get; set; } = true;
+
+    /// The finished picture's look, by ColorGrade's id.
+    public string ColorGrade { get; set; } = "Filmic";
     /// Samples per pixel in the 3D view: 1 (off), 2, 4 or 8.
     public int Msaa { get; set; } = 4;
 

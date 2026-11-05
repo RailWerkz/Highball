@@ -1,0 +1,118 @@
+#version 450
+// Temporal anti-aliasing. The world is drawn a fraction of a pixel off each frame, and each pixel keeps most of what was at its place
+// last frame, as long as that's still like what's round it now. MSAA has the edges of solid things; this has what MSAA can't reach:
+// thin rails in the distance, highlights, grass, and the noise in the occlusion. Nothing here knows how things move except the camera,
+// so anything else that moves leans on the clamp.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D result;
+layout(set = 0, binding = 1) uniform sampler2D current;
+layout(set = 0, binding = 2) uniform sampler2D history;
+layout(set = 0, binding = 3) uniform sampler2D sceneDepth;
+#include "PostData.glsl"
+
+const float Keep = 0.9;
+const float Spread = 1.25;
+
+// Bright things squeezed, so a lone bright sample doesn't flicker or dominate its neighbours.
+vec3 squeeze(vec3 color)
+{
+    return color / (1.0 + luma(color));
+}
+
+vec3 unsqueeze(vec3 color)
+{
+    return color / max(1.0 - luma(color), 1e-3);
+}
+
+vec3 toYCoCg(vec3 c)
+{
+    return vec3(c.r * 0.25 + c.g * 0.5 + c.b * 0.25, c.r * 0.5 - c.b * 0.5, -c.r * 0.25 + c.g * 0.5 - c.b * 0.25);
+}
+
+vec3 fromYCoCg(vec3 c)
+{
+    return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z);
+}
+
+// Catmull-Rom in five taps, which keeps last frame's image sharp where plain bilinear would blur it a little more every frame.
+vec3 sharpHistory(vec2 uv, vec2 size)
+{
+    vec2 position = uv * size;
+    vec2 centre = floor(position - 0.5) + 0.5;
+    vec2 f = position - centre;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 tc0 = (centre - 1.0) / size;
+    vec2 tc12 = (centre + w2 / w12) / size;
+    vec2 tc3 = (centre + 2.0) / size;
+
+    vec3 sum = textureLod(history, vec2(tc12.x, tc0.y), 0.0).rgb * (w12.x * w0.y)
+        + textureLod(history, vec2(tc0.x, tc12.y), 0.0).rgb * (w0.x * w12.y)
+        + textureLod(history, tc12, 0.0).rgb * (w12.x * w12.y)
+        + textureLod(history, vec2(tc3.x, tc12.y), 0.0).rgb * (w3.x * w12.y)
+        + textureLod(history, vec2(tc12.x, tc3.y), 0.0).rgb * (w12.x * w3.y);
+    float total = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+    return max(sum / total, vec3(0.0));
+}
+
+void main()
+{
+    ivec2 size = imageSize(result);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec3 now = texelFetch(current, pixel, 0).rgb;
+    if (post.moved.w < 0.5)
+    {
+        imageStore(result, pixel, vec4(now, 1.0));
+        return;
+    }
+
+    // What's round this pixel now: what last frame's colour may be.
+    vec3 mean = vec3(0.0);
+    vec3 square = vec3(0.0);
+    for (int y = -1; y <= 1; y++)
+    {
+        for (int x = -1; x <= 1; x++)
+        {
+            vec3 c = toYCoCg(squeeze(texelFetch(current, clamp(pixel + ivec2(x, y), ivec2(0), size - 1), 0).rgb));
+            mean += c;
+            square += c * c;
+        }
+    }
+
+    mean /= 9.0;
+    vec3 spread = sqrt(max(square / 9.0 - mean * mean, vec3(0.0))) * Spread;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    float depth = texelFetch(sceneDepth, pixel, 0).r;
+    vec3 here = (post.forward.xyz + ndc.x * post.right.xyz + ndc.y * post.up.xyz) * (post.forward.w / max(depth, 1e-8));
+    vec4 clip = post.previousViewProjection * vec4(here + post.moved.xyz, 1.0);
+
+    vec3 color = now;
+    if (clip.w > 0.0)
+    {
+        vec2 previous = vec2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+        if (all(greaterThanEqual(previous, vec2(0.0))) && all(lessThanEqual(previous, vec2(1.0))))
+        {
+            vec3 past = toYCoCg(squeeze(sharpHistory(previous, vec2(size))));
+            // Towards the middle of the box rather than to its nearest corner, which keeps the colour from drifting.
+            vec3 offset = past - mean;
+            vec3 reach = abs(offset) / max(spread, vec3(1e-5));
+            float furthest = max(reach.x, max(reach.y, reach.z));
+            if (furthest > 1.0)
+                past = mean + offset / furthest;
+
+            color = unsqueeze(mix(squeeze(now), fromYCoCg(past), Keep));
+        }
+    }
+
+    imageStore(result, pixel, vec4(color, 1.0));
+}

@@ -138,16 +138,17 @@ public sealed unsafe class AmbientOcclusion : IDisposable
         ], []);
     }
 
-    /// Outside any render pass, after the world's ended and before anything's laid over it. bindWorld binds the sky, the shadows and
+    /// Outside any render pass, after the world's ended and before anything's laid over it. noiseFrame turns its noise each frame, for
+    /// temporal anti-aliasing to smooth out. bindWorld binds the sky, the shadows and
     /// the clouds' shade to a layout.
-    public void Draw(CommandBuffer cmd, RenderTarget target, Camera camera, float aspect, Action<VkPipelineLayout> bindWorld)
+    public void Draw(CommandBuffer cmd, RenderTarget target, Camera camera, float aspect, int noiseFrame, Action<VkPipelineLayout> bindWorld)
     {
         Resize(target);
 
         var tanY = MathF.Tan(camera.FieldOfView * 0.5f);
         var uniforms = new Uniforms
         {
-            Right = new float4(camera.Right * (tanY * aspect), 0f),
+            Right = new float4(camera.Right * (tanY * aspect), noiseFrame % 64),
             Up = new float4(camera.Up * tanY, 0f),
             Forward = new float4(camera.Forward, camera.Near),
         };

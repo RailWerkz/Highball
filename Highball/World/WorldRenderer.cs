@@ -51,6 +51,7 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly SunShadows _shadows = new();
     private readonly Clouds _clouds = new();
     private readonly AmbientOcclusion _occlusion = new();
+    private readonly PostProcess _post = new();
     private readonly TerrainHorizon _horizon = new();
     private readonly Vegetation _vegetation = new();
     private VkPipeline _sky;
@@ -62,12 +63,6 @@ public sealed unsafe class WorldRenderer : IDisposable
     private VkPipeline _partWire;
     private VkPipeline _model;
     private VkPipeline _plant;
-    private readonly VkDescriptorSetLayout _tonemapSetLayout;
-    private readonly VkPipelineLayout _tonemapLayout;
-    private readonly VkPipeline _tonemap;
-    private VkDescriptorPool _pool;
-    private VkDescriptorSet _tonemapSet;
-    private int _targetVersion = -1;
     private VkSampleCountFlags _pipelineSamples;
 
     /// Unit vector towards the sun.
@@ -75,7 +70,8 @@ public sealed unsafe class WorldRenderer : IDisposable
 
     /// The sky and the light it gives; switch it with Sky.Use.
     public Sky Sky { get; } = new(RailWerkz.Core.Settings.Settings.Current.Skybox);
-    public float Exposure { get; set; } = 1f;
+    public float Exposure { get => _post.Exposure; set => _post.Exposure = value; }
+    public bool MeasureExposure { get => _post.MeasureExposure; set => _post.MeasureExposure = value; }
     public bool Wireframe { get; set; }
     public bool Shadows { get => _shadows.Enabled; set => _shadows.Enabled = value; }
     public Clouds Clouds => _clouds;
@@ -88,24 +84,6 @@ public sealed unsafe class WorldRenderer : IDisposable
         _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
         _modelLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(3), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
         CreateWorldPipelines();
-
-        using var fullscreen = Shader.Load("fullscreen.vert");
-        using var tonemap = Shader.Load("tonemap.frag");
-        var binding = new VkDescriptorSetLayoutBinding
-        {
-            Binding = 0,
-            DescriptorType = VkDescriptorType.CombinedImageSampler,
-            DescriptorCount = 1,
-            StageFlags = VkShaderStageFlags.FragmentBit,
-        };
-        var setLayout = new VkDescriptorSetLayoutCreateInfo { BindingCount = 1, Bindings = &binding };
-        _tonemapSetLayout = Gpu.Device.CreateDescriptorSetLayout(in setLayout, Gpu.Device.VkAllocator);
-        _tonemapLayout = Pipelines.Layout(16, _tonemapSetLayout);
-        _tonemap = Pipelines.Create(new PipelineDesc
-        {
-            Vertex = fullscreen, Fragment = tonemap, Layout = _tonemapLayout, Cull = VkCullModeFlags.None, DepthTest = false, DepthWrite = false,
-            RenderPass = Gpu.PresentPass, ColorFormat = Gpu.SwapchainFormat,
-        });
     }
 
     /// The pipelines that draw into the target, which are made for its samples per pixel.
@@ -194,6 +172,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         }
 
         _target.Resize(size);
+        _post.Jitter(camera, size);
         var aspect = size.X / (float)size.Y;
         var camPos = new float4((float)camera.X, (float)camera.Y, (float)camera.Z, 0f);
         var sun = new float4(Sun, 0f);
@@ -236,7 +215,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         if (terrain is not null)
         {
             using var _ = Profiler.Sample("Terrain");
-            var push = new TerrainPush { ViewProjection = camera.ViewProjection(aspect), Camera = camPos, Sun = sun };
+            var push = new TerrainPush { ViewProjection = camera.JitteredViewProjection(aspect), Camera = camPos, Sun = sun };
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _terrainWire : _terrain);
             Sky.Bind(cmd, _terrainLayout);
             _shadows.Bind(cmd, _terrainLayout);
@@ -253,7 +232,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         {
             var push = new TerrainPush
             {
-                ViewProjection = camera.ViewProjection(aspect),
+                ViewProjection = camera.JitteredViewProjection(aspect),
                 Camera = new float4(camPos.X, camPos.Y, camPos.Z, network.NearRadius),
                 Sun = sun,
             };
@@ -301,7 +280,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         if (RailWerkz.Core.Settings.Settings.Current.AmbientOcclusion)
         {
             using var _ = Profiler.Sample("Ambient occlusion");
-            _occlusion.Draw(cmd, _target, camera, aspect, layout =>
+            _occlusion.Draw(cmd, _target, camera, aspect, _post.NoiseFrame, layout =>
             {
                 Sky.Bind(cmd, layout);
                 _shadows.Bind(cmd, layout);
@@ -312,6 +291,9 @@ public sealed unsafe class WorldRenderer : IDisposable
         // Over everything: they march only as far as the depth just drawn, so they're right from under, in or above the layers.
         using (Profiler.Sample("Clouds"))
             _clouds.Draw(cmd, _target);
+
+        using (Profiler.Sample("After the world"))
+            _post.Draw(cmd, _target, camera, aspect, Sky);
     }
 
     /// The land cover's colour round the camera, for what's reflected in metal and lights things from beneath. It changes slowly,
@@ -356,7 +338,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         Sky.Bind(cmd, _modelLayout);
         _shadows.Bind(cmd, _modelLayout);
         _clouds.Bind(cmd, _modelLayout);
-        var viewProjection = camera.ViewProjection(aspect);
+        var viewProjection = camera.JitteredViewProjection(aspect);
 
         foreach (var draw in models)
         {
@@ -379,63 +361,11 @@ public sealed unsafe class WorldRenderer : IDisposable
         }
     }
 
-    /// Draws the tonemapped world over the screen. Inside the present pass, before the interface.
-    public void Composite(CommandBuffer cmd)
-    {
-        if (_target.Version != _targetVersion)
-            RefreshSet();
-
-        var size = Gpu.Extent;
-        cmd.SetViewport(0, [new VkViewport { X = 0f, Y = 0f, Width = size.X, Height = size.Y, MinDepth = 0f, MaxDepth = 1f }]);
-        cmd.SetScissor(0, [new VkRect2D(size.X, size.Y)]);
-        cmd.BindPipeline(VkPipelineBindPoint.Graphics, _tonemap);
-        cmd.BindDescriptorSets(VkPipelineBindPoint.Graphics, _tonemapLayout, 0, [_tonemapSet], []);
-        cmd.PushConstants(_tonemapLayout, Stages, ByteSize.Zero, new float4(Exposure, 0f, 0f, 0f));
-        cmd.Draw(3, 1, 0, 0);
-    }
-
-    /// The target was remade: a new set pointing at it, from a pool of its own, since the old one may still be in use
-    /// by a frame in flight.
-    private void RefreshSet()
-    {
-        FreeSet();
-        var size = new VkDescriptorPoolSize { Type = VkDescriptorType.CombinedImageSampler, DescriptorCount = 1 };
-        var pool = new VkDescriptorPoolCreateInfo { MaxSets = 1, PoolSizeCount = 1, PoolSizes = &size };
-        _pool = Gpu.Device.CreateDescriptorPool(in pool, Gpu.Device.VkAllocator);
-
-        var layout = _tonemapSetLayout;
-        var allocate = new VkDescriptorSetAllocateInfo { DescriptorPool = _pool, DescriptorSetCount = 1, SetLayouts = &layout };
-        var sets = new VkDescriptorSet[1];
-        Gpu.Device.AllocateDescriptorSets(in allocate, sets);
-        _tonemapSet = sets[0];
-
-        var image = new VkDescriptorImageInfo { Sampler = _target.Sampler, ImageView = _target.ColorView, ImageLayout = VkImageLayout.ShaderReadOnlyOptimal };
-        var write = new VkWriteDescriptorSet
-        {
-            DstSet = _tonemapSet,
-            DstBinding = 0,
-            DescriptorCount = 1,
-            DescriptorType = VkDescriptorType.CombinedImageSampler,
-            ImageInfo = &image,
-        };
-        Gpu.Device.UpdateDescriptorSets([write], []);
-        _targetVersion = _target.Version;
-    }
-
-    private void FreeSet()
-    {
-        if (_pool.IsNull())
-            return;
-
-        var pool = _pool;
-        _pool = default;
-        _tonemapSet = default;
-        Gpu.Defer(() => Gpu.Device.DestroyDescriptorPool(pool, Gpu.Device.VkAllocator));
-    }
+    /// Draws the finished world over the screen. Inside the present pass, before the interface.
+    public void Composite(CommandBuffer cmd) => _post.Composite(cmd);
 
     public void Dispose()
     {
-        FreeSet();
         _target.Dispose();
         DestroyWorldPipelines();
         Pipelines.Destroy(default, _terrainLayout);
@@ -444,12 +374,10 @@ public sealed unsafe class WorldRenderer : IDisposable
         _shadows.Dispose();
         _clouds.Dispose();
         _occlusion.Dispose();
+        _post.Dispose();
         _horizon.Dispose();
         _vegetation.Dispose();
         Pipelines.Destroy(default, _layout);
         Sky.Dispose();
-        Pipelines.Destroy(_tonemap, _tonemapLayout);
-        var setLayout = _tonemapSetLayout;
-        Gpu.Defer(() => Gpu.Device.DestroyDescriptorSetLayout(setLayout, Gpu.Device.VkAllocator));
     }
 }

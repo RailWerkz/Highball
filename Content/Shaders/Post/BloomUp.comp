@@ -1,0 +1,27 @@
+#version 450
+// Bloom's way back up: each level is its own downsample mixed with the level below, spread by a 3 x 3 tent, so the glow is tight round
+// bright things and wide and faint further out.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D result;
+layout(set = 0, binding = 1) uniform sampler2D own;
+layout(set = 0, binding = 2) uniform sampler2D lower;
+#include "PostData.glsl"
+
+void main()
+{
+    ivec2 size = imageSize(result);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec2 t = 1.0 / vec2(textureSize(lower, 0));
+
+    #define TAP(x, y) textureLod(lower, uv + vec2(x, y) * t, 0.0).rgb
+    vec3 spread = TAP(0.0, 0.0) * 4.0
+        + (TAP(0.0, 1.0) + TAP(-1.0, 0.0) + TAP(1.0, 0.0) + TAP(0.0, -1.0)) * 2.0
+        + TAP(-1.0, 1.0) + TAP(1.0, 1.0) + TAP(-1.0, -1.0) + TAP(1.0, -1.0);
+    imageStore(result, pixel, vec4(mix(texelFetch(own, pixel, 0).rgb, spread / 16.0, 0.65), 1.0));
+}

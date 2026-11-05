@@ -1,0 +1,88 @@
+#version 450
+// Measures the picture, into one pixel kept from frame to frame. Red: its brightness, as an eye settling on it would see it, ignoring the
+// darkest and brightest parts and counting the middle of the screen for more. Green: how much of the sun can be seen.
+
+layout(local_size_x = 1, local_size_y = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform image2D result;
+layout(set = 0, binding = 1) uniform sampler2D reduced;
+layout(set = 0, binding = 2) uniform sampler2D colorNow;
+layout(set = 0, binding = 3) uniform sampler2D sceneDepth;
+#include "PostData.glsl"
+
+const int Bins = 64;
+const float LowestLog = -10.0;
+const float HighestLog = 6.0;
+
+float sunVisible()
+{
+    if (post.sun.w <= 0.0 || luma(post.sunColor.rgb) <= 0.0)
+        return 0.0;
+
+    float seen = 0.0;
+    vec2 scale = vec2(1.0 / post.sunUv.z, 1.0) * 0.012;
+    for (int i = 0; i < 32; i++)
+    {
+        float r = sqrt((float(i) + 0.5) / 32.0);
+        float a = float(i) * 2.39996323;
+        vec2 uv = post.sunUv.xy + vec2(cos(a), sin(a)) * r * scale;
+        if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0)
+            continue;
+
+        if (textureLod(sceneDepth, uv, 0.0).r <= 0.0)
+            seen += smoothstep(0.25, 0.9, luma(textureLod(colorNow, uv, 0.0).rgb) / luma(post.sunColor.rgb));
+    }
+
+    return seen / 32.0;
+}
+
+void main()
+{
+    uint bins[Bins];
+    for (int i = 0; i < Bins; i++)
+        bins[i] = 0u;
+
+    ivec2 size = textureSize(reduced, 0);
+    uint total = 0u;
+    for (int y = 0; y < size.y; y++)
+    {
+        for (int x = 0; x < size.x; x++)
+        {
+            vec2 d = (vec2(x, y) + 0.5) / vec2(size) * 2.0 - 1.0;
+            uint weight = uint(1.0 + 3.0 * clamp(1.0 - dot(d, d), 0.0, 1.0));
+            float brightness = log2(max(luma(texelFetch(reduced, ivec2(x, y), 0).rgb), 1e-4));
+            int bin = clamp(int((brightness - LowestLog) / (HighestLog - LowestLog) * float(Bins)), 0, Bins - 1);
+            bins[bin] += weight;
+            total += weight;
+        }
+    }
+
+    // The mean of what's left between the 30th and 85th percentiles.
+    float low = float(total) * 0.3;
+    float high = float(total) * 0.85;
+    float seen = 0.0;
+    float sum = 0.0;
+    float kept = 0.0;
+    for (int i = 0; i < Bins; i++)
+    {
+        float count = float(bins[i]);
+        float taken = max(min(seen + count, high) - max(seen, low), 0.0);
+        sum += taken * (LowestLog + (float(i) + 0.5) / float(Bins) * (HighestLog - LowestLog));
+        kept += taken;
+        seen += count;
+    }
+
+    float target = sum / max(kept, 1.0);
+    float visible = sunVisible();
+
+    vec4 last = imageLoad(result, ivec2(0));
+    if (last.b > 0.5)
+    {
+        // Slower to open up in the dark than to close down in the light, as eyes are.
+        float dt = post.sunUv.w;
+        target = mix(last.r, target, 1.0 - exp(-dt * (target > last.r ? 1.6 : 0.9)));
+        visible = mix(last.g, visible, 1.0 - exp(-dt * 12.0));
+    }
+
+    imageStore(result, ivec2(0), vec4(target, visible, 1.0, 1.0));
+}

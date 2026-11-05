@@ -11,6 +11,7 @@ public sealed unsafe class StorageImage : IDisposable
     public int Height { get; }
     public int Depth { get; }
     public int MipLevels { get; }
+    public VkImage VkImage => _image.VkImage;
     public VkImageView View => _view.VkImageView;
     public VkSampler Sampler { get; }
 

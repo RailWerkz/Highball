@@ -51,8 +51,8 @@ void main()
 
     vec3 acrossView = normalize(occlusion.right.xyz);
     vec3 upView = normalize(occlusion.up.xyz);
-    float turn = noiseAt(vec2(pixel));
-    float jitter = noiseAt(vec2(pixel) + vec2(5.3, 11.7));
+    float turn = fract(noiseAt(vec2(pixel)) + occlusion.right.w * 0.61803399);
+    float jitter = fract(noiseAt(vec2(pixel) + vec2(5.3, 11.7)) + occlusion.right.w * 0.7548777);
 
     float total = 0.0;
     for (int slice = 0; slice < Slices; slice++)

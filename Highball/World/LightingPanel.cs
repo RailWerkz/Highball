@@ -17,7 +17,6 @@ public sealed class LightingPanel
     public bool Open;
 
     /// The most auto exposure opens up: it should still look like night at night.
-    private const float MaxAdaptation = 4f;
 
     /// Barstow, for a scene with no route of its own.
     public LightingPanel(WorldRenderer renderer, double latitude = 34.9, double longitude = -117.09)
@@ -30,6 +29,30 @@ public sealed class LightingPanel
         {
             DevTools.CloudCoverage = null;
             Settings.Current.CloudCoverage = coverage;
+        }
+
+        if (DevTools.NoTemporalAA)
+        {
+            DevTools.NoTemporalAA = false;
+            Settings.Current.TemporalAA = false;
+        }
+
+        if (DevTools.NoBloom)
+        {
+            DevTools.NoBloom = false;
+            Settings.Current.Bloom = false;
+        }
+
+        if (DevTools.NoGodRays)
+        {
+            DevTools.NoGodRays = false;
+            Settings.Current.GodRays = false;
+        }
+
+        if (DevTools.ColorGrade is { } grade)
+        {
+            DevTools.ColorGrade = null;
+            Settings.Current.ColorGrade = grade;
         }
 
         if (DevTools.NoOcclusion)
@@ -104,9 +127,8 @@ public sealed class LightingPanel
             }
         }
 
-        // Partly, not all the way: dusk should still look darker than noon.
-        var adaptation = s.AutoExposure ? MathF.Min(MathF.Pow(1f / MathF.Max(sky.Brightness, 1e-4f), 0.42f), MaxAdaptation) : 1f;
-        _renderer.Exposure = s.Exposure * adaptation;
+        _renderer.Exposure = s.Exposure;
+        _renderer.MeasureExposure = s.AutoExposure;
     }
 
     /// The window, if it's open, with anything else the screen wants in it.
@@ -154,6 +176,30 @@ public sealed class LightingPanel
             var shadows = _renderer.Shadows;
             if (ImGui.Checkbox("Sun shadows"u8, ref shadows))
                 _renderer.Shadows = shadows;
+
+            var temporal = s.TemporalAA;
+            if (ImGui.Checkbox("Temporal anti-aliasing"u8, ref temporal))
+                s.TemporalAA = temporal;
+
+            var bloom = s.Bloom;
+            if (ImGui.Checkbox("Bloom"u8, ref bloom))
+                s.Bloom = bloom;
+
+            var rays = s.GodRays;
+            if (ImGui.Checkbox("God rays and glare"u8, ref rays))
+                s.GodRays = rays;
+
+            var look = ColorGrade.Find(s.ColorGrade);
+            if (ImGui.BeginCombo("Look"u8, look.Label))
+            {
+                foreach (var grade in ColorGrade.All)
+                {
+                    if (ImGui.Selectable(grade.Label, grade == look))
+                        s.ColorGrade = grade.Id;
+                }
+
+                ImGui.EndCombo();
+            }
 
             var occluded = s.AmbientOcclusion;
             if (ImGui.Checkbox("Ambient occlusion"u8, ref occluded))

@@ -1,0 +1,51 @@
+#version 450
+// God rays, at quarter size: from each pixel, walks towards the sun on screen and counts how much bright sky it passes. Where hills, trees
+// and clouds cut that off there's a shaft of shade in the glow.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D result;
+layout(set = 0, binding = 1) uniform sampler2D colorNow;
+layout(set = 0, binding = 3) uniform sampler2D sceneDepth;
+#include "PostData.glsl"
+
+const int Steps = 32;
+
+void main()
+{
+    ivec2 size = imageSize(result);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    if (post.sun.w <= 0.0 || post.sunColor.w <= 0.0)
+    {
+        imageStore(result, pixel, vec4(0.0));
+        return;
+    }
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec2 to = post.sunUv.xy - uv;
+    vec2 flat2 = to * vec2(post.sunUv.z, 1.0);
+    float away = length(flat2);
+
+    float jitter = noiseAt(vec2(pixel));
+    float light = 1.0 / max(luma(post.sunColor.rgb), 1e-3);
+    float sum = 0.0;
+    float total = 0.0;
+    for (int i = 0; i < Steps; i++)
+    {
+        float t = (float(i) + jitter) / float(Steps);
+        vec2 at = uv + to * t;
+        float weight = 1.0 - t * 0.6;
+        total += weight;
+        if (at.x < 0.0 || at.y < 0.0 || at.x > 1.0 || at.y > 1.0)
+            continue;
+
+        if (textureLod(sceneDepth, at, 0.0).r <= 0.0)
+            sum += weight * clamp(luma(textureLod(colorNow, at, 0.0).rgb) * light * 1.5, 0.0, 1.0);
+    }
+
+    float shafts = sum / total * exp(-away * 2.6) * post.sun.w;
+    imageStore(result, pixel, vec4(shafts, shafts, shafts, 1.0));
+}

@@ -17,6 +17,9 @@ public sealed class Camera
     public float FieldOfView = 60f * MathF.PI / 180f;
     public float Near = 0.5f;
 
+    /// How far off, in clip space, the world is drawn this frame for temporal anti-aliasing.
+    public float2 Jitter;
+
     public float3 Forward
     {
         get
@@ -41,4 +44,17 @@ public sealed class Camera
     /// View and projection with the camera at the origin.
     public float4x4 ViewProjection(float aspect) =>
         MathEx.LookTo(default, Forward, new float3(0f, 1f, 0f)) * MathEx.Perspective(FieldOfView, aspect, Near);
+
+    /// The same, as the world's drawn this frame. Whatever has to line up from frame to frame uses ViewProjection instead.
+    public float4x4 JitteredViewProjection(float aspect)
+    {
+        var values = ViewProjection(aspect).AsReadOnlySpan().ToArray();
+        for (var row = 0; row < 4; row++)
+        {
+            values[row * 4] += Jitter.X * values[row * 4 + 3];
+            values[row * 4 + 1] += Jitter.Y * values[row * 4 + 3];
+        }
+
+        return new float4x4(values);
+    }
 }

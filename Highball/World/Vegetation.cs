@@ -559,7 +559,7 @@ public sealed unsafe class Vegetation : IDisposable
         var (forward, right, up) = (camera.Forward, camera.Right, camera.Up);
         var slackX = MathF.Sqrt(1f + tanX * tanX);
         var slackY = MathF.Sqrt(1f + tanY * tanY);
-        var push = new Push { Matrix = camera.ViewProjection(aspect) };
+        var push = new Push { Matrix = camera.JitteredViewProjection(aspect) };
         var phases = WindPhases();
 
         for (var k = 0; k < KindCount; k++)

@@ -1,0 +1,40 @@
+#version 450
+// Bloom's way down: Jimenez's thirteen taps (Call of Duty, Siggraph 2014), each level half the last. There's no threshold: everything
+// glows a little, as it does in a real lens, and only what's far brighter than the rest shows it. On the first level each group of taps
+// counts for less the brighter it is, so one sparkling pixel doesn't pulse.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D result;
+layout(set = 0, binding = 1) uniform sampler2D source;
+#include "PostData.glsl"
+
+vec3 group(vec3 a, vec3 b, vec3 c, vec3 d, bool tame)
+{
+    vec3 sum = (a + b + c + d) * 0.25;
+    return tame ? sum / (1.0 + luma(sum)) : sum;
+}
+
+void main()
+{
+    ivec2 size = imageSize(result);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec2 t = 1.0 / vec2(textureSize(source, 0));
+    bool first = imageSize(result).y * 3 > textureSize(source, 0).y && textureSize(source, 0).y > 400;
+
+    #define TAP(x, y) textureLod(source, uv + vec2(x, y) * t, 0.0).rgb
+    vec3 a = TAP(-2.0, 2.0), b = TAP(0.0, 2.0), c = TAP(2.0, 2.0);
+    vec3 d = TAP(-2.0, 0.0), e = TAP(0.0, 0.0), f = TAP(2.0, 0.0);
+    vec3 g = TAP(-2.0, -2.0), h = TAP(0.0, -2.0), i = TAP(2.0, -2.0);
+    vec3 j = TAP(-1.0, 1.0), k = TAP(1.0, 1.0), l = TAP(-1.0, -1.0), m = TAP(1.0, -1.0);
+
+    vec3 color = group(j, k, l, m, first) * 0.5
+        + (group(a, b, d, e, first) + group(b, c, e, f, first) + group(d, e, g, h, first) + group(e, f, h, i, first)) * 0.125;
+    if (first)
+        color /= max(1.0 - luma(color), 0.02);
+    imageStore(result, pixel, vec4(max(color, vec3(0.0)), 1.0));
+}
