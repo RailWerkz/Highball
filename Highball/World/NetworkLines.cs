@@ -1506,7 +1506,46 @@ public sealed partial class NetworkLines
                 continue;
             heights[sample] = (a.Y * b.D + b.Y * a.D) / MathF.Max(a.D + b.D, 1e-3f);
         }
+
+        // Under a road the ground follows the road point by point, a little below it: the shaping above works from every
+        // ConformStride-th point, and on a road's changing grade the ground between them can rise through its surface.
+        var under = new float[heights.Length];
+        Array.Fill(under, float.MaxValue);
+        foreach (var index in list)
+        {
+            var line = _lines[index];
+            if (line.Rail || line.Mark)
+                continue;
+            var r = line.Formation / _spacing;
+            for (var p = 0; p + 1 < line.Count; p++)
+            {
+                if (line.Structures[p] != Structure.Ground)
+                    continue;
+                var (ax, az, bx, bz) = (line.X[p] / _spacing - gx0, line.Z[p] / _spacing - gz0, line.X[p + 1] / _spacing - gx0, line.Z[p + 1] / _spacing - gz0);
+                var (x0, x1) = (Math.Max(0, (int)Math.Floor(Math.Min(ax, bx) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(ax, bx) + r)));
+                var (z0, z1) = (Math.Max(0, (int)Math.Floor(Math.Min(az, bz) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(az, bz) + r)));
+                var (dx, dz) = (bx - ax, bz - az);
+                var length2 = dx * dx + dz * dz;
+                for (var z = z0; z <= z1; z++)
+                    for (var x = x0; x <= x1; x++)
+                    {
+                        var t = length2 > 0 ? Math.Clamp(((x - ax) * dx + (z - az) * dz) / length2, 0.0, 1.0) : 0.0;
+                        var (ex, ez) = (ax + dx * t - x, az + dz * t - z);
+                        var d = (float)Math.Sqrt(ex * ex + ez * ez) * _spacing;
+                        var sample = z * samples + x;
+
+                        // (Not where a track's formation lies nearer: that's the track's ground.)
+                        if (d > line.Formation || d >= under[sample] || d > claimed[sample] + 1f)
+                            continue;
+                        under[sample] = d;
+                        heights[sample] = line.Y[p] + (line.Y[p + 1] - line.Y[p]) * (float)t - RoadClearance;
+                    }
+            }
+        }
     }
+
+    /// How far under a road's formation height the ground beneath it lies.
+    private const float RoadClearance = 0.02f;
 
     /// How far apart two rail lines can be for the ground between them to be graded as one.
     private const float YardGap = 45f;
