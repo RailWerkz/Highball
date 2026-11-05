@@ -47,6 +47,13 @@ wrong. Needs Fixing in the side panel lists every red one with why; clicking one
 
 In Route Builder → Open Route, Enter opens the highlighted route and Del deletes it (its whole folder), once confirmed.
 
+## Terrain shaping
+
+Wherever a terrain square's two diagonals climb very differently, it's split along the gentler one, so steep banks come out as slopes
+rather than a sawtooth. Rock on steep ground takes the colour of the land cover around it. Ground under a bridge is kept below its
+deck, easing off over the last 6 m to each end. All of this happens as tiles load, so it needs no rebuild and hand sculpting still
+goes on top.
+
 ## Moving around the editors
 
 | | 2D Editor | 3D Editor |
@@ -481,7 +488,7 @@ for each route given; run it before and after a change to the junction fitting t
 | `--sculpt TOOL STEPS` | Apply a terrain tool at the middle of the screen |
 | `--fly SPEED` | Fly straight ahead at SPEED m/s, logging frame times and terrain streaming |
 | `--skybox NAME` | Use that sky |
-| `--panels` | Open Frame Statistics, Profiler and Background Work |
+| `--panels` | Open Frame Statistics, Profiler and Threading |
 
 ## Threads
 

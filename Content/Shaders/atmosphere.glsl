@@ -122,7 +122,8 @@ vec3 sunDisc(vec3 dir, vec3 sun)
 // well under the sun so greys stay grey rather than going blue-white.
 vec3 skyAmbient(vec3 n)
 {
-    return mix(Ground * 0.5, Zenith * 0.9 + Horizon * 0.45, n.y * 0.5 + 0.5);
+    // Sky above, and on anything facing sideways or down, sunlight bounced off the ground, so shade isn't just the sky's blue.
+    return mix(Ground * 0.5, Zenith * 0.9 + Horizon * 0.45, n.y * 0.5 + 0.5) + vec3(0.17, 0.15, 0.12) * (1.0 - clamp(n.y, 0.0, 1.0));
 }
 
 // Exponential height fog: thicker in the valleys, thinning with altitude along the ray.

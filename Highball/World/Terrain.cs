@@ -57,12 +57,14 @@ public sealed class Terrain : IDisposable
         public required Mesh Mesh { get; init; }
         /// Vertices outside the built tiles, or null when every vertex is inside.
         public bool[]? Valid { get; init; }
+        /// The quads split the other way, to lie along the slope; null when none are.
+        public bool[]? Flips { get; init; }
         public Dictionary<int, (BufferEx Buffer, int Count)>? OwnIndices;
         public long Used;
     }
 
     /// Epoch: the edit count when the build started, so an edit made while it ran still leaves the patch stale.
-    private sealed record Built(Key Key, float3 Origin, TerrainVertex[] Vertices, bool[]? Valid, int Epoch);
+    private sealed record Built(Key Key, float3 Origin, TerrainVertex[] Vertices, bool[]? Valid, bool[]? Flips, int Epoch);
 
     private readonly TerrainSource _source;
     private readonly Dictionary<Key, Patch> _patches = [];
@@ -134,7 +136,7 @@ public sealed class Terrain : IDisposable
                 Release(old);
 
             var mesh = Mesh.Create<TerrainVertex>(built.Vertices, TerrainVertex.Layout, later: true);
-            _patches[built.Key] = new Patch { Key = built.Key, Origin = built.Origin, Mesh = mesh, Valid = built.Valid, Used = _frame };
+            _patches[built.Key] = new Patch { Key = built.Key, Origin = built.Origin, Mesh = mesh, Valid = built.Valid, Flips = built.Flips, Used = _frame };
         }
 
         _leaves.Clear();
@@ -296,7 +298,7 @@ public sealed class Terrain : IDisposable
         }
         catch
         {
-            _built.Enqueue(new Built(key, default, null!, null, epoch));
+            _built.Enqueue(new Built(key, default, null!, null, null, epoch));
             throw;
         }
     }
@@ -373,7 +375,35 @@ public sealed class Terrain : IDisposable
             }
         }
 
-        return new Built(k, origin, vertices, valid, epoch);
+        return new Built(k, origin, vertices, valid, Diagonals(vertices, spacing), epoch);
+    }
+
+    /// How much further one way across a quad has to climb than the other, per metre of vertex spacing, before the quad's
+    /// split is turned to the gentler one.
+    private const float FlipGain = 0.5f;
+
+    /// Fewer quads than this needing it isn't worth the patch its own index list.
+    private const int FewestFlips = 16;
+
+    /// Which quads to split along their gentler diagonal. Split the same way everywhere, a steep slope running across the
+    /// diagonals comes out as a sawtooth. Null when no quad needs it, so the patch can share the common index list.
+    private static bool[]? Diagonals(TerrainVertex[] vertices, float spacing)
+    {
+        const int width = Quads + 1;
+        bool[]? flips = null;
+        var count = 0;
+        for (var z = 0; z < Quads; z++)
+            for (var x = 0; x < Quads; x++)
+            {
+                var (a, b, c, d) = (vertices[z * width + x].Position.Y, vertices[z * width + x + 1].Position.Y, vertices[(z + 1) * width + x].Position.Y, vertices[(z + 1) * width + x + 1].Position.Y);
+                if (MathF.Abs(b - c) - MathF.Abs(a - d) <= FlipGain * spacing)
+                    continue;
+                flips ??= new bool[Quads * Quads];
+                flips[z * Quads + x] = true;
+                count++;
+            }
+
+        return count >= FewestFlips ? flips : null;
     }
 
     private static float3 Normalize(float3 v) => v / MathF.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
@@ -409,11 +439,11 @@ public sealed class Terrain : IDisposable
     private (BufferEx Buffer, int Count) Indices(Patch patch)
     {
         var ratios = Ratios(patch.Key);
-        var cache = patch.Valid is null ? _sharedIndices : patch.OwnIndices ??= [];
+        var cache = patch.Valid is null && patch.Flips is null ? _sharedIndices : patch.OwnIndices ??= [];
         if (cache.TryGetValue(ratios, out var indices))
             return indices;
 
-        var list = Triangulate(ratios, patch.Valid);
+        var list = Triangulate(ratios, patch.Valid, patch.Flips);
         indices = list.Length > 0 ? (Buffers.UploadLater(MemoryMarshal.AsBytes(list), VkBufferUsageFlags.IndexBufferBit, "terrain.indices"), list.Length) : (default, 0);
         cache[ratios] = indices;
         return indices;
@@ -424,7 +454,7 @@ public sealed class Terrain : IDisposable
 
     /// The triangles of a 64 x 64 grid with its edges stitched to the given ratios, skipping any that touch an invalid
     /// vertex, written into _triangles (main thread). Counter-clockwise seen from above.
-    private ReadOnlySpan<uint> Triangulate(int ratios, bool[]? valid)
+    private ReadOnlySpan<uint> Triangulate(int ratios, bool[]? valid, bool[]? flips)
     {
         const int width = Quads + 1;
         var indices = _triangles;
@@ -458,8 +488,16 @@ public sealed class Terrain : IDisposable
         {
             for (var x = x0; x < x1; x++)
             {
-                Triangle(x, z, x, z + 1, x + 1, z);
-                Triangle(x + 1, z, x, z + 1, x + 1, z + 1);
+                if (flips is not null && flips[z * Quads + x])
+                {
+                    Triangle(x, z, x, z + 1, x + 1, z + 1);
+                    Triangle(x, z, x + 1, z + 1, x + 1, z);
+                }
+                else
+                {
+                    Triangle(x, z, x, z + 1, x + 1, z);
+                    Triangle(x + 1, z, x, z + 1, x + 1, z + 1);
+                }
             }
         }
 

@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 namespace Highball.App;
 
-/// One kind of background work, for the Background Work window: how many are running now, how many have finished, and how
+/// One kind of background work, for the Threading window: how many are running now, how many have finished, and how
 /// much time they've taken. Runners: how many a job stream has; nought for work that isn't a stream.
 public sealed class Activity(string name, int runners)
 {

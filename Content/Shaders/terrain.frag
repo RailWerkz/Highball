@@ -93,8 +93,10 @@ void main()
         vec3 blend = pow(abs(n), vec3(4.0));
         blend /= blend.x + blend.y + blend.z;
         vec3 wx = world;
-        vec3 rockColor = vec3(0.17, 0.16, 0.145) * (detail2(cliffAlbedo, wx.zy, CliffTile) * blend.x
-            + detail2(cliffAlbedo, wx.xz, CliffTile) * blend.y + detail2(cliffAlbedo, wx.xy, CliffTile) * blend.z);
+        // Rock in the colour of the ground it's cut through, its grain softened: a bank in pale desert isn't a black hole.
+        vec3 grainy = detail2(cliffAlbedo, wx.zy, CliffTile) * blend.x + detail2(cliffAlbedo, wx.xz, CliffTile) * blend.y
+            + detail2(cliffAlbedo, wx.xy, CliffTile) * blend.z;
+        vec3 rockColor = mix(vec3(0.17, 0.16, 0.145), vCover.rgb * 0.72, 0.8) * mix(vec3(1.0), grainy, 0.55);
         // Gentler than the ground's: on a slope the relief tilts faces right away from the sun.
         vec2 rx = relief2(cliffNormal, wx.zy, CliffTile) * 0.6;
         vec2 ry = relief2(cliffNormal, wx.xz, CliffTile) * 0.6;

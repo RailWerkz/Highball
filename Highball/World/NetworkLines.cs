@@ -1542,7 +1542,58 @@ public sealed partial class NetworkLines
                     }
             }
         }
+
+        foreach (var index in list)
+            if (Array.IndexOf(_lines[index].Structures, Structure.Bridge) >= 0)
+                ClearBridges(index, heights, samples, gx0, gz0);
     }
+
+    /// Keeps the ground below a bridge's deck: it may rise from under the deck at the cut slope outward, and the requirement
+    /// eases off over the last few metres to each end, where a deck meets the ground anyway. Mapped ends and lidar rarely agree
+    /// to the metre, so a deck drawn between its ends can otherwise have the ground come up through it.
+    private void ClearBridges(int index, float[] heights, int samples, int gx0, int gz0)
+    {
+        var line = _lines[index];
+        var (half, depth) = line.Rail ? (line.BallastHalfTop + 0.9f, 1.8f) : (line.Width * 0.5f + 0.4f, 1.4f);
+        var r = (half + BridgeClearReach) / _spacing;
+        for (var from = 0; from < line.Structures.Length; from++)
+        {
+            if (line.Structures[from] != Structure.Bridge)
+                continue;
+            var to = from;
+            while (to + 1 < line.Structures.Length && line.Structures[to + 1] == Structure.Bridge)
+                to++;
+
+            var (start, end) = (line.S[from], line.S[to + 1]);
+            for (var p = from; p <= to; p++)
+            {
+                var (ax, az, bx, bz) = (line.X[p] / _spacing - gx0, line.Z[p] / _spacing - gz0, line.X[p + 1] / _spacing - gx0, line.Z[p + 1] / _spacing - gz0);
+                var (x0, x1) = (Math.Max(0, (int)Math.Floor(Math.Min(ax, bx) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(ax, bx) + r)));
+                var (z0, z1) = (Math.Max(0, (int)Math.Floor(Math.Min(az, bz) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(az, bz) + r)));
+                var (dx, dz) = (bx - ax, bz - az);
+                var length2 = dx * dx + dz * dz;
+                for (var z = z0; z <= z1; z++)
+                    for (var x = x0; x <= x1; x++)
+                    {
+                        var t = length2 > 0 ? Math.Clamp(((x - ax) * dx + (z - az) * dz) / length2, 0.0, 1.0) : 0.0;
+                        var (ex, ez) = (ax + dx * t - x, az + dz * t - z);
+                        var d = (float)Math.Sqrt(ex * ex + ez * ez) * _spacing;
+                        var s = line.S[p] + (line.S[p + 1] - line.S[p]) * (float)t;
+                        var ease = Math.Clamp(MathF.Min(s - start, end - s) / BridgeEndEase, 0f, 1f);
+                        var y = line.Y[p] + (line.Y[p + 1] - line.Y[p]) * (float)t;
+                        var limit = y - (depth + BridgeClearance) * ease + MathF.Max(0f, d - half) * CutSlope;
+                        if (heights[z * samples + x] > limit)
+                            heights[z * samples + x] = limit;
+                    }
+            }
+
+            from = to;
+        }
+    }
+
+    private const float BridgeClearance = 0.3f;
+    private const float BridgeClearReach = 8f;
+    private const float BridgeEndEase = 6f;
 
     /// How far under a road's formation height the ground beneath it lies.
     private const float RoadClearance = 0.02f;

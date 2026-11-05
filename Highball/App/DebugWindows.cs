@@ -4,14 +4,14 @@ using Brutal.Numerics;
 
 namespace Highball.App;
 
-/// The debug windows every Route Builder view shares: Frame Statistics (F4), Profiler (F5) and Background Work (F6).
+/// The debug windows every Route Builder view shares: Frame Statistics (F4), Profiler (F5) and Threading (F6).
 public static class DebugWindows
 {
     private const double SampleSeconds = 0.5;
 
     private static bool _stats;
     private static bool _profiler;
-    private static bool _work;
+    private static bool _threading;
 
     private static readonly float[] CpuHistory = new float[Profiler.History];
     private static int _cpuCursor;
@@ -20,7 +20,7 @@ public static class DebugWindows
     private static TimeSpan _cpuAt;
     private static long _ticksAt;
 
-    public static void ShowAll() => _stats = _profiler = _work = true;
+    public static void ShowAll() => _stats = _profiler = _threading = true;
 
     public static void Keys()
     {
@@ -29,14 +29,14 @@ public static class DebugWindows
         if (ImGui.IsKeyPressed(ImGuiKey.F5))
             _profiler = !_profiler;
         if (ImGui.IsKeyPressed(ImGuiKey.F6))
-            _work = !_work;
+            _threading = !_threading;
     }
 
     public static void Menu()
     {
         ImGui.MenuItem("Frame Statistics"u8, "F4"u8, ref _stats);
         ImGui.MenuItem("Profiler"u8, "F5"u8, ref _profiler);
-        ImGui.MenuItem("Background Work"u8, "F6"u8, ref _work);
+        ImGui.MenuItem("Threading"u8, "F6"u8, ref _threading);
     }
 
     /// x, y: where they first open. stats: the view's own lines in Frame Statistics. job: a route build in progress, if there is one.
@@ -47,8 +47,8 @@ public static class DebugWindows
             StatsWindow(x, y, stats);
         if (_profiler)
             ProfilerWindow(x, y + 290f);
-        if (_work)
-            WorkWindow(x + 572f, y, job);
+        if (_threading)
+            ThreadingWindow(x + 572f, y, job);
     }
 
     private static void StatsWindow(float x, float y, Action stats)
@@ -135,10 +135,10 @@ public static class DebugWindows
         (_sampledAt, _cpuAt, _ticksAt) = (now, cpu, ticks);
     }
 
-    private static void WorkWindow(float x, float y, (string Status, float Progress)? job)
+    private static void ThreadingWindow(float x, float y, (string Status, float Progress)? job)
     {
         ImGui.SetNextWindowPos(new float2(x, y), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("Background Work"u8, ref _work, ImGuiWindowFlags.AlwaysAutoResize))
+        if (ImGui.Begin("Threading"u8, ref _threading, ImGuiWindowFlags.AlwaysAutoResize))
         {
             var logical = Environment.ProcessorCount;
             ImGui.Text($"Whole game {_cpu:0}% of {logical} threads, {_cpu * logical / 100f:0.0} in use");
