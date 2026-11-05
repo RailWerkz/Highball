@@ -12,6 +12,7 @@ layout(push_constant) uniform Push
     vec4 offset;
     vec4 shape;
     vec4 shift;
+    vec4 wind;
 } pc;
 
 void main()

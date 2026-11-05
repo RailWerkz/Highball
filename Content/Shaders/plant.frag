@@ -21,6 +21,7 @@ layout(push_constant) uniform Push
     vec4 offset;
     vec4 shape;
     vec4 shift; // w: the camera's height
+    vec4 wind;
 } pc;
 
 void main()

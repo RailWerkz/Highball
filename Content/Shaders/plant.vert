@@ -2,6 +2,8 @@
 // Plants and rocks, one mesh drawn many times. Each shrinks away with distance, its own random number saying how soon, so a far
 // hillside thins out without any of them popping.
 
+#include "plant_wind.glsl"
+
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inUv;
@@ -17,9 +19,10 @@ layout(location = 4) out float vHeight;
 layout(push_constant) uniform Push
 {
     mat4 viewProjection;
-    vec4 offset; // the cell relative to the camera; w: time in seconds
+    vec4 offset; // the cell relative to the camera; w: the flutter's phase
     vec4 shape;  // how much the wind moves it, how much its normal leans up, how far away it's gone, where its cut-out comes from
     vec4 shift;  // moves the mesh to stand on its base; w: the camera's height
+    vec4 wind;   // xy: the cell's place, wrapped; zw: the gusts' phases
 } pc;
 
 void main()
@@ -38,12 +41,11 @@ void main()
     vec3 turned = vec3(model.x * c - model.z * s, model.y, model.x * s + model.z * c);
     vec3 normal = vec3(inNormal.x * c - inNormal.z * s, inNormal.y, inNormal.x * s + inNormal.z * c);
 
-    // Bends with height, in gusts that cross the ground.
+    // Bends more the higher up it is.
     if (pc.shape.x > 0.0)
     {
-        float gust = sin(pc.offset.w * 1.7 + (inPlace.x + inPlace.z) * 0.13 + random * 6.28) + 0.5 * sin(pc.offset.w * 4.1 + random * 17.0);
-        float bend = inPosition.y * inPosition.y * pc.shape.x * size;
-        turned.xz += vec2(0.8, 0.5) * gust * bend;
+        float up = max(inPosition.y + pc.shift.y, 0.0);
+        turned.xz += windPush(pc.wind.xy + inPlace.xz, away, vec3(pc.wind.zw, pc.offset.w), up * up * pc.shape.x * size);
     }
 
     vec3 relative = standing + turned;

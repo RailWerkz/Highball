@@ -70,7 +70,18 @@ public sealed unsafe class Vegetation : IDisposable
         public float4 Offset;
         public float4 Shape;
         public float4 Shift;
+        public float4 Wind;
     }
+
+    /// The gusts' and flutter's phases now: (gust, gust, flutter). A gust 69 m long passing at 4 m/s, one 37.5 m long at 4.5 m/s.
+    private static float3 WindPhases()
+    {
+        static float Phase(double hertz) => (float)(Time.Now * hertz % 1.0) * MathF.Tau;
+        return new float3(Phase(4.0 / 68.9), Phase(4.5 / 37.5), Phase(0.4));
+    }
+
+    /// The cell's place wrapped to the 1024 m plant_wind.glsl's waves repeat over; both sizes of cell divide it.
+    private static float WrapCell(int cell, float size) => cell * (int)size & 1023;
 
     private const VkShaderStageFlags Stages = VkShaderStageFlags.VertexBit | VkShaderStageFlags.FragmentBit;
 
@@ -117,16 +128,16 @@ public sealed unsafe class Vegetation : IDisposable
 
         _kinds[Grass] = new Kind
         {
-            Mesh = Own(GrassMesh()), Textures = Own(new TextureBinding(grassAlbedo, grassOpacity)), Wind = 0.12f, SoftNormal = 0.8f, Fade = NearReach * 0.92f, Cutout = 1f, LastCascade = 0,
+            Mesh = Own(GrassMesh()), Textures = Own(new TextureBinding(grassAlbedo, grassOpacity)), Wind = 0.07f, SoftNormal = 0.8f, Fade = NearReach * 0.92f, Cutout = 1f, LastCascade = 0,
         };
         _kinds[Pebble] = new Kind { Mesh = Own(RockMesh(11)), Textures = Own(new TextureBinding(rock, rock)), Fade = NearReach * 0.9f, Cutout = 2f, LastCascade = 0 };
         _kinds[Shrub] = new Kind
         {
-            Mesh = Own(ShrubMesh()), Textures = Own(new TextureBinding(twigs, twigs)), Wind = 0.05f, SoftNormal = 0.55f, Fade = FarReach * 0.9f, LastCascade = 3,
+            Mesh = Own(ShrubMesh()), Textures = Own(new TextureBinding(twigs, twigs)), Wind = 0.02f, SoftNormal = 0.55f, Fade = FarReach * 0.9f, LastCascade = 3,
         };
         _kinds[Boulder] = new Kind { Mesh = Own(RockMesh(29)), Textures = Own(new TextureBinding(rock, rock)), Fade = FarReach * 0.7f, Cutout = 2f, LastCascade = 3 };
         for (var i = FirstTree; i < KindCount; i++)
-            _kinds[i] = new Kind { Fade = FarReach * 0.95f, LastCascade = 3, Wind = i % 2 == 1 ? 0.04f : 0f };
+            _kinds[i] = new Kind { Fade = FarReach * 0.95f, LastCascade = 3 };
     }
 
     private T Own<T>(T thing) where T : IDisposable
@@ -519,6 +530,9 @@ public sealed unsafe class Vegetation : IDisposable
             var (b, l) = (_kinds[FirstTree + i * 2], _kinds[FirstTree + i * 2 + 1]);
             (b.Mesh, b.Textures, b.Shift) = (bark.Mesh, bark.Parts[0].Textures, shift);
             (l.Mesh, l.Textures, l.Shift) = (leaves.Mesh, leaves.Parts[0].Textures, shift);
+
+            // A hundredth of its height at the top in the strongest gust, trunk and leaves together.
+            b.Wind = l.Wind = 0.01f / MathF.Max(max.Y - min.Y, 1f);
         }
     }
 
@@ -546,7 +560,7 @@ public sealed unsafe class Vegetation : IDisposable
         var slackX = MathF.Sqrt(1f + tanX * tanX);
         var slackY = MathF.Sqrt(1f + tanY * tanY);
         var push = new Push { Matrix = camera.ViewProjection(aspect) };
-        var time = (float)(Time.Now % 3600.0);
+        var phases = WindPhases();
 
         for (var k = 0; k < KindCount; k++)
         {
@@ -582,9 +596,10 @@ public sealed unsafe class Vegetation : IDisposable
                     bound = true;
                 }
 
-                push.Offset = new float4((float)ox, -(float)camera.Y, (float)oz, time);
+                push.Offset = new float4((float)ox, -(float)camera.Y, (float)oz, phases.Z);
                 push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade, kind.Cutout);
                 push.Shift = new float4(kind.Shift, (float)camera.Y);
+                push.Wind = new float4(WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size), phases.X, phases.Y);
                 cmd.PushConstants(layout, Stages, ByteSize.Zero, push);
                 kind.Mesh.DrawInstanced(cmd, cell.Buffer, showing, cell.Starts[k]);
                 DrawnInstances += showing;
@@ -599,7 +614,7 @@ public sealed unsafe class Vegetation : IDisposable
             return;
 
         var push = new Push { Matrix = light };
-        var time = (float)(Time.Now % 3600.0);
+        var phases = WindPhases();
         for (var k = 0; k < KindCount; k++)
         {
             var kind = _kinds[k];
@@ -630,9 +645,10 @@ public sealed unsafe class Vegetation : IDisposable
                     bound = true;
                 }
 
-                push.Offset = new float4((float)ox, -(float)camera.Y, (float)oz, time);
+                push.Offset = new float4((float)ox, -(float)camera.Y, (float)oz, phases.Z);
                 push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade, kind.Cutout);
                 push.Shift = new float4(kind.Shift, (float)camera.Y);
+                push.Wind = new float4(WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size), phases.X, phases.Y);
                 cmd.PushConstants(layout, Stages, ByteSize.Zero, push);
                 kind.Mesh.DrawInstanced(cmd, cell.Buffer, showing, cell.Starts[k]);
             }
