@@ -10,8 +10,9 @@ using RailWerkz.Core.Logging;
 namespace Highball.Routes;
 
 /// Builds tiles of a route on a worker thread:
-///   heights from the USGS's 3D Elevation Program where it has them (bare earth, 1 m lidar in much of the US), and the
-///   AWS Terrain Tiles (Terrarium PNGs at zoom 15, metres to a 256th) everywhere else, sampled on the route's lattice;
+///   heights from the USGS's 3D Elevation Program for tiles marked lidar, where it has them (bare earth, 1 m lidar in much of
+///   the US), and the AWS Terrain Tiles (Terrarium PNGs at zoom 15, metres to a 256th) everywhere else, sampled on the
+///   route's lattice, and eased to meet any tile already built beside them;
 ///   ground cover from ESA WorldCover 2021 (10 m classes), read straight out of its cloud-optimised GeoTIFFs by range
 ///   requests;
 ///   roads and rail lines from OpenStreetMap through the Overpass API, at the detail asked for, merged into the
@@ -24,6 +25,13 @@ public sealed class RouteGenerator
         public required RouteInfo Route { get; init; }
         public required RouteNetwork Network { get; init; }
         public required List<TileId> Tiles { get; init; }
+
+        /// The tiles to build with lidar heights; all of them if null.
+        public IReadOnlySet<TileId>? Lidar { get; init; }
+
+        /// Just fetch where the rail runs under the tiles, into the network: nothing's built.
+        public bool FindTrackOnly { get; init; }
+
         public int RoadLevel { get; init; }
         public int RailLevel { get; init; }
 
@@ -76,7 +84,8 @@ public sealed class RouteGenerator
             try
             {
                 await Build(request, token);
-                _status = $"Built {request.Tiles.Count} tile{(request.Tiles.Count == 1 ? "" : "s")} in {watch.Elapsed.TotalSeconds:0}s";
+                if (!request.FindTrackOnly)
+                    _status = $"Built {request.Tiles.Count} tile{(request.Tiles.Count == 1 ? "" : "s")} in {watch.Elapsed.TotalSeconds:0}s";
                 Log.Info($"Route builder: {_status}");
             }
             catch (OperationCanceledException)
@@ -116,10 +125,23 @@ public sealed class RouteGenerator
         var unavailable = 0;
         var cover = new WorldCover();
 
+        if (r.FindTrackOnly)
+        {
+            Say("Asking OpenStreetMap where the track is", 0.5f);
+            var (railWays, railNodes) = await OpenStreetMap(route, r.Tiles, [], rails.Classes, token);
+            token.ThrowIfCancellationRequested();
+            r.Network.Merge(railWays, railNodes);
+            r.Network.Save(route);
+            Version++;
+            Say($"{railWays.Count} rail lines found", 1f);
+            return;
+        }
+
         // Tiles nearest the middle of the selection first.
         var middle = new RoutePoint(r.Tiles.Average(t => t.I + 0.5), r.Tiles.Average(t => t.J + 0.5));
         var tiles = r.Tiles.OrderBy(t => Math.Pow(t.I + 0.5 - middle.East, 2) + Math.Pow(t.J + 0.5 - middle.North, 2)).ToList();
         var share = 0.8f / tiles.Count;
+        var pending = tiles.ToHashSet();
 
         for (var n = 0; n < tiles.Count; n++)
         {
@@ -137,14 +159,17 @@ public sealed class RouteGenerator
             });
 
             float[]? exact = null;
-            try
+            if (r.Lidar is null || r.Lidar.Contains(tile))
             {
-                exact = await usgs.Heights(geo, grid.Spacing, token);
-            }
-            catch (Exception e) when (e is not OperationCanceledException)
-            {
-                unavailable++;
-                Log.Warn($"USGS heights: tile {tile} fell back to the coarser source ({e.Message})");
+                try
+                {
+                    exact = await usgs.Heights(geo, grid.Spacing, token);
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    unavailable++;
+                    Log.Warn($"USGS heights: tile {tile} fell back to the coarser source ({e.Message})");
+                }
             }
 
             var complete = exact is not null && !exact.Any(float.IsNaN);
@@ -162,6 +187,8 @@ public sealed class RouteGenerator
             var source = exact is null ? "AWS Terrain Tiles" : complete ? "USGS 3DEP" : "USGS 3DEP, AWS Terrain Tiles";
             if (exact is not null)
                 Usgs3dep.Blend(heights, exact, samples);
+            MeetNeighbours(route, tile, heights, samples, pending);
+            pending.Remove(tile);
 
             Say($"{label}: land cover", (n + 0.6f) * share);
             var cells = grid.CoverCells;
@@ -209,6 +236,44 @@ public sealed class RouteGenerator
         if (unavailable > 0)
             Say($"USGS heights unavailable for {unavailable} of {tiles.Count} tiles: those used the coarser source. Build them again to retry.", 1f);
         Progress = 1f;
+    }
+
+    /// How many samples in from its edge a tile eases to meet a tile already built beside it.
+    private const int MeetSamples = 150;
+
+    /// Eases a tile's heights to meet the edges of the tiles already built beside it (those still to be built this time meet
+    /// this one in turn), so lidar beside standard heights leaves no step. Rows run north to south.
+    private static void MeetNeighbours(RouteInfo route, TileId tile, float[] heights, int samples, HashSet<TileId> pending)
+    {
+        var last = samples - 1;
+        float[]? Beside(int di, int dj)
+        {
+            var near = new TileId(tile.I + di, tile.J + dj);
+            var folder = route.TileFolder(near);
+            return pending.Contains(near) || !File.Exists(Path.Combine(folder, "Tile.json")) ? null : RouteTile.Load(folder).Heights;
+        }
+
+        // One neighbour's edge: from(k) its sample, to(k) the one here that's the same place; in(k, n) the sample n in from there.
+        void Meet(float[]? other, Func<int, int> from, Func<int, int> to, Func<int, int, int> inward)
+        {
+            if (other is null)
+                return;
+            Parallel.For(0, samples, k =>
+            {
+                var gap = other[from(k)] - heights[to(k)];
+                for (var n = 0; n < MeetSamples; n++)
+                {
+                    var t = 1f - (float)n / MeetSamples;
+                    heights[inward(k, n)] += gap * t * t * (3f - 2f * t);
+                }
+            });
+        }
+
+        // North and south first, then east and west from what that's made of the edges, so each corner ends up on both.
+        Meet(Beside(0, 1), k => last * samples + k, k => k, (k, n) => n * samples + k);
+        Meet(Beside(0, -1), k => k, k => last * samples + k, (k, n) => (last - n) * samples + k);
+        Meet(Beside(-1, 0), k => k * samples + last, k => k * samples, (k, n) => k * samples + n);
+        Meet(Beside(1, 0), k => k * samples, k => k * samples + last, (k, n) => k * samples + last - n);
     }
 
     private static (double South, double West, double North, double East) Bounds(IReadOnlyCollection<GeoPoint> points) =>

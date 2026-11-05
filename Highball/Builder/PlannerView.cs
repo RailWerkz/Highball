@@ -10,12 +10,15 @@ using static RailWerkz.UI.Style;
 
 namespace Highball.Builder;
 
-/// The builder's Planner: the route's tiles over OpenStreetMap, picked by dragging across them, and built at the road
-/// and rail detail chosen in the side panel. The first area picked fixes the route's origin and its tile grid; every
+/// The builder's Planner: the route's tiles over OpenStreetMap, picked by dragging across them, each to be built with lidar
+/// heights or standard ones, at the road and rail detail chosen in the side panel. The first area picked fixes the route's origin and its tile grid; every
 /// later area lands on the same grid, so the route grows outward in one piece.
 public sealed class PlannerView : IDisposable
 {
-    private enum DragMode { Replace, Add, Remove }
+    private enum DragMode { Add, Remove }
+
+    private static readonly Rgba LidarColor = Rgba.Hex(0x4D8DFF);
+    private static readonly Rgba StandardColor = Rgba.Hex(0xFFC145);
 
     private sealed record Line(bool Rail, int Class, double[] X, double[] Y, double MinX, double MinY, double MaxX, double MaxY);
 
@@ -32,6 +35,15 @@ public sealed class PlannerView : IDisposable
     private readonly HashSet<TileId> _selected = [];
     private readonly Dictionary<(int, int), float2> _corners = [];
     private HashSet<TileId> _built;
+
+    /// Of the tiles selected, those to build with lidar; of those built, those that were; and which a drag marks next.
+    private readonly HashSet<TileId> _lidar = [];
+    private readonly HashSet<TileId> _builtLidar = [];
+    private bool _paintLidar = true;
+
+    /// Asking OpenStreetMap where the track is, to mark the selection by it; and then building, for testing.
+    private bool _findingTrack;
+    private bool _buildAfterFinding;
     private int _roadLevel = 2;
     private int _railLevel = 4;
     private int _generatorVersion;
@@ -64,6 +76,7 @@ public sealed class PlannerView : IDisposable
         _notify = notify;
         _network = RouteNetwork.Load(route);
         _built = route.BuiltTiles();
+        ReadBuiltSources(_built);
         _layouts = World.TrackLayouts.LoadMarkers(route);
 
         // The detail the route was last built at.
@@ -115,8 +128,69 @@ public sealed class PlannerView : IDisposable
                 for (var i = 0; i < select.Size; i++)
                     _selected.Add(new TileId(centre.I - select.Size / 2 + i, centre.J - select.Size / 2 + j));
             _map.LookAt(point, 13.0);
-            Build();
+            if (App.DevTools.TrackBuild)
+                (_buildAfterFinding, _) = (true, FindTrack());
+            else
+            {
+                _lidar.UnionWith(_selected);
+                Build();
+            }
         }
+    }
+
+    /// Which of these built tiles have lidar heights, from what each says it was built from.
+    private void ReadBuiltSources(IEnumerable<TileId> tiles)
+    {
+        foreach (var tile in tiles)
+        {
+            try
+            {
+                if (RouteTile.LoadInfo(_route.TileFolder(tile)).HeightSource.Contains("USGS"))
+                    _builtLidar.Add(tile);
+                else
+                    _builtLidar.Remove(tile);
+            }
+            catch (Exception e)
+            {
+                Log.Warn($"Tile {tile}: {e.Message}");
+            }
+        }
+    }
+
+    /// Marks the tiles selected: lidar where track runs through them, standard elsewhere.
+    private void MarkByTrack()
+    {
+        var track = new HashSet<TileId>();
+        foreach (var way in _network.Ways.Values.Where(w => w.Rail && w.Class != (int)RailClass.Disused))
+            for (var i = 0; i + 1 < way.Lat.Length; i++)
+            {
+                var (a, b) = (_route.Projection!.Forward(new GeoPoint(way.Lat[i], way.Lon[i])), _route.Projection.Forward(new GeoPoint(way.Lat[i + 1], way.Lon[i + 1])));
+                var steps = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(Math.Pow(b.East - a.East, 2) + Math.Pow(b.North - a.North, 2)) / 100.0));
+                for (var k = 0; k <= steps; k++)
+                    track.Add(_route.Grid!.TileAt(new RoutePoint(a.East + (b.East - a.East) * k / steps, a.North + (b.North - a.North) * k / steps)));
+            }
+
+        _lidar.Clear();
+        _lidar.UnionWith(_selected.Where(track.Contains));
+        _notify($"Track through {_lidar.Count} of {_selected.Count} tiles");
+    }
+
+    /// Fetches where the rail runs under the selection, then marks it. False if a build is running.
+    private bool FindTrack()
+    {
+        if (_route.Grid is null || _generator.Running)
+            return false;
+        _findingTrack = true;
+        _generator.Start(new RouteGenerator.Request
+        {
+            Route = _route,
+            Network = _network,
+            Tiles = [.. _selected],
+            RoadLevel = _roadLevel,
+            RailLevel = Math.Max(_railLevel, 1),
+            FindTrackOnly = true,
+        });
+        return true;
     }
 
     private static HttpClient CreateClient()
@@ -165,6 +239,7 @@ public sealed class PlannerView : IDisposable
             Route = _route,
             Network = _network,
             Tiles = [.. _selected],
+            Lidar = _lidar.ToHashSet(),
             RoadLevel = _roadLevel,
             RailLevel = _railLevel,
         });
@@ -182,6 +257,7 @@ public sealed class PlannerView : IDisposable
             Route = _route,
             Network = _network,
             Tiles = [.. _built],
+            Lidar = _builtLidar.ToHashSet(),
             RoadLevel = _roadLevel,
             RailLevel = _railLevel,
             ReplaceNetwork = true,
@@ -245,21 +321,39 @@ public sealed class PlannerView : IDisposable
         if (_generator.Version != _generatorVersion)
         {
             _generatorVersion = _generator.Version;
+            var before = _built;
             _built = _route.BuiltTiles();
+            ReadBuiltSources(_built.Where(t => !before.Contains(t) || _selected.Contains(t)));
         }
 
         if (_wasRunning && !_generator.Running)
         {
             _notify(_generator.Status);
-            if (_generator.Status.StartsWith("Built"))
+            if (_findingTrack)
+            {
+                _findingTrack = false;
+                _linesVersion = -1;
+                if (!_generator.Status.StartsWith("Failed") && _generator.Status != "Cancelled")
+                {
+                    MarkByTrack();
+                    if (_buildAfterFinding)
+                        Build();
+                }
+
+                _buildAfterFinding = false;
+            }
+            else if (_generator.Status.StartsWith("Built"))
+            {
                 _selected.Clear();
+                _lidar.Clear();
+            }
         }
 
         _wasRunning = _generator.Running;
     }
 
     public (string Key, string Action)[] Hints =>
-        [("LMB", "Select"), ("SHIFT", "Add"), ("CTRL", "Remove"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("TAB", "2D Editor"), ("ESC", "Exit")];
+        [("LMB", "Add tiles"), ("CTRL+LMB", "Remove tiles"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("TAB", "2D Editor"), ("ESC", "Exit")];
 
     public string Attribution => MapTiles.Attribution;
 
@@ -284,6 +378,14 @@ public sealed class PlannerView : IDisposable
         Level("Roads"u8, ref _roadLevel, Detail.RoadLevels.Select(l => l.Name).ToArray());
         Level("Rails"u8, ref _railLevel, Detail.RailLevels.Select(l => l.Name).ToArray());
 
+        ImGui.SeparatorText("Heights"u8);
+        HeightRow("Lidar"u8, LidarColor, true, _lidar.Count, _builtLidar.Count);
+        HeightRow("Standard"u8, StandardColor, false, _selected.Count - _lidar.Count, _built.Count - _builtLidar.Count);
+        ImGui.BeginDisabled(_selected.Count == 0 || _generator.Running);
+        if (ImGui.Button("Lidar Along Track"u8))
+            FindTrack();
+        ImGui.EndDisabled();
+
         ImGui.SeparatorText("Build"u8);
         ImGui.Text($"{_selected.Count} tile{(_selected.Count == 1 ? "" : "s")} selected");
         ImGui.BeginDisabled(_selected.Count == 0 || _generator.Running);
@@ -298,7 +400,10 @@ public sealed class PlannerView : IDisposable
         ImGui.SameLine(0f, -1f);
         ImGui.BeginDisabled(_selected.Count == 0);
         if (ImGui.Button("Clear Selection"u8))
+        {
             _selected.Clear();
+            _lidar.Clear();
+        }
         ImGui.EndDisabled();
         ImGui.BeginDisabled(_built.Count == 0 || _generator.Running);
         if (ImGui.Button($"Regenerate {_built.Count} Built Tile{(_built.Count == 1 ? "" : "s")}"))
@@ -311,6 +416,17 @@ public sealed class PlannerView : IDisposable
             ImGui.TextWrapped(_generator.Status);
 
         Key();
+    }
+
+    /// A kind of heights: picks what a drag marks, with how many tiles are selected and built that way.
+    private void HeightRow(ImString name, Rgba color, bool lidar, int selected, int built)
+    {
+        if (ImGui.RadioButton(name, _paintLidar == lidar))
+            _paintLidar = lidar;
+        ImGui.SameLine(126f, -1f);
+        ImGui.ColorButton($"##{lidar}", new float4(color.R, color.G, color.B, 1f), ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoBorder, new float2(14f, 14f));
+        ImGui.SameLine(0f, -1f);
+        ImGui.TextDisabled($"{selected} selected, {built} built");
     }
 
     private static void Level(ImString label, ref int level, string[] names)
@@ -473,23 +589,25 @@ public sealed class PlannerView : IDisposable
     private void DrawTiles(ImDrawListPtr draw)
     {
         foreach (var t in _built)
-            Quad(draw, t, Clear.WithAlpha(0.14f), Clear.WithAlpha(0.45f));
+        {
+            var color = _builtLidar.Contains(t) ? LidarColor : StandardColor;
+            Quad(draw, t, color.WithAlpha(0.1f), color.WithAlpha(0.35f));
+        }
 
         var preview = _dragging ? DragRect() : [];
         var removing = _dragging && _dragMode == DragMode.Remove;
 
         foreach (var t in _selected)
         {
-            if (removing && preview.Contains(t))
+            if (preview.Contains(t))
                 continue;
-            if (_dragging && _dragMode == DragMode.Replace)
-                continue;
-            Quad(draw, t, Accent.WithAlpha(0.3f), Accent.WithAlpha(0.9f));
+            var color = _lidar.Contains(t) ? LidarColor : StandardColor;
+            Quad(draw, t, color.WithAlpha(0.32f), color.WithAlpha(0.95f));
         }
 
-        if (!removing)
-            foreach (var t in preview)
-                Quad(draw, t, Accent.WithAlpha(0.3f), Accent.WithAlpha(0.9f));
+        var marking = removing ? Stop : _paintLidar ? LidarColor : StandardColor;
+        foreach (var t in preview)
+            Quad(draw, t, marking.WithAlpha(0.32f), marking.WithAlpha(0.95f));
     }
 
     private HashSet<TileId> DragRect()
@@ -505,7 +623,8 @@ public sealed class PlannerView : IDisposable
         return tiles;
     }
 
-    /// Left-drag picks a rectangle of tiles: alone it replaces the selection, with Shift it adds, with Ctrl it removes.
+    /// Left-drag marks a rectangle of tiles, added to the selection as the kind of heights picked in the panel; with Ctrl it
+    /// removes them, shown in red.
     /// The very first press on a route without an origin fixes the origin there.
     private void Select(bool hovered, float2 mouse)
     {
@@ -523,8 +642,7 @@ public sealed class PlannerView : IDisposable
                 Log.Info($"Route {_route.Name}: origin {_route.Origin.Latitude}, {_route.Origin.Longitude}");
             }
 
-            var io = ImGui.GetIO();
-            _dragMode = io.KeyCtrl ? DragMode.Remove : io.KeyShift ? DragMode.Add : DragMode.Replace;
+            _dragMode = ImGui.GetIO().KeyCtrl ? DragMode.Remove : DragMode.Add;
             _dragFrom = _dragTo = TileUnder(mouse);
             _dragging = true;
         }
@@ -537,12 +655,19 @@ public sealed class PlannerView : IDisposable
             return;
 
         var rect = DragRect();
-        if (_dragMode == DragMode.Replace)
-            _selected.Clear();
         if (_dragMode == DragMode.Remove)
+        {
             _selected.ExceptWith(rect);
+            _lidar.ExceptWith(rect);
+        }
         else
+        {
             _selected.UnionWith(rect);
+            if (_paintLidar)
+                _lidar.UnionWith(rect);
+            else
+                _lidar.ExceptWith(rect);
+        }
 
         _dragging = false;
         Sfx.Hover();

@@ -12,6 +12,7 @@ namespace Highball.App;
 ///   --tab NAME                                      with --menu options, open on that tab: display, graphics, audio, simulation
 ///   --route NAME                                    open that route in the Route Builder (made if there isn't one)
 ///   --select LAT LON N                              with --route, pick N x N tiles there and build them
+///   --trackbuild                                    with --select, build lidar only where track runs, standard elsewhere
 ///   --view                                          with --route, open its built terrain in 3D
 ///   --camera LAT LON HEIGHT YAW PITCH               with --view, start there: metres above ground, degrees (yaw 0 north)
 ///   --sculpt TOOL STEPS                             with --view, once loaded, apply a tool (raise, lower, smooth, flatten,
@@ -44,6 +45,9 @@ public static class DevTools
 
     /// Tiles to pick and build on opening the route editor (--select), read once by it.
     public static (double Lat, double Lon, int Size)? Select { get; set; }
+
+    /// --trackbuild: --select marks its tiles by the track before building.
+    public static bool TrackBuild { get; private set; }
 
     /// --regenerate: the Planner regenerates every built tile as it opens.
     public static bool Regenerate { get; set; }
@@ -140,6 +144,9 @@ public static class DevTools
                     break;
                 case "--shapeops" when i + 1 < args.Length:
                     ShapeOps = new Queue<string>((args[++i].StartsWith('@') ? File.ReadAllText(args[i][1..]) : args[i]).Split(';', StringSplitOptions.RemoveEmptyEntries));
+                    break;
+                case "--trackbuild":
+                    TrackBuild = true;
                     break;
                 case "--refit":
                     Refit = true;

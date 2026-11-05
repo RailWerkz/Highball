@@ -23,7 +23,8 @@ float noise(vec2 p)
     return mix(mix(hash(i), hash(i + ivec2(1, 0)), u.x), mix(hash(i + ivec2(0, 1)), hash(i + ivec2(1, 1)), u.x), u.y);
 }
 
-// Octaves fade out as they shrink below a pixel, so distant ground doesn't shimmer.
+// Octaves fade out to their average as they shrink below a pixel, so distant ground doesn't shimmer and the detail thins out
+// smoothly with distance.
 float fbm(vec2 p, float footprint)
 {
     float sum = 0.0;
@@ -32,11 +33,11 @@ float fbm(vec2 p, float footprint)
     for (int i = 0; i < 5; i++)
     {
         float fade = 1.0 - smoothstep(0.25, 0.5, footprint);
-        sum += noise(p) * amplitude * fade;
-        total += amplitude * fade;
+        sum += mix(0.5, noise(p), fade) * amplitude;
+        total += amplitude;
         p = mat2(1.6, 1.2, -1.2, 1.6) * p + 17.1; // rotated each octave so the lattice doesn't line up
         footprint *= 2.0;
         amplitude *= 0.5;
     }
-    return total > 0.0 ? sum / total : 0.5;
+    return sum / total;
 }
