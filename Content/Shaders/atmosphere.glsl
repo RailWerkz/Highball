@@ -207,9 +207,10 @@ float airAlong(vec3 dir, float dist, float eyeHeight, float falloff)
 // and scattered in first, so distant land goes blue, then fades into the horizon's colour, and low in the valleys there's more.
 vec3 applyFog(vec3 color, vec3 dir, float dist, float eyeHeight, vec3 sun)
 {
-    const vec3 Rayleigh = vec3(5.8e-6, 13.5e-6, 33.1e-6);
+    // Less of the blue than the sky's own: past this, ground seen from high up turns the colour of water.
+    const vec3 Rayleigh = vec3(5.8e-6, 11.0e-6, 20.0e-6);
     const float Mie = 12e-6;
-    const float Dust = 1.6;
+    const float Dust = 1.2;
     vec3 optical = Rayleigh * airAlong(dir, dist, eyeHeight, 1.0 / 8000.0) + vec3(Mie * airAlong(dir, dist, eyeHeight, 1.0 / 1200.0));
     vec3 through = exp(-optical * Dust);
     vec3 haze = skyHaze(normalize(vec3(dir.x, max(dir.y, 0.0) * 0.5 + 0.02, dir.z)), sun);

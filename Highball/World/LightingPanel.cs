@@ -12,7 +12,7 @@ public sealed class LightingPanel
     private readonly WorldRenderer _renderer;
     private readonly double _latitude;
     private readonly double _longitude;
-    private (string Sky, int Version, int Year, int Month, int Day, float Hour) _applied = ("", -1, 0, 0, 0, 0f);
+    private (string Sky, int Version, int Year, int Month, int Day, float Hour, float Overcast) _applied = ("", -1, 0, 0, 0, 0f, 0f);
 
     public bool Open;
 
@@ -30,6 +30,12 @@ public sealed class LightingPanel
         {
             DevTools.CloudCoverage = null;
             Settings.Current.CloudCoverage = coverage;
+        }
+
+        if (DevTools.CloudType is { } type)
+        {
+            DevTools.CloudType = null;
+            Settings.Current.CloudType = type;
         }
 
         if (DevTools.SkyTime is { } time)
@@ -68,16 +74,20 @@ public sealed class LightingPanel
     {
         var s = Settings.Current;
         var sky = _renderer.Sky;
-        _renderer.Clouds.Coverage = s.CloudCoverage;
+        var type = CloudType.Find(s.CloudType);
+        _renderer.Clouds.Type = type;
+        _renderer.Clouds.Amount = s.CloudCoverage;
         if (sky.Name == Sky.Procedural)
         {
-            var key = (sky.Name, sky.Version, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour);
+            var overcast = type.OvercastAt(s.CloudCoverage);
+            var key = (sky.Name, sky.Version, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour, overcast);
             if (key != _applied)
             {
                 var sun = Sun();
                 sky.SetSun(sun.Elevation, sun.Azimuth,
                     MoonPosition.At(_latitude, _longitude, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour),
-                    MoonPosition.StarTurn(_latitude, _longitude, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour));
+                    MoonPosition.StarTurn(_latitude, _longitude, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour),
+                    overcast);
                 _applied = key;
             }
         }
@@ -150,8 +160,28 @@ public sealed class LightingPanel
 
         ImGui.NewLine();
 
+        var current = CloudType.Find(s.CloudType);
+        if (ImGui.BeginCombo("Clouds"u8, current.Label))
+        {
+            var group = "";
+            foreach (var type in CloudType.All)
+            {
+                if (type.Group != group)
+                {
+                    group = type.Group;
+                    if (group.Length > 0)
+                        ImGui.SeparatorText(group);
+                }
+
+                if (ImGui.Selectable(type.Label, type == current))
+                    s.CloudType = type.Id;
+            }
+
+            ImGui.EndCombo();
+        }
+
         var coverage = s.CloudCoverage;
-        if (ImGui.SliderFloat("Clouds"u8, ref coverage, 0f, 1f))
+        if (ImGui.SliderFloat("Amount"u8, ref coverage, 0f, 1f))
             s.CloudCoverage = coverage;
 
         var hour = s.SkyHour;

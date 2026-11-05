@@ -53,6 +53,9 @@ public static class DevTools
     /// How much of the sky is cloud (--clouds), read once by the lighting window.
     public static float? CloudCoverage { get; set; }
 
+    /// Which clouds (--cloudtype), read once by the lighting window.
+    public static string? CloudType { get; set; }
+
     /// The procedural sky's date and time (--skytime), read once by the lighting window.
     public static (int Year, int Month, int Day, float Hour)? SkyTime { get; set; }
 
@@ -149,6 +152,9 @@ public static class DevTools
                     break;
                 case "--clouds" when i + 1 < args.Length:
                     CloudCoverage = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
+                    break;
+                case "--cloudtype" when i + 1 < args.Length:
+                    CloudType = args[++i];
                     break;
                 case "--skytime" when i + 2 < args.Length:
                     var date = DateTime.ParseExact(args[i + 1], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);

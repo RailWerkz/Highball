@@ -39,8 +39,10 @@ public sealed class Settings
     public float Exposure { get; set; } = 0.62f;
     /// Open up as the light falls, the way an eye or a camera does.
     public bool AutoExposure { get; set; } = true;
-    /// How much of the procedural sky is cloud, 0 to 1.
+    /// How much cloud of its type the procedural sky has, 0 to 1; a half is what's typical of the type.
     public float CloudCoverage { get; set; } = 0.5f;
+    /// Which clouds the procedural sky has, by CloudType's id.
+    public string CloudType { get; set; } = "FairWeather";
     /// Samples per pixel in the 3D view: 1 (off), 2, 4 or 8.
     public int Msaa { get; set; } = 4;
 

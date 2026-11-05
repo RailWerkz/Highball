@@ -146,7 +146,8 @@ public sealed unsafe class Sky : IDisposable
     /// Puts the procedural sky's sun at this height over the horizon and this bearing (degrees, 0 north, 90 east), with the colours
     /// that gives the air (see Atmosphere), and the moon and stars where they are. Once the sun has gone, the moon takes its place
     /// as what lights the world and casts shadows, far brighter than the real thing or there'd be nothing to see.
-    public void SetSun(float elevation, float azimuth, MoonPosition moon, float[] stars)
+    /// overcast, 0 to 1: how far cloud has greyed the sky, and with it the shade and the haze.
+    public void SetSun(float elevation, float azimuth, MoonPosition moon, float[] stars, float overcast)
     {
         if (Name != Procedural)
             Use(Procedural);
@@ -164,14 +165,20 @@ public sealed unsafe class Sky : IDisposable
         var moonlight = MoonColor * (MoonStrength * MathF.Pow(lit, 1.5f) * dark * MathEx.SmoothStep(0f, 0.06f, moon.Up));
         var sunLights = direction.Y >= MoonTakesOver || moon.Up <= 0f;
 
+        float3 Grey(float3 c)
+        {
+            var grey = (c.X * 0.2126f + c.Y * 0.7152f + c.Z * 0.0722f) * (1f - 0.3f * overcast) * new float3(0.97f, 0.99f, 1.03f);
+            return c + (grey - c) * overcast;
+        }
+
         var uniforms = new Uniforms
         {
             SunDirection = new float4(sunLights ? direction : moonDirection, 1f),
             SunColor = new float4(sunLights ? colors.Sun : moonlight, 0f),
-            Zenith = new float4(colors.Zenith + moonlight * 0.05f, 0f),
-            Horizon = new float4(colors.Horizon + moonlight * 0.07f, 0f),
-            Ground = new float4(colors.Ground + moonlight * 0.1f, 0f),
-            HorizonTowardsSun = new float4(colors.HorizonTowardsSun + moonlight * 0.07f, 0f),
+            Zenith = new float4(Grey(colors.Zenith + moonlight * 0.05f), 0f),
+            Horizon = new float4(Grey(colors.Horizon + moonlight * 0.07f), 0f),
+            Ground = new float4(Grey(colors.Ground + moonlight * 0.1f), 0f),
+            HorizonTowardsSun = new float4(Grey(colors.HorizonTowardsSun + moonlight * 0.07f), 0f),
             Moon = new float4(moonDirection, lit),
             RealSun = new float4(direction, sunLights ? 1f : 0f),
             StarsX = new float4(stars[0], stars[1], stars[2], 0f),

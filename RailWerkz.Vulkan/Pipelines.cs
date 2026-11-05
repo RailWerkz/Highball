@@ -31,6 +31,12 @@ public sealed class PipelineDesc
     public float DepthBiasConstant { get; init; }
     public float DepthBiasSlope { get; init; }
 
+    /// Colour added over what's there, which is kept by the alpha (premultiplied, the way volumes composite).
+    public bool Blend { get; init; }
+
+    /// One sample per pixel, for a pass over the target's resolved image.
+    public bool SingleSample { get; init; }
+
     public VkFormat ColorFormat { get; init; } = VkFormat.R16G16B16A16SFloat;
     public VkFormat DepthFormat { get; init; } = RenderTarget.DepthFormat;
     public VkRenderPass RenderPass { get; init; }
@@ -77,7 +83,7 @@ public static unsafe class Pipelines
                 DepthBiasConstantFactor = desc.DepthBiasConstant,
                 DepthBiasSlopeFactor = desc.DepthBiasSlope,
             };
-            var multisample = new VkPipelineMultisampleStateCreateInfo { RasterizationSamples = desc.RenderPass.IsNull() && !desc.DepthOnly ? RenderTarget.Samples : VkSampleCountFlags._1Bit };
+            var multisample = new VkPipelineMultisampleStateCreateInfo { RasterizationSamples = desc.RenderPass.IsNull() && !desc.DepthOnly && !desc.SingleSample ? RenderTarget.Samples : VkSampleCountFlags._1Bit };
             var depth = new VkPipelineDepthStencilStateCreateInfo
             {
                 DepthTestEnable = new Bool32(desc.DepthTest),
@@ -87,6 +93,13 @@ public static unsafe class Pipelines
             var attachment = new VkPipelineColorBlendAttachmentState
             {
                 ColorWriteMask = VkColorComponentFlags.RBit | VkColorComponentFlags.GBit | VkColorComponentFlags.BBit | VkColorComponentFlags.ABit,
+                BlendEnable = new Bool32(desc.Blend),
+                SrcColorBlendFactor = VkBlendFactor.One,
+                DstColorBlendFactor = VkBlendFactor.SrcAlpha,
+                ColorBlendOp = VkBlendOp.Add,
+                SrcAlphaBlendFactor = VkBlendFactor.Zero,
+                DstAlphaBlendFactor = VkBlendFactor.One,
+                AlphaBlendOp = VkBlendOp.Add,
             };
             var blend = new VkPipelineColorBlendStateCreateInfo { AttachmentCount = desc.DepthOnly ? 0 : 1, Attachments = desc.DepthOnly ? null : &attachment };
             var dynamicStates = stackalloc VkDynamicState[] { VkDynamicState.Viewport, VkDynamicState.Scissor };

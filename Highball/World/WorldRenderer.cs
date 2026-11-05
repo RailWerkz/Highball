@@ -182,8 +182,10 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         using (Profiler.Sample("Sun shadows"))
             _shadows.Render(cmd, camera, aspect, Sun, terrain, models);
-        using (Profiler.Sample("Clouds"))
-            _clouds.Render(cmd, size, camera, aspect, Sky);
+        if (terrain is not null)
+            _clouds.GroundLevel = terrain.Source.HeightAt(0.0, 0.0);
+        using (Profiler.Sample("Cloud shade"))
+            _clouds.Prepare(cmd, _target, camera, aspect, Sky);
 
         _target.Begin(cmd, new float4(0f, 0f, 0f, 1f));
 
@@ -199,7 +201,6 @@ public sealed unsafe class WorldRenderer : IDisposable
         var skyScope = Profiler.Sample("Sky");
         cmd.BindPipeline(VkPipelineBindPoint.Graphics, _sky);
         Sky.Bind(cmd, _layout);
-        _clouds.Bind(cmd, _layout);
         cmd.PushConstants(_layout, Stages, ByteSize.Zero, sky);
         cmd.Draw(3, 1, 0, 0);
 
@@ -259,6 +260,10 @@ public sealed unsafe class WorldRenderer : IDisposable
         }
 
         _target.End(cmd);
+
+        // Over everything: they march only as far as the depth just drawn, so they're right from under, in or above the layers.
+        using (Profiler.Sample("Clouds"))
+            _clouds.Draw(cmd, _target);
     }
 
     private void DrawModels(CommandBuffer cmd, Camera camera, float aspect, IReadOnlyList<ModelDraw> models)

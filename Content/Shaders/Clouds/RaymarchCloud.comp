@@ -1,8 +1,7 @@
 #version 450
-// Volumetric clouds, adapted from Kitten Space Agency's RaymarchCloud: a dithered march through the layer with a shorter one
-// towards the sun at each step, at half the screen's size. Where theirs upscales with motion vectors, this blends with last
-// frame's along the view, which is enough for something kilometres away. Colour is what the clouds add; alpha is how much of the
-// sky behind them still shows.
+// Volumetric clouds, adapted from Kitten Space Agency's RaymarchCloud: a dithered march through each layer, as far as whatever the
+// world has drawn there, with a shorter march towards the sun at each step, at half the screen's size. Colour is what the clouds
+// add; alpha is how much of what's behind them still shows. TemporalCloud.comp then settles the noise this leaves.
 
 #include "Clouds/CloudData.glsl"
 #include "Clouds/CloudDensity.glsl"
@@ -10,16 +9,23 @@
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D result;
-layout(set = 0, binding = 1) uniform sampler2D history;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D resultDistance;
+layout(set = 0, binding = 4) uniform sampler2D sceneDepth;
 
-#define MAX_STEPS 72
+#define MAX_STEPS 48
 #define LIGHT_STEPS 5
-#define LIGHT_DISTANCE 1800.0
-#define GOLDEN_RATIO 0.61803398875
+#define LIGHT_DISTANCE 2400.0
 #define EARLY_EXIT 0.004
 #define CLOUD_BRIGHTNESS 4.0
 #define HAZE_DISTANCE 70000.0
 #define MAX_DISTANCE 140000.0
+#define GOLDEN_RATIO 0.61803398875
+
+// What's been gathered along the ray so far.
+vec3 gColor;
+float gThrough;
+float gDistanceSum;
+float gWeightSum;
 
 // A different start for every pixel, walking evenly through 0..1 from frame to frame, which the blend with last frame averages out.
 // A patterned dither won't do: its pattern survives the blend, as stripes across every lit cloud.
@@ -30,14 +36,15 @@ float Dither(vec2 pixel, float frame)
     return fract((p.x + p.y) * p.z + frame * GOLDEN_RATIO);
 }
 
-float DensityToLight(vec3 position, vec3 sun, float lod, float dither)
+float DensityToLight(int index, vec3 position, vec3 sun, float lod, float dither)
 {
-    float toTop = SphereHits(position, sun, EarthRadius + clouds.layer.y).y;
+    vec4 heights = clouds.layers[index].heights;
+    float toTop = SphereHits(position, sun, EarthRadius + heights.y).y;
     if (toTop <= 0.0)
         return 0.0;
 
     // Each step twice the last: short ones first, for the small billows shading each other, and long ones for the cloud's bulk.
-    float limit = min(LIGHT_DISTANCE, toTop);
+    float limit = min(min(LIGHT_DISTANCE, (heights.y - heights.x) * 1.5), toTop);
     float size = limit / (pow(2.0, float(LIGHT_STEPS)) - 1.0);
     float total = 0.0;
     float travelled = -size * dither;
@@ -45,114 +52,144 @@ float DensityToLight(vec3 position, vec3 sun, float lod, float dither)
     {
         float middle = travelled + size * 0.5;
         travelled += size;
-        float dimensional, noiseDepth;
-        total += size * CloudDensity(position + sun * max(middle, 0.0), lod + float(i) * 0.5, dimensional, noiseDepth);
+        float dimensional, noiseDepth, h;
+        total += size * CloudDensity(index, position + sun * max(middle, 0.0), lod + float(i) * 0.5, dimensional, noiseDepth, h);
         size *= 2.0;
     }
 
     return total;
 }
 
-vec4 Raymarch(vec3 direction, vec2 pixel)
+// Far clouds sink into the haze along the horizon, then are gone before the march runs out, which would cut them off in a line.
+float Gone(float distance)
 {
-    float eyeRadius = EarthRadius + clouds.offset.w;
-    float bottom = EarthRadius + clouds.layer.x;
-    float top = EarthRadius + clouds.layer.y;
+    return smoothstep(MAX_DISTANCE * 0.45, MAX_DISTANCE * 0.8, distance);
+}
 
+// The stretch of a ray inside a shell between two heights, from under it, inside it or above it. y <= x when there's none.
+vec2 ShellAlong(vec3 direction, float bottom, float top)
+{
+    float eye = EarthRadius + clouds.offset.w;
     vec2 inner = SphereHits(vec3(0.0), direction, bottom);
     vec2 outer = SphereHits(vec3(0.0), direction, top);
     if (outer.y <= 0.0)
-        return vec4(0.0, 0.0, 0.0, 1.0);
+        return vec2(0.0);
+    if (eye < bottom)
+        return vec2(inner.y, outer.y);
+    if (eye < top)
+        return vec2(0.0, inner.x > 0.0 ? inner.x : outer.y);
+    return vec2(outer.x, inner.x > 0.0 ? inner.x : outer.y);
+}
 
-    // The stretch of this ray that's inside the layer, from under it, inside it or above it.
-    float start, end;
-    if (eyeRadius < bottom)
-    {
-        start = inner.y;
-        end = outer.y;
-    }
-    else if (eyeRadius < top)
-    {
-        start = 0.0;
-        end = inner.x > 0.0 ? inner.x : outer.y;
-    }
-    else
-    {
-        start = outer.x;
-        end = inner.x > 0.0 ? inner.x : outer.y;
-    }
+void MarchLayer(int index, vec2 along, vec3 direction, float dither, float lightDither, float direct, float indirect, vec3 sky)
+{
+    float end = min(along.y, MAX_DISTANCE);
+    if (along.x >= end || gThrough <= EARLY_EXIT)
+        return;
 
-    end = min(end, MAX_DISTANCE);
-    if (start >= end)
-        return vec4(0.0, 0.0, 0.0, 1.0);
-
+    vec4 heights = clouds.layers[index].heights;
+    float ambient = clouds.layers[index].look2.x;
+    float sunGain = clouds.layers[index].look2.w;
+    float nearest = max((heights.y - heights.x) / 28.0, 30.0);
     vec3 sun = clouds.sun.xyz;
-    float direct, indirect;
-    GetPhaseFunctions(dot(direction, sun), direct, indirect);
 
-    float dither = Dither(pixel, clouds.frame.x);
-    float lightDither = fract(dither + GOLDEN_RATIO);
-
-    vec3 light = vec3(0.0);
-    vec3 skyLit = vec3(0.0);
-    float transmittance = 1.0;
-    float distanceSum = 0.0;
-    float weightSum = 0.0;
-    float travelled = start;
-
-    for (int i = 0; i < MAX_STEPS && travelled < end; i++)
+    // Each sample is dithered within its own step, not just the first: steps grow with distance, and a start shifted by less than a
+    // far step leaves that step's slices showing as stripes.
+    float reached = along.x;
+    float widen = 1.0;
+    for (int i = 0; i < MAX_STEPS && reached < end; i++)
     {
-        // Longer steps further away, where they show least.
-        float size = min(90.0 + travelled * 0.012, 1600.0);
-        if (i == 0)
-            size *= dither;
-        travelled = min(travelled + size, end);
+        // Longer steps further away, where they show least, and through clear air.
+        float size = min(nearest + reached * 0.012, 2000.0) * widen;
+        size = min(size, end - reached);
+        float travelled = reached + size * dither;
+        reached += size;
 
         float lod = clamp(log2(travelled / 3000.0 + 1.0), 0.0, 4.0);
         vec3 position = direction * travelled;
-        float dimensional, noiseDepth;
-        float density = CloudDensity(position, lod, dimensional, noiseDepth);
+        float dimensional, noiseDepth, h;
+        float density = CloudDensity(index, position, lod, dimensional, noiseDepth, h);
         if (density <= 0.0)
+        {
+            widen = min(widen * 1.3, 2.5);
             continue;
+        }
+        widen = 1.0;
 
-        float toLight = DensityToLight(position, sun, lod, lightDither);
+        float toLight = DensityToLight(index, position, sun, lod, lightDither);
         lightDither = fract(lightDither + GOLDEN_RATIO);
 
-        float through = BeerAbsorption(density * size);
-        float weight = transmittance * (1.0 - through);
+        float through = mix(BeerAbsorption(density * size), 1.0, Gone(travelled));
+        float weight = gThrough * (1.0 - through);
         float edge = GetMultipleScatteringEdgeEffect(dimensional, noiseDepth);
-        float scattered = BeerAbsorption(toLight) * direct + BeerAbsorptionMultipleScattering(toLight) * indirect * edge;
 
-        light += vec3(scattered) * weight;
-        skyLit += vec3(BeerAbsorptionMultipleScattering(dimensional * 3.0)) * weight;
-        transmittance *= through;
-        distanceSum += travelled * weight;
-        weightSum += weight;
+        // The sunlit side's creases go dark, since light scatters out of a cloud less near its surface.
+        float powder = 1.0 - 0.6 * exp(-density * 150.0);
+        float scattered = (BeerAbsorption(toLight) * direct + BeerAbsorptionMultipleScattering(toLight) * indirect * edge) * powder;
 
-        if (transmittance <= EARLY_EXIT)
+        // Skylight comes from above, so undersides are dark and tops are bright.
+        vec3 lit = clouds.sunColor.rgb * scattered * CLOUD_BRIGHTNESS * sunGain + sky * 1.6 * ambient * mix(0.35, 1.0, pow(h, 0.7));
+        float haze = 1.0 - exp(-travelled / HAZE_DISTANCE);
+        gColor += mix(lit, clouds.horizon.rgb, haze) * weight;
+        gThrough *= through;
+        gDistanceSum += travelled * weight;
+        gWeightSum += weight;
+
+        if (gThrough <= EARLY_EXIT)
         {
-            light += vec3(scattered) * transmittance;
-            transmittance = 0.0;
+            gThrough = 0.0;
             break;
         }
     }
+}
 
-    if (weightSum <= 0.0)
-        return vec4(0.0, 0.0, 0.0, 1.0);
+void AddHighCloud(vec3 direction, float limit, float mu, float direct, vec3 sky)
+{
+    if (clouds.high.z < -0.5 || clouds.high.y <= 0.0 || gThrough <= EARLY_EXIT)
+        return;
 
-    // Skylight, a little desaturated: without light bouncing between clouds, pure sky colour overpowers them.
-    vec3 sky = clouds.zenith.rgb * 0.9 + clouds.horizon.rgb * 0.45;
-    sky = mix(vec3(dot(sky, vec3(0.2126, 0.7152, 0.0722))), sky, 0.6);
-    vec3 color = light * clouds.sunColor.rgb * CLOUD_BRIGHTNESS + skyLit * sky * 1.6;
+    float radius = EarthRadius + clouds.high.x;
+    vec2 hits = SphereHits(vec3(0.0), direction, radius);
+    float at = EarthRadius + clouds.offset.w < radius ? hits.y : hits.x;
+    if (at <= 0.0 || at >= min(limit, MAX_DISTANCE * 2.0))
+        return;
 
-    // Far clouds sink into the haze along the horizon.
-    float haze = 1.0 - exp(-(distanceSum / weightSum) / HAZE_DISTANCE);
-    color = mix(color, clouds.horizon.rgb * (1.0 - transmittance), haze);
-    transmittance = mix(transmittance, 1.0, haze * haze);
+    float lod = clamp(log2(at / 9000.0 + 1.0) * 1.5, 0.0, 5.0);
+    float cover = HighCloudCover(direction * at, lod);
+    if (cover <= 0.001)
+        return;
 
-    // And are gone before the march runs out, which would cut them off in a straight line.
-    float gone = smoothstep(MAX_DISTANCE * 0.45, MAX_DISTANCE * 0.8, distanceSum / weightSum);
-    return vec4(color * (1.0 - gone), mix(transmittance, 1.0, gone));
+    float fade = smoothstep(MAX_DISTANCE * 2.0, MAX_DISTANCE * 0.8, at);
+    cover *= fade;
+
+    // Ice is thin: the sun comes straight through, with a bright rim round it when it's close.
+    vec3 lit = clouds.sunColor.rgb * (0.22 + direct * 2.5) + sky * 0.7;
+
+    // A cirrostratus veil shows a ring 22 degrees round the sun or moon.
+    if (clouds.high.z > 0.5 && clouds.high.z < 1.5)
+    {
+        float angle = acos(clamp(mu, -1.0, 1.0));
+        float ring = exp(-pow((angle - 0.384) / 0.018, 2.0)) + 0.35 * exp(-max(angle - 0.384, 0.0) / 0.12) * step(0.384, angle);
+        lit += clouds.sunColor.rgb * vec3(1.05, 0.95, 0.85) * ring * 0.8;
+    }
+
+    float haze = 1.0 - exp(-at / (HAZE_DISTANCE * 1.5));
+    gColor += mix(lit, clouds.horizon.rgb, haze) * cover * gThrough;
+    gDistanceSum += at * cover * gThrough;
+    gWeightSum += cover * gThrough;
+    gThrough *= 1.0 - cover;
+}
+
+// How far along a direction the world has drawn something, or very far where there's only sky.
+float SceneDistance(ivec2 pixel, vec3 direction)
+{
+    float depth = texelFetch(sceneDepth, pixel, 0).r;
+    if (depth <= 0.0)
+        return 1e9;
+
+    // Reverse-Z with no far plane: depth is the near plane over the distance along the view.
+    float along = clouds.forward.w / depth;
+    return along / max(dot(direction, normalize(clouds.forward.xyz)), 1e-3);
 }
 
 void main()
@@ -166,19 +203,56 @@ void main()
     vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     vec3 direction = normalize(clouds.forward.xyz + ndc.x * clouds.right.xyz + ndc.y * clouds.up.xyz);
 
-    vec4 current = Raymarch(direction, vec2(pixel));
+    gColor = vec3(0.0);
+    gThrough = 1.0;
+    gDistanceSum = 0.0;
+    gWeightSum = 0.0;
 
-    // Where this direction was on screen last frame. Clouds are far enough away that only the camera's turning matters.
-    if (clouds.frame.z > 0.5)
+    float limit = SceneDistance(min(pixel * 2, textureSize(sceneDepth, 0) - 1), direction);
+    vec3 sun = clouds.sun.xyz;
+    float mu = dot(direction, sun);
+    float direct, indirect;
+    GetPhaseFunctions(mu, direct, indirect);
+
+    // Skylight, a little desaturated: without light bouncing between clouds, pure sky colour overpowers them.
+    vec3 sky = clouds.zenith.rgb * 0.9 + clouds.horizon.rgb * 0.45;
+    sky = mix(vec3(dot(sky, vec3(0.2126, 0.7152, 0.0722))), sky, 0.6);
+
+    float dither = Dither(vec2(pixel), clouds.frame.x);
+    float lightDither = fract(dither + GOLDEN_RATIO);
+
+    // Nearest first, so each only shows through what's in front. Above the ice sheet, it comes first.
+    bool aboveHigh = clouds.offset.w > clouds.high.x;
+    if (aboveHigh)
+        AddHighCloud(direction, limit, mu, direct, sky);
+
+    int count = int(clouds.ground.y);
+    vec2 a = vec2(0.0);
+    vec2 b = vec2(0.0);
+    if (count > 0)
+        a = ShellAlong(direction, EarthRadius + clouds.layers[0].heights.x, EarthRadius + clouds.layers[0].heights.y);
+    if (count > 1)
+        b = ShellAlong(direction, EarthRadius + clouds.layers[1].heights.x, EarthRadius + clouds.layers[1].heights.y);
+    a.y = min(a.y, limit);
+    b.y = min(b.y, limit);
+
+    bool firstIsLower = a.x <= b.x || b.y <= b.x;
+    if (firstIsLower)
     {
-        vec4 clip = clouds.previousViewProjection * vec4(direction, 1.0);
-        if (clip.w > 0.0)
-        {
-            vec2 previous = vec2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
-            if (all(greaterThanEqual(previous, vec2(0.0))) && all(lessThanEqual(previous, vec2(1.0))))
-                current = mix(current, textureLod(history, previous, 0.0), 0.9);
-        }
+        MarchLayer(0, a, direction, dither, lightDither, direct, indirect, sky);
+        MarchLayer(1, b, direction, dither, lightDither, direct, indirect, sky);
+    }
+    else
+    {
+        MarchLayer(1, b, direction, dither, lightDither, direct, indirect, sky);
+        MarchLayer(0, a, direction, dither, lightDither, direct, indirect, sky);
     }
 
-    imageStore(result, pixel, current);
+    if (!aboveHigh)
+        AddHighCloud(direction, limit, mu, direct, sky);
+
+    // Where they are, in kilometres, to find them in last frame's picture; very far when there's nothing here.
+    float distance = gWeightSum > 0.0 ? gDistanceSum / gWeightSum : 10000000.0;
+    imageStore(result, pixel, vec4(gColor, gThrough));
+    imageStore(resultDistance, pixel, vec4(distance / 1000.0));
 }

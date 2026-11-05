@@ -9,7 +9,25 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D result;
 
-#define STEPS 8
+#define STEPS 6
+
+// How much cloud of a layer lies along the sun's ray from a point on the ground.
+float AlongLayer(int index, vec3 from, vec3 sun)
+{
+    vec4 heights = clouds.layers[index].heights;
+    float start = max(SphereHits(from, sun, EarthRadius + heights.x).y, 0.0);
+    float end = SphereHits(from, sun, EarthRadius + heights.y).y;
+    float step = max(end - start, 0.0) / float(STEPS);
+
+    float total = 0.0;
+    for (int i = 0; i < STEPS; i++)
+    {
+        float dimensional, noiseDepth, h;
+        total += step * CloudDensity(index, from + sun * (start + (float(i) + 0.5) * step), 2.0, dimensional, noiseDepth, h);
+    }
+
+    return total;
+}
 
 void main()
 {
@@ -19,21 +37,24 @@ void main()
         return;
 
     vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
-    vec3 ground = vec3((uv.x * 2.0 - 1.0) * clouds.frame.w, 0.0, (uv.y * 2.0 - 1.0) * clouds.frame.w);
+    vec2 across = (uv * 2.0 - 1.0) * clouds.frame.w + clouds.ground.zw;
+    vec3 from = vec3(across.x, clouds.ground.x, across.y);
     vec3 sun = clouds.sun.xyz;
 
-    float start = max(SphereHits(ground, sun, EarthRadius + clouds.layer.x).y, 0.0);
-    float end = SphereHits(ground, sun, EarthRadius + clouds.layer.y).y;
-    float step = max(end - start, 0.0) / float(STEPS);
-
     float total = 0.0;
-    for (int i = 0; i < STEPS; i++)
-    {
-        float dimensional, noiseDepth;
-        total += step * CloudDensity(ground + sun * (start + (float(i) + 0.5) * step), 2.0, dimensional, noiseDepth);
-    }
+    int count = int(clouds.ground.y);
+    for (int i = 0; i < count; i++)
+        total += AlongLayer(i, from, sun);
 
     // Light scattered through a cloud still arrives: an overcast sky doesn't throw black shadows.
     float lit = BeerAbsorptionMultipleScattering(total);
-    imageStore(result, pixel, vec4(mix(0.22, 1.0, lit), 0.0, 0.0, 1.0));
+
+    if (clouds.high.z > -0.5 && clouds.high.y > 0.0)
+    {
+        float at = SphereHits(from, sun, EarthRadius + clouds.high.x).y;
+        if (at > 0.0)
+            lit *= 1.0 - 0.5 * HighCloudCover(from + sun * at, 2.0);
+    }
+
+    imageStore(result, pixel, vec4(mix(0.3, 1.0, lit), 0.0, 0.0, 1.0));
 }

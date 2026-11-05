@@ -1,0 +1,63 @@
+#version 450
+// Settles the march's noise by blending with last frame's picture. Each pixel looks up where its clouds were, allowing for the camera
+// having moved and the wind, and last frame's colour is only believed as far as it looks like what's round this pixel now, so
+// nothing trails behind when flying or when a hill passes in front.
+
+#include "Clouds/CloudData.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D result;
+layout(set = 0, binding = 1) uniform sampler2D current;
+layout(set = 0, binding = 2) uniform sampler2D currentDistance;
+layout(set = 0, binding = 4) uniform sampler2D history;
+
+#define KEEP 0.92
+#define SPREAD 1.3
+
+void main()
+{
+    ivec2 size = imageSize(result);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec4 now = texelFetch(current, pixel, 0);
+
+    // What's round this pixel now, as an average and a spread.
+    vec4 sum = vec4(0.0);
+    vec4 squares = vec4(0.0);
+    for (int y = -1; y <= 1; y++)
+    {
+        for (int x = -1; x <= 1; x++)
+        {
+            vec4 c = texelFetch(current, clamp(pixel + ivec2(x, y), ivec2(0), size - 1), 0);
+            sum += c;
+            squares += c * c;
+        }
+    }
+    vec4 mean = sum / 9.0;
+    vec4 spread = sqrt(max(squares / 9.0 - mean * mean, vec4(0.0)));
+
+    vec4 color = mean;
+    if (clouds.frame.z > 0.5)
+    {
+        vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+        vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+        vec3 direction = normalize(clouds.forward.xyz + ndc.x * clouds.right.xyz + ndc.y * clouds.up.xyz);
+        float distance = texelFetch(currentDistance, pixel, 0).r * 1000.0;
+
+        vec4 clip = clouds.previousViewProjection * vec4(direction * distance + clouds.motion.xyz, 1.0);
+        if (clip.w > 0.0)
+        {
+            vec2 previous = vec2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+            if (all(greaterThanEqual(previous, vec2(0.0))) && all(lessThanEqual(previous, vec2(1.0))))
+            {
+                vec4 past = clamp(textureLod(history, previous, 0.0), mean - spread * SPREAD, mean + spread * SPREAD);
+                color = mix(now, past, KEEP);
+            }
+        }
+    }
+
+    imageStore(result, pixel, color);
+}

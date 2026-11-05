@@ -1,6 +1,5 @@
 #version 450
 #include "atmosphere.glsl"
-#include "clouds.glsl"
 
 layout(location = 0) in vec2 vNdc;
 layout(location = 0) out vec4 outColor;
@@ -18,6 +17,5 @@ void main()
 {
     vec3 dir = normalize(pc.forward.xyz + vNdc.x * pc.right.xyz + vNdc.y * pc.up.xyz);
     vec3 sun = pc.sun.xyz;
-    vec3 color = applyClouds(skyColor(dir, sun) + sunDisc(dir, sun), vNdc);
-    outColor = vec4(color, 1.0);
+    outColor = vec4(skyColor(dir, sun) + sunDisc(dir, sun), 1.0);
 }
