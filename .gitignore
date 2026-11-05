@@ -7,3 +7,25 @@ publish/
 __pycache__/
 *.pyc
 *.blend1
+
+# Logs and OS leftovers
+*.log
+*.tmp
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.blend2
+
+# Route data that's fetched or worked out again: built terrain, the solved track and its markers.
+# (Kept: Route.json, the track and objects laid by hand, and each tile's painted cover and sculpting.)
+Content/Routes/*/Track.bin.gz
+Content/Routes/*/Junctions.json
+Content/Routes/*/Tiles/*/Heights.bin.gz
+Content/Routes/*/Tiles/*/Tile.json
+
+# Downloaded source models and what the Blender scripts build from them
+Content/Models/**/Source/
+Content/Models/**/Assembled/*.blend
+
+# Terrain textures nothing loads
+Content/Textures/Terrain/Modifiers/
