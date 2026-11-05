@@ -1,0 +1,108 @@
+#version 450
+// Ground truth ambient occlusion (after Jimenez et al. 2016), at half size from the depth alone: in a few slices through each
+// pixel's view, how far up the surroundings rise on either side, and so how much of the sky over the surface they leave.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba8) uniform writeonly image2D result;
+layout(set = 0, binding = 1) uniform sampler2D sceneDepth;
+
+#define OCCLUSION_SET 0
+#define OCCLUSION_BINDING 2
+#include "OcclusionData.glsl"
+
+const int Slices = 3;
+const int Steps = 4;
+const float FadeFrom = 180.0; // past this, and gone by FadeTo: too far for anything it finds to matter under the haze
+const float FadeTo = 450.0;
+const float Pi = 3.14159265;
+
+// Interleaved gradient noise: spreads the slices' error evenly, for the blur to take out.
+float noiseAt(vec2 pixel)
+{
+    return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+}
+
+void main()
+{
+    ivec2 size = imageSize(result);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    ivec2 screen = textureSize(sceneDepth, 0);
+    ivec2 full = min(pixel * 2, screen - 1);
+    float depth = texelFetch(sceneDepth, full, 0).r;
+    float along = alongView(depth);
+    if (depth <= 0.0 || along >= FadeTo)
+    {
+        imageStore(result, pixel, vec4(1.0));
+        return;
+    }
+
+    vec3 here = placeAt((vec2(full) + 0.5) / vec2(screen), depth);
+    vec3 n = normalAt(sceneDepth, full, screen, here);
+    vec3 view = -normalize(here);
+
+    // Wider with distance, so it still finds something once a metre is only a pixel or two.
+    float radius = 1.5 + along * 0.012;
+    float pixels = min(radius * float(screen.y) * 0.5 / (length(occlusion.up.xyz) * along), 128.0);
+    float falloff = 1.0 / (radius * radius);
+
+    vec3 acrossView = normalize(occlusion.right.xyz);
+    vec3 upView = normalize(occlusion.up.xyz);
+    float turn = noiseAt(vec2(pixel));
+    float jitter = noiseAt(vec2(pixel) + vec2(5.3, 11.7));
+
+    float total = 0.0;
+    for (int slice = 0; slice < Slices; slice++)
+    {
+        float angle = (float(slice) + turn) * Pi / float(Slices);
+        vec2 screenWay = vec2(cos(angle), sin(angle));
+        vec3 way = acrossView * screenWay.x - upView * screenWay.y;
+        vec3 flat2 = normalize(way - view * dot(way, view));
+        vec3 axis = cross(flat2, view);
+        vec3 inSlice = n - axis * dot(n, axis);
+        float sliceLength = length(inSlice);
+        if (sliceLength < 1e-4)
+            continue;
+
+        float cosN = clamp(dot(inSlice / sliceLength, view), -1.0, 1.0);
+        float angleN = sign(dot(inSlice, flat2)) * acos(cosN);
+        float sinN = sin(angleN);
+
+        // On each side, the highest thing seen, starting from the surface's own plane.
+        for (int side = 0; side < 2; side++)
+        {
+            float direction = side == 0 ? -1.0 : 1.0;
+            float highest = cos(angleN + direction * Pi * 0.5);
+            for (int s = 0; s < Steps; s++)
+            {
+                float t = (float(s) + jitter) / float(Steps);
+                vec2 offset = screenWay * direction * max(t * t * pixels, float(s + 1));
+                ivec2 at = full + ivec2(round(offset));
+                if (at.x < 0 || at.y < 0 || at.x >= screen.x || at.y >= screen.y)
+                    break;
+
+                float other = texelFetch(sceneDepth, at, 0).r;
+                if (other <= 0.0)
+                    continue;
+
+                vec3 to = placeAt((vec2(at) + 0.5) / vec2(screen), other) - here;
+                float distance2 = dot(to, to);
+                float seen = dot(to, view) / sqrt(max(distance2, 1e-6));
+                // Far things count for less, so a nearer object doesn't darken the hillside behind it.
+                float weight = clamp(1.0 - distance2 * falloff, 0.0, 1.0);
+                highest = max(highest, mix(highest, seen, weight));
+            }
+
+            float h = direction * acos(clamp(highest, -1.0, 1.0));
+            h = angleN + clamp(h - angleN, -Pi * 0.5, Pi * 0.5);
+            total += sliceLength * 0.25 * (cosN + 2.0 * h * sinN - cos(2.0 * h - angleN));
+        }
+    }
+
+    float open = clamp(total / float(Slices), 0.0, 1.0);
+    open = mix(open * sqrt(open), 1.0, smoothstep(FadeFrom, FadeTo, along));
+    imageStore(result, pixel, vec4(open));
+}

@@ -50,6 +50,8 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly GroundTextures _ground = new();
     private readonly SunShadows _shadows = new();
     private readonly Clouds _clouds = new();
+    private readonly AmbientOcclusion _occlusion = new();
+    private readonly TerrainHorizon _horizon = new();
     private readonly Vegetation _vegetation = new();
     private VkPipeline _sky;
     private VkPipeline _terrain;
@@ -199,6 +201,8 @@ public sealed unsafe class WorldRenderer : IDisposable
         if (terrain is not null)
         {
             UpdateGroundLight(terrain.Source, camera);
+            _horizon.Update(terrain.Source, terrain.Epoch, camera.X, camera.Z);
+            _shadows.UseHorizon(_horizon);
             _vegetation.Enabled = RailWerkz.Core.Settings.Settings.Current.Vegetation;
             _vegetation.Update(terrain, camera);
         }
@@ -293,6 +297,17 @@ public sealed unsafe class WorldRenderer : IDisposable
         }
 
         _target.End(cmd);
+
+        if (RailWerkz.Core.Settings.Settings.Current.AmbientOcclusion)
+        {
+            using var _ = Profiler.Sample("Ambient occlusion");
+            _occlusion.Draw(cmd, _target, camera, aspect, layout =>
+            {
+                Sky.Bind(cmd, layout);
+                _shadows.Bind(cmd, layout);
+                _clouds.Bind(cmd, layout);
+            });
+        }
 
         // Over everything: they march only as far as the depth just drawn, so they're right from under, in or above the layers.
         using (Profiler.Sample("Clouds"))
@@ -428,6 +443,8 @@ public sealed unsafe class WorldRenderer : IDisposable
         _ground.Dispose();
         _shadows.Dispose();
         _clouds.Dispose();
+        _occlusion.Dispose();
+        _horizon.Dispose();
         _vegetation.Dispose();
         Pipelines.Destroy(default, _layout);
         Sky.Dispose();

@@ -45,6 +45,7 @@ public sealed class Settings
     public string CloudType { get; set; } = "FairWeather";
     /// Grass, shrubs, trees and rocks over the terrain.
     public bool Vegetation { get; set; } = true;
+    public bool AmbientOcclusion { get; set; } = true;
     /// Samples per pixel in the 3D view: 1 (off), 2, 4 or 8.
     public int Msaa { get; set; } = 4;
 

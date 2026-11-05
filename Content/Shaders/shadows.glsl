@@ -8,9 +8,13 @@ layout(set = 2, binding = 0) uniform ShadowUniforms
     vec4 splits;  // how far each cascade reaches along the view
     vec4 forward; // the view's direction; w: 1 when there are shadows to read
     vec4 texels;  // each cascade's texel, in metres
+    vec4 horizon; // xy: the horizon map's middle relative to the camera; z: 1 / its width; w: 1 when there is one
 } shadow;
 
 layout(set = 2, binding = 1) uniform sampler2DArrayShadow shadowMap;
+// How high the land rises round each point, in eight directions from east going round towards +z, as the sine of the angle.
+layout(set = 2, binding = 2) uniform sampler2D horizonMap0;
+layout(set = 2, binding = 3) uniform sampler2D horizonMap1;
 
 // How lit a point is in one cascade, 0 to 1: nine filtered taps, for an edge a couple of texels soft.
 float shadowInCascade(int cascade, vec3 relative, vec3 n, float nl)
@@ -60,8 +64,36 @@ float groundShadow(vec3 relative, vec3 n, vec3 sun)
     return 1.0;
 }
 
+// How much of the sun gets past the land between it and a point, however far away that land is. Softly, since the map is coarse, the
+// sun isn't a point, and the point itself may stand a little above or below the map's idea of the ground.
+float horizonShadow(vec3 relative, vec3 sun)
+{
+    if (shadow.horizon.w < 0.5)
+        return 1.0;
+
+    vec2 uv = (relative.xz - shadow.horizon.xy) * shadow.horizon.z + 0.5;
+    vec2 edges = min(uv, 1.0 - uv);
+    float inside = smoothstep(0.0, 0.03, min(edges.x, edges.y));
+    if (inside <= 0.0)
+        return 1.0;
+
+    float around = atan(sun.z, sun.x) / (3.14159265 / 4.0);
+    around = around < 0.0 ? around + 8.0 : around;
+    int low = int(around) % 8;
+    int high = (low + 1) % 8;
+    vec4 east = texture(horizonMap0, uv);
+    vec4 west = texture(horizonMap1, uv);
+    float a = low < 4 ? east[low] : west[low - 4];
+    float b = high < 4 ? east[high] : west[high - 4];
+    float rise = mix(a, b, fract(around));
+    if (rise <= 0.0)
+        return 1.0;
+
+    return mix(1.0, smoothstep(rise - 0.006, rise + 0.014, sun.y), inside);
+}
+
 // How much of the sun reaches a point, 0 to 1.
 float sunShadow(vec3 relative, vec3 n, vec3 sun)
 {
-    return groundShadow(relative, n, sun) * cloudSunShadow(relative);
+    return groundShadow(relative, n, sun) * horizonShadow(relative, sun) * cloudSunShadow(relative);
 }

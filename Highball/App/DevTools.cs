@@ -55,6 +55,7 @@ public static class DevTools
 
     /// No grass, shrubs, trees or rocks (--novegetation), to see what they cost.
     public static bool NoVegetation { get; set; }
+    public static bool NoOcclusion { get; set; }
 
     /// Which clouds (--cloudtype), read once by the lighting window.
     public static string? CloudType { get; set; }
@@ -155,6 +156,9 @@ public static class DevTools
                     break;
                 case "--clouds" when i + 1 < args.Length:
                     CloudCoverage = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
+                    break;
+                case "--noao":
+                    NoOcclusion = true;
                     break;
                 case "--novegetation":
                     NoVegetation = true;

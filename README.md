@@ -76,7 +76,9 @@ sun worked out from the route's place on Earth.
 This scene and the terrain use physically based light (`Content/Shaders/lighting.glsl`): each direct light goes through
 `shadeLight`, and there are no local lights yet. Track and roads go through it too, and cast shadows: beds, roads and bridges in every cascade, rails and ties only in the nearer two. Metal reflects the sky above the horizon and the land cover's colour round the camera below it (no reflection probes yet). Everything receives the sun's
 shadows (`Content/Shaders/shadows.glsl`, `SunShadows`); terrain, plants and whole models cast them too.
-`--noshadows` turns them off, to see what they cost.
+`--noshadows` turns them off, to see what they cost. Past the cascades, `TerrainHorizon` keeps how high the land rises round each
+point in eight directions, over 41 km round the camera, so mountains shade the land at any distance. `AmbientOcclusion` darkens
+what the sky can't reach, from the depth alone, sparing the sun's light (`--noao`, or the Lighting window, turns it off).
 
 The procedural sky has volumetric clouds (`Highball/World/Clouds.cs`, `Content/Shaders/Clouds/`), adapted from Kitten Space
 Agency's cloud shaders. They march after the world, as far as its depth, so they hold from under, inside and above them. The

@@ -32,6 +32,12 @@ public sealed class LightingPanel
             Settings.Current.CloudCoverage = coverage;
         }
 
+        if (DevTools.NoOcclusion)
+        {
+            DevTools.NoOcclusion = false;
+            RailWerkz.Core.Settings.Settings.Current.AmbientOcclusion = false;
+        }
+
         if (DevTools.NoVegetation)
         {
             DevTools.NoVegetation = false;
@@ -148,6 +154,10 @@ public sealed class LightingPanel
             var shadows = _renderer.Shadows;
             if (ImGui.Checkbox("Sun shadows"u8, ref shadows))
                 _renderer.Shadows = shadows;
+
+            var occluded = s.AmbientOcclusion;
+            if (ImGui.Checkbox("Ambient occlusion"u8, ref occluded))
+                s.AmbientOcclusion = occluded;
 
             var plants = s.Vegetation;
             if (ImGui.Checkbox("Plants and rocks"u8, ref plants))
