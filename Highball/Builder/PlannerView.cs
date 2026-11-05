@@ -54,6 +54,7 @@ public sealed class PlannerView : IDisposable
 
     public HashSet<TileId> Built => _built;
     public bool Building => _generator.Running;
+    public (string Status, float Progress)? BuildJob => _generator.Running ? (_generator.Status, _generator.Progress) : null;
     /// Goes up every time a build finishes, so a 3D view of the old tiles knows to open them again.
     public int BuildVersion => _generator.Version;
 
@@ -261,6 +262,14 @@ public sealed class PlannerView : IDisposable
         [("LMB", "Select"), ("SHIFT", "Add"), ("CTRL", "Remove"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("TAB", "2D Editor"), ("ESC", "Exit")];
 
     public string Attribution => MapTiles.Attribution;
+
+    /// The Planner's lines in Frame Statistics.
+    public void DebugStats()
+    {
+        ImGui.Separator();
+        ImGui.Text($"Tiles {_built.Count} built   {_selected.Count} selected");
+        ImGui.Text($"Layouts {_layouts.Count}");
+    }
 
     // --- Menus and the side panel (ImGui). ---
 

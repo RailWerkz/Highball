@@ -42,6 +42,8 @@ public sealed class BuilderScreen : Screen, IWorldScreen
     {
         _route = route;
         _planner = new PlannerView(route, Notify);
+        if (DevTools.Panels)
+            DebugWindows.ShowAll();
     }
 
     public override void Exit()
@@ -105,6 +107,7 @@ public sealed class BuilderScreen : Screen, IWorldScreen
     public override void Update(float dt)
     {
         _planner.Update();
+        DebugWindows.Keys();
 
         if (!Keyboard.KeysBlocked)
         {
@@ -218,6 +221,8 @@ public sealed class BuilderScreen : Screen, IWorldScreen
                     _editor!.MenuView();
                 }
 
+                ImGui.Separator();
+                DebugWindows.Menu();
                 ImGui.EndMenu();
             }
 
@@ -229,45 +234,51 @@ public sealed class BuilderScreen : Screen, IWorldScreen
             Panel();
         if (_mode != Mode.Planner)
             _editor?.Windows();
+
+        var left = (_mode == Mode.Planner ? 0f : EditorView.StripWidth) + (_showPanel ? PanelWidth : 0f) + 12f;
+        Action lines = _mode == Mode.Planner || _editor is null ? _planner.DebugStats : _editor.DebugStats;
+        DebugWindows.Draw(left, _headerBottom + 12f, lines, _planner.BuildJob);
     }
 
-    /// The views, then the route and whether it's saved, on the menu bar.
+    private static readonly (Mode Mode, string Name, string Key)[] ViewTabs =
+    [
+        (Mode.Planner, "Planner", "F1"), (Mode.Editor2D, "2D Editor", "F2"), (Mode.Editor3D, "3D Editor", "F3"),
+    ];
+
+    /// The views as tabs in the middle of the menu bar, then the route and whether it's saved at its right.
     private void TopBar(bool editing)
     {
-        ImGui.Dummy(new float2(16f, 1f));
-        ImGui.SameLine(0f, -1f);
-        if (ViewButton("Planner", _mode == Mode.Planner))
-            Show(Mode.Planner);
-        ImGui.SameLine(0f, 2f);
-        if (ViewButton("2D", _mode == Mode.Editor2D))
-            Show(Mode.Editor2D);
-        ImGui.SameLine(0f, 2f);
-        if (ViewButton("3D", _mode == Mode.Editor3D))
-            Show(Mode.Editor3D);
+        const float pad = 16f;
+        const float textSize = 15f;
+        var draw = ImGui.GetWindowDrawList();
+        var height = ImGui.GetWindowSize().Y;
+        var total = ViewTabs.Sum(t => Canvas.TextSize(Medium, textSize, t.Name).X + pad * 2f);
+        var x = (ImGui.GetIO().DisplaySize.X - total) * 0.5f;
+        foreach (var (mode, name, key) in ViewTabs)
+        {
+            var size = new float2(Canvas.TextSize(Medium, textSize, name).X + pad * 2f, height);
+            var at = new float2(x, 0f);
+            var on = _mode == mode;
+            var open = mode == Mode.Planner || editing || CanOpen3D;
+            ImGui.SetCursorScreenPos(at);
+            if (ImGui.InvisibleButton(name, size))
+                Show(mode);
+            var hovered = ImGui.IsItemHovered();
+            if (on)
+                draw.AddRectFilled(at, at + size, Raised);
+            else if (hovered && open)
+                draw.AddRectFilled(at, at + size, RaisedHover);
+            if (on)
+                draw.AddRectFilled(at + new float2(0f, height - 2f), at + size, Accent);
+            Canvas.Text(draw, Medium, textSize, at + new float2(size.X * 0.5f, (height - textSize) * 0.5f), on ? Style.Text : open ? hovered ? Style.Text : TextDim : TextFaint, name, Align.Center);
+            if (hovered)
+                ImGui.SetTooltip(open ? $"{name} ({key})" : "Build some tiles first");
+            x += size.X;
+        }
 
         var label = editing ? $"{_route.Name}   {_editor!.SaveState}" : _route.Name;
         ImGui.SameLine(ImGui.GetIO().DisplaySize.X - ImGui.CalcTextSize(label).X - 16f, -1f);
         ImGui.Text(label);
-    }
-
-    private static bool ViewButton(string name, bool on)
-    {
-        if (on)
-        {
-            ImGui.PushStyleColor(ImGuiCol.Button, Accent);
-            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, Accent);
-            ImGui.PushStyleColor(ImGuiCol.Text, OnAccent);
-        }
-
-        var clicked = ImGui.Button(name);
-        if (on)
-        {
-            ImGui.PopStyleColor();
-            ImGui.PopStyleColor();
-            ImGui.PopStyleColor();
-        }
-
-        return clicked;
     }
 
     /// What the view in front has to show and set: in the Planner, the route's place first.

@@ -98,10 +98,7 @@ public sealed partial class EditorView : IDisposable
     private (double X, double Y, double Z, float Yaw, float Pitch)? _flight;
     private float2? _panFrom;
 
-    // The Stats and Profiler windows (View, F4 and F5) and the grades on the track (G), left as they were each time
-    // the view opens.
-    private static bool _showStats;
-    private static bool _showProfiler;
+    // The grades on the track (G), left as they were each time the view opens.
     private static bool _showGrades = true;
     private (float2 Screen, float Grade, float Height)? _gradeAt;
 
@@ -150,8 +147,6 @@ public sealed partial class EditorView : IDisposable
         _route = route;
         _start = start;
         _opening = TerrainSource.Open(route);
-        if (DevTools.Panels)
-            _showStats = _showProfiler = true;
         if (DevTools.Clean)
             _showGrades = false;
         if (DevTools.Skybox is { } sky)
@@ -315,10 +310,6 @@ public sealed partial class EditorView : IDisposable
 
         if (ImGui.IsKeyPressed(ImGuiKey.F))
             _renderer.Wireframe = !_renderer.Wireframe;
-        if (ImGui.IsKeyPressed(ImGuiKey.F4))
-            _showStats = !_showStats;
-        if (ImGui.IsKeyPressed(ImGuiKey.F5))
-            _showProfiler = !_showProfiler;
         if (ImGui.IsKeyPressed(ImGuiKey.G) && !Keyboard.KeysBlocked)
             _showGrades = !_showGrades;
 
@@ -2251,9 +2242,6 @@ public sealed partial class EditorView : IDisposable
         if (ImGui.MenuItem("Wireframe", "F", _renderer.Wireframe, true))
             _renderer.Wireframe = !_renderer.Wireframe;
         ImGui.MenuItem("Track Grades"u8, "G"u8, ref _showGrades);
-        ImGui.Separator();
-        ImGui.MenuItem("Frame Statistics"u8, "F4"u8, ref _showStats);
-        ImGui.MenuItem("Profiler"u8, "F5"u8, ref _showProfiler);
     }
 
     /// Whether the side panel has anything to show.
@@ -2585,85 +2573,22 @@ public sealed partial class EditorView : IDisposable
         RebuildNetwork();
     }
 
-    public void Windows()
-    {
-        ToolStrip();
-        StatsWindow();
-        ProfilerWindow();
-    }
+    public void Windows() => ToolStrip();
 
-    private void StatsWindow()
+    /// The editor's lines in Frame Statistics.
+    public void DebugStats()
     {
-        if (!_showStats)
-            return;
-
-        ImGui.SetNextWindowPos(new float2(StripWidth + DockPanelWidth + 12f, _headerBottom + 12f), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSize(new float2(470f, 270f), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("Frame Statistics"u8, ref _showStats, ImGuiWindowFlags.NoFocusOnAppearing))
+        if (_terrain is { } terrain && _network is { } network)
         {
-            var times = Profiler.FrameTimes;
-            var average = times.Average();
-            ImGui.Text($"{1000f / MathF.Max(0.01f, average):0} fps   {average:0.00} ms   worst {times.Max():0.0} ms");
-            ImGui.PlotLines("##frames"u8, times, Profiler.FrameCursor, default, 0f, 40f, new float2(300f, 50f));
-            ImGui.Text($"{Profiler.DrawCalls} draw calls   {Profiler.Triangles / 1000f:0.0}k triangles");
-            ImGui.Text($"GPU {HighballApp.Instance.GpuName}");
-
-            if (_terrain is { } terrain && _network is { } network)
-            {
-                var source = terrain.Source;
-                ImGui.Separator();
-                ImGui.Text($"Tiles {source.Tiles.Count}   lines {source.Lines?.Lines.Count ?? 0}   ways {source.Network.Ways.Count}");
-                ImGui.Text($"Terrain patches {terrain.DrawnPatches} drawn / {terrain.PatchCount} held   {terrain.Building} building   {terrain.Waiting} waiting");
-                ImGui.Text($"Line chunks {network.DrawnChunks} drawn   {network.Building} building   {network.Turnouts} switches");
-                ImGui.Text($"Edits {_undo.Count} to undo   {(source.Unsaved || source.Network.Unsaved ? "unsaved" : "saved")}");
-            }
-
-            ImGui.Text($"Camera {_camera.X:0} {_camera.Y:0} {_camera.Z:0}   yaw {_camera.Yaw * 180f / MathF.PI:0}   pitch {_camera.Pitch * 180f / MathF.PI:0}");
+            var source = terrain.Source;
+            ImGui.Separator();
+            ImGui.Text($"Tiles {source.Tiles.Count}   lines {source.Lines?.Lines.Count ?? 0}   ways {source.Network.Ways.Count}");
+            ImGui.Text($"Terrain patches {terrain.DrawnPatches} drawn / {terrain.PatchCount} held   {terrain.Building} building   {terrain.Waiting} waiting");
+            ImGui.Text($"Line chunks {network.DrawnChunks} drawn   {network.Building} building   {network.Turnouts} switches");
+            ImGui.Text($"Edits {_undo.Count} to undo   {(source.Unsaved || source.Network.Unsaved ? "unsaved" : "saved")}");
         }
 
-        ImGui.End();
-    }
-
-    private void ProfilerWindow()
-    {
-        if (!_showProfiler)
-            return;
-
-        ImGui.SetNextWindowPos(new float2(StripWidth + DockPanelWidth + 12f, _headerBottom + 300f), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("Profiler"u8, ref _showProfiler, ImGuiWindowFlags.AlwaysAutoResize))
-        {
-            ImGui.Text("CPU time per frame, over the last two seconds"u8);
-            if (ImGui.BeginTable("sections"u8, 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders))
-            {
-                ImGui.TableSetupColumn("Section"u8);
-                ImGui.TableSetupColumn("Last ms"u8);
-                ImGui.TableSetupColumn("Avg ms"u8);
-                ImGui.TableSetupColumn("Worst ms"u8);
-                ImGui.TableSetupColumn("Draws"u8);
-                ImGui.TableHeadersRow();
-
-                foreach (var (section, depth) in Profiler.Tree())
-                {
-                    ImGui.TableNextRow();
-                    ImGui.TableNextColumn();
-                    ImGui.Text(new string(' ', depth * 2) + section.Name);
-                    ImGui.TableNextColumn();
-                    ImGui.Text($"{section.Last:0.00}");
-                    ImGui.TableNextColumn();
-                    ImGui.Text($"{section.Average:0.00}");
-                    ImGui.TableNextColumn();
-                    ImGui.Text($"{section.Worst:0.00}");
-                    ImGui.TableNextColumn();
-                    ImGui.Text($"{section.DrawCalls}");
-                }
-
-                ImGui.EndTable();
-            }
-
-            ImGui.Text("Wait for GPU and Present include waiting for the display."u8);
-        }
-
-        ImGui.End();
+        ImGui.Text($"Camera {_camera.X:0} {_camera.Y:0} {_camera.Z:0}   yaw {_camera.Yaw * 180f / MathF.PI:0}   pitch {_camera.Pitch * 180f / MathF.PI:0}");
     }
 
     /// The controls for flying and for the tool in hand, for the footer.

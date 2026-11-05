@@ -1,3 +1,4 @@
+using Highball.App;
 using System.Collections.Concurrent;
 using Highball.Routes;
 using RailWerkz.Core.Logging;
@@ -82,6 +83,7 @@ public sealed partial class TerrainSource
     /// reshaped to carry them.
     public static Task<TerrainSource> Open(RouteInfo route) => Task.Run(() =>
     {
+        using var counted = Background.Begin("Opening terrain");
         var watch = System.Diagnostics.Stopwatch.StartNew();
         var built = route.BuiltTiles();
         var ids = built.ToArray();
@@ -201,6 +203,7 @@ public sealed partial class TerrainSource
                 {
                     try
                     {
+                        using var counted = Background.Begin("Tile loads");
                         var heights = RouteTile.Load(folder).Heights;
                         Lines?.Conform(tile.Id, heights, samples);
                         ApplyEdits(heights, tile.Edits);

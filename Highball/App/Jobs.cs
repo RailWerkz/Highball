@@ -10,6 +10,7 @@ namespace Highball.App;
 public sealed class JobStream : IDisposable
 {
     private readonly JobScheduler _scheduler;
+    private readonly Activity _activity;
 
     /// How many jobs run at once.
     public int Runners { get; }
@@ -28,6 +29,7 @@ public sealed class JobStream : IDisposable
     {
         Runners = Math.Max(1, (int)Math.Round(Cores * share));
         _scheduler = new JobScheduler((uint)Runners, name, priority);
+        _activity = Background.Find(name, Runners);
     }
 
     /// Starts a batch if the last one has finished: each job with its rough cost, which the scheduler balances the
@@ -40,7 +42,7 @@ public sealed class JobStream : IDisposable
         var any = false;
         foreach (var (job, cost) in jobs)
         {
-            _scheduler.Queue(job, Math.Max(1, cost));
+            _scheduler.Queue(new Counted(job, _activity), Math.Max(1, cost));
             any = true;
         }
 
@@ -54,6 +56,16 @@ public sealed class JobStream : IDisposable
     {
         _scheduler.AbortJobs(false);
         _scheduler.Wait();
+    }
+}
+
+/// A job that counts towards its stream's activity while it runs.
+internal sealed class Counted(IJob job, Activity activity) : IJob
+{
+    public void Run()
+    {
+        using (activity.Begin())
+            job.Run();
     }
 }
 
@@ -94,6 +106,7 @@ public static class FrameJobs
             return;
         }
 
+        using var counted = Background.Find("Frame slices", JobStream.Cores).Begin();
         var scheduler = Scheduler;
         var size = (count + slices - 1) / slices;
         for (var slice = 0; slice < slices; slice++)

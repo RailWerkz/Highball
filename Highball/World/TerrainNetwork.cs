@@ -1,3 +1,4 @@
+using Highball.App;
 using System.Collections.Concurrent;
 using Highball.Routes;
 
@@ -24,6 +25,7 @@ public sealed partial class TerrainSource
 
         return Task.Run(() =>
         {
+            using var counted = Background.Begin("Laying track");
             if (solveAgain)
                 NetworkLines.ForgetSolved(_route);
             var lines = NetworkLines.Build(ways, _route, built, shapes);

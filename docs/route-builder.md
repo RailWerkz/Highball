@@ -476,7 +476,7 @@ for each route given; run it before and after a change to the junction fitting t
 | `--sculpt TOOL STEPS` | Apply a terrain tool at the middle of the screen |
 | `--fly SPEED` | Fly straight ahead at SPEED m/s, logging frame times and terrain streaming |
 | `--skybox NAME` | Use that sky |
-| `--panels` | Open Frame Statistics and Profiler |
+| `--panels` | Open Frame Statistics, Profiler and Background Work |
 
 ## Threads
 

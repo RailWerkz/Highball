@@ -72,6 +72,7 @@ public sealed class RouteGenerator
         Task.Run(async () =>
         {
             var watch = System.Diagnostics.Stopwatch.StartNew();
+            using var counted = Highball.App.Background.Begin("Route build");
             try
             {
                 await Build(request, token);
