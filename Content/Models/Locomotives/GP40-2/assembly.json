@@ -66,32 +66,32 @@
       "model": "fan.glb",
       "position": [
         0,
-        4.3,
-        4.56
+        4.2,
+        4.46
       ]
     },
     {
       "model": "fan.glb",
       "position": [
         0,
-        5.65,
-        4.56
+        5.46,
+        4.46
       ]
     },
     {
       "model": "fan.glb",
       "position": [
         0,
-        7.0,
-        4.56
+        6.76,
+        4.46
       ]
     },
     {
       "model": "fan.glb",
       "position": [
         0,
-        -2.9,
-        4.6
+        1.0,
+        4.46
       ]
     }
   ],

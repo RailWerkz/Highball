@@ -1,0 +1,77 @@
+{
+  "source": "EMD-SD40 Diesel Electric Locomotive by Heataker, CC BY 4.0",
+  "lengthOverCouplers": 20.437,
+  "lods": [
+    "LOD0"
+  ],
+  "trianglesWholeEngine": {
+    "LOD0": 444839
+  },
+  "models": "Each model below is <lod>/<model>.glb",
+  "bodies": [
+    "body_csx"
+  ],
+  "truckByBody": {},
+  "trucks": [
+    {
+      "model": "truck",
+      "position": [
+        0,
+        -6.4117,
+        0
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "truck",
+      "position": [
+        0,
+        6.4117,
+        0
+      ],
+      "yaw": 180
+    }
+  ],
+  "wheelsets": {
+    "model": "wheelset",
+    "onTruck": [
+      [
+        0,
+        -1.9641,
+        0.4895
+      ],
+      [
+        0,
+        0.0,
+        0.4895
+      ],
+      [
+        0,
+        2.0565,
+        0.4895
+      ]
+    ],
+    "radius": 0.4895
+  },
+  "couplers": [
+    {
+      "model": "coupler",
+      "position": [
+        0,
+        -9.7005,
+        0.8134
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "coupler",
+      "position": [
+        0,
+        9.7005,
+        0.8134
+      ],
+      "yaw": 180
+    }
+  ],
+  "axes": "Blender Z-up metres, front towards -Y; in the files, glTF Y-up: (x, y, z) here is (x, z, -y) there"
+}

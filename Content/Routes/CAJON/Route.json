@@ -1,0 +1,19 @@
+{
+  "name": "CAJON",
+  "description": "",
+  "author": "ENGINEER",
+  "version": "0.0.1",
+  "origin": {
+    "latitude": 34.368664,
+    "longitude": -117.552229
+  },
+  "lengthKm": 0,
+  "era": "",
+  "tags": [],
+  "grid": {
+    "tileSize": 2000,
+    "spacing": 2,
+    "samples": 1001,
+    "coverCells": 200
+  }
+}

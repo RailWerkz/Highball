@@ -40,26 +40,33 @@ KNUCKLE_PIN = (0.105, -0.93)
 FRAME_END = 8.53
 FRAME_X = 1.525
 # Heights and stations measured off side and head-on references, scaled to 15'5" and 59'2".
-DECK = 1.55
+DECK = 1.5
 SILL_LOW = 1.22  # the tops of the trucks come up to just under this
 HOOD_X = 0.92
-HOOD_TOP = 4.48
-HOOD_SPLIT = 3.85
-BLISTER_TOP = 4.56
+HOOD_TOP = 4.33
+HOOD_SPLIT = 3.75
+FORWARD_SPLIT = 3.5  # ahead of the jog, the roof colour comes down to the cab's line
+JOG = (-1.65, -1.3)
+RECESS = 0.07  # how far the grilles sit in from the hood's side
+GRILLES = ((-3.64, -2.0, 3.59, 4.31), (.06, 1.97, 3.78, 4.17), (3.11, 7.51, 3.46, 4.12))
+BLISTER_TOP = 4.565
 NOSE_X = 0.95
-NOSE_TOP = 3.43
-NOSE_FRONT = -8.15
-BOX_TOP = 2.35
-CAB_FRONT = -6.0
-CAB_REAR = -3.88
-HEADER = 3.92
-HOOD_REAR = 8.15
+NOSE_TOP = 3.25
+NOSE_FRONT = -8.14
+BOX_TOP = 2.18
+BOX_ENDS = (-7.39, -3.58)  # the boxes beside the cab; ahead of them is the front porch
+CAB_FRONT = -6.1
+CAB_REAR = -4.1
+EAVE = 3.79
+CAB_TOP = 4.33
+HOOD_REAR = 8.06
 STAIR = (7.75, 8.4)
-END_RAIL = 2.7
-RADIATOR_FANS = (4.3, 5.65, 7.0)
-FAN_Z = 4.56
-BRAKE_FAN = -2.9
-BRAKE_FAN_Z = 4.6
+END_RAIL = 2.6
+RAIL_TOP = 2.44
+RADIATOR_FANS = (4.2, 5.46, 6.76)
+FAN_Z = 4.46
+BRAKE_FAN = 1.0
+BRAKE_FAN_Z = 4.46
 
 
 def srgb(code):
@@ -75,9 +82,9 @@ def srgb(code):
 COMMON = {"Frame": ("#17181b", 0, .6), "Deck": ("#2b2c2e", 0, .85), "Truck": ("#1b1b1d", 0, .7), "Tank": ("#17181b", 0, .55),
           "Pilot": ("#17181b", 0, .55), "Sill": ("#17181b", 0, .55), "Steel": ("#74787c", 1, .45), "Tread": ("#a2a5a8", 1, .3),
           "Dark": ("#08090a", 0, .8), "Glass": ("#22303a", 0, .08), "Lamp": ("#f3f0dc", 0, .15), "Rubber": ("#0d0d0e", 0, .9),
-          "Board": ("#e6e4d8", 0, .4), "Red": ("#a4161e", 0, .3), "ShieldBlue": ("#1b2a5c", 0, .4), "ShieldWhite": ("#ece9de", 0, .4),
+          "Board": ("#e6e4d8", 0, .4), "BoardText": ("#08090a", 0, .6), "Red": ("#a4161e", 0, .3), "ShieldBlue": ("#1b2a5c", 0, .4), "ShieldWhite": ("#ece9de", 0, .4),
           "Moving_Knuckle": ("#4a4540", 0, .7), "Coupler": ("#4a4540", 0, .7), "Blade": ("#3a3c3f", .6, .5)}
-BLUE, YELLOW, GRAY = "#17324f", "#f2b41b", "#8d9297"
+BLUE, YELLOW, GRAY = "#264563", "#e8ac28", "#8d9297"
 UP_YELLOW, UP_GRAY, UP_RED = "#f0b400", "#7e8388", "#b3172a"
 LIVERIES = {
     "csx_blue": {"paint": {"Hood": BLUE, "HoodRoof": BLUE, "Cab": BLUE, "CabRoof": "#c7ccd0", "CabHeader": BLUE, "Pin": BLUE, "Nose": BLUE, "NoseFront": YELLOW,
@@ -87,8 +94,8 @@ LIVERIES = {
                            "Stripe": YELLOW, "Rail": "#b9bcbe", "Logo": BLUE, "Number": YELLOW, "Plate": BLUE},
                  "logo": ("CSX", "serif", 3.7, 1.42, 1.15, 2.7), "number": "6942", "plate": "CSX"},
     "up": {"paint": {"Hood": UP_YELLOW, "HoodRoof": UP_GRAY, "Cab": UP_YELLOW, "CabRoof": UP_GRAY, "CabHeader": UP_GRAY, "Pin": UP_RED, "Nose": UP_YELLOW, "NoseFront": UP_YELLOW,
-                     "Stripe": UP_RED, "Rail": UP_GRAY, "Logo": UP_RED, "Number": UP_RED, "Plate": UP_RED, "Sill": UP_GRAY, "Pilot": UP_GRAY, "Deck": UP_GRAY},
-           "logo": ("UNION PACIFIC", "sans", 6.2, .57, 1.17, 3.05), "number": "1535", "plate": "shield"},
+                     "Stripe": UP_GRAY, "Frame": UP_GRAY, "Tank": UP_GRAY, "Rail": UP_GRAY, "Logo": UP_RED, "Number": UP_RED, "Plate": UP_RED, "Board": "#15171a", "BoardText": "#ece9de", "Sill": UP_GRAY, "Pilot": UP_GRAY, "Deck": UP_GRAY},
+           "logo": ("UNION PACIFIC", "sans", 6.25, .5, 1.18, 2.97), "number": "1535", "plate": "shield"},
 }
 FONTS = {"serif": ["rockb.ttf", "georgiab.ttf", "timesbd.ttf"], "sans": ["arialbd.ttf", "segoeuib.ttf"]}
 
@@ -404,21 +411,21 @@ def stairs(m, s, e):
 
 
 def railings(m):
-    top, mid = 2.61, 2.1
+    top, mid = RAIL_TOP, 2.0
     r = .018
     side_end = STAIR[0] - .05
-    posts = (-3.6, -1.6, .4, 2.3, 4.2, 6.1, side_end)
+    posts = (-3.33, -2.0, -.78, .43, 1.7, 2.92, 4.14, 5.36, 6.37, side_end)
     for s in (-1, 1):
         x = s * 1.475
-        # Along the long hood, out to the rear steps, where the top rail comes down as a grab for them.
-        m.tube("Rail", [(x, CAB_REAR, mid), (x, side_end, mid)], r, 0)
-        m.tube("Rail", [(x, CAB_REAR, top), (x, side_end, top), (s * 1.535, side_end + .02, DECK), (s * 1.535, side_end + .02, 1.06)], r, .08)
+        # Along the long hood; forward it sweeps up to a grab on the cab; aft it comes down for the steps.
+        m.tube("Rail", [(x, -3.33, mid), (x, side_end, mid)], r, 0)
+        m.tube("Rail", [(x, CAB_REAR - .02, 3.15), (x, -4.03, 3.15), (x, -3.67, top), (x, side_end, top), (s * 1.535, side_end + .02, DECK), (s * 1.535, side_end + .02, 1.06)], r, .1)
         for y in posts:
             m.cyl("Rail", (x, y, DECK), (x, y, top), r * 1.1, 8)
             m.box("Rail", (x - .04, y - .04, DECK), (x + .04, y + .04, DECK + .01))
-        # Beside the nose there is no walk, only the battery boxes: a grab up from the steps on to them.
-        y = -side_end
-        m.tube("Rail", [(s * 1.535, y - .02, 1.06), (s * 1.535, y - .02, DECK), (s * 1.47, y, 2.3)], r, .06)
+        # On the porch: a grab from the steps up on to the box.
+        y = BOX_ENDS[0] - .05
+        m.tube("Rail", [(s * 1.535, y, 1.06), (s * 1.535, y, DECK), (s * 1.47, y, 2.5)], r, .06)
         # The end railing: up from the outer step, slanting in over it to one level rail on four posts.
         for e in (-1, 1):
             Y = e * 8.45
@@ -429,163 +436,179 @@ def railings(m):
         m.tube("Rail", [(s * .4, HOOD_REAR + .01, 2.05), (s * .4, HOOD_REAR + .07, 2.1), (s * .4, HOOD_REAR + .07, 3.2), (s * .4, HOOD_REAR + .01, 3.25)], .012, .03)
 
 
-def cab_front_y(z):
-    """The cab's front wall stands straight to the header, then the header leans back to the roof."""
-    return CAB_FRONT + max(z - HEADER, 0) * .35
+def mirrored(half):
+    return half + [(-x, z) for x, z in reversed(half)]
 
 
 def cab(m, livery):
-    def warp(x, y, z):
-        return (x, cab_front_y(z), z) if y < CAB_FRONT + .01 else (x, y, z)
+    # Straight sides to the eave, then the long shoulders in to a flat roof. The front wall stands straight.
+    m.prism("Cab", mirrored([(1.5, DECK), (1.5, EAVE), (.92, CAB_TOP)]), "y", CAB_FRONT, CAB_REAR)
+    m.prism("CabRoof", mirrored([(1.54, EAVE - .035), (1.54, EAVE), (.93, CAB_TOP + .02)]), "y", CAB_FRONT + .01, CAB_REAR + .02)
+    # The raised hatch along the middle of the roof.
+    m.prism("CabRoof", mirrored([(.62, CAB_TOP), (.5, 4.5)]), "y", -5.84, -4.82)
 
-    # Straight sides up to the shoulders, then 45 degrees in to a flat roof.
-    half = [(1.5, DECK), (1.5, 3.98), (1.46, 4.04), (.98, 4.58), (.92, 4.60)]
-    m.prism("Cab", half + [(-x, z) for x, z in reversed(half)], "y", CAB_FRONT, CAB_REAR, warp)
-    cap = [(1.515, 3.96), (1.475, 4.045), (.99, 4.595), (.925, 4.615)]
-    m.prism("CabRoof", cap + [(-x, z) for x, z in reversed(cap)], "y", CAB_FRONT, CAB_REAR + .02,
-            lambda x, y, z: (x, cab_front_y(z) + .025, z) if y < CAB_FRONT + .01 else (x, y, z))
-
-    # The band above the windows, for the paints that carry one.
-    lean = math.hypot(1.0, .35)
-    tilt = (0, .35 / lean, 1.0 / lean)
-    y_band = cab_front_y(HEADER)
-    outline = [(1.5, -.03), (1.5, .06 * lean), (1.46, .12 * lean), (.98, .66 * lean), (.92, .68 * lean), (-.92, .68 * lean), (-.98, .66 * lean),
-               (-1.46, .12 * lean), (-1.5, .06 * lean), (-1.5, -.03)]
-    m.panel("CabHeader", (0, y_band, HEADER), (1, 0, 0), tilt, outline, .004)
+    # The colour above the window line, on the front wall and along the sides.
+    m.panel("CabHeader", (0, CAB_FRONT, 0), (1, 0, 0), (0, 0, 1), mirrored([(1.5, FORWARD_SPLIT), (1.5, EAVE), (.92, CAB_TOP)]), .004)
+    m.panel("Pin", (0, CAB_FRONT, 0), (1, 0, 0), (0, 0, 1), rrect(-1.5, 1.5, FORWARD_SPLIT - .03, FORWARD_SPLIT), .004)
     for s in (-1, 1):
         a, b = sorted((s * 1.5, s * 1.504))
-        m.box("CabHeader", (a, y_band, 3.85), (b, CAB_REAR, 3.96))
+        m.box("CabHeader", (a, CAB_FRONT, FORWARD_SPLIT), (b, CAB_REAR, EAVE - .03))
         a, b = sorted((s * 1.5, s * 1.505))
-        m.box("Pin", (a, y_band, 3.825), (b, CAB_REAR, 3.85))
+        m.box("Pin", (a, CAB_FRONT, FORWARD_SPLIT - .03), (b, CAB_REAR, FORWARD_SPLIT))
+
+    # The number board box: a V standing out of the wall, a board on each face, turned so it reads from the side too.
+    f = CAB_FRONT + .01
+    tip = -6.52
+    plan = [(.83, f), (.13, tip), (-.13, tip), (-.83, f)]
+    m.loft("CabHeader", [(3.87, plan), (4.16, plan), (4.3, [(.83, f), (.13, f - .02), (-.13, f - .02), (-.83, f)])], "z")
+    m.box("CabHeader", (-.13, tip - .05, 3.85), (.13, tip + .02, 4.32), .012)
+    for z in (3.97, 4.2):
+        m.cyl("Rubber", (0, tip - .05, z), (0, tip - .07, z), .105, 18)
+        m.cyl("Lamp", (0, tip - .07, z), (0, tip - .078, z), .09, 18)
 
     for s in (-1, 1):
         def side_panel(role, yc, zc, outline, depth):
             m.panel(role, (s * 1.5, yc, zc), (0, s, 0), (0, 0, 1), outline, depth)
 
-        # The side windows, sliding, forward of the middle of the cab.
-        for yc in (-5.27, -4.78):
-            side_panel("Rubber", yc, 3.41, rrect(-.25, .25, -.33, .33, .04, .04, 3), .006)
-            side_panel("Steel", yc, 3.41, rrect(-.235, .235, -.315, .315, .03, .03, 3), .01)
-            side_panel("Glass", yc, 3.41, rrect(-.22, .22, -.3, .3, .025, .025, 3), .014)
-        # The sun visor over them, sloping out and down.
-        x0, x1 = s * 1.5, s * 1.68
-        m.hexa("Cab", ((x0, -5.58, 3.8), (x1, -5.58, 3.72), (x1, -4.47, 3.72), (x0, -4.47, 3.8),
-                       (x0, -5.58, 3.815), (x1, -5.58, 3.735), (x1, -4.47, 3.735), (x0, -4.47, 3.815)))
-        # Grabs and the mirror.
-        m.tube("Rail", [(s * 1.5, CAB_REAR - .08, 2.0), (s * 1.56, CAB_REAR - .08, 2.04), (s * 1.56, CAB_REAR - .08, 2.85), (s * 1.5, CAB_REAR - .08, 2.89)], .012, .03)
-        m.tube("Steel", [(s * 1.5, -5.72, 3.45), (s * 1.64, -5.72, 3.45)], .012, 0)
-        m.box("Dark", (min(s * 1.62, s * 1.66), -5.76, 3.36), (max(s * 1.62, s * 1.66), -5.68, 3.56), .005)
+        face = Vector((.858, s * .515, 0))
+        n = face.cross(Vector((0, 0, 1)))
+        o = Vector((s * .48, -6.31, 4.015))
+        m.panel("Dark", o, face, (0, 0, 1), rrect(-.36, .36, -.135, .135, .03, .03, 2), .006)
+        m.panel("Board", o, face, (0, 0, 1), rrect(-.34, .34, -.115, .115, .025, .025, 2), .01)
+        m.text("BoardText", livery["number"], "sans", o + n * .01, face, (0, 0, 1), .5, .15)
 
-        # The front wall outboard of the nose: a door with a tall window, over the battery box.
-        xc = s * 1.225
-        o = (xc, CAB_FRONT, 3.14)
-        m.panel("Dark", o, (1, 0, 0), (0, 0, 1), rrect(-.27, .27, -.77, .77, .02, .02, 2), .003)
-        m.panel("Cab", o, (1, 0, 0), (0, 0, 1), rrect(-.26, .26, -.76, .76, .018, .018, 2), .006)
-        o = (xc, CAB_FRONT, 3.6)
-        m.panel("Rubber", o, (1, 0, 0), (0, 0, 1), rrect(-.215, .215, -.3, .3, .04, .04, 3), .009)
-        m.panel("Glass", o, (1, 0, 0), (0, 0, 1), rrect(-.195, .195, -.28, .28, .03, .03, 3), .013)
-        m.cyl("Steel", (s * 1.03, CAB_FRONT, 2.95), (s * 1.03, CAB_FRONT - .04, 2.95), .018, 8)
-        # The windscreens, reaching down almost to the top of the nose.
-        xc = s * .45
-        o = (xc, CAB_FRONT, 3.68)
-        m.panel("Rubber", o, (1, 0, 0), (0, 0, 1), rrect(-.4, .4, -.22, .22, .04, .04, 3), .006)
-        m.panel("Glass", o, (1, 0, 0), (0, 0, 1), rrect(-.38, .38, -.2, .2, .03, .03, 3), .01)
-        m.tube("Dark", [(xc - s * .25, CAB_FRONT - .025, 3.85), (xc + s * .08, CAB_FRONT - .025, 3.51)], .007, 0, 6)
-        # The number boards, on the header, either side of the lights.
-        zb = 4.2
-        o = (s * .56, cab_front_y(zb), zb)
-        m.panel("Dark", o, (1, 0, 0), tilt, rrect(-.35, .35, -.15, .15, .03, .03, 2), .008)
-        m.panel("Board", o, (1, 0, 0), tilt, rrect(-.33, .33, -.13, .13, .025, .025, 2), .012)
-        n = (0, -1.0 / lean, .35 / lean)
-        at = (o[0] + n[0] * .012, o[1] + n[1] * .012, o[2] + n[2] * .012)
-        m.text("Dark", livery["number"], "sans", at, (1, 0, 0), tilt, .46, .15)
+        # The side windows: two sliding sashes under the eave.
+        for yc in (-4.92, -5.44):
+            side_panel("Rubber", yc, 3.275, rrect(-.26, .26, -.315, .315, .03, .03, 3), .008)
+            side_panel("Steel", yc, 3.275, rrect(-.245, .245, -.3, .3, .025, .025, 3), .012)
+            side_panel("Glass", yc, 3.275, rrect(-.225, .225, -.28, .28, .02, .02, 3), .016)
+        # The visor over them: wide at the wall, narrower at its lip, sloping down.
+        x0, x1 = s * 1.5, s * 1.62
+        m.hexa("CabHeader", ((x0, -5.95, EAVE - .05), (x1, -5.72, 3.62), (x1, -4.66, 3.62), (x0, -4.4, EAVE - .05),
+                       (x0, -5.95, EAVE - .03), (x1, -5.72, 3.64), (x1, -4.66, 3.64), (x0, -4.4, EAVE - .03)))
+        m.tube("Rail", [(s * 1.5, CAB_REAR - .08, 2.25), (s * 1.56, CAB_REAR - .08, 2.29), (s * 1.56, CAB_REAR - .08, 2.95), (s * 1.5, CAB_REAR - .08, 2.99)], .012, .03)
+        # Under the windows: the seam on to the box and its doors.
+        for y0, y1 in ((-6.05, -5.1), (-5.05, -4.15)):
+            door(m, s, y0, y1, DECK + .1, BOX_TOP - .03, "Cab", True, 1.5)
+
+        # The tall corner windows, beside the nose, reaching down past its top.
+        xc = s * 1.155
+        o = (xc, CAB_FRONT, 2.98)
+        m.panel("Dark", o, (1, 0, 0), (0, 0, 1), rrect(-.27, .27, -.78, .78, .02, .02, 2), .003)
+        o = (xc, CAB_FRONT, 3.535)
+        m.panel("Rubber", o, (1, 0, 0), (0, 0, 1), rrect(-.225, .225, -.325, .325, .1, .05, 4), .009)
+        m.panel("Glass", o, (1, 0, 0), (0, 0, 1), rrect(-.205, .205, -.305, .305, .085, .04, 4), .013)
+        # The windscreens, between the nose and the board box.
+        xc = s * .435
+        o = (xc, CAB_FRONT, 3.665)
+        m.panel("Rubber", o, (1, 0, 0), (0, 0, 1), rrect(-.335, .335, -.195, .195, .04, .04, 3), .008)
+        m.panel("Glass", o, (1, 0, 0), (0, 0, 1), rrect(-.315, .315, -.175, .175, .03, .03, 3), .012)
+        m.tube("Dark", [(xc - s * .2, CAB_FRONT - .02, 3.82), (xc + s * .08, CAB_FRONT - .02, 3.5)], .007, 0, 6)
         # The rear wall's windows.
-        m.panel("Rubber", (s * 1.21, CAB_REAR, 3.62), (-1, 0, 0), (0, 0, 1), rrect(-.25, .25, -.25, .25, .03, .03, 3), .006)
-        m.panel("Glass", (s * 1.21, CAB_REAR, 3.62), (-1, 0, 0), (0, 0, 1), rrect(-.23, .23, -.23, .23, .025, .025, 3), .01)
+        m.panel("Rubber", (s * 1.21, CAB_REAR, 3.4), (-1, 0, 0), (0, 0, 1), rrect(-.25, .25, -.25, .25, .03, .03, 3), .006)
+        m.panel("Glass", (s * 1.21, CAB_REAR, 3.4), (-1, 0, 0), (0, 0, 1), rrect(-.23, .23, -.23, .23, .025, .025, 3), .01)
 
-    # The twin headlight, one lamp over the other, in a raised housing between the boards.
-    z0, z1 = 4.06, 4.54
-    y0, y1 = cab_front_y(z0), cab_front_y(z1)
-    t = .07
-    m.hexa("CabHeader", ((-.13, y0 - t, z0), (.13, y0 - t, z0), (.13, y0 + .05, z0), (-.13, y0 + .05, z0),
-                   (-.13, y1 - t, z1), (.13, y1 - t, z1), (.13, y1 + .05, z1), (-.13, y1 + .05, z1)))
-    for z in (4.19, 4.42):
-        y = cab_front_y(z) - t
-        m.cyl("Rubber", (0, y, z), (0, y - .02, z), .108, 18)
-        m.cyl("Lamp", (0, y - .02, z), (0, y - .028, z), .092, 18)
-
-    # The door to the walk behind the cab, and the back wall.
+    # The door to the walk behind the cab.
     y0, y1 = sorted((CAB_REAR, CAB_REAR + .004))
-    m.box("Dark", (-1.47, y0, DECK + .02), (-.96, y1, 3.28))
+    m.box("Dark", (-1.47, y0, BOX_TOP + .02), (-.96, y1, 3.15))
     y0, y1 = sorted((CAB_REAR, CAB_REAR + .01))
-    m.box("Cab", (-1.455, y0, DECK + .035), (-.975, y1, 3.265))
-    m.cyl("Steel", (-1.05, CAB_REAR + .01, 2.5), (-1.05, CAB_REAR + .045, 2.5), .018, 8)
+    m.box("Cab", (-1.455, y0, BOX_TOP + .035), (-.975, y1, 3.135))
 
-    # On the roof: three horns on a base, an antenna and a vent.
-    m.box("Frame", (-.3, -4.86, 4.615), (.3, -4.7, 4.64))
+    # On the roof: three horns on the hatch, and an antenna.
+    m.box("Frame", (-.3, -5.42, 4.5), (.3, -5.26, 4.525))
     for x, length, r in ((-.2, .46, .075), (0, .3, .06), (.2, .38, .07)):
-        m.cyl("Steel", (x, -4.78, 4.66), (x, -4.78 - length, 4.7), .022, 10, r)
-    m.cyl("Dark", (0, -4.2, 4.615), (0, -4.2, 4.66), .05, 10)
-    m.cyl("Dark", (0, -4.2, 4.66), (0, -4.2, 4.76), .01, 6)
-    m.box("CabRoof", (-.5, -5.5, 4.61), (.5, -5.2, 4.64), .01)
+        m.cyl("Steel", (x, -5.34, 4.55), (x, -5.34 - length, 4.59), .022, 10, r)
+    m.cyl("Dark", (0, -4.5, CAB_TOP), (0, -4.5, CAB_TOP + .05), .05, 10)
+    m.cyl("Dark", (0, -4.5, CAB_TOP + .05), (0, -4.5, CAB_TOP + .17), .01, 6)
 
     # The road number, big, under the windows.
     for s in (-1, 1):
-        m.text("Number", livery["number"], "sans", (s * 1.5005, -4.94, 2.6), (0, s, 0), (0, 0, 1), 1.5, .5)
+        m.text("Number", livery["number"], "sans", (s * 1.5005, -5.1, 2.65), (0, s, 0), (0, 0, 1), 1.7, .5)
+
+
+def hood_section(lo, hi, cut):
+    """One side of the hood from lo up to hi, with the grille's recess taken out of it, as (x, z) going up."""
+    if not cut or cut[3] <= lo or cut[2] >= hi:
+        return [(HOOD_X, lo), (HOOD_X, hi)]
+    z0, z1 = cut[2], cut[3]
+    pts = []
+    if z0 > lo:
+        pts += [(HOOD_X, lo), (HOOD_X, z0)]
+    pts += [(HOOD_X - RECESS, max(z0, lo)), (HOOD_X - RECESS, min(z1, hi))]
+    if z1 < hi:
+        pts += [(HOOD_X, z1), (HOOD_X, hi)]
+    return pts
 
 
 def long_hood(m, livery):
     y0, y1 = CAB_REAR, HOOD_REAR
-    m.box("Hood", (-HOOD_X, y0, DECK), (HOOD_X, y1, HOOD_SPLIT), .004)
-    m.prism("HoodRoof", rrect(-HOOD_X, HOOD_X, HOOD_SPLIT, HOOD_TOP, .14, 0, 5), "y", y0, y1)
+    # The hood in slices along its length, so that each grille really is let into its side.
+    edges = sorted({y0, y1, *[g[0] for g in GRILLES], *[g[1] for g in GRILLES]})
+    for a, b in zip(edges, edges[1:]):
+        mid = (a + b) / 2
+        cut = next((g for g in GRILLES if g[0] < mid < g[1]), None)
+        low = hood_section(DECK, HOOD_SPLIT, cut)
+        m.prism("Hood", low + [(-x, z) for x, z in reversed(low)], "y", a, b)
+        side = hood_section(HOOD_SPLIT, HOOD_TOP - .14, cut)
+        arc = [(HOOD_X - .14 + .14 * math.cos(math.pi / 2 * k / 5), HOOD_TOP - .14 + .14 * math.sin(math.pi / 2 * k / 5)) for k in range(1, 6)]
+        if cut and cut[3] > HOOD_TOP - .14:
+            # The tall forward grille reaches up into the rounded edge: finish it square under the blister.
+            side = hood_section(HOOD_SPLIT, cut[3], cut)
+            arc = [(HOOD_X - RECESS - .02, HOOD_TOP)]
+        up = side + arc
+        m.prism("HoodRoof", up + [(-x, z) for x, z in reversed(up)], "y", a, b)
 
-    low = DECK + .12
+    jog = [(JOG[0], FORWARD_SPLIT), (JOG[1], HOOD_SPLIT), (y0, HOOD_SPLIT), (y0, FORWARD_SPLIT)]
     for s in (-1, 1):
-        # Behind the cab: the electrical cabinet's doors, under the dynamic brake's intake.
-        for k in range(3):
-            door(m, s, y0 + .08 + k * .62, y0 + .08 + k * .62 + .59, low, 3.5)
-        grille(m, s, y0 + .1, -1.95, 3.64, 4.22, role="HoodRoof")
-        # Engine room: the long row of doors, and short ones over them.
-        for k in range(8):
-            yd = -1.8 + k * .59
-            door(m, s, yd, yd + .56, low, 3.38)
-            door(m, s, yd, yd + .56, 3.42, 3.8, hinges=False)
-        a, b = sorted((s * HOOD_X, s * (HOOD_X + .004)))
-        m.box("Pin", (a, -1.9, 3.825), (b, 3.0, 3.85))
-        # The radiator: its big louvred air intakes high up, and doors under them.
-        grille(m, s, 3.1, 8.0, 3.54, 4.2, role="HoodRoof")
-        for k in range(5):
-            yd = 3.1 + k * .99
-            door(m, s, yd, yd + .94, low, 3.45)
+        wall = HOOD_X
+        o, u, v = (s * wall, 0, 0), (0, s, 0), (0, 0, 1)
+        # Ahead of the jog the roof colour comes down, round the forward grille's recess.
+        g = GRILLES[0]
+        m.panel("HoodRoof", o, u, v, [(s * p, q) for p, q in ((y0, FORWARD_SPLIT), (g[0], FORWARD_SPLIT), (g[0], HOOD_SPLIT), (y0, HOOD_SPLIT))], .003)
+        m.panel("HoodRoof", o, u, v, [(s * p, q) for p, q in ((g[0], FORWARD_SPLIT), (g[1], FORWARD_SPLIT), (g[1], g[2]), (g[0], g[2]))], .003)
+        m.panel("HoodRoof", o, u, v, [(s * p, q) for p, q in ((g[1], FORWARD_SPLIT), (JOG[0], FORWARD_SPLIT), (JOG[1], HOOD_SPLIT), (g[1], HOOD_SPLIT))], .003)
+        # The line under it, stepping up at the jog and stopping at the radiator grille.
+        for ya, yb, z in ((y0, JOG[0], FORWARD_SPLIT), (JOG[1], GRILLES[2][0], HOOD_SPLIT)):
+            m.panel("Pin", o, u, v, [(s * ya, z - .03), (s * yb, z - .03), (s * yb, z), (s * ya, z)], .004)
+        m.panel("Pin", o, u, v, [(s * JOG[0], FORWARD_SPLIT - .03), (s * JOG[1], HOOD_SPLIT - .03), (s * JOG[1], HOOD_SPLIT), (s * JOG[0], FORWARD_SPLIT)], .004)
+        # The grilles, in their recesses.
+        for ga, gb, gl, gh in GRILLES:
+            grille(m, s, ga, gb, gl, gh, HOOD_X - RECESS, "HoodRoof")
+        # The doors, on their real seams: a tall row over a low row, up to the grilles.
+        seams = (7.53, 6.58, 5.68, 4.89, 3.82, 2.92, 2.02, 1.12, .22, -.52, -1.37, -2.0, -2.82, -3.64)
+        for a, b in zip(seams[1:], seams):
+            top = 3.4 if a > 3.0 else 3.45
+            door(m, s, a + .02, b - .02, 1.87, top)
+            door(m, s, a + .02, b - .02, DECK + .1, 1.83, hinges=False)
         # A rib along the foot of the hood.
         a, b = sorted((s * HOOD_X, s * (HOOD_X + .012)))
         m.box("Hood", (a, y0, DECK), (b, y1, DECK + .09))
-    # Its roof lines: hatches over the engine, seams round them.
-    for ya, yb in ((-1.7, .35), (1.7, 3.0)):
-        m.box("Dark", (-.76, ya, HOOD_TOP - .002), (.76, yb, HOOD_TOP + .001))
-        m.box("HoodRoof", (-.75, ya + .012, HOOD_TOP), (.75, yb - .012, HOOD_TOP + .012), .004)
+    # The roof: hatches with seams round them.
+    for ya, yb in ((-.9, .25), (1.75, 2.4)):
+        m.box("Dark", (-.72, ya, HOOD_TOP - .002), (.72, yb, HOOD_TOP + .001))
+        m.box("HoodRoof", (-.71, ya + .012, HOOD_TOP), (.71, yb - .012, HOOD_TOP + .012), .004)
 
-    # The dynamic brake blister with its fan, right behind the cab.
-    ends = [(y0, BLISTER_TOP), (-1.95, BLISTER_TOP), (-1.8, HOOD_TOP - .02)]
-    m.loft("HoodRoof", [(y, rrect(-.86, .86, 4.0, z, .1, 0, 4)) for y, z in ends], "y")
-    fan_shroud(m, BRAKE_FAN, BRAKE_FAN_Z, BLISTER_TOP)
+    # The blister over the forward grille, against the cab.
+    m.loft("HoodRoof", [(y, rrect(-HOOD_X, HOOD_X, HOOD_TOP - .03, z, .1, 0, 4)) for y, z in ((y0, BLISTER_TOP), (-2.0, BLISTER_TOP), (-1.85, HOOD_TOP + .12))], "y")
 
-    # The radiator fans, low and side by side.
+    # The dynamic brake fan, then the radiator fans, side by side.
+    fan_shroud(m, BRAKE_FAN, BRAKE_FAN_Z, HOOD_TOP)
     for y in RADIATOR_FANS:
         fan_shroud(m, y, FAN_Z, HOOD_TOP)
+    m.cyl("HoodRoof", (0, 2.71, HOOD_TOP), (0, 2.71, 4.5), .16, 18)
 
-    # Exhaust: the turbo's single wide stack, low on the roof.
-    stack_y = 1.0
-    m.loft("Dark", [(HOOD_TOP - .01, circle(0, stack_y, .36, .22)), (HOOD_TOP + .09, circle(0, stack_y, .32, .19))], "z")
-    m.loft("Rubber", [(HOOD_TOP + .09, circle(0, stack_y, .345, .215)), (HOOD_TOP + .11, circle(0, stack_y, .345, .215))], "z")
-    m.loft("Dark", [(HOOD_TOP + .11, circle(0, stack_y, .28, .15)), (HOOD_TOP + .115, circle(0, stack_y, .28, .15))], "z")
+    # Exhaust: the turbo's single wide stack on a raised base.
+    stack_y = -1.42
+    m.loft("HoodRoof", [(HOOD_TOP - .01, circle(0, stack_y, .4, .34)), (HOOD_TOP + .14, circle(0, stack_y, .36, .3))], "z")
+    m.loft("Dark", [(HOOD_TOP + .14, circle(0, stack_y, .3, .2)), (HOOD_TOP + .22, circle(0, stack_y, .28, .18))], "z")
+    m.loft("Rubber", [(HOOD_TOP + .22, circle(0, stack_y, .3, .2)), (HOOD_TOP + .24, circle(0, stack_y, .3, .2))], "z")
 
     # The rear wall: door, twin lamps and number boards.
     m.box("Hood", (-.34, HOOD_REAR, DECK + .08), (.34, HOOD_REAR + .01, 3.1))
     for s in (-1, 1):
         m.box("Dark", (s * .5 - .3, HOOD_REAR + .001, 3.5), (s * .5 + .3, HOOD_REAR + .008, 3.78))
         m.box("Board", (s * .5 - .28, HOOD_REAR + .002, 3.52), (s * .5 + .28, HOOD_REAR + .012, 3.76))
-        m.text("Dark", livery["number"], "sans", (s * .5, HOOD_REAR + .012, 3.64), (-1, 0, 0), (0, 0, 1), .42, .14)
+        m.text("BoardText", livery["number"], "sans", (s * .5, HOOD_REAR + .012, 3.64), (-1, 0, 0), (0, 0, 1), .42, .14)
     for z in (3.4, 3.88):
         m.cyl("Hood", (0, HOOD_REAR, z), (0, HOOD_REAR + .07, z), .095, 16)
         m.cyl("Lamp", (0, HOOD_REAR + .07, z), (0, HOOD_REAR + .078, z), .08, 16)
@@ -621,35 +644,30 @@ def nose(m, livery):
     profile = lambda half, top: rrect(-half, half, DECK, top, .15, 0, 5)
     m.loft("NoseFront", [(NOSE_FRONT, profile(NOSE_X - .06, NOSE_TOP - .07)), (NOSE_FRONT + .08, profile(NOSE_X, NOSE_TOP)), (NOSE_FRONT + .33, profile(NOSE_X, NOSE_TOP))], "y")
     m.prism("Nose", profile(NOSE_X, NOSE_TOP), "y", NOSE_FRONT + .33, CAB_FRONT)
+    # The non-slip on its top.
+    m.box("Dark", (-NOSE_X + .17, NOSE_FRONT + .1, NOSE_TOP), (NOSE_X - .17, CAB_FRONT, NOSE_TOP + .002))
     # The front: two hatches up in the corners, a seam low down, the railroad mark in the middle.
     u, v = (1, 0, 0), (0, 0, 1)
     for s in (-1, 1):
-        m.panel("Dark", (s * .6, NOSE_FRONT, 3.08), u, v, rrect(-.2, .2, -.17, .17, .02, .02, 2), .002)
-        m.panel("NoseFront", (s * .6, NOSE_FRONT, 3.08), u, v, rrect(-.19, .19, -.16, .16, .015, .015, 2), .005)
-    m.box("Dark", (-.8, NOSE_FRONT - .002, 1.92), (.8, NOSE_FRONT, 1.93))
+        m.panel("Dark", (s * .6, NOSE_FRONT, 2.92), u, v, rrect(-.2, .2, -.15, .15, .02, .02, 2), .002)
+        m.panel("NoseFront", (s * .6, NOSE_FRONT, 2.92), u, v, rrect(-.19, .19, -.14, .14, .015, .015, 2), .005)
+    m.box("Dark", (-.8, NOSE_FRONT - .002, 1.85), (.8, NOSE_FRONT, 1.86))
     if livery["plate"] == "shield":
-        shield(m, 2.72)
+        shield(m, 2.5)
     else:
-        m.text("Plate", livery["plate"], "serif", (0, NOSE_FRONT, 2.72), u, v, 1.56, .56)
+        m.text("Plate", livery["plate"], "serif", (0, NOSE_FRONT, 2.5), u, v, 1.56, .56)
     for s in (-1, 1):
-        for yd in (-7.6, -7.0, -6.42):
-            door(m, s, yd - .24, yd + .24, BOX_TOP + .08, NOSE_TOP - .16, "Nose", True, NOSE_X)
-        # The battery boxes fill the deck beside the nose, out to the sill.
-        a, b = sorted((s * NOSE_X, s * 1.46))
-        yb = NOSE_FRONT + .04
-        m.hexa("Nose", ((a, yb, DECK), (b, yb, DECK), (b, CAB_FRONT, DECK), (a, CAB_FRONT, DECK),
-                        (a, yb, BOX_TOP + .03), (b, yb, BOX_TOP - .05), (b, CAB_FRONT, BOX_TOP - .05), (a, CAB_FRONT, BOX_TOP + .03)))
-        for yd in (-7.5, -6.72):
-            a2, b2 = sorted((s * 1.46, s * 1.469))
-            m.box("Dark", (a2, yd - .3, DECK + .1), (b2, yd + .3, BOX_TOP - .14))
-            a2, b2 = sorted((s * 1.46, s * 1.472))
-            m.box("Nose", (a2, yd - .285, DECK + .115), (b2, yd + .285, BOX_TOP - .155))
-            m.cyl("Steel", (s * 1.472, yd, DECK + .4), (s * 1.49, yd, DECK + .4), .018, 8)
-        # A grab up the door above the box.
-        m.tube("Rail", [(s * 1.42, CAB_FRONT - .01, BOX_TOP + .08), (s * 1.42, CAB_FRONT - .07, BOX_TOP + .12), (s * 1.42, CAB_FRONT - .07, 3.15), (s * 1.42, CAB_FRONT - .01, 3.2)], .012, .03)
+        # The nose's side: one big door.
+        door(m, s, -7.4, -6.2, BOX_TOP + .06, NOSE_TOP - .06, "Nose", True, NOSE_X)
+        # The boxes beside nose and cab stop short of the front, leaving the porch.
+        a, b = sorted((s * NOSE_X, s * 1.49))
+        m.prism("Nose", rrect(BOX_ENDS[0], BOX_ENDS[1], DECK, BOX_TOP, .12, 0, 4), "x", a, b, lambda x, y, z: (x, y, z))
+        door(m, s, -7.33, -6.16, DECK + .1, BOX_TOP - .03, "Nose", True, 1.49)
+        # A grab up the cab's front from the box.
+        m.tube("Rail", [(s * 1.42, CAB_FRONT - .01, BOX_TOP + .08), (s * 1.42, CAB_FRONT - .07, BOX_TOP + .12), (s * 1.42, CAB_FRONT - .07, 3.1), (s * 1.42, CAB_FRONT - .01, 3.14)], .012, .03)
         # The ditch lights, low on the corners of the nose.
-        m.box("Dark", (s * .98 - .1, NOSE_FRONT - .1, DECK + .2), (s * .98 + .1, NOSE_FRONT + .05, DECK + .42), .012)
-        m.cyl("Lamp", (s * .98, NOSE_FRONT - .1, DECK + .31), (s * .98, NOSE_FRONT - .11, DECK + .31), .085, 16)
+        m.box("Dark", (s * .78 - .1, NOSE_FRONT - .1, DECK + .2), (s * .78 + .1, NOSE_FRONT + .05, DECK + .42), .012)
+        m.cyl("Lamp", (s * .78, NOSE_FRONT - .1, DECK + .31), (s * .78, NOSE_FRONT - .11, DECK + .31), .085, 16)
     # The bell, up on the nose.
     m.box("Steel", (-.05, -7.0, NOSE_TOP), (.05, -6.88, NOSE_TOP + .05))
     m.lathe("Tread", (0, -6.94, NOSE_TOP + .04), (0, 0, 1), [(0, .095), (.035, .08), (.09, .058), (.13, .05), (.13, .01), (0, .01)], 18)
@@ -663,14 +681,14 @@ def underbody(m):
     for s in (-1, 1):
         a, b = sorted((s * 1.49, s * FRAME_X))
         m.box("Sill", (a, -STAIR[0] + .05, SILL_LOW), (b, STAIR[0] - .05, DECK - .04), .004)
-        m.box("Sill", (a, -FRAME_END, DECK - .09), (b, FRAME_END, DECK), .004)
+        m.box("Sill", (a, -FRAME_END, DECK - .15), (b, FRAME_END, DECK), .004)
         a, b = sorted((s * FRAME_X, s * (FRAME_X + .003)))
-        m.box("Stripe", (a, -FRAME_END, DECK - .085), (b, FRAME_END, DECK - .005))
+        m.box("Stripe", (a, -FRAME_END, DECK - .145), (b, FRAME_END, DECK - .005))
         # A row of stiffeners on the sill.
         y = -7.2
         while y < 7.3:
             x0, x1 = sorted((s * FRAME_X, s * (FRAME_X + .012)))
-            m.box("Sill", (x0, y - .02, SILL_LOW + .02), (x1, y + .02, DECK - .1))
+            m.box("Sill", (x0, y - .02, SILL_LOW + .02), (x1, y + .02, DECK - .16))
             y += 1.2
         for e in (-1, 1):
             stairs(m, s, e)
@@ -683,10 +701,10 @@ def underbody(m):
             a, b = sorted((s * 1.1, s * 1.42))
             m.box("Frame", (a, y - .03, 1.07), (b, y + .03, SILL_LOW + .02))
     # The fuel tank: deep, nearly down to the rails.
-    m.loft("Tank", [(y, rrect(-x, x, z, SILL_LOW + .02, .1, .2, 5)) for y, x, z in
-                    ((-2.52, 1.08, .3), (-2.44, 1.18, .22), (2.44, 1.18, .22), (2.52, 1.08, .3))], "y")
+    m.loft("Tank", [(y, rrect(-x, x, z, SILL_LOW + .02, .1, .32, 6)) for y, x, z in
+                    ((-2.64, .98, .34), (-2.56, 1.12, .22), (-2.44, 1.18, .16), (2.3, 1.18, .16), (2.42, 1.12, .22), (2.5, .98, .34))], "y")
     for y in (-1.5, 0, 1.5):
-        m.prism("Frame", rrect(-1.192, 1.192, .208, SILL_LOW + .02, .1, .21, 5), "y", y - .025, y + .025)
+        m.prism("Frame", rrect(-1.192, 1.192, .148, SILL_LOW + .02, .1, .33, 6), "y", y - .025, y + .025)
     for s in (-1, 1):
         # Filler, gauge and the emergency stop box.
         m.cyl("Steel", (s * 1.17, 1.0, .85), (s * 1.24, 1.0, .85), .06, 12)
@@ -930,6 +948,7 @@ def assemble(body_file):
 def combined(livery):
     """One whole engine for looking at: every part on an empty named for it, so a truck turns with its wheels on it."""
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    shared = {}
 
     def holder(name, at=(0, 0, 0), yaw=0.0, parent=None):
         empty = bpy.data.objects.new(name, None)
@@ -948,10 +967,7 @@ def combined(livery):
             obj.matrix_parent_inverse = Matrix.Identity(4)
             obj.name = f"{prefix}_{obj.name.split('.')[0]}"
             for slot in obj.material_slots:
-                base = slot.material.name.split(".")[0]
-                shared = bpy.data.materials.get(base)
-                if shared is not None:
-                    slot.material = shared
+                slot.material = shared.setdefault(slot.material.name.split(".")[0], slot.material)
 
     root = holder("GP40-2")
     load(f"body_{livery}.glb", holder("Body", parent=root), "Body")
@@ -980,6 +996,7 @@ def combined(livery):
         obj.select_set(True)
     bpy.ops.export_scene.gltf(filepath=os.path.join(folder, f"gp40_2_{livery}.glb"), export_format="GLB", use_selection=True, export_yup=True,
                               export_materials="EXPORT", export_normals=True, export_texcoords=False)
+    bpy.context.preferences.filepaths.save_version = 0
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, f"gp40_2_{livery}.blend"), check_existing=False)
     print("wrote", folder, livery, len(bpy.data.objects), "objects")
 
@@ -1061,6 +1078,7 @@ def previews():
             shoot("truck", (6.2, 1.4, 1.2), (0, TRUCK_CENTRE, .7), 55, (1100, 700))
             shoot("pilot", (3.6, -13.4, 1.5), (0, -8.8, 1.05), 55, (1100, 700))
             shoot("cab", (6.0, -11.0, 4.3), (0, -5.2, 3.0), 55, (1100, 760))
+            shoot("ref3", (12, -18, 6.0), (0, -.8, 2.0), 50, (1476, 828))
 
 
 for key, livery in LIVERIES.items():
