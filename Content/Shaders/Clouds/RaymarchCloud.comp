@@ -12,20 +12,22 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D result;
 layout(set = 0, binding = 1) uniform sampler2D history;
 
-#define MAX_STEPS 64
+#define MAX_STEPS 72
 #define LIGHT_STEPS 5
 #define LIGHT_DISTANCE 1800.0
+#define GOLDEN_RATIO 0.61803398875
 #define EARLY_EXIT 0.004
 #define CLOUD_BRIGHTNESS 4.0
 #define HAZE_DISTANCE 70000.0
 #define MAX_DISTANCE 140000.0
-#define GOLDEN_RATIO 0.61803398875
 
-// Noise that changes every pixel and frame, which the blend with last frame averages out.
+// A different start for every pixel, walking evenly through 0..1 from frame to frame, which the blend with last frame averages out.
+// A patterned dither won't do: its pattern survives the blend, as stripes across every lit cloud.
 float Dither(vec2 pixel, float frame)
 {
-    pixel += 5.588238 * mod(frame, 64.0);
-    return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+    vec3 p = fract(vec3(pixel.xyx) * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z + frame * GOLDEN_RATIO);
 }
 
 float DensityToLight(vec3 position, vec3 sun, float lod, float dither)
@@ -34,15 +36,18 @@ float DensityToLight(vec3 position, vec3 sun, float lod, float dither)
     if (toTop <= 0.0)
         return 0.0;
 
-    float step = min(LIGHT_DISTANCE, toTop) / float(LIGHT_STEPS);
+    // Each step twice the last: short ones first, for the small billows shading each other, and long ones for the cloud's bulk.
+    float limit = min(LIGHT_DISTANCE, toTop);
+    float size = limit / (pow(2.0, float(LIGHT_STEPS)) - 1.0);
     float total = 0.0;
-    float travelled = 0.0;
+    float travelled = -size * dither;
     for (int i = 0; i < LIGHT_STEPS; i++)
     {
-        float size = i == 0 ? step * dither : step;
+        float middle = travelled + size * 0.5;
         travelled += size;
         float dimensional, noiseDepth;
-        total += size * CloudDensity(position + sun * travelled, lod + 1.0, dimensional, noiseDepth);
+        total += size * CloudDensity(position + sun * max(middle, 0.0), lod + float(i) * 0.5, dimensional, noiseDepth);
+        size *= 2.0;
     }
 
     return total;
@@ -98,7 +103,7 @@ vec4 Raymarch(vec3 direction, vec2 pixel)
     for (int i = 0; i < MAX_STEPS && travelled < end; i++)
     {
         // Longer steps further away, where they show least.
-        float size = min(120.0 + travelled * 0.012, 1600.0);
+        float size = min(90.0 + travelled * 0.012, 1600.0);
         if (i == 0)
             size *= dither;
         travelled = min(travelled + size, end);
@@ -145,7 +150,9 @@ vec4 Raymarch(vec3 direction, vec2 pixel)
     color = mix(color, clouds.horizon.rgb * (1.0 - transmittance), haze);
     transmittance = mix(transmittance, 1.0, haze * haze);
 
-    return vec4(color, transmittance);
+    // And are gone before the march runs out, which would cut them off in a straight line.
+    float gone = smoothstep(MAX_DISTANCE * 0.45, MAX_DISTANCE * 0.8, distanceSum / weightSum);
+    return vec4(color * (1.0 - gone), mix(transmittance, 1.0, gone));
 }
 
 void main()

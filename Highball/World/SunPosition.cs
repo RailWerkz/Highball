@@ -35,6 +35,10 @@ public readonly record struct SunPosition(float Elevation, float Azimuth, double
         return new SunPosition((float)elevation, (float)((azimuth + 360.0) % 360.0), noon - half, noon, noon + half);
     }
 
+    /// The Julian day of a clock time at a longitude.
+    public static double JulianDayAt(double longitude, int year, int month, int day, double hour) =>
+        JulianDay(year, month, day, hour - TimeZone(longitude));
+
     /// The hours from UTC of a longitude's time zone.
     public static int TimeZone(double longitude) => (int)Math.Round(longitude / 15.0);
 

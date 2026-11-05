@@ -75,7 +75,9 @@ public sealed class LightingPanel
             if (key != _applied)
             {
                 var sun = Sun();
-                sky.SetSun(sun.Elevation, sun.Azimuth);
+                sky.SetSun(sun.Elevation, sun.Azimuth,
+                    MoonPosition.At(_latitude, _longitude, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour),
+                    MoonPosition.StarTurn(_latitude, _longitude, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour));
                 _applied = key;
             }
         }

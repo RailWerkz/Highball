@@ -1,6 +1,7 @@
 #version 450
 // The tiling noise clouds are carved from, adapted from Kitten Space Agency's GenerateWorleyNoise: several octaves of
-// cellular noise, inverted so it billows. Red is the broad shape, green the same with its cells half the size.
+// cellular noise, inverted so it billows. Red is the broad shape, green the same with its cells half the size. Blue is smooth
+// gradient noise, for where clouds are: thresholding cellular noise cuts along its cells' straight edges.
 
 #include "Clouds/Cellular3D.glsl"
 
@@ -27,6 +28,47 @@ float Billows(vec3 uv, float frequency)
     return smoothstep(0.2, 0.75, 1.0 - result / total);
 }
 
+vec3 Gradient(vec3 cell, float period)
+{
+    cell = mod(cell, period);
+    vec3 h = fract(sin(vec3(dot(cell, vec3(127.1, 311.7, 74.7)), dot(cell, vec3(269.5, 183.3, 246.1)), dot(cell, vec3(113.5, 271.9, 124.6)))) * 43758.5453);
+    return normalize(h * 2.0 - 1.0);
+}
+
+// Gradient noise that tiles across uv's 0..1, about -0.7..0.7.
+float GradientNoise(vec3 uv, float period)
+{
+    vec3 p = uv * period;
+    vec3 i = floor(p);
+    vec3 f = p - i;
+    vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+
+    float bottom = mix(
+        mix(dot(Gradient(i, period), f), dot(Gradient(i + vec3(1, 0, 0), period), f - vec3(1, 0, 0)), u.x),
+        mix(dot(Gradient(i + vec3(0, 1, 0), period), f - vec3(0, 1, 0)), dot(Gradient(i + vec3(1, 1, 0), period), f - vec3(1, 1, 0)), u.x), u.y);
+    float top = mix(
+        mix(dot(Gradient(i + vec3(0, 0, 1), period), f - vec3(0, 0, 1)), dot(Gradient(i + vec3(1, 0, 1), period), f - vec3(1, 0, 1)), u.x),
+        mix(dot(Gradient(i + vec3(0, 1, 1), period), f - vec3(0, 1, 1)), dot(Gradient(i + vec3(1, 1, 1), period), f - vec3(1, 1, 1)), u.x), u.y);
+    return mix(bottom, top, u.z);
+}
+
+// Several octaves of it, spread over 0..1 with its middle at a half.
+float Smooth(vec3 uv, float frequency)
+{
+    float total = 0.0;
+    float amplitude = 1.0;
+    float result = 0.0;
+    for (int i = 0; i < OCTAVES; i++)
+    {
+        result += GradientNoise(uv, frequency) * amplitude;
+        total += amplitude;
+        amplitude *= 0.5;
+        frequency *= 2.0;
+    }
+
+    return clamp(result / total * 1.6 + 0.5, 0.0, 1.0);
+}
+
 void main()
 {
     ivec3 size = imageSize(resultImage);
@@ -35,5 +77,5 @@ void main()
         return;
 
     vec3 uv = (vec3(voxel) + 0.5) / vec3(size);
-    imageStore(resultImage, voxel, vec4(Billows(uv, 4.0), Billows(uv, 8.0), 0.0, 1.0));
+    imageStore(resultImage, voxel, vec4(Billows(uv, 4.0), Billows(uv, 8.0), Smooth(uv, 4.0), 1.0));
 }

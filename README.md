@@ -79,7 +79,8 @@ shadows (`Content/Shaders/shadows.glsl`, `SunShadows`); terrain and whole models
 `--noshadows` turns them off, to see what they cost.
 
 The procedural sky has volumetric clouds (`Highball/World/Clouds.cs`, `Content/Shaders/Clouds/`), adapted from Kitten Space
-Agency's cloud shaders. `--clouds COVERAGE` sets how much of the sky they cover.
+Agency's cloud shaders. `--clouds COVERAGE` sets how much of the sky they cover. The moon (`MoonPosition`) is where it really is
+for the date, with its real phase, and lights the world once the sun has gone. The stars are invented but turn with the real sky.
 
 ## Licences
 

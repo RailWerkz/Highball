@@ -68,6 +68,11 @@ public static class Atmosphere
         horizonAway = horizonAway * SkyGain + bounced + NightHorizon;
         horizonTowards = horizonTowards * SkyGain + bounced + NightHorizon;
 
+        // Light bounced many times comes out whiter than this follows, where the blue has been lost along the way: without it, the
+        // horizon turns teal.
+        var pale = (horizonAway.X * 0.2126f + horizonAway.Y * 0.7152f + horizonAway.Z * 0.0722f) * new float3(0.94f, 0.98f, 1.06f);
+        horizonAway = horizonAway + (pale - horizonAway) * 0.6f;
+
         // Dry ground, lit by the sun and the sky above it.
         var light = color * MathF.Max(sun.Y, 0f) + zenith * 0.9f + horizonAway * 0.45f;
         var ground = new float3(light.X * 0.11f, light.Y * 0.10f, light.Z * 0.085f);

@@ -18,6 +18,11 @@ public sealed unsafe class Sky : IDisposable
 {
     public const string Procedural = "Procedural";
 
+    /// How far under the horizon the sun is (the sine of it) when its light has gone and the moon's can take over.
+    private const float MoonTakesOver = -0.02f;
+    private const float MoonStrength = 0.11f;
+    private static readonly float3 MoonColor = new(0.72f, 0.82f, 1f);
+
     [StructLayout(LayoutKind.Sequential)]
     private struct Uniforms
     {
@@ -28,6 +33,11 @@ public sealed unsafe class Sky : IDisposable
         public float4 Ground;
         public float4 Mode; // x: 1 for a skybox
         public float4 HorizonTowardsSun;
+        public float4 Moon;
+        public float4 RealSun; // w: 1 while it's the sun that lights the world, not the moon
+        public float4 StarsX;
+        public float4 StarsY;
+        public float4 StarsZ;
     }
 
     private static VkDescriptorSetLayout _setLayout;
@@ -133,9 +143,10 @@ public sealed unsafe class Sky : IDisposable
         Apply(in uniforms);
     }
 
-    /// Puts the procedural sky's sun at this height over the horizon and this bearing (degrees, 0 north, 90 east), with
-    /// the colours that gives the air (see Atmosphere).
-    public void SetSun(float elevation, float azimuth)
+    /// Puts the procedural sky's sun at this height over the horizon and this bearing (degrees, 0 north, 90 east), with the colours
+    /// that gives the air (see Atmosphere), and the moon and stars where they are. Once the sun has gone, the moon takes its place
+    /// as what lights the world and casts shadows, far brighter than the real thing or there'd be nothing to see.
+    public void SetSun(float elevation, float azimuth, MoonPosition moon, float[] stars)
     {
         if (Name != Procedural)
             Use(Procedural);
@@ -147,14 +158,25 @@ public sealed unsafe class Sky : IDisposable
         var colors = Atmosphere.Compute(direction);
         Brightness = colors.Light / Atmosphere.Compute(new float3(0f, 1f, 0f)).Light;
 
+        var moonDirection = new float3(moon.East, moon.Up, moon.South);
+        var lit = (1f - (direction.X * moonDirection.X + direction.Y * moonDirection.Y + direction.Z * moonDirection.Z)) * 0.5f;
+        var dark = 1f - MathEx.SmoothStep(MoonTakesOver - 0.12f, MoonTakesOver, direction.Y);
+        var moonlight = MoonColor * (MoonStrength * MathF.Pow(lit, 1.5f) * dark * MathEx.SmoothStep(0f, 0.06f, moon.Up));
+        var sunLights = direction.Y >= MoonTakesOver || moon.Up <= 0f;
+
         var uniforms = new Uniforms
         {
-            SunDirection = new float4(direction, 1f),
-            SunColor = new float4(colors.Sun, 0f),
-            Zenith = new float4(colors.Zenith, 0f),
-            Horizon = new float4(colors.Horizon, 0f),
-            Ground = new float4(colors.Ground, 0f),
-            HorizonTowardsSun = new float4(colors.HorizonTowardsSun, 0f),
+            SunDirection = new float4(sunLights ? direction : moonDirection, 1f),
+            SunColor = new float4(sunLights ? colors.Sun : moonlight, 0f),
+            Zenith = new float4(colors.Zenith + moonlight * 0.05f, 0f),
+            Horizon = new float4(colors.Horizon + moonlight * 0.07f, 0f),
+            Ground = new float4(colors.Ground + moonlight * 0.1f, 0f),
+            HorizonTowardsSun = new float4(colors.HorizonTowardsSun + moonlight * 0.07f, 0f),
+            Moon = new float4(moonDirection, lit),
+            RealSun = new float4(direction, sunLights ? 1f : 0f),
+            StarsX = new float4(stars[0], stars[1], stars[2], 0f),
+            StarsY = new float4(stars[3], stars[4], stars[5], 0f),
+            StarsZ = new float4(stars[6], stars[7], stars[8], 0f),
         };
         ReleaseUniforms();
         Apply(in uniforms);

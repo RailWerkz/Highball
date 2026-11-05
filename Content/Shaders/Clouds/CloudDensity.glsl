@@ -46,20 +46,22 @@ float CloudDensity(vec3 relative, float lod, out float dimensional, out float no
 
     vec3 p = relative + clouds.offset.xyz;
 
-    // Shear the map with height, and let the shape noise push it about, or every cloud is a straight-sided column.
-    float billow = textureLod(noiseTexture, p / ShapeTile, min(lod, 2.0)).r;
-    vec2 map = p.xz + vec2(h * 1400.0, h * 500.0) + (billow - 0.5) * 1100.0;
+    // Shear the map with height, and let broad noise push it about, or every cloud is a straight-sided column. Only the smooth
+    // mips will do for all of this: the sharper ones, pulled this far, fold the map over itself into ripples and swirls.
+    float push = textureLod(noiseTexture, p / ShapeTile, 2.0).b;
+    vec2 map = p.xz + vec2(h * 500.0, h * 180.0) + (push - 0.5) * 2000.0;
 
     // Banks of cloud and the gaps between them, thresholded by how much of the sky should be covered.
-    float banks = textureLod(noiseTexture, vec3(map.x, 0.0, map.y) / CoverageTile, 0.0).r;
-    float patches = textureLod(noiseTexture, vec3(map.y, 0.3 * CoverageTile, map.x) / (CoverageTile * 0.25), 0.0).r;
-    float spread = banks * 0.45 + patches * 0.55;
-    float coverage = smoothstep(1.0 - clouds.layer.z - 0.06, 1.0 - clouds.layer.z + 0.14, spread);
+    float banks = textureLod(noiseTexture, vec3(map.x, 0.17 * CoverageTile, map.y) / CoverageTile, 1.0).b;
+    float patches = textureLod(noiseTexture, vec3(map.y, 0.37 * CoverageTile, map.x) / (CoverageTile * 0.25), 1.0).b;
+    float spread = clamp((banks * 0.4 + patches * 0.6 - 0.5) * 1.7 + 0.5, 0.0, 1.0);
+    // A slow rise from the edge of a cloud to its middle, which the height curve below makes a dome of: a quick one makes a cliff.
+    float coverage = smoothstep(1.0 - clouds.layer.z - 0.04, 1.0 - clouds.layer.z + 0.36, spread);
     if (coverage < 0.01)
         return 0.0;
 
     // Flat bases and rounded tops, reaching higher where there's more cloud.
-    float shapeGradient = smoothstep(0.0, 0.05, h) * (1.0 - smoothstep(0.1 + 0.55 * coverage, 0.25 + 0.75 * coverage, h));
+    float shapeGradient = smoothstep(0.0, 0.06, h) * (1.0 - smoothstep(0.05 + 0.5 * coverage, 0.2 + 0.8 * coverage, h));
     float densityGradient = mix(0.55, 1.0, smoothstep(0.0, 0.5, h));
 
     dimensional = coverage + shapeGradient - 1.0;
@@ -67,7 +69,7 @@ float CloudDensity(vec3 relative, float lod, out float dimensional, out float no
         return 0.0;
 
     float detail = textureLod(noiseTexture, p / DetailTile, min(lod, 3.0)).g;
-    float noise = mix(billow, detail, 0.35);
+    float noise = mix(textureLod(noiseTexture, p / ShapeTile, min(lod, 2.0)).r, detail, 0.45);
 
     return ApplyErosion(noise, dimensional, CloudErosionDepth, CloudEdgeSharpness, noiseDepth) * clouds.layer.w * densityGradient;
 }

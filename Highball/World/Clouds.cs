@@ -17,7 +17,7 @@ public sealed unsafe class Clouds : IDisposable
     private const int ShadowMapSize = 256;
     private const float ShadowMapHalfWidth = 20000f;
     private const float Bottom = 2400f;
-    private const float Top = 6000f;
+    private const float Top = 5200f;
     private const float Density = 0.02f;
     /// The camera's place in the noise wraps at this, a whole number of every noise's tiles, so it stays precise.
     private const double NoisePeriod = 120000.0;
