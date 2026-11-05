@@ -91,7 +91,7 @@ public sealed class Terrain : IDisposable
     private long _frame;
 
     /// How many vertex spacings away a patch must be before it's drawn that coarse; higher is finer.
-    public float DetailFactor { get; set; } = 140f;
+    public float DetailFactor { get; set; } = 70f;
 
     public TerrainSource Source => _source;
     public int PatchCount => _patches.Count;
