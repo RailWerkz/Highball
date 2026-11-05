@@ -13,6 +13,7 @@ namespace Highball.App;
 ///   --lighting PRESET [MODEL]                       with --menu lighting, start at noon, golden or night, with the model
 ///                                                   csx (the game's SD40) or source (its source file, with PBR maps)
 ///   --orbit YAW PITCH DISTANCE                      with --menu lighting, where the camera starts (degrees, metres)
+///   --skytime YYYY-MM-DD HOUR                       the procedural sky's date and time, in hours on the route's clock
 ///   --tab NAME                                      with --menu options, open on that tab: display, graphics, audio, simulation
 ///   --route NAME                                    open that route in the Route Builder (made if there isn't one)
 ///   --select LAT LON N                              with --route, pick N x N tiles there and build them
@@ -47,6 +48,9 @@ public static class DevTools
 
     /// The lighting test scene's first time of day and model (--lighting), read once by it.
     public static (string Preset, string? Model)? Lighting { get; set; }
+
+    /// The procedural sky's date and time (--skytime), read once by the lighting window.
+    public static (int Year, int Month, int Day, float Hour)? SkyTime { get; set; }
 
     /// Where the lighting test scene's camera starts (--orbit), read once by it.
     public static (float Yaw, float Pitch, float Distance)? Orbit { get; set; }
@@ -138,6 +142,11 @@ public static class DevTools
                 case "--lighting" when i + 1 < args.Length:
                     var preset = args[++i];
                     Lighting = (preset, i + 1 < args.Length && !args[i + 1].StartsWith('-') ? args[++i] : null);
+                    break;
+                case "--skytime" when i + 2 < args.Length:
+                    var date = DateTime.ParseExact(args[i + 1], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+                    SkyTime = (date.Year, date.Month, date.Day, float.Parse(args[i + 2], System.Globalization.CultureInfo.InvariantCulture));
+                    i += 2;
                     break;
                 case "--orbit" when i + 3 < args.Length:
                     var o = System.Globalization.CultureInfo.InvariantCulture;

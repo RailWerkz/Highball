@@ -31,6 +31,14 @@ public sealed class Settings
     public float ViewDistance { get; set; } = 8000f;
     public float FieldOfView { get; set; } = 60f;
     public string Skybox { get; set; } = "Procedural";
+    /// The procedural sky's date and time, as a clock on the route would show them (see SunPosition).
+    public int SkyYear { get; set; } = 2026;
+    public int SkyMonth { get; set; } = 6;
+    public int SkyDay { get; set; } = 21;
+    public float SkyHour { get; set; } = 10f;
+    public float Exposure { get; set; } = 0.62f;
+    /// Open up as the light falls, the way an eye or a camera does.
+    public bool AutoExposure { get; set; } = true;
     /// Samples per pixel in the 3D view: 1 (off), 2, 4 or 8.
     public int Msaa { get; set; } = 4;
 

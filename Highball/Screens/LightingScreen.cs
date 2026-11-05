@@ -22,13 +22,6 @@ public sealed class LightingScreen : Screen, IWorldScreen
     private const float RailOffset = 1.435f * 0.5f + 0.0373f;
     private const float EngineLength = 20.437f;
 
-    private static readonly (string Name, float Elevation, float Azimuth)[] Presets =
-    [
-        ("Noon", 65f, 150f),
-        ("Golden hour", 7f, 250f),
-        ("Night", -20f, 250f),
-    ];
-
     private static readonly (string Id, string Label)[] Engines =
     [
         ("csx", "SD40, as the game has it"),
@@ -36,20 +29,15 @@ public sealed class LightingScreen : Screen, IWorldScreen
     ];
 
     private readonly WorldRenderer _renderer = new();
+    private readonly LightingPanel _panel;
     private readonly Camera _camera = new();
     private readonly List<IDisposable> _owned = [];
     private readonly List<ModelDraw> _scene = [];
     private readonly Dictionary<string, RenderModel> _engines = [];
     private readonly List<ModelDraw> _draws = [];
 
-    private float _elevation = Presets[0].Elevation;
-    private float _azimuth = Presets[0].Azimuth;
-    private float _exposure = 1f;
     private string _engine = Engines[0].Id;
     private bool _showSpheres = true;
-    private bool _shadows = !DevTools.NoShadows;
-    private bool _sunChanged = true;
-    private string _sky = Sky.Procedural;
 
     private float _yaw = 215f * MathF.PI / 180f;
     private float _pitch = -12f * MathF.PI / 180f;
@@ -57,17 +45,14 @@ public sealed class LightingScreen : Screen, IWorldScreen
 
     public override WorldView View => WorldView.World;
 
+    public LightingScreen() => _panel = new LightingPanel(_renderer);
+
     public override void Enter()
     {
         if (DevTools.Lighting is { } start)
         {
             DevTools.Lighting = null;
-            foreach (var preset in Presets)
-            {
-                if (preset.Name.StartsWith(start.Preset, StringComparison.OrdinalIgnoreCase))
-                    (_elevation, _azimuth) = (preset.Elevation, preset.Azimuth);
-            }
-
+            _panel.Preset(start.Preset);
             if (start.Model is { } model)
                 _engine = model;
         }
@@ -83,7 +68,7 @@ public sealed class LightingScreen : Screen, IWorldScreen
         if (DevTools.Skybox is { } skybox)
         {
             DevTools.Skybox = null;
-            _sky = skybox;
+            _renderer.Sky.Use(skybox);
         }
 
         BuildScene();
@@ -168,21 +153,6 @@ public sealed class LightingScreen : Screen, IWorldScreen
         if (ImGui.IsKeyPressed(ImGuiKey.Escape))
             HighballApp.Instance.Pop();
 
-        if (_sky != Sky.Procedural)
-        {
-            if (_renderer.Sky.Name != _sky)
-                _renderer.Sky.Use(_sky);
-        }
-        else if (_sunChanged || _renderer.Sky.Name != Sky.Procedural)
-        {
-            _renderer.Sky.SetSun(_elevation, _azimuth);
-        }
-
-        _sunChanged = false;
-
-        _renderer.Exposure = _exposure;
-        _renderer.Shadows = _shadows;
-
         if (!Keyboard.PointerBlocked)
         {
             if (Input.Mouse(GlfwMouseButton.Left) || Input.Mouse(GlfwMouseButton.Right))
@@ -219,36 +189,10 @@ public sealed class LightingScreen : Screen, IWorldScreen
 
     public override void DrawWindows()
     {
-        ImGui.SetNextWindowPos(new float2(16f, 16f), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSize(new float2(360f, 0f), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("Lighting"u8))
+        // Always open here: it's what the screen is for.
+        _panel.Open = true;
+        _panel.Draw(() =>
         {
-            foreach (var preset in Presets)
-            {
-                if (ImGui.Button(preset.Name))
-                {
-                    (_elevation, _azimuth) = (preset.Elevation, preset.Azimuth);
-                    _sunChanged = true;
-                }
-
-                ImGui.SameLine();
-            }
-
-            ImGui.NewLine();
-            _sunChanged |= ImGui.SliderFloat("Sun height"u8, ref _elevation, -30f, 90f);
-            _sunChanged |= ImGui.SliderFloat("Sun bearing"u8, ref _azimuth, 0f, 360f);
-            ImGui.SliderFloat("Exposure"u8, ref _exposure, 0.1f, 8f);
-            if (ImGui.BeginCombo("Sky"u8, Sky.Label(_sky)))
-            {
-                foreach (var name in Sky.Available)
-                {
-                    if (ImGui.Selectable(Sky.Label(name), name == _sky))
-                        _sky = name;
-                }
-
-                ImGui.EndCombo();
-            }
-
             ImGui.Separator();
             foreach (var (id, label) in Engines)
             {
@@ -257,12 +201,10 @@ public sealed class LightingScreen : Screen, IWorldScreen
             }
 
             ImGui.Checkbox("Test spheres"u8, ref _showSpheres);
-            ImGui.Checkbox("Sun shadows"u8, ref _shadows);
             ImGui.Separator();
             ImGui.TextDisabled("Drag to orbit, wheel to zoom, Esc to leave"u8);
-        }
-
-        ImGui.End();
+        });
+        _panel.Apply();
     }
 
     private static Mesh Plane(float half, float tile)

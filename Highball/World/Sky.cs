@@ -27,6 +27,7 @@ public sealed unsafe class Sky : IDisposable
         public float4 Horizon;
         public float4 Ground;
         public float4 Mode; // x: 1 for a skybox
+        public float4 HorizonTowardsSun;
     }
 
     private static VkDescriptorSetLayout _setLayout;
@@ -38,7 +39,14 @@ public sealed unsafe class Sky : IDisposable
     private VkDescriptorPool _pool;
 
     public string Name { get; private set; } = "";
+
+    /// Counts the times the sky was switched, so whoever sets the sun knows to set it again.
+    public int Version { get; private set; }
     public float3 SunDirection { get; private set; }
+
+    /// How bright this sky makes the world relative to the middle of a clear day, for exposing by: 1 for a skybox, whose
+    /// picture is exposed already.
+    public float Brightness { get; private set; } = 1f;
     public VkDescriptorSet Set { get; private set; }
 
     /// Procedural first, then every skybox, by file name.
@@ -113,14 +121,17 @@ public sealed unsafe class Sky : IDisposable
             }
         }
 
+        uniforms.HorizonTowardsSun = uniforms.Horizon;
+        Brightness = 1f;
         Release();
         _map = map ?? Texture2D.Solid(new byte4(128, 160, 200, 255));
         Name = name;
+        Version++;
         Apply(in uniforms);
     }
 
     /// Puts the procedural sky's sun at this height over the horizon and this bearing (degrees, 0 north, 90 east), with
-    /// the colours of that time of day: warm near the horizon, dim through dusk, a faint blue at night (there's no moonlight yet).
+    /// the colours that gives the air (see Atmosphere).
     public void SetSun(float elevation, float azimuth)
     {
         if (Name != Procedural)
@@ -128,23 +139,19 @@ public sealed unsafe class Sky : IDisposable
 
         var (sinElevation, cosElevation) = MathF.SinCos(elevation * MathF.PI / 180f);
         var (sinAzimuth, cosAzimuth) = MathF.SinCos(azimuth * MathF.PI / 180f);
-        var low = 1f - MathEx.SmoothStep(0f, 0.35f, sinElevation);
-        var day = MathEx.SmoothStep(-0.12f, 0.08f, sinElevation);
-        var risen = MathEx.SmoothStep(-0.02f, 0.05f, sinElevation);
-
-        var sunColor = MathEx.Lerp(new float3(1.0f, 0.94f, 0.84f) * 3f, new float3(1.0f, 0.52f, 0.24f) * 2.4f, low) * risen;
-        var zenith = MathEx.Lerp(new float3(0.09f, 0.22f, 0.52f), new float3(0.05f, 0.10f, 0.25f), low) * day + new float3(0.012f, 0.018f, 0.036f);
-        var horizon = MathEx.Lerp(new float3(0.50f, 0.64f, 0.82f), new float3(0.85f, 0.50f, 0.30f), low) * day + new float3(0.016f, 0.022f, 0.040f);
-        var ground = MathEx.Lerp(new float3(0.24f, 0.26f, 0.28f), new float3(0.16f, 0.12f, 0.10f), low) * day + new float3(0.006f, 0.008f, 0.012f);
+        // x east, y up, z south.
+        var direction = new float3(sinAzimuth * cosElevation, sinElevation, -cosAzimuth * cosElevation);
+        var colors = Atmosphere.Compute(direction);
+        Brightness = colors.Light / Atmosphere.Compute(new float3(0f, 1f, 0f)).Light;
 
         var uniforms = new Uniforms
         {
-            // x east, y up, z south.
-            SunDirection = new float4(sinAzimuth * cosElevation, sinElevation, -cosAzimuth * cosElevation, 1f),
-            SunColor = new float4(sunColor, 0f),
-            Zenith = new float4(zenith, 0f),
-            Horizon = new float4(horizon, 0f),
-            Ground = new float4(ground, 0f),
+            SunDirection = new float4(direction, 1f),
+            SunColor = new float4(colors.Sun, 0f),
+            Zenith = new float4(colors.Zenith, 0f),
+            Horizon = new float4(colors.Horizon, 0f),
+            Ground = new float4(colors.Ground, 0f),
+            HorizonTowardsSun = new float4(colors.HorizonTowardsSun, 0f),
         };
         ReleaseUniforms();
         Apply(in uniforms);

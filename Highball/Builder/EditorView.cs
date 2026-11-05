@@ -52,6 +52,9 @@ public sealed partial class EditorView : IDisposable
     private readonly RouteInfo _route;
     private readonly Task<TerrainSource> _opening;
     private readonly WorldRenderer _renderer = new();
+
+    /// The sky, time of day and exposure, in the menu bar's Lighting menu.
+    public LightingPanel Lighting { get; }
     private readonly Camera _camera = new();
     private readonly RoutePoint? _start;
     private Terrain? _terrain;
@@ -146,6 +149,7 @@ public sealed partial class EditorView : IDisposable
     {
         _route = route;
         _start = start;
+        Lighting = new LightingPanel(_renderer, route.Origin.Latitude, route.Origin.Longitude) { Open = DevTools.Panels };
         _opening = TerrainSource.Open(route);
         if (DevTools.Clean)
             _showGrades = false;

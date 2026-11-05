@@ -10,6 +10,7 @@ layout(set = 1, binding = 0) uniform SkyUniforms
     vec4 horizon;
     vec4 ground;
     vec4 mode; // x: 1 for a skybox
+    vec4 horizonTowardsSun;
 } sky;
 
 layout(set = 1, binding = 1) uniform sampler2D skyMap;  // horizontal cross: +Y over -X +Z +X -Z over -Y
@@ -56,13 +57,18 @@ vec2 skyMapUv(vec3 d, float inset)
 vec3 analyticSky(vec3 dir, vec3 sun)
 {
     float up = max(dir.y, 0.0);
-    vec3 color = mix(Horizon, Zenith, 1.0 - pow(1.0 - up, 3.0));
+    // The horizon's colour goes round the compass: at sunset, orange under the sun and dusky blue behind you.
+    float flat2 = dot(dir.xz, dir.xz) * dot(sun.xz, sun.xz);
+    float round = flat2 > 1e-6 ? dot(dir.xz, sun.xz) / sqrt(flat2) * 0.5 + 0.5 : 0.5;
+    vec3 horizon = mix(Horizon, sky.horizonTowardsSun.rgb, round * round * round);
+
+    vec3 color = mix(horizon, Zenith, 1.0 - pow(1.0 - up, 5.0));
     if (dir.y < 0.0)
-        color = mix(Horizon, Ground, clamp(-dir.y * 4.0, 0.0, 1.0));
+        color = mix(horizon, Ground, clamp(-dir.y * 4.0, 0.0, 1.0));
 
     // Forward scattering round the sun, stronger low down where the light crosses more air.
     float mu = max(dot(dir, sun), 0.0);
-    color += SunColor * (0.06 * pow(mu, 6.0) + 0.25 * pow(mu, 64.0)) * (0.5 + 0.5 * (1.0 - up));
+    color += SunColor * (0.02 * pow(mu, 6.0) + 0.12 * pow(mu, 64.0)) * (0.5 + 0.5 * (1.0 - up));
     return color;
 }
 

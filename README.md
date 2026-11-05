@@ -68,8 +68,10 @@ Highball --skipsplash --menu lighting
 ```
 
 The SD40 on a short length of track beside rows of test spheres (metal over non-metal, rough to polished), with
-sliders for the sun and exposure and a sky picker. Drag to orbit, wheel to zoom. To compare the same view after a
-shader change, fix it with `--lighting noon|golden|night [csx|source]` and `--orbit YAW PITCH DISTANCE`, then use `--shot`.
+the Lighting window (sky, date and time, exposure). Drag to orbit, wheel to zoom. To compare the same view after a
+shader change, fix it with `--skytime YYYY-MM-DD HOUR`, `--lighting dawn|noon|golden|dusk|night [csx|source]` and
+`--orbit YAW PITCH DISTANCE`, then use `--shot`. The Route Builder has the same window under its Lighting menu, with the
+sun worked out from the route's place on Earth.
 
 This scene and the terrain use physically based light (`Content/Shaders/lighting.glsl`): each direct light goes through
 `shadeLight`, and there are no local lights yet. Track and roads keep their own shaders. Everything receives the sun's

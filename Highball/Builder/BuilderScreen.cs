@@ -226,6 +226,15 @@ public sealed class BuilderScreen : Screen, IWorldScreen
                 ImGui.EndMenu();
             }
 
+            if (ImGui.BeginMenu("Lighting"))
+            {
+                if (ImGui.MenuItem("Sky and Time of Day", "", editing && _editor!.Lighting.Open, editing))
+                    _editor!.Lighting.Open = !_editor.Lighting.Open;
+                if (ImGui.MenuItem("Test Scene"))
+                    HighballApp.Instance.Push(new Screens.LightingScreen());
+                ImGui.EndMenu();
+            }
+
             TopBar(editing);
             ImGui.EndMainMenuBar();
         }
@@ -233,7 +242,11 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         if (_showPanel && (_mode == Mode.Planner || _editor?.HasPanel == true))
             Panel();
         if (_mode != Mode.Planner)
+        {
             _editor?.Windows();
+            _editor?.Lighting.Draw();
+            _editor?.Lighting.Apply();
+        }
 
         var left = (_mode == Mode.Planner ? 0f : EditorView.StripWidth) + (_showPanel ? PanelWidth : 0f) + 12f;
         Action lines = _mode == Mode.Planner || _editor is null ? _planner.DebugStats : _editor.DebugStats;
