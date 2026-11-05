@@ -84,7 +84,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         // One layout for every world pipeline: push constants, and a texture at set 0 for those that sample one.
         _layout = Pipelines.Layout(128, TextureBinding.SetLayout, Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
         _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
-        _modelLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(2), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
+        _modelLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(3), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
         CreateWorldPipelines();
 
         using var fullscreen = Shader.Load("fullscreen.vert");
@@ -176,6 +176,10 @@ public sealed unsafe class WorldRenderer : IDisposable
         Pipelines.Destroy(_plant, default);
     }
 
+    private TerrainSource? _groundLightSource;
+    private double _groundLightX;
+    private double _groundLightZ;
+
     private static float3 Normalize(float3 v) => v / MathF.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
 
     /// Records the world into the HDR target. Outside any render pass.
@@ -194,12 +198,13 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         if (terrain is not null)
         {
+            UpdateGroundLight(terrain.Source, camera);
             _vegetation.Enabled = RailWerkz.Core.Settings.Settings.Current.Vegetation;
             _vegetation.Update(terrain, camera);
         }
 
         using (Profiler.Sample("Sun shadows"))
-            _shadows.Render(cmd, camera, aspect, Sun, terrain, models, terrain is null ? null : _vegetation);
+            _shadows.Render(cmd, camera, aspect, Sun, terrain, models, terrain is null ? null : _vegetation, network);
         if (terrain is not null)
             _clouds.GroundLevel = terrain.Source.HeightAt(0.0, 0.0);
         using (Profiler.Sample("Cloud shade"))
@@ -292,6 +297,42 @@ public sealed unsafe class WorldRenderer : IDisposable
         // Over everything: they march only as far as the depth just drawn, so they're right from under, in or above the layers.
         using (Profiler.Sample("Clouds"))
             _clouds.Draw(cmd, _target);
+    }
+
+    /// The land cover's colour round the camera, for what's reflected in metal and lights things from beneath. It changes slowly,
+    /// so only every so often as the camera moves.
+    private void UpdateGroundLight(TerrainSource source, Camera camera)
+    {
+        const double Step = 64.0;
+        const double Across = 150.0;
+        var dx = camera.X - _groundLightX;
+        var dz = camera.Z - _groundLightZ;
+        if (ReferenceEquals(source, _groundLightSource) && dx * dx + dz * dz < Step * Step)
+            return;
+
+        var sum = default(float3);
+        var samples = 0;
+        for (var z = -1; z <= 1; z++)
+        {
+            for (var x = -1; x <= 1; x++)
+            {
+                var gx = (int)Math.Round((camera.X + x * Across) / source.Spacing);
+                var gz = (int)Math.Round((camera.Z + z * Across) / source.Spacing);
+                var cover = source.Ground(gx, gz, 0f).Cover;
+                if (cover.X + cover.Y + cover.Z <= 0f)
+                    continue;
+
+                sum += new float3(cover.X, cover.Y, cover.Z);
+                samples++;
+            }
+        }
+
+        // Nothing's known here yet: ask again next frame.
+        if (samples == 0)
+            return;
+
+        (_groundLightSource, _groundLightX, _groundLightZ) = (source, camera.X, camera.Z);
+        Sky.SetGroundColor(sum / samples);
     }
 
     private void DrawModels(CommandBuffer cmd, Camera camera, float aspect, IReadOnlyList<ModelDraw> models)

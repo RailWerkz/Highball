@@ -18,6 +18,9 @@ The source maps the engine's left and right sides on to the same part of its tex
 body's texture here is two pages side by side: the source's atlas twice, with the shell's -X half moved on to the right-hand page.
 A livery is then painted from where each texel lands on the engine: its colours and lettering are given in the engine's own
 metres, and the source's seams, hinges and handles are kept as shading under them.
+
+The source's roughness map is kept, weathered, but it marks nothing as metal and has no normal map. So bare metal and glass are
+set here part by part (BARE, GEAR_BARE), and the shell's normal map is raised from the seams and hinges in its base colour.
 """
 import json
 import math
@@ -71,6 +74,15 @@ GROUPS = ((BOARD, ("Detail_Signs",)),
           (SILL, ("Base",)),
           (SHELL, SHAPE[:1] + ("Cab", "Non_Mirrored", "Vent_Module")))
 RUNNING = ("Bogee_", "Brakes", "Suspension", "Wheel_", "Coupling")
+
+# What isn't paint: the parts, how metal they are and how rough. Everything else on the engine is painted, so not a metal to look at.
+BARE = ((("Horns",), 1.0, .35),
+        (("Detail_FuelCap", "Detail_PipeJoint", "Detail_Plug", "Detail_Hose_Plug"), .9, .5),
+        (("Detail_Lamp",), 1.0, .2))
+GLASS = ("Cab_Windows", "Detail_Bulb")  # only their dark texels: the windows' frames share the mesh, and are painted
+GEAR_BARE = ((("Wheel_",), 1.0, .45), (("Coupling",), .8, .55))
+GEAR_ROUGH = .6  # the rest of the running gear: greasy castings, whatever the source's map says
+SEAM_HEIGHT = 4.0  # how steeply a dark line in the base colour dips in the normal map
 
 # Stations on the engine, in metres from the rail and from midway between the trucks.
 NOSE_END = -8.0  # the nose's front face is ahead of this
@@ -247,18 +259,21 @@ def load_source():
 
 
 def atlas():
-    """The base colour and emissive images as arrays, bottom row first as Blender holds them."""
+    """The base colour, emissive and roughness images as arrays, bottom row first as Blender holds them."""
     material = next(m for m in bpy.data.materials if m.use_nodes and "Principled BSDF" in m.node_tree.nodes)
     bsdf = material.node_tree.nodes["Principled BSDF"]
 
     def pixels(socket):
-        image = bsdf.inputs[socket].links[0].from_node.image
+        node = bsdf.inputs[socket].links[0].from_node
+        while not hasattr(node, "image"):
+            node = node.inputs[0].links[0].from_node
+        image = node.image
         w, h = image.size
         data = np.empty(w * h * 4, dtype=np.float32)
         image.pixels.foreach_get(data)
         return data.reshape(h, w, 4)
 
-    return pixels("Base Color"), pixels("Emission Color")
+    return pixels("Base Color"), pixels("Emission Color"), pixels("Roughness")[..., 1]
 
 
 def halve(pixels, height):
@@ -528,7 +543,86 @@ def paint(key, livery, base, glow, label, place, facing):
     return (np.concatenate((out, alpha), axis=2).clip(0, 1) * 255).astype(np.uint8)
 
 
-def make_material(name, pixels):
+def blur(values, radius):
+    """A box blur, twice over, along both axes."""
+    size = radius * 2 + 1
+    for _ in range(2):
+        for axis in (0, 1):
+            total = np.cumsum(np.insert(values, 0, 0, axis=axis), axis=axis, dtype=np.float64)
+            end = np.take(total, np.minimum(np.arange(values.shape[axis]) + radius + 1, values.shape[axis]), axis=axis)
+            start = np.take(total, np.maximum(np.arange(values.shape[axis]) - radius, 0), axis=axis)
+            shape = [1, 1]
+            shape[axis] = -1
+            count = np.minimum(np.arange(values.shape[axis]) + radius + 1, values.shape[axis]) - np.maximum(np.arange(values.shape[axis]) - radius, 0)
+            values = ((end - start) / count.reshape(shape)).astype(np.float32)
+    return values
+
+
+def texels_of(meshes, starts, width, height):
+    """Which texels the named parts use."""
+    mask = np.zeros((height, width), dtype=bool)
+    for name, mesh in meshes.items():
+        if not name.startswith(starts):
+            continue
+        mesh.calc_loop_triangles()
+        uv = np.empty(len(mesh.loops) * 2, dtype=np.float32)
+        mesh.uv_layers[0].data.foreach_get("uv", uv)
+        uv = uv.reshape(-1, 2) * (width, height)
+        for tri in mesh.loop_triangles:
+            i, j, k = tri.loops
+            hit = fill(mask, uv[i], uv[j], uv[k], None)
+            if hit is not None:
+                mask[hit[0], hit[1]] = True
+    return mask
+
+
+def finish_pixels(rough, metal):
+    """Blue metalness and green roughness, as glTF packs them."""
+    one = np.ones_like(rough)
+    return np.stack((one, rough, metal, one), axis=2)
+
+
+def body_finish(rough_atlas, meshes, label, place, facing, light):
+    """The body's two pages of roughness and metalness: painted steel, weathered lower down, with the bare parts set apart."""
+    height, width = label.shape
+    rough = np.maximum(np.concatenate((rough_atlas, rough_atlas), axis=1), .3)
+    metal = np.zeros_like(rough)
+    shell = label == SHELL
+    x, y, z = place[..., 0], place[..., 1], place[..., 2]
+    worn = np.sin(y * 1.7 + z * 3.1) * np.sin(y * .6 - z * 2.3 + x * 1.1)
+    rough[shell] = np.clip(rough[shell] + .08 * worn[shell] + .12 * np.clip(1 - (z[shell] - 1.2) / 2.5, 0, 1), 0, 1)
+    for starts, how_metal, how_rough in BARE:
+        where = texels_of(meshes, starts, width, height)
+        rough[where] = how_rough
+        metal[where] = how_metal
+    rough[texels_of(meshes, GLASS, width, height) & (light < .15)] = .08
+    # The fans and grilles share atlas space with the lamps, and they're painted.
+    metal[label == ROOFGEAR] = 0
+    return finish_pixels(rough, metal)
+
+
+def body_bumps(label, place, facing, light):
+    """The shell's seams and hinges, which are thin dark lines in its base colour, as dips. Not the source's paint scheme."""
+    lines = np.clip(blur(light, 6) - light, 0, .5)
+    ends, bands, cab_number = artwork_to_erase(label, place, facing, light)
+    lines[(label != SHELL) | ends | bands | cab_number] = 0
+    dx = (np.roll(lines, -1, axis=1) - np.roll(lines, 1, axis=1)) * .5 * SEAM_HEIGHT
+    dy = (np.roll(lines, -1, axis=0) - np.roll(lines, 1, axis=0)) * .5 * SEAM_HEIGHT
+    # Lines are dips, so the surface leans towards where they get deeper.
+    length = np.sqrt(dx * dx + dy * dy + 1)
+    return np.stack((dx / length * .5 + .5, dy / length * .5 + .5, 1 / length * .5 + .5, np.ones_like(dx)), axis=2)
+
+
+def data_image(name, pixels):
+    h, w = pixels.shape[:2]
+    image = bpy.data.images.new(name, w, h, alpha=False)
+    image.colorspace_settings.name = "Non-Color"
+    image.pixels.foreach_set(pixels.astype(np.float32).ravel())
+    image.pack()
+    return image
+
+
+def make_material(name, pixels, finish=None, bumps=None):
     h, w = pixels.shape[:2]
     image = bpy.data.images.new(name, w, h, alpha=False)
     image.pixels.foreach_set(pixels.astype(np.float32).ravel())
@@ -542,6 +636,19 @@ def make_material(name, pixels):
     mat.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
     bsdf.inputs["Metallic"].default_value = 0
     bsdf.inputs["Roughness"].default_value = .6
+    if finish is not None:
+        map_node = nodes.new("ShaderNodeTexImage")
+        map_node.image = data_image(f"{name}_finish", finish)
+        split = nodes.new("ShaderNodeSeparateColor")
+        mat.node_tree.links.new(map_node.outputs["Color"], split.inputs["Color"])
+        mat.node_tree.links.new(split.outputs["Green"], bsdf.inputs["Roughness"])
+        mat.node_tree.links.new(split.outputs["Blue"], bsdf.inputs["Metallic"])
+    if bumps is not None:
+        map_node = nodes.new("ShaderNodeTexImage")
+        map_node.image = data_image(f"{name}_normal", bumps)
+        normal = nodes.new("ShaderNodeNormalMap")
+        mat.node_tree.links.new(map_node.outputs["Color"], normal.inputs["Color"])
+        mat.node_tree.links.new(normal.outputs["Normal"], bsdf.inputs["Normal"])
     return mat
 
 
@@ -582,7 +689,7 @@ def write(path, objects, mat):
     return tris
 
 
-def build(lod, base, painted_pages, budget):
+def build(lod, base, painted_pages, budget, finish, bumps, gear_finish):
     meshes = load_source()
     bpy.ops.object.select_all(action="DESELECT")
     gear_pixels = halve(base, lod["gear_tex"])
@@ -615,8 +722,10 @@ def build(lod, base, painted_pages, budget):
 
     folder = lod["folder"]
     for key, pages in painted_pages.items():
-        budget[f"body{folder}"] = write(os.path.join(OUT, folder, f"body_{key}.glb"), groups["body"], make_material(f"SD40_{key}", halve(pages.astype(np.float32) / 255, lod["page"])))
-    gear = make_material("SD40_gear", gear_pixels)
+        budget[f"body{folder}"] = write(os.path.join(OUT, folder, f"body_{key}.glb"), groups["body"], make_material(
+            f"SD40_{key}", halve(pages.astype(np.float32) / 255, lod["page"]), halve(finish, lod["page"] // 2), halve(bumps, lod["page"] // 2)))
+    gear_map = halve(gear_finish, lod["gear_tex"] // 4)
+    gear = make_material("SD40_gear", gear_pixels, gear_map)
     for key in ("truck", "wheelset", "coupler"):
         budget[f"{key}{folder}"] = write(os.path.join(OUT, folder, f"{key}.glb"), groups[key], gear)
     # Liveries with coloured trucks: the same dark casting, in their colour.
@@ -624,7 +733,7 @@ def build(lod, base, painted_pages, budget):
         if "gear" in livery:
             tinted = gear_pixels.copy()
             tinted[..., :3] = code(livery["gear"]) * np.clip(gear_pixels[..., :3].mean(axis=2) / .17, 0, 1.3)[..., None]
-            write(os.path.join(OUT, folder, f"truck_{key}.glb"), groups["truck"], make_material(f"SD40_gear_{key}", tinted))
+            write(os.path.join(OUT, folder, f"truck_{key}.glb"), groups["truck"], make_material(f"SD40_gear_{key}", tinted, gear_map))
 
 
 def combined(key):
@@ -672,10 +781,10 @@ def combined(key):
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.gltf(filepath=SOURCE)
-base_pixels, glow_pixels = atlas()
+base_pixels, glow_pixels, rough_pixels = atlas()
 # The base colour comes down to the largest page used, then the emissive mask is matched to it.
 top = max(lod["page"] for lod in LODS)
-base_pixels, glow_pixels = halve(base_pixels, top), halve(glow_pixels, top)
+base_pixels, glow_pixels, rough_pixels = halve(base_pixels, top), halve(glow_pixels, top), halve(rough_pixels[..., None], top)[..., 0]
 if glow_pixels.shape[0] < top:
     k = top // glow_pixels.shape[0]
     glow_pixels = glow_pixels.repeat(k, axis=0).repeat(k, axis=1)
@@ -705,11 +814,21 @@ fan_light = base_pixels[(fan_uv[:, 1] * top).astype(int).clip(0, top - 1), (fan_
 FAN_WHITE, FAN_DARK = tuple(fan_uv[fan_light.argmax()]), tuple(fan_uv[fan_light.argmin()])
 texel_label, texel_place, texel_facing = map_texels(source_meshes, top * 2, top)
 pages_by_livery = {key: paint(key, livery, base_pixels, glow_pixels, texel_label, texel_place, texel_facing) for key, livery in BUILT.items()}
-del texel_label, texel_place, texel_facing
+texel_light = np.concatenate((base_pixels, base_pixels), axis=1)[..., :3].mean(axis=2)
+body_finish_pixels = body_finish(rough_pixels, source_meshes, texel_label, texel_place, texel_facing, texel_light)
+body_bump_pixels = body_bumps(texel_label, texel_place, texel_facing, texel_light)
+gear_rough = np.full_like(rough_pixels, GEAR_ROUGH)
+gear_metal = np.zeros_like(gear_rough)
+for starts, how_metal, how_rough in GEAR_BARE:
+    where = texels_of(source_meshes, starts, top, top)
+    gear_rough[where] = how_rough
+    gear_metal[where] = how_metal
+gear_finish_pixels = finish_pixels(gear_rough, gear_metal)
+del texel_label, texel_place, texel_facing, texel_light
 
 budget = {}
 for level in LODS:
-    build(level, base_pixels, pages_by_livery, budget)
+    build(level, base_pixels, pages_by_livery, budget, body_finish_pixels, body_bump_pixels, gear_finish_pixels)
 
 over = {}
 for level in LODS:
@@ -749,7 +868,7 @@ Licensed under Creative Commons Attribution 4.0: http://creativecommons.org/lice
 The source files are in Source/, unchanged.
 The other models in these folders are made from it by Tools/Blender/sd40.py. Changes: split into body, truck, wheelset and coupler;
 moved so the rail is at zero; wheelsets narrowed to standard gauge; textures re-laid so the two sides have their own space;
-the original paint scheme replaced by a new livery.
+the original paint scheme replaced by a new livery; metalness set by part; a normal map raised from the base colour's seams.
 
 Railroad names in the liveries are their owners' trademarks.
 """)

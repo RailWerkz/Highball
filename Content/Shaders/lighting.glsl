@@ -58,19 +58,18 @@ vec3 shadeLight(Surface s, vec3 light, vec3 color)
     return (diffuse + specular) * color * nl;
 }
 
-// Light arriving from the whole sky on a surface facing n. Unlike skyAmbient, the ground's bounce follows the sun, so the
-// shade goes dark at night.
+// Light arriving from the whole sky on a surface facing n, and up off the real ground beneath it, which goes dark at night.
 vec3 skyIrradiance(vec3 n)
 {
-    vec3 hemisphere = mix(Ground * 0.5, Zenith * 0.9 + Horizon * 0.45, n.y * 0.5 + 0.5);
-    return hemisphere + SunColor * 0.085 * (0.5 - 0.5 * n.y);
+    return mix(sky.groundLit.rgb, Zenith * 0.9 + Horizon * 0.45, n.y * 0.5 + 0.5);
 }
 
-// The sky in a mirror direction, blurring as the surface gets rougher.
+// The sky in a mirror direction, or the ground below the horizon, blurring as the surface gets rougher.
 vec3 skyReflection(vec3 dir, float roughness, vec3 sun)
 {
     // Fading to the average hides the seams of a skybox's cross, which its blurrier levels can't blend across.
     vec3 sharp = sky.mode.x > 0.5 ? textureLod(skyMap, skyMapUv(dir, 0.02), roughness * 6.0).rgb : analyticSky(dir, sun);
+    sharp = mix(sharp, sky.groundLit.rgb, smoothstep(0.0, 0.06, -dir.y));
     return mix(sharp, skyIrradiance(dir), roughness * roughness);
 }
 

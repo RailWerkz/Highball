@@ -20,7 +20,7 @@ public sealed class Model : IDisposable
     /// thrown away.
     /// Metallic and Roughness are the material's factors; MetallicRoughness, if it has one, is its glTF map of them (green
     /// roughness, blue metalness), multiplied by those factors.
-    public readonly record struct Surface(float4 BaseColor, Texture2D? Texture, float AlphaCutoff, float Metallic = 1f, float Roughness = 1f, Texture2D? MetallicRoughness = null);
+    public readonly record struct Surface(float4 BaseColor, Texture2D? Texture, float AlphaCutoff, float Metallic = 1f, float Roughness = 1f, Texture2D? MetallicRoughness = null, Texture2D? Normal = null);
 
     /// How the file's coordinates were turned, moved and scaled into the model's, so a part loaded on its own (a
     /// rotor, say) can be put in exactly the same place.
@@ -549,9 +549,10 @@ public sealed class Model : IDisposable
             float4 factor = pbr?.BaseColorFactor ?? new float4(1f);
             var texture = pbr?.BaseColorTexture is { } color ? Image(color.Index, true) : null;
             var metallicRoughness = pbr?.MetallicRoughnessTexture is { } map ? Image(map.Index, false) : null;
+            var normal = material?.NormalTexture is { } bumps ? Image(bumps.Index, false) : null;
 
             var cutoff = material is null || material.AlphaMode == Material.AlphaModeEnum.Opaque ? 0f : material.AlphaCutoff;
-            surfaces.Add(new Surface(factor, texture, cutoff, pbr?.MetallicFactor ?? 1f, pbr?.RoughnessFactor ?? 1f, metallicRoughness));
+            surfaces.Add(new Surface(factor, texture, cutoff, pbr?.MetallicFactor ?? 1f, pbr?.RoughnessFactor ?? 1f, metallicRoughness, normal));
         }
 
         return surfaces;
@@ -684,7 +685,7 @@ public sealed class Model : IDisposable
     public void Dispose()
     {
         Mesh.Dispose();
-        foreach (var texture in Surfaces.SelectMany(s => new[] { s.Texture, s.MetallicRoughness }).OfType<Texture2D>().Distinct())
+        foreach (var texture in Surfaces.SelectMany(s => new[] { s.Texture, s.MetallicRoughness, s.Normal }).OfType<Texture2D>().Distinct())
             texture.Dispose();
     }
 }

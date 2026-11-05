@@ -23,7 +23,7 @@ public sealed class RenderModel : IDisposable
         foreach (var sub in model.SubMeshes)
         {
             var surface = model.Surfaces[sub.Material];
-            _parts.Add(new Part(sub.FirstIndex, sub.IndexCount, Bind(surface.Texture, surface.MetallicRoughness), surface.BaseColor, surface.Metallic, surface.Roughness, surface.AlphaCutoff));
+            _parts.Add(new Part(sub.FirstIndex, sub.IndexCount, Bind(surface.Texture, surface.MetallicRoughness, surface.Normal), surface.BaseColor, surface.Metallic, surface.Roughness, surface.AlphaCutoff));
         }
     }
 
@@ -32,13 +32,13 @@ public sealed class RenderModel : IDisposable
     {
         Mesh = mesh;
         _owned = [mesh, .. owned];
-        _parts.Add(new Part(0, mesh.IndexCount, Bind(albedo, null), baseColor, metallic, roughness, 0f));
+        _parts.Add(new Part(0, mesh.IndexCount, Bind(albedo, null, null), baseColor, metallic, roughness, 0f));
     }
 
-    private TextureBinding Bind(Texture2D? albedo, Texture2D? metallicRoughness)
+    private TextureBinding Bind(Texture2D? albedo, Texture2D? metallicRoughness, Texture2D? normal)
     {
         Texture2D White() => _white ??= Texture2D.Solid(new byte4(255, 255, 255, 255));
-        var binding = new TextureBinding(albedo ?? White(), metallicRoughness ?? White());
+        var binding = new TextureBinding(albedo ?? White(), metallicRoughness ?? White(), normal ?? White());
         _bindings.Add(binding);
         return binding;
     }

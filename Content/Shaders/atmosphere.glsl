@@ -16,6 +16,7 @@ layout(set = 1, binding = 0) uniform SkyUniforms
     vec4 starsX;  // with Y and Z, the turn from the world to the stars
     vec4 starsY;
     vec4 starsZ;
+    vec4 groundLit; // the light coming up off the ground round the camera
 } sky;
 
 layout(set = 1, binding = 1) uniform sampler2D skyMap;  // horizontal cross: +Y over -X +Z +X -Z over -Y

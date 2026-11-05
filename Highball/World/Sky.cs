@@ -38,6 +38,7 @@ public sealed unsafe class Sky : IDisposable
         public float4 StarsX;
         public float4 StarsY;
         public float4 StarsZ;
+        public float4 GroundLit; // Apply works it out
     }
 
     private static VkDescriptorSetLayout _setLayout;
@@ -46,6 +47,8 @@ public sealed unsafe class Sky : IDisposable
     private readonly Texture2D _moon;
     private Texture2D? _map;
     private BufferEx _uniforms;
+    private Uniforms _applied;
+    private float3 _groundColor = new(0.2f, 0.19f, 0.17f);
     private VkDescriptorPool _pool;
 
     public string Name { get; private set; } = "";
@@ -189,9 +192,27 @@ public sealed unsafe class Sky : IDisposable
         Apply(in uniforms);
     }
 
-    /// A uniform buffer and a set for these values over the current map.
-    private void Apply(in Uniforms uniforms)
+    /// The colour of the ground round the camera, for the light it sends back up. Small changes aren't worth a new buffer.
+    public void SetGroundColor(float3 color)
     {
+        var change = color - _groundColor;
+        if (MathF.Abs(change.X) + MathF.Abs(change.Y) + MathF.Abs(change.Z) < 0.01f)
+            return;
+
+        _groundColor = color;
+        var applied = _applied;
+        ReleaseUniforms();
+        Apply(in applied);
+    }
+
+    /// A uniform buffer and a set for these values over the current map.
+    private void Apply(in Uniforms given)
+    {
+        var uniforms = given;
+        var upward = uniforms.SunColor.XYZ * MathF.Max(uniforms.SunDirection.Y, 0f) + uniforms.Zenith.XYZ * 0.9f + uniforms.Horizon.XYZ * 0.45f;
+        uniforms.GroundLit = new float4(_groundColor.X * upward.X, _groundColor.Y * upward.Y, _groundColor.Z * upward.Z, 0f);
+        _applied = uniforms;
+
         SunDirection = uniforms.SunDirection.XYZ;
         SunColor = uniforms.SunColor.XYZ;
         Zenith = uniforms.Zenith.XYZ;

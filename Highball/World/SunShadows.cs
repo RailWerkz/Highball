@@ -60,6 +60,8 @@ public sealed unsafe class SunShadows : IDisposable
     private readonly VkPipelineLayout _layout;
     private readonly VkPipeline _terrain;
     private readonly VkPipeline _model;
+    private readonly VkPipeline _line;
+    private readonly VkPipeline _part;
     private readonly VkPipelineLayout _plantLayout;
     private readonly VkPipeline _plant;
     private readonly float4x4[] _matrices = new float4x4[Cascades];
@@ -131,7 +133,20 @@ public sealed unsafe class SunShadows : IDisposable
             DepthBiasConstant = -60f, DepthBiasSlope = -1.75f,
         });
 
-        _plantLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(2));
+        _line = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = terrainVert, Layout = _layout, Attributes = position, Stride = Marshal.SizeOf<LineVertex>(), Cull = VkCullModeFlags.None, DepthOnly = true,
+            DepthBiasConstant = -60f, DepthBiasSlope = -1.75f,
+        });
+        using var partVert = Shader.Load("shadow_part.vert");
+        _part = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = partVert, Layout = _layout, Attributes = position, Stride = Marshal.SizeOf<Vertex>(),
+            InstanceAttributes = TieInstance.Layout, InstanceStride = Marshal.SizeOf<TieInstance>(), Cull = VkCullModeFlags.None, DepthOnly = true,
+            DepthBiasConstant = -60f, DepthBiasSlope = -1.75f,
+        });
+
+        _plantLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(3));
         using var plantVert = Shader.Load("shadow_plant.vert");
         using var plantFrag = Shader.Load("shadow_plant.frag");
         _plant = Pipelines.Create(new PipelineDesc
@@ -146,7 +161,7 @@ public sealed unsafe class SunShadows : IDisposable
         cmd.BindDescriptorSets(VkPipelineBindPoint.Graphics, layout, 2, [_set], []);
 
     /// Draws the cascades and updates what shadows.glsl reads. Outside any render pass, before the world.
-    public void Render(CommandBuffer cmd, Camera camera, float aspect, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation = null)
+    public void Render(CommandBuffer cmd, Camera camera, float aspect, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation = null, NetworkMeshes? network = null)
     {
         // A sun on the horizon has no sensible shadows, and one under it gives no light to shade.
         var active = Enabled && sun.Y > 0.02f;
@@ -176,7 +191,7 @@ public sealed unsafe class SunShadows : IDisposable
 
             _map.BeginLayer(cmd, c);
             if (active)
-                DrawCasters(cmd, camera, c, centre, right, up, sun, radius, terrain, models, vegetation);
+                DrawCasters(cmd, camera, c, centre, right, up, sun, radius, terrain, models, vegetation, network);
             _map.EndLayer(cmd);
         }
 
@@ -226,7 +241,7 @@ public sealed unsafe class SunShadows : IDisposable
     }
 
     private void DrawCasters(CommandBuffer cmd, Camera camera, int cascade, float3 centre, float3 right, float3 up, float3 sun, float radius,
-        Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation)
+        Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation, NetworkMeshes? network)
     {
         // Could something this size at this place shade anything in the cascade? Anywhere towards the sun can.
         bool Reaches(float3 relative, float size)
@@ -241,6 +256,20 @@ public sealed unsafe class SunShadows : IDisposable
         {
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, _plant);
             vegetation.DrawCasters(cmd, _plantLayout, camera, light, cascade, Reaches);
+        }
+
+        if (network is not null)
+        {
+            void Place(float3 offset)
+            {
+                var push = new TerrainPush { Light = light, Offset = new float4(offset, 0f) };
+                cmd.PushConstants(_layout, Stages, ByteSize.Zero, push);
+            }
+
+            cmd.BindPipeline(VkPipelineBindPoint.Graphics, _line);
+            network.DrawLineCasters(cmd, camera.X, camera.Y, camera.Z, cascade, Reaches, Place);
+            cmd.BindPipeline(VkPipelineBindPoint.Graphics, _part);
+            network.DrawPartCasters(cmd, camera.X, camera.Y, camera.Z, cascade, Reaches, Place);
         }
 
         if (models is not null)
@@ -283,6 +312,8 @@ public sealed unsafe class SunShadows : IDisposable
         Pipelines.Destroy(_plant, _plantLayout);
         Pipelines.Destroy(_terrain, default);
         Pipelines.Destroy(_model, default);
+        Pipelines.Destroy(_line, default);
+        Pipelines.Destroy(_part, default);
         Gpu.Defer(() =>
         {
             uniforms.Dispose();

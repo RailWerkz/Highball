@@ -5,6 +5,6 @@ Licensed under Creative Commons Attribution 4.0: http://creativecommons.org/lice
 The source files are in Source/, unchanged.
 The other models in these folders are made from it by Tools/Blender/sd40.py. Changes: split into body, truck, wheelset and coupler;
 moved so the rail is at zero; wheelsets narrowed to standard gauge; textures re-laid so the two sides have their own space;
-the original paint scheme replaced by a new livery.
+the original paint scheme replaced by a new livery; metalness set by part; a normal map raised from the base colour's seams.
 
 Railroad names in the liveries are their owners' trademarks.

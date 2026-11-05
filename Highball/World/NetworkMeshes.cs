@@ -343,6 +343,8 @@ public sealed partial class NetworkMeshes : IDisposable
                 _chunks[built.Key] = chunk = new Chunk { Used = _frame };
 
             var mesh = built.Indices.Length > 0 ? Mesh.Create<LineVertex>(built.Vertices, LineVertex.Layout, built.Indices, later: true) : null;
+            if (mesh is not null)
+                SetBounds(mesh, built.Vertices);
             if (built.Near)
             {
                 chunk.Near?.Dispose();
@@ -457,6 +459,7 @@ public sealed partial class NetworkMeshes : IDisposable
             if (KitFor(sw.Turnout) is { } parts)
                 KitMoving(builder, sw.Turnout, parts, position, _handThrows.GetValueOrDefault(node), _objectModels.GetValueOrDefault(PlacedKind.HandThrow));
             sw.Blades = Mesh.Create<LineVertex>([.. builder.Vertices], LineVertex.Layout, [.. builder.Indices], later: true);
+            SetBounds(sw.Blades, builder.Vertices);
             sw.BuiltAt = position;
         }
     }
@@ -1549,6 +1552,114 @@ public sealed partial class NetworkMeshes : IDisposable
             var origin = OriginOf(sw.Key);
             push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
             sw.Blades.Draw(cmd);
+        }
+    }
+
+    /// Where a mesh's vertices reach, for leaving it out of the shadow cascades it can't touch.
+    private static void SetBounds(Mesh mesh, IEnumerable<LineVertex> vertices)
+    {
+        var (min, max) = (new float3(float.MaxValue), new float3(float.MinValue));
+        foreach (var vertex in vertices)
+        {
+            var p = vertex.Position;
+            min = new float3(MathF.Min(min.X, p.X), MathF.Min(min.Y, p.Y), MathF.Min(min.Z, p.Z));
+            max = new float3(MathF.Max(max.X, p.X), MathF.Max(max.Y, p.Y), MathF.Max(max.Z, p.Z));
+        }
+
+        (mesh.BoundsMin, mesh.BoundsMax) = (min, max);
+    }
+
+    /// The last shadow cascade thin things are worth drawing in: rails and ties are a fraction of a texel in the wider ones, and
+    /// would only speckle. Beds, roads and bridges go in all of them.
+    private const int LastThinCascade = 1;
+
+    /// Draws the lines' shapes into a shadow cascade, with a pipeline bound that takes just their positions.
+    public void DrawLineCasters(CommandBuffer cmd, double cx, double cy, double cz, int cascade, Func<float3, float, bool> reaches, Action<float3> push)
+    {
+        foreach (var (key, near) in _drawList)
+        {
+            if (near && cascade > LastThinCascade)
+                continue;
+
+            var chunk = _chunks[key];
+            var mesh = near ? chunk.Near : chunk.Far;
+            if (mesh is null)
+                continue;
+
+            var origin = OriginOf(key);
+            var offset = new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz));
+            if (!reaches(offset + (mesh.BoundsMin + mesh.BoundsMax) * 0.5f, MathEx.Length(mesh.BoundsMax - mesh.BoundsMin) * 0.5f))
+                continue;
+
+            push(offset);
+            mesh.Draw(cmd);
+        }
+
+        if (cascade > LastThinCascade)
+            return;
+
+        foreach (var sw in _switches.Values)
+        {
+            if (sw.Blades is null || !_nearKeys.Contains(sw.Key))
+                continue;
+            var origin = OriginOf(sw.Key);
+            push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
+            sw.Blades.Draw(cmd);
+        }
+    }
+
+    /// Draws the ties and, close by, the plates into a shadow cascade, cell by cell, with the part caster pipeline bound.
+    public void DrawPartCasters(CommandBuffer cmd, double cx, double cy, double cz, int cascade, Func<float3, float, bool> reaches, Action<float3> push)
+    {
+        if (cascade > LastThinCascade)
+            return;
+
+        DrawCellCasters(cmd, cx, cy, cz, reaches, push, c => (c.Ties, c.TieCells), _tieFar.Mesh);
+        if (cascade == 0)
+            DrawCellCasters(cmd, cx, cy, cz, reaches, push, c => (c.Plates, c.PlateCells), _plate.Mesh);
+    }
+
+    private void DrawCellCasters(CommandBuffer cmd, double cx, double cy, double cz, Func<float3, float, bool> reaches, Action<float3> push, Func<Chunk, (BufferEx, int[])> instances, Mesh mesh)
+    {
+        foreach (var (key, near) in _drawList)
+        {
+            if (!near)
+                continue;
+
+            var chunk = _chunks[key];
+            var (buffer, cells) = instances(chunk);
+            if (cells.Length == 0 || cells[^1] == 0 || chunk.Near is not { } lines)
+                continue;
+
+            var origin = OriginOf(key);
+            var height = (lines.BoundsMin.Y + lines.BoundsMax.Y) * 0.5f - (float)cy;
+            var radius = CellSize * 0.75f + (lines.BoundsMax.Y - lines.BoundsMin.Y) * 0.5f + 3f;
+            var pushed = false;
+            var runStart = -1;
+            for (var c = 0; c <= Cells * Cells; c++)
+            {
+                var wanted = c < Cells * Cells && reaches(
+                    new float3((float)(origin.X + (c % Cells + 0.5f) * CellSize - cx), height, (float)(origin.Z + (c / Cells + 0.5f) * CellSize - cz)), radius);
+                if (wanted)
+                {
+                    if (runStart < 0)
+                        runStart = c;
+                    continue;
+                }
+
+                if (runStart >= 0 && cells[c] > cells[runStart])
+                {
+                    if (!pushed)
+                    {
+                        push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
+                        pushed = true;
+                    }
+
+                    mesh.DrawInstanced(cmd, buffer, cells[c] - cells[runStart], cells[runStart]);
+                }
+
+                runStart = -1;
+            }
         }
     }
 

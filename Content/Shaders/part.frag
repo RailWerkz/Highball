@@ -1,5 +1,6 @@
 #version 450
 #include "atmosphere.glsl"
+#include "lighting.glsl"
 #include "shadows.glsl"
 
 layout(location = 0) in vec3 vRelative;
@@ -33,8 +34,17 @@ void main()
     // Each one a little lighter or darker than the next.
     vec3 albedo = texture(albedoMap, vUv).rgb * (0.75 + 0.5 * vTint);
 
-    float direct = max(dot(n, sun), 0.0) * sunShadow(vRelative, n, sun);
-    vec3 color = albedo * (SunColor * direct + skyAmbient(n));
+    // Weathered wood, and rusted plates: neither shows bare metal.
+    Surface s;
+    s.albedo = albedo;
+    s.metallic = 0.0;
+    s.roughness = 0.8;
+    s.normal = n;
+    s.view = -view;
+    s.occlusion = 0.85;
+    s.specular = 0.5;
+
+    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative, n, sun)) + shadeSky(s, sun);
     color = applyFog(color, view, dist, pc.camera.y, sun);
     outColor = vec4(color, 1.0);
 }

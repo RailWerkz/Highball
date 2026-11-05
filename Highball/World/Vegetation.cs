@@ -128,14 +128,14 @@ public sealed unsafe class Vegetation : IDisposable
 
         _kinds[Grass] = new Kind
         {
-            Mesh = Own(GrassMesh()), Textures = Own(new TextureBinding(grassAlbedo, grassOpacity)), Wind = 0.07f, SoftNormal = 0.8f, Fade = NearReach * 0.92f, Cutout = 1f, LastCascade = 0,
+            Mesh = Own(GrassMesh()), Textures = Own(new TextureBinding(grassAlbedo, grassOpacity, grassOpacity)), Wind = 0.07f, SoftNormal = 0.8f, Fade = NearReach * 0.92f, Cutout = 1f, LastCascade = 0,
         };
-        _kinds[Pebble] = new Kind { Mesh = Own(RockMesh(11)), Textures = Own(new TextureBinding(rock, rock)), Fade = NearReach * 0.9f, Cutout = 2f, LastCascade = 0 };
+        _kinds[Pebble] = new Kind { Mesh = Own(RockMesh(11)), Textures = Own(new TextureBinding(rock, rock, rock)), Fade = NearReach * 0.9f, Cutout = 2f, LastCascade = 0 };
         _kinds[Shrub] = new Kind
         {
-            Mesh = Own(ShrubMesh()), Textures = Own(new TextureBinding(twigs, twigs)), Wind = 0.02f, SoftNormal = 0.55f, Fade = FarReach * 0.9f, LastCascade = 3,
+            Mesh = Own(ShrubMesh()), Textures = Own(new TextureBinding(twigs, twigs, twigs)), Wind = 0.02f, SoftNormal = 0.55f, Fade = FarReach * 0.9f, LastCascade = 3,
         };
-        _kinds[Boulder] = new Kind { Mesh = Own(RockMesh(29)), Textures = Own(new TextureBinding(rock, rock)), Fade = FarReach * 0.7f, Cutout = 2f, LastCascade = 3 };
+        _kinds[Boulder] = new Kind { Mesh = Own(RockMesh(29)), Textures = Own(new TextureBinding(rock, rock, rock)), Fade = FarReach * 0.7f, Cutout = 2f, LastCascade = 3 };
         for (var i = FirstTree; i < KindCount; i++)
             _kinds[i] = new Kind { Fade = FarReach * 0.95f, LastCascade = 3 };
     }

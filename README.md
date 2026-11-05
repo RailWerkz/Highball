@@ -74,8 +74,8 @@ shader change, fix it with `--skytime YYYY-MM-DD HOUR`, `--lighting dawn|noon|go
 sun worked out from the route's place on Earth.
 
 This scene and the terrain use physically based light (`Content/Shaders/lighting.glsl`): each direct light goes through
-`shadeLight`, and there are no local lights yet. Track and roads keep their own shaders. Everything receives the sun's
-shadows (`Content/Shaders/shadows.glsl`, `SunShadows`); terrain and whole models cast them, track and roads don't yet.
+`shadeLight`, and there are no local lights yet. Track and roads go through it too, and cast shadows: beds, roads and bridges in every cascade, rails and ties only in the nearer two. Metal reflects the sky above the horizon and the land cover's colour round the camera below it (no reflection probes yet). Everything receives the sun's
+shadows (`Content/Shaders/shadows.glsl`, `SunShadows`); terrain, plants and whole models cast them too.
 `--noshadows` turns them off, to see what they cost.
 
 The procedural sky has volumetric clouds (`Highball/World/Clouds.cs`, `Content/Shaders/Clouds/`), adapted from Kitten Space
