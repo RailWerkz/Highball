@@ -60,6 +60,8 @@ public sealed unsafe class SunShadows : IDisposable
     private readonly VkPipelineLayout _layout;
     private readonly VkPipeline _terrain;
     private readonly VkPipeline _model;
+    private readonly VkPipelineLayout _plantLayout;
+    private readonly VkPipeline _plant;
     private readonly float4x4[] _matrices = new float4x4[Cascades];
 
     public bool Enabled { get; set; } = !DevTools.NoShadows;
@@ -128,13 +130,23 @@ public sealed unsafe class SunShadows : IDisposable
             Vertex = modelVert, Layout = _layout, Attributes = position, Stride = Marshal.SizeOf<Vertex>(), Cull = VkCullModeFlags.None, DepthOnly = true,
             DepthBiasConstant = -60f, DepthBiasSlope = -1.75f,
         });
+
+        _plantLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(2));
+        using var plantVert = Shader.Load("shadow_plant.vert");
+        using var plantFrag = Shader.Load("shadow_plant.frag");
+        _plant = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = plantVert, Fragment = plantFrag, Layout = _plantLayout, Attributes = [new(0, 3, 0), new(2, 2, 24)], Stride = Marshal.SizeOf<Vertex>(),
+            InstanceAttributes = PlantInstance.Layout, InstanceStride = Marshal.SizeOf<PlantInstance>(), Cull = VkCullModeFlags.None, DepthOnly = true,
+            DepthBiasConstant = -60f, DepthBiasSlope = -1.75f,
+        });
     }
 
     public void Bind(CommandBuffer cmd, VkPipelineLayout layout) =>
         cmd.BindDescriptorSets(VkPipelineBindPoint.Graphics, layout, 2, [_set], []);
 
     /// Draws the cascades and updates what shadows.glsl reads. Outside any render pass, before the world.
-    public void Render(CommandBuffer cmd, Camera camera, float aspect, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models)
+    public void Render(CommandBuffer cmd, Camera camera, float aspect, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation = null)
     {
         // A sun on the horizon has no sensible shadows, and one under it gives no light to shade.
         var active = Enabled && sun.Y > 0.02f;
@@ -164,7 +176,7 @@ public sealed unsafe class SunShadows : IDisposable
 
             _map.BeginLayer(cmd, c);
             if (active)
-                DrawCasters(cmd, camera, c, centre, right, up, sun, radius, terrain, models);
+                DrawCasters(cmd, camera, c, centre, right, up, sun, radius, terrain, models, vegetation);
             _map.EndLayer(cmd);
         }
 
@@ -214,7 +226,7 @@ public sealed unsafe class SunShadows : IDisposable
     }
 
     private void DrawCasters(CommandBuffer cmd, Camera camera, int cascade, float3 centre, float3 right, float3 up, float3 sun, float radius,
-        Terrain? terrain, IReadOnlyList<ModelDraw>? models)
+        Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation)
     {
         // Could something this size at this place shade anything in the cascade? Anywhere towards the sun can.
         bool Reaches(float3 relative, float size)
@@ -224,6 +236,12 @@ public sealed unsafe class SunShadows : IDisposable
         }
 
         var light = _matrices[cascade];
+
+        if (vegetation is not null)
+        {
+            cmd.BindPipeline(VkPipelineBindPoint.Graphics, _plant);
+            vegetation.DrawCasters(cmd, _plantLayout, camera, light, cascade, Reaches);
+        }
 
         if (models is not null)
         {
@@ -262,6 +280,7 @@ public sealed unsafe class SunShadows : IDisposable
     {
         _map.Dispose();
         var (uniforms, pool, layout) = (_uniforms, _pool, _layout);
+        Pipelines.Destroy(_plant, _plantLayout);
         Pipelines.Destroy(_terrain, default);
         Pipelines.Destroy(_model, default);
         Gpu.Defer(() =>

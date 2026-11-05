@@ -84,6 +84,10 @@ Lighting window picks a type (`CloudType`: the ten basic types and a few mixes),
 sets how much of it. The moon (`MoonPosition`) is where it really is
 for the date, with its real phase, and lights the world once the sun has gone. The stars are invented but turn with the real sky.
 
+Over the terrain, `Vegetation` places grass, scrub, stones and trees from the land cover as the camera moves, keeping off track and
+roads (`--novegetation`, or the Lighting window, turns them off). The scrub's texture and the stones are generated; the grass cards
+are from `Content/Textures/Terrain/GroundClutter`, and the trees from `Content/Models/Vegetation`, only where the map shows forest.
+
 ## Licences
 
 BRUTAL: see `Vendor/BRUTAL_LICENSE.txt` and `Vendor/BRUTAL_NOTICE.txt`. FastNoiseLite and NLayer: MIT. JetBrains

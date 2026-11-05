@@ -53,6 +53,9 @@ public static class DevTools
     /// How much of the sky is cloud (--clouds), read once by the lighting window.
     public static float? CloudCoverage { get; set; }
 
+    /// No grass, shrubs, trees or rocks (--novegetation), to see what they cost.
+    public static bool NoVegetation { get; set; }
+
     /// Which clouds (--cloudtype), read once by the lighting window.
     public static string? CloudType { get; set; }
 
@@ -152,6 +155,9 @@ public static class DevTools
                     break;
                 case "--clouds" when i + 1 < args.Length:
                     CloudCoverage = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
+                    break;
+                case "--novegetation":
+                    NoVegetation = true;
                     break;
                 case "--cloudtype" when i + 1 < args.Length:
                     CloudType = args[++i];

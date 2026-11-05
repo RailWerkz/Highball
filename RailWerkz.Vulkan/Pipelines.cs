@@ -34,6 +34,9 @@ public sealed class PipelineDesc
     /// Colour added over what's there, which is kept by the alpha (premultiplied, the way volumes composite).
     public bool Blend { get; init; }
 
+    /// Alpha decides how many of a pixel's samples are covered, for soft cut-out edges.
+    public bool AlphaToCoverage { get; init; }
+
     /// One sample per pixel, for a pass over the target's resolved image.
     public bool SingleSample { get; init; }
 
@@ -83,7 +86,12 @@ public static unsafe class Pipelines
                 DepthBiasConstantFactor = desc.DepthBiasConstant,
                 DepthBiasSlopeFactor = desc.DepthBiasSlope,
             };
-            var multisample = new VkPipelineMultisampleStateCreateInfo { RasterizationSamples = desc.RenderPass.IsNull() && !desc.DepthOnly && !desc.SingleSample ? RenderTarget.Samples : VkSampleCountFlags._1Bit };
+            var samples = desc.RenderPass.IsNull() && !desc.DepthOnly && !desc.SingleSample ? RenderTarget.Samples : VkSampleCountFlags._1Bit;
+            var multisample = new VkPipelineMultisampleStateCreateInfo
+            {
+                RasterizationSamples = samples,
+                AlphaToCoverageEnable = new Bool32(desc.AlphaToCoverage && samples != VkSampleCountFlags._1Bit),
+            };
             var depth = new VkPipelineDepthStencilStateCreateInfo
             {
                 DepthTestEnable = new Bool32(desc.DepthTest),

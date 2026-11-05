@@ -20,6 +20,14 @@ layout(set = 0, binding = 5) uniform sampler2D cliffNormal;
 layout(set = 0, binding = 6) uniform sampler2D grassSurface; // ambient occlusion in red, roughness in green
 layout(set = 0, binding = 7) uniform sampler2D earthSurface;
 layout(set = 0, binding = 8) uniform sampler2D cliffSurface;
+layout(set = 0, binding = 9) uniform sampler2D desertAlbedo;
+layout(set = 0, binding = 10) uniform sampler2D desertNormal;
+layout(set = 0, binding = 11) uniform sampler2D desertSurface;
+layout(set = 0, binding = 12) uniform sampler2D beachAlbedo;
+layout(set = 0, binding = 13) uniform sampler2D beachNormal;
+layout(set = 0, binding = 14) uniform sampler2D beachSurface;
+layout(set = 0, binding = 15) uniform sampler2D grassHeight;
+layout(set = 0, binding = 16) uniform sampler2D earthHeight;
 
 layout(push_constant) uniform Push
 {
@@ -34,6 +42,8 @@ layout(push_constant) uniform Push
 const float GrassTile = 4.0;
 const float EarthTile = 6.0;
 const float CliffTile = 9.0;
+const float DesertTile = 12.0;
+const float BeachTile = 7.0;
 const float Second = 5.37;
 
 // A detail map's colour over its average (its last, 1 x 1 mip): around 1, to multiply the land cover's colour by.
@@ -82,17 +92,45 @@ void main()
 
     vec4 m = vMaterials / max(dot(vMaterials, vec4(1.0)), 1e-3);
 
+    // Where grass meets earth, whichever stands taller at this spot wins, so the edge follows clumps and stones, not a smooth fade.
+    float land = m.x + m.y;
+    if (m.x > 0.001 && m.y > 0.001)
+    {
+        float taller = texture(grassHeight, tex / GrassTile).r - texture(earthHeight, tex / EarthTile).r;
+        float grassShare = smoothstep(-0.12, 0.12, (m.x / land - 0.5) * 2.0 + taller * 0.8);
+        m.x = land * grassShare;
+        m.y = land * (1.0 - grassShare);
+    }
+
+    // Bare ground goes to weathered desert rock as it steepens, patchily.
+    float desert = clamp(smoothstep(0.985, 0.9, n.y) + (fbm(tex * 0.012, pixel * 0.012) - 0.55) * 1.2, 0.0, 1.0);
+
+    // Sand along the water's edge, in its own colour.
+    float shore = smoothstep(0.02, 0.3, m.z) * (1.0 - smoothstep(0.55, 0.9, m.z)) * step(n.y, 2.0) * smoothstep(0.85, 0.95, n.y);
+
     // The land cover's colour, varied broadly, times the textures' detail.
     vec3 albedo = vCover.rgb * (0.7 + 0.6 * fbm(tex * 0.004, pixel * 0.004));
-    vec3 grain = detail2(grassAlbedo, tex, GrassTile) * m.x + detail2(earthAlbedo, tex, EarthTile) * m.y + vec3(m.z + m.w);
+    vec3 earthGrain = mix(detail2(earthAlbedo, tex, EarthTile), detail2(desertAlbedo, tex, DesertTile), desert);
+    vec3 grain = detail2(grassAlbedo, tex, GrassTile) * m.x + earthGrain * m.y + vec3(m.z + m.w);
     albedo *= grain;
 
     // Their relief, laid onto the ground's own normal (projected straight down; flat ground mostly faces up).
-    vec2 bump = relief2(grassNormal, tex, GrassTile) * m.x + relief2(earthNormal, tex, EarthTile) * m.y;
-    vec3 surface = normalize(vec3(n.x + bump.x, n.y, n.z + bump.y));
+    vec2 earthBump = mix(relief2(earthNormal, tex, EarthTile), relief2(desertNormal, tex, DesertTile), desert);
+    vec2 bump = relief2(grassNormal, tex, GrassTile) * m.x + earthBump * m.y;
 
     // How much sky reaches it, and how rough it is, in the same proportions.
-    vec2 finish = texture(grassSurface, tex / GrassTile).rg * m.x + texture(earthSurface, tex / EarthTile).rg * m.y + WaterSurface * (m.z + m.w);
+    vec2 earthFinish = mix(texture(earthSurface, tex / EarthTile).rg, texture(desertSurface, tex / DesertTile).rg, desert);
+    vec2 finish = texture(grassSurface, tex / GrassTile).rg * m.x + earthFinish * m.y + WaterSurface * (m.z + m.w);
+
+    if (shore > 0.0)
+    {
+        albedo = mix(albedo, texture(beachAlbedo, tex / BeachTile).rgb, shore);
+        bump = mix(bump, relief2(beachNormal, tex, BeachTile), shore);
+        finish = mix(finish, texture(beachSurface, tex / BeachTile).rg, shore);
+        m.z *= 1.0 - shore;
+    }
+
+    vec3 surface = normalize(vec3(n.x + bump.x, n.y, n.z + bump.y));
 
     // Tree canopy: dark clumps with lighter crowns.
     float canopy = vCover.a * smoothstep(0.35, 0.6, fbm(tex * 0.06, pixel * 0.06));

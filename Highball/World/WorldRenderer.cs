@@ -50,6 +50,7 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly GroundTextures _ground = new();
     private readonly SunShadows _shadows = new();
     private readonly Clouds _clouds = new();
+    private readonly Vegetation _vegetation = new();
     private VkPipeline _sky;
     private VkPipeline _terrain;
     private VkPipeline _terrainWire;
@@ -58,6 +59,7 @@ public sealed unsafe class WorldRenderer : IDisposable
     private VkPipeline _part;
     private VkPipeline _partWire;
     private VkPipeline _model;
+    private VkPipeline _plant;
     private readonly VkDescriptorSetLayout _tonemapSetLayout;
     private readonly VkPipelineLayout _tonemapLayout;
     private readonly VkPipeline _tonemap;
@@ -75,6 +77,7 @@ public sealed unsafe class WorldRenderer : IDisposable
     public bool Wireframe { get; set; }
     public bool Shadows { get => _shadows.Enabled; set => _shadows.Enabled = value; }
     public Clouds Clouds => _clouds;
+    public Vegetation Vegetation => _vegetation;
 
     public WorldRenderer()
     {
@@ -117,6 +120,8 @@ public sealed unsafe class WorldRenderer : IDisposable
         using var partFrag = Shader.Load("part.frag");
         using var modelVert = Shader.Load("model.vert");
         using var modelFrag = Shader.Load("model.frag");
+        using var plantVert = Shader.Load("plant.vert");
+        using var plantFrag = Shader.Load("plant.frag");
 
         _sky = Pipelines.Create(new PipelineDesc { Vertex = fullscreen, Fragment = sky, Layout = _layout, Cull = VkCullModeFlags.None, DepthTest = false, DepthWrite = false });
         var terrain = new PipelineDesc { Vertex = terrainVert, Fragment = terrainFrag, Layout = _terrainLayout, Attributes = TerrainVertex.Layout, Stride = Marshal.SizeOf<TerrainVertex>() };
@@ -150,6 +155,12 @@ public sealed unsafe class WorldRenderer : IDisposable
         {
             Vertex = modelVert, Fragment = modelFrag, Layout = _modelLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(), Cull = VkCullModeFlags.None,
         });
+        // Plants and rocks, many of one mesh. Cards are seen from both sides.
+        _plant = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = plantVert, Fragment = plantFrag, Layout = _modelLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(),
+            InstanceAttributes = PlantInstance.Layout, InstanceStride = Marshal.SizeOf<PlantInstance>(), Cull = VkCullModeFlags.None, AlphaToCoverage = true,
+        });
     }
 
     private void DestroyWorldPipelines()
@@ -162,6 +173,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         Pipelines.Destroy(_part, default);
         Pipelines.Destroy(_partWire, default);
         Pipelines.Destroy(_model, default);
+        Pipelines.Destroy(_plant, default);
     }
 
     private static float3 Normalize(float3 v) => v / MathF.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
@@ -180,8 +192,14 @@ public sealed unsafe class WorldRenderer : IDisposable
         var camPos = new float4((float)camera.X, (float)camera.Y, (float)camera.Z, 0f);
         var sun = new float4(Sun, 0f);
 
+        if (terrain is not null)
+        {
+            _vegetation.Enabled = RailWerkz.Core.Settings.Settings.Current.Vegetation;
+            _vegetation.Update(terrain, camera);
+        }
+
         using (Profiler.Sample("Sun shadows"))
-            _shadows.Render(cmd, camera, aspect, Sun, terrain, models);
+            _shadows.Render(cmd, camera, aspect, Sun, terrain, models, terrain is null ? null : _vegetation);
         if (terrain is not null)
             _clouds.GroundLevel = terrain.Source.HeightAt(0.0, 0.0);
         using (Profiler.Sample("Cloud shade"))
@@ -251,6 +269,16 @@ public sealed unsafe class WorldRenderer : IDisposable
                 cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _partWire : _part);
                 network.DrawParts(cmd, _layout, camera.X, camera.Y, camera.Z, Push);
             }
+        }
+
+        if (terrain is not null && _vegetation.Enabled)
+        {
+            using var _ = Profiler.Sample("Plants and rocks");
+            cmd.BindPipeline(VkPipelineBindPoint.Graphics, _plant);
+            Sky.Bind(cmd, _modelLayout);
+            _shadows.Bind(cmd, _modelLayout);
+            _clouds.Bind(cmd, _modelLayout);
+            _vegetation.Draw(cmd, _modelLayout, camera, aspect);
         }
 
         if (models is not null)
@@ -359,6 +387,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         _ground.Dispose();
         _shadows.Dispose();
         _clouds.Dispose();
+        _vegetation.Dispose();
         Pipelines.Destroy(default, _layout);
         Sky.Dispose();
         Pipelines.Destroy(_tonemap, _tonemapLayout);

@@ -106,6 +106,9 @@ public sealed class Terrain : IDisposable
 
     public Terrain(TerrainSource source) => _source = source;
 
+    /// Goes up whenever the ground changes shape.
+    public int Epoch => _epoch;
+
     private float SpacingOf(int level) => _source.Spacing * (1 << level);
 
     private static int SamplesOf(int level) => Quads << level;

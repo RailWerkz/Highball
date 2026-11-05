@@ -32,6 +32,12 @@ public sealed class LightingPanel
             Settings.Current.CloudCoverage = coverage;
         }
 
+        if (DevTools.NoVegetation)
+        {
+            DevTools.NoVegetation = false;
+            Settings.Current.Vegetation = false;
+        }
+
         if (DevTools.CloudType is { } type)
         {
             DevTools.CloudType = null;
@@ -142,6 +148,10 @@ public sealed class LightingPanel
             var shadows = _renderer.Shadows;
             if (ImGui.Checkbox("Sun shadows"u8, ref shadows))
                 _renderer.Shadows = shadows;
+
+            var plants = s.Vegetation;
+            if (ImGui.Checkbox("Plants and rocks"u8, ref plants))
+                s.Vegetation = plants;
 
             extra?.Invoke();
         }
