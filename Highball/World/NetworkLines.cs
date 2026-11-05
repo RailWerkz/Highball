@@ -353,6 +353,38 @@ public sealed partial class NetworkLines
     /// Whether more than one line touches this node; once the profiles are finished.
     public bool IsJunction(long node) => _junctionNodes.Contains(node);
 
+    /// The ends of roads (or of mapped tracks' marks) that meet at this end of a line, this one among them, always in the
+    /// same order; just this one if it meets nothing end to end. Bridges and tunnels make their own ends.
+    public IReadOnlyList<(NetworkLine Line, int Point)> EndsMeetingAt(NetworkLine line, int point)
+    {
+        _roadEnds ??= FindRoadEnds();
+        return line.Nodes.FirstOrDefault(n => n.Point == point) is { } at && _roadEnds.TryGetValue((at.Node, line.Mark), out var ends) && ends.Exists(e => e.Line == line && e.Point == point)
+            ? ends
+            : [(line, point)];
+    }
+
+    private Dictionary<(long Node, bool Mark), List<(NetworkLine Line, int Point)>> FindRoadEnds()
+    {
+        var found = new Dictionary<(long, bool), List<(NetworkLine, int)>>();
+        foreach (var line in _lines.Where(l => !l.Rail).OrderBy(l => l.Index))
+        {
+            foreach (var (node, point) in line.Nodes)
+            {
+                if (point != 0 && point != line.Count - 1)
+                    continue;
+                if (line.Structures[Math.Min(point, line.Structures.Length - 1)] is Structure.Bridge or Structure.Tunnel)
+                    continue;
+                if (!found.TryGetValue((node, line.Mark), out var list))
+                    found[(node, line.Mark)] = list = [];
+                list.Add((line, point));
+            }
+        }
+
+        return found;
+    }
+
+    private Dictionary<(long Node, bool Mark), List<(NetworkLine Line, int Point)>>? _roadEnds;
+
     /// Which tiles each line reaches and has points on.
     private void IndexLines(HashSet<TileId> built)
     {
@@ -1442,7 +1474,8 @@ public sealed partial class NetworkLines
         {
             if (line.Rail && d < near[sample].D)
                 near[sample] = (index, d, target, ex, ez);
-            var run = MathF.Max(0f, d - line.Formation);
+            // (Track's flat ground runs a terrain triangle past its gravel, so a slope rising beside it can't bury the gravel's edge.)
+            var run = MathF.Max(0f, d - (line.Rail ? line.Formation + _spacing * 1.5f : line.Formation));
             if (run <= 0f ? d >= claimed[sample] : claimed[sample] < float.MaxValue)
                 return;
             if (run <= 0f)

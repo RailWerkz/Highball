@@ -14,7 +14,8 @@ public sealed record NetworkEdit(List<(long Id, NetworkWay? Before, NetworkWay? 
 public readonly record struct LayPoint(double X, double Z, long? Node = null, (long Way, int Segment)? Split = null);
 
 /// A way to lay along with others. From: the point of the first way it branches off, sharing its control point there.
-public sealed record PlannedWay(List<LayPoint> Points, int? From = null);
+/// Shared: its points that are another way's in the same lay, by that way's place in the list (an earlier one) and its point there.
+public sealed record PlannedWay(List<LayPoint> Points, int? From = null, IReadOnlyList<(int Point, int Way, int Other)>? Shared = null);
 
 /// Track editing in the editors, on the route's network: OpenStreetMap's rail ways, whose nodes are the control
 /// points. Moving a node moves every way through it (so junctions stay joined); new track is a new way, joined to
@@ -560,8 +561,9 @@ public sealed class TrackEditor
         return Commit([.. changes.Select(c => (c.Key, c.Value.Before, c.Value.After))]);
     }
 
-    /// Lays yard track as one edit: ways joined to what they start or end on, and branches off the first of them.
-    public NetworkEdit? LayWays(IReadOnlyList<PlannedWay> ways)
+    /// Lays yard track as one edit: ways joined to what they start or end on, and branches off the first of them. laid, if
+    /// given, gets each way's nodes.
+    public NetworkEdit? LayWays(IReadOnlyList<PlannedWay> ways, List<long[]>? laid = null)
     {
         if (ways.Count == 0)
             return null;
@@ -569,6 +571,7 @@ public sealed class TrackEditor
         var changes = new Dictionary<long, (NetworkWay? Before, NetworkWay? After)>();
         long[]? firstNodes = null;
         double[]? firstLat = null, firstLon = null;
+        var made = new List<(long[] Nodes, double[] Lat, double[] Lon)>();
         foreach (var planned in ways)
         {
             var points = planned.Points;
@@ -576,6 +579,14 @@ public sealed class TrackEditor
             for (var i = 0; i < points.Count; i++)
             {
                 var point = points[i];
+                var index = i;
+                if (planned.Shared?.Where(s => s.Point == index).Select(s => ((int Way, int Other)?)(s.Way, s.Other)).FirstOrDefault() is { } link)
+                {
+                    var (otherNodes, otherLat, otherLon) = made[link.Way];
+                    (nodes[i], lat[i], lon[i]) = (otherNodes[link.Other], otherLat[link.Other], otherLon[link.Other]);
+                    continue;
+                }
+
                 if (i == 0 && planned.From is { } from)
                 {
                     (nodes[i], lat[i], lon[i]) = (firstNodes![from], firstLat![from], firstLon![from]);
@@ -595,7 +606,11 @@ public sealed class TrackEditor
                 if (point.Split is { } split && _network.Ways.TryGetValue(split.Way, out var original))
                 {
                     var way = changes.TryGetValue(split.Way, out var c) ? c.After! : original;
-                    var start = Array.IndexOf(way.Nodes, original.Nodes[split.Segment]) + 1;
+                    var begin = Array.IndexOf(way.Nodes, original.Nodes[split.Segment]);
+                    var start = begin + 1;
+                    double Away(double a, double o) => (a - way.Lat[begin]) * (a - way.Lat[begin]) + (o - way.Lon[begin]) * (o - way.Lon[begin]);
+                    while (start < way.Nodes.Length && Array.IndexOf(original.Nodes, way.Nodes[start]) < 0 && Away(way.Lat[start], way.Lon[start]) < Away(geo.Lat, geo.Lon))
+                        start++;
                     var (n, la, lo) = (way.Nodes.ToList(), way.Lat.ToList(), way.Lon.ToList());
                     n.Insert(start, nodes[i]);
                     la.Insert(start, geo.Lat);
@@ -607,6 +622,8 @@ public sealed class TrackEditor
             firstNodes ??= nodes;
             firstLat ??= lat;
             firstLon ??= lon;
+            made.Add((nodes, lat, lon));
+            laid?.Add(nodes);
             var id = _network.NewId();
             changes[id] = (null, new NetworkWay
             {

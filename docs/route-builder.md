@@ -1,7 +1,9 @@
 # Route Builder
 
-One screen per route, with three views of it. They share the menu bar along the top, the side panel on the right and
-the controls footer along the bottom.
+One screen per route, with three views of it. They share the top bar (menus, the views, the route and whether it's saved), the side
+panel on the left and the status line along the bottom. In the editors the tool strip runs down the left edge with undo and redo at
+its foot, the side panel beside it starts with the tool in hand's options, and the status line says where the pointer is, how high the ground is there and where
+the camera is, then what the tool's controls are.
 
 | View | Key | What it's for |
 |---|---|---|
@@ -54,17 +56,22 @@ In Route Builder → Open Route, Enter opens the highlighted route and Del delet
 
 ## Tools
 
-Number keys pick the tool for the left mouse button. They're also in the Edit menu.
+The strip on the left picks the tool for the left mouse button, and so do these keys. Terrain on the strip goes back to the brush
+last used, and its panel has the brushes, their radius and the covers to paint.
 
 | Key | Tool |
 |---|---|
-| 1 | Look |
+| 1 | Free Look |
 | 2–5 | Raise, Lower, Smooth, Flatten (to where the stroke began) |
 | 6 | Paint Cover (P picks the cover) |
 | 7 | Edit Track |
 | 8 | Pen |
 | 9 | Track Circuits |
 | 0 | Switches |
+| - | Shape Track |
+| = | Lay Yard |
+| P | Parallel (with Paint in hand, P picks the cover instead) |
+| O or \\ | Objects |
 
 `[` and `]` size the brush. Ctrl+Z and Ctrl+Y undo and redo any edit, terrain or track. Ctrl+S saves.
 
@@ -305,11 +312,9 @@ A click on built track, or on a guide within 2.5 m of it, joins it there, so a b
 as a real switch. The path is led off along the track it leaves (and on to one it arrives at) by a curve no tighter than
 80 m if there's room, as the preview shows.
 
-The tool's panel picks how it lays: Follow, as above, or one of three that work from built track in two clicks. Each shows what
+The tool's panel picks how it lays: Follow, as above, or one of two that work from built track in two clicks. Each shows what
 it would lay, in red with the reason if it can't, and the second click lays it; Backspace starts over and Ctrl+Z undoes it.
 
-- Parallel: click a track where the new one starts, then level with where it ends, on the side it goes. It runs at the panel's
-  spacing (3.5 to 12 m, 4.6 m to begin with), along that one line, and won't be laid within 3 m of another track or across one.
 - Crossover: click one track, then the other. Clicking further along on the second makes it lean that way; the middle of the
   two clicks is its middle. Automatic takes the first of No. 8, 7, 6, 10, 15, 20 that fits on yard track, and of No. 10, 15, 20,
   8, 7, 6 otherwise. It's refused too near another junction or a track's end, or between tracks not within 4 degrees of parallel.
@@ -335,9 +340,41 @@ laid out together and can't be dragged.
 A picked crossover shows one white circle at its middle instead. Dragging it along the tracks moves both switches the same way
 and as far as they both can go (15 m short of the next junction or either track's end), and the crossover is laid out again there.
 
-## Placing objects
+## Parallel track
 
-The Place tool (\\) puts signals, hand throws, grade crossings and diamonds on the route. Pick one in the panel and click:
+The Parallel tool (P) lays any number of tracks beside a built track at once: click the track where they start, then level with
+where they end, on the side they go. The panel sets how many (up to 500, a guard against a mistyped count) and their spacing (3.5
+to 12 m, 4.6 m to begin with). They're shown as you move, in red with which track and why if any can't be laid: none of them are
+laid then. None is laid within 3 m of another track or across one, or tighter than the sharpest curve allowed; offsetting a curve
+by many tracks tightens the inner ones. Backspace or Esc starts over, and Ctrl+Z takes them all back at once.
+
+## Objects
+
+The Objects tool (O) lays premade track and puts signals, hand throws, grade crossings and diamonds on the route. Pick one in the panel
+and click; each click places another, and clicking one already placed picks it instead. Esc lets go of what's picked.
+
+Track pieces are real track, drawn in place before they're laid, in red with why if they can't be:
+
+- Switches: No. 6, 7, 8, 10, 15 and 20, left and right. On a track, the track is the through route and only the diverging route is laid.
+- Crossovers: the same sizes, leaning left or right, as two tracks and the crossover. Clicked on a track with another beside it within
+  12 m, only the crossover is laid between them.
+- Three-way switches: the same sizes, with the first route to the left or right. They're two sets of points one after the other, the
+  second clear of the first's blades and done before its frog. On a track, the track is the through route.
+- Scissors crossovers: No. 6 to 15 (a No. 20's crossing would be under 8 degrees). Two crossovers and the diamond where they cross, as
+  two tracks wide enough to keep that diamond clear of the frogs. Clicked on a track with another beside it, it's laid between them if
+  they're far enough apart.
+- Single and double slips: tracks crossing at 10, 15 or 20 degrees, with a route from one to the other beside the diamond (a double
+  has one each side). They're built from ordinary switches either side of the diamond, so they run longer than a compact slip with its
+  points inside the crossing.
+- Diamonds: two tracks crossing at 15 to 90 degrees.
+- Ladders: 3, 4 or 6 tracks with No. 6, 8 or 10 switches. On a track, the lead leaves it by a switch.
+- Straights and Curves: clicked near a track's loose end, they carry on from it, so pieces chain.
+
+R turns a piece 15 degrees and Shift+R back; holding R and rolling the wheel turns it 1 degree a notch, or 5 with Shift. On a track
+that decides which way the piece faces. V mirrors it. The panel sets the
+spacing crossovers and ladders are built to. Mapped nodes tagged as slips or three-way switches still show as needing fixing.
+
+The rest:
 
 - Signal: snaps 3.6 m off the nearest track within 15 m, on the side clicked, facing trains that have it on their right.
 - Hand Throw: goes on the nearest switch within 20 m, in place of its power machine, and its target and lever turn as the switch
@@ -349,7 +386,7 @@ The Place tool (\\) puts signals, hand throws, grade crossings and diamonds on t
 - Diamond: joins two built tracks where they cross, within 15 m, with a control point in both. Refused under 8 degrees. Edit Track
   moves that point, and the assembly is rebuilt to whatever the tracks then make.
 
-Click an object's marker to pick it, then drag to move it (it snaps again), R and Shift+R to turn it 15 degrees, V to turn it round
+Click an object's marker to pick it, then drag to move it (it snaps again), R and Shift+R to turn it 15 degrees, R and the wheel to turn it 1 degree a notch (one undo for the whole turn), V to turn it round
 (a hand throw: to the switch's other side), Delete to remove it. They're kept in Objects.json in the route's folder, saved as
 they change, and Ctrl+Z undoes them. Signals don't show aspects or tie into circuits yet, and crossings don't work their gates.
 

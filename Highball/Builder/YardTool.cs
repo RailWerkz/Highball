@@ -23,6 +23,9 @@ public sealed class YardTool
     public const float MaxSpacing = 12f;
     public const int MaxTracks = 20;
 
+    /// A guard against a mistyped count, not a design limit: past this they'd be kilometres wide.
+    public const int MaxParallel = 500;
+
     /// How near a click has to be to a track, and to one of its points to use that point.
     private const double OnTrack = 4.0;
     private const double AtPoint = 2.5;
@@ -54,6 +57,11 @@ public sealed class YardTool
     public YardMode Mode { get; private set; }
     public float Spacing = 4.6f;
     public int Tracks = 4;
+
+    /// How many to lay at once with Parallel, the first beside the track and each of the others beside the last.
+    public int ParallelTracks = 1;
+
+    public static YardTool ForParallel() => new() { Mode = YardMode.Parallel };
 
     /// The switch size wanted; nought for automatic.
     public int Size;
@@ -96,7 +104,7 @@ public sealed class YardTool
             return;
         }
 
-        object key = (Mode, anchor.Point.X, anchor.Point.Z, Math.Round(at.X * 4.0), Math.Round(at.Z * 4.0), Spacing, Tracks, Size, tracks.Network.Version);
+        object key = (Mode, anchor.Point.X, anchor.Point.Z, Math.Round(at.X * 4.0), Math.Round(at.Z * 4.0), Spacing, Tracks, ParallelTracks, Size, tracks.Network.Version);
         _pointer = at;
         if (key.Equals(_key))
             return;
@@ -177,24 +185,42 @@ public sealed class YardTool
         var (rx, rz) = LineRuns(line, to.S);
         var side = rx * (at.Z - pz) - rz * (at.X - px) >= 0.0 ? 1.0 : -1.0;
 
-        var path = new List<(double X, double Z)>();
         var count = Math.Max(2, (int)Math.Ceiling((last - first) / 4.0));
-        for (var k = 0; k <= count; k++)
+        var (spacing, n) = (Spacing, ParallelTracks);
+        var fitted = new (bool Fitted, double Radius, double Length, List<(double X, double Z)> Points)[n];
+        System.Threading.Tasks.Parallel.For(0, n, t =>
         {
-            var s = first + (last - first) * (double)k / count;
-            var (x, z) = AlongLine(line, s);
-            var (ux, uz) = LineRuns(line, s);
-            path.Add((x - uz * side * Spacing, z + ux * side * Spacing));
+            var path = new List<(double X, double Z)>(count + 1);
+            var off = side * spacing * (t + 1);
+            for (var k = 0; k <= count; k++)
+            {
+                var s = first + (last - first) * (double)k / count;
+                var (x, z) = AlongLine(line, s);
+                var (ux, uz) = LineRuns(line, s);
+                path.Add((x - uz * off, z + ux * off));
+            }
+
+            var fit = TrackAlignment.FitPath(path);
+            fitted[t] = (fit.Fitted, fit.Radius, Alignment.LengthOf(fit.Pieces), Sampled(fit.Pieces, []).Points);
+        });
+
+        string? problem = null;
+        for (var t = 0; t < n && problem is null; t++)
+        {
+            var one = fitted[t];
+            var why = !one.Fitted ? "No clean fit along this stretch"
+                : one.Radius < TrackQuality.MinRadius ? $"Too sharp: curve {length(one.Radius)}"
+                : tracks.RunsInto(one.Points, Math.Min(RunClearance, Spacing - 0.4), false, false) ? "Runs into another track"
+                : null;
+            if (why is not null)
+                problem = n > 1 ? $"Track {t + 1}: {why}" : why;
         }
 
-        var fit = TrackAlignment.FitPath(path);
-        var points = Sampled(fit.Pieces, []).Points;
-        string? problem = !fit.Fitted ? "No clean fit along this stretch"
-            : fit.Radius < TrackQuality.MinRadius ? $"Too sharp: curve {length(fit.Radius)}"
-            : tracks.RunsInto(points, Math.Min(RunClearance, Spacing - 0.4), false, false) ? "Runs into another track"
-            : null;
-        var curve = fit.Radius < double.MaxValue / 2.0 ? $", tightest curve {length(fit.Radius)}" : ", straight";
-        return new YardPlan([new PlannedWay([.. points.Select(p => new LayPoint(p.X, p.Z))])], $"{length(Alignment.LengthOf(fit.Pieces))} track, {length(Spacing)} apart{curve}", problem, 0);
+        var tightest = fitted.Min(f => f.Radius);
+        var curve = tightest < double.MaxValue / 2.0 ? $", tightest curve {length(tightest)}" : ", straight";
+        var total = fitted.Sum(f => f.Length);
+        var summary = n == 1 ? $"{length(total)} track, {length(Spacing)} apart{curve}" : $"{n} tracks, {length(total)} in all, {length(Spacing)} apart{curve}";
+        return new YardPlan([.. fitted.Select(f => new PlannedWay([.. f.Points.Select(p => new LayPoint(p.X, p.Z))]))], summary, problem, 0);
     }
 
     // --- Crossover. ---
@@ -236,7 +262,7 @@ public sealed class YardTool
         return YardPlan.Refused(why ?? "No crossover fits");
     }
 
-    private static YardPlan? CrossoverOf(TrackEditor tracks, (double X, double Z) a, (double X, double Z) u, (double X, double Z) n, double along, float spacing, int number, Func<double, string> length, out string? problem)
+    internal static YardPlan? CrossoverOf(TrackEditor tracks, (double X, double Z) a, (double X, double Z) u, (double X, double Z) n, double along, float spacing, int number, Func<double, string> length, out string? problem)
     {
         var total = CrossoverFitting.Length(number, spacing);
         var from = along / 2.0 - total / 2.0;
@@ -389,7 +415,7 @@ public sealed class YardTool
     }
 
     /// Points along pieces, no more than a sample step apart, and falling exactly on each break; and where each break fell.
-    private static (List<(double X, double Z)> Points, List<int> Marks) Sampled(IReadOnlyList<TrackPiece> pieces, IReadOnlyList<double> breaks)
+    internal static (List<(double X, double Z)> Points, List<int> Marks) Sampled(IReadOnlyList<TrackPiece> pieces, IReadOnlyList<double> breaks)
     {
         var total = Alignment.LengthOf(pieces);
         var (points, marks) = (new List<(double X, double Z)> { Alignment.Position(pieces, 0.0) }, new List<int>());

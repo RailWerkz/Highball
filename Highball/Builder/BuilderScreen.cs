@@ -11,13 +11,13 @@ namespace Highball.Builder;
 /// The Route Builder for one route: the Planner (its tiles over OpenStreetMap, picked and built), and the 2D and 3D
 /// Editors (the built terrain from straight above or flown through, sculpted, painted and laid with track), switched
 /// with Tab (in that order), F1 to F3 or the View menu. All three share the menu bar along the top, the side panel on
-/// the right and the controls footer along the bottom. The editors are one view of the terrain, kept open once it's
+/// the left (beside the editors' tool strip) and the controls footer along the bottom. The editors are one view of the terrain, kept open once it's
 /// been opened, so switching costs nothing; it opens again only after a build.
 public sealed class BuilderScreen : Screen, IWorldScreen
 {
     public enum Mode { Planner, Editor2D, Editor3D }
 
-    private const float PanelWidth = 360f;
+    private const float PanelWidth = 320f;
     private const float FooterHeight = 36f;
     private const double NoticeSeconds = 4.0;
 
@@ -165,7 +165,14 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         var height = S(FooterHeight);
         draw.AddRectFilled(new float2(0f, _footerTop), size, Surface);
         draw.AddLine(new float2(0f, _footerTop), new float2(size.X, _footerTop), StrokeStrong, 1f);
-        Canvas.Hints(draw, new float2(S(24f), size.Y - (height - S(22f)) * 0.5f), _mode == Mode.Planner ? _planner.Hints : _editor!.Hints);
+        var left = S(24f);
+        if (_mode != Mode.Planner && _editor!.Status is { Length: > 0 } status)
+        {
+            Canvas.Text(draw, Mono, S(13f), new float2(left, _footerTop + (height - S(13f)) * 0.5f), Style.Text, status);
+            left += Canvas.TextSize(Mono, S(13f), status).X + S(32f);
+        }
+
+        Canvas.Hints(draw, new float2(left, size.Y - (height - S(22f)) * 0.5f), _mode == Mode.Planner ? _planner.Hints : _editor!.Hints);
 
         var noticing = RailWerkz.Core.Time.Time.Now - _noticeAt < NoticeSeconds;
         var right = noticing ? _notice : _mode == Mode.Planner ? _planner.Attribution : "";
@@ -195,15 +202,6 @@ public sealed class BuilderScreen : Screen, IWorldScreen
                 ImGui.EndMenu();
             }
 
-            if (ImGui.BeginMenu("Edit"))
-            {
-                if (editing)
-                    _editor!.MenuEdit();
-                else
-                    _planner.MenuEdit();
-                ImGui.EndMenu();
-            }
-
             if (ImGui.BeginMenu("View"))
             {
                 if (ImGui.MenuItem("Planner", "F1", !editing, true))
@@ -223,33 +221,72 @@ public sealed class BuilderScreen : Screen, IWorldScreen
                 ImGui.EndMenu();
             }
 
+            TopBar(editing);
             ImGui.EndMainMenuBar();
         }
 
-        if (_showPanel)
+        if (_showPanel && (_mode == Mode.Planner || _editor?.HasPanel == true))
             Panel();
         if (_mode != Mode.Planner)
             _editor?.Windows();
     }
 
-    /// The route, then what the view in front has to show and set.
+    /// The views, then the route and whether it's saved, on the menu bar.
+    private void TopBar(bool editing)
+    {
+        ImGui.Dummy(new float2(16f, 1f));
+        ImGui.SameLine(0f, -1f);
+        if (ViewButton("Planner", _mode == Mode.Planner))
+            Show(Mode.Planner);
+        ImGui.SameLine(0f, 2f);
+        if (ViewButton("2D", _mode == Mode.Editor2D))
+            Show(Mode.Editor2D);
+        ImGui.SameLine(0f, 2f);
+        if (ViewButton("3D", _mode == Mode.Editor3D))
+            Show(Mode.Editor3D);
+
+        var label = editing ? $"{_route.Name}   {_editor!.SaveState}" : _route.Name;
+        ImGui.SameLine(ImGui.GetIO().DisplaySize.X - ImGui.CalcTextSize(label).X - 16f, -1f);
+        ImGui.Text(label);
+    }
+
+    private static bool ViewButton(string name, bool on)
+    {
+        if (on)
+        {
+            ImGui.PushStyleColor(ImGuiCol.Button, Accent);
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, Accent);
+            ImGui.PushStyleColor(ImGuiCol.Text, OnAccent);
+        }
+
+        var clicked = ImGui.Button(name);
+        if (on)
+        {
+            ImGui.PopStyleColor();
+            ImGui.PopStyleColor();
+            ImGui.PopStyleColor();
+        }
+
+        return clicked;
+    }
+
+    /// What the view in front has to show and set: in the Planner, the route's place first.
     private void Panel()
     {
-        var display = ImGui.GetIO().DisplaySize;
-        ImGui.SetNextWindowPos(new float2(display.X - PanelWidth, _headerBottom), ImGuiCond.Always);
+        ImGui.SetNextWindowPos(new float2(_mode == Mode.Planner ? 0f : EditorView.StripWidth, _headerBottom), ImGuiCond.Always);
         ImGui.SetNextWindowSize(new float2(PanelWidth, Math.Max(100f, _footerTop - _headerBottom)), ImGuiCond.Always);
         const ImGuiWindowFlags flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoResize |
                                        ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings;
         if (ImGui.Begin("Route"u8, flags))
         {
-            ImGui.Text(_route.Name);
-            ImGui.TextDisabled(_route.Grid is null
-                ? "Origin not set"
-                : string.Create(CultureInfo.InvariantCulture, $"Origin {_route.Origin.Latitude:0.00000}, {_route.Origin.Longitude:0.00000}"));
-            ImGui.TextDisabled($"{_planner.Built.Count} tile{(_planner.Built.Count == 1 ? "" : "s")} built");
-
             if (_mode == Mode.Planner)
+            {
+                ImGui.TextDisabled(_route.Grid is null
+                    ? "Origin not set"
+                    : string.Create(CultureInfo.InvariantCulture, $"Origin {_route.Origin.Latitude:0.00000}, {_route.Origin.Longitude:0.00000}"));
+                ImGui.TextDisabled($"{_planner.Built.Count} tile{(_planner.Built.Count == 1 ? "" : "s")} built");
                 _planner.Panel();
+            }
             else
                 _editor!.Panel();
         }

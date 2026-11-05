@@ -64,4 +64,4 @@ Settings are saved to `%APPDATA%/Highball/Settings.json`, and the log is written
 ## Licences
 
 BRUTAL: see `Vendor/BRUTAL_LICENSE.txt` and `Vendor/BRUTAL_NOTICE.txt`. FastNoiseLite and NLayer: MIT. JetBrains
-Mono: OFL.
+Mono: OFL. EMD SD40 model by Heataker: CC BY 4.0, modified; see `Content/Models/Locomotives/SD40/CREDITS.txt`.

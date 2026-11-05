@@ -567,11 +567,16 @@ public sealed partial class NetworkMeshes : IDisposable
     /// first..last, flat-shaded across and smooth along. material(edge) picks each edge's material; value(edge, u, y)
     /// its Data.w.
     private static void Sweep(Builder builder, NetworkLine line, int first, int last, (float U, float Y)[] section, Func<int, float> code,
+        Func<int, float, float, float> value, float offset = 0f, float rise = 0f) =>
+        Sweep(builder, line, Enumerable.Range(first, last - first + 1).ToList(), section, code, value, offset, rise);
+
+    /// As above, with rings at only these points.
+    private static void Sweep(Builder builder, NetworkLine line, List<int> points, (float U, float Y)[] section, Func<int, float> code,
         Func<int, float, float, float> value, float offset = 0f, float rise = 0f)
     {
         var edges = section.Length - 1;
         var start = (uint)builder.Vertices.Count;
-        for (var p = first; p <= last; p++)
+        foreach (var p in points)
         {
             var (center, right) = Frame(line, p, builder.Origin);
             var v = line.S[p] % Wrap;
@@ -589,7 +594,7 @@ public sealed partial class NetworkMeshes : IDisposable
         }
 
         var ring = (uint)(edges * 2);
-        for (var p = 0; p < last - first; p++)
+        for (var p = 0; p < points.Count - 1; p++)
         {
             for (var e = 0; e < edges; e++)
             {
@@ -627,9 +632,9 @@ public sealed partial class NetworkMeshes : IDisposable
                 if (line.Rail)
                     FarRail(builder, line, first, last, structure == Structure.Bridge);
                 else if (line.Mark && structure != Structure.Bridge)
-                    Mark(builder, line, first, last);
+                    Mark(builder, lines, line, first, last);
                 else
-                    Road(builder, line, first, last, structure == Structure.Bridge);
+                    Road(builder, lines, line, first, last, structure == Structure.Bridge);
 
                 if (structure == Structure.Bridge)
                     Piers(builder, line, first, last);
@@ -731,7 +736,7 @@ public sealed partial class NetworkMeshes : IDisposable
     }
 
     /// A mapped track's mark: a strip of gravel lying on the ground, following it across as well as along.
-    private static void Mark(Builder builder, NetworkLine line, int first, int last)
+    private static void Mark(Builder builder, NetworkLines lines, NetworkLine line, int first, int last)
     {
         const int across = NetworkLine.MarkPoints;
         var gravel = Code(LineMaterial.Gravel);
@@ -763,12 +768,12 @@ public sealed partial class NetworkMeshes : IDisposable
             }
 
         if (first == 0)
-            Cap(builder, line, 0, line.Width * 0.5f, gravel);
+            EndPatch(builder, lines, line, 0, gravel);
         if (last == line.Count - 1)
-            Cap(builder, line, last, line.Width * 0.5f, gravel);
+            EndPatch(builder, lines, line, last, gravel);
     }
 
-    private static void Road(Builder builder, NetworkLine line, int first, int last, bool bridge)
+    private static void Road(Builder builder, NetworkLines lines, NetworkLine line, int first, int last, bool bridge)
     {
         var half = line.Width * 0.5f;
         var marks = line.Unpaved ? 0 : (RoadClass)line.Class switch
@@ -785,11 +790,10 @@ public sealed partial class NetworkMeshes : IDisposable
 
         // Data.w is per point, so the sweep's value callback can't see it; patch it in after.
         var start = builder.Vertices.Count;
+        var rings = RoadRings(line, first, last, Junction);
         if (!bridge)
         {
-            var gravel = Code(LineMaterial.Gravel);
-            Sweep(builder, line, first, last, [(-half - 0.6f, -0.35f), (-half, RoadRise), (half, RoadRise), (half + 0.6f, -0.35f)],
-                e => e == 1 ? surface : gravel, (_, _, _) => 0f);
+            Sweep(builder, line, rings, [(-half, RoadRise), (half, RoadRise)], _ => surface, (_, _, _) => 0f);
         }
         else
         {
@@ -801,50 +805,139 @@ public sealed partial class NetworkMeshes : IDisposable
                 (-half - 0.4f, -deck), (-half - 0.4f, wall), (-half, wall), (-half, RoadRise), (half, RoadRise), (half, wall),
                 (half + 0.4f, wall), (half + 0.4f, -deck), (-half - 0.4f, -deck),
             ];
-            Sweep(builder, line, first, last, section, e => e == 3 ? surface : concrete, (_, _, _) => 0f);
+            Sweep(builder, line, rings, section, e => e == 3 ? surface : concrete, (_, _, _) => 0f);
         }
 
-        var perRing = (builder.Vertices.Count - start) / (last - first + 1);
+        var perRing = (builder.Vertices.Count - start) / rings.Count;
 
-        // Round caps where the line ends, so ways meeting end to end at an angle overlap instead of leaving notches.
-        // A hair below the road so its own surface wins where they overlap; no markings (junction distance 0).
+        // The shoulders, separate from the surface: they start a little in from its edge and just under it, so they stay under
+        // any road that crosses this one.
         if (!bridge)
         {
-            if (first == 0)
-                Cap(builder, line, 0, half, surface);
-            if (last == line.Count - 1)
-                Cap(builder, line, last, half, surface);
+            const float under = RoadRise - 0.02f;
+            var gravel = Code(LineMaterial.Gravel);
+            Sweep(builder, line, rings, [(-half - 0.6f, -0.35f), (-half + 0.05f, under)], _ => gravel, (_, _, _) => 0f);
+            Sweep(builder, line, rings, [(half - 0.05f, under), (half + 0.6f, -0.35f)], _ => gravel, (_, _, _) => 0f);
         }
 
-        for (var p = first; p <= last; p++)
+        for (var r = 0; r < rings.Count; r++)
         {
-            var junction = Junction(p);
+            var junction = Junction(rings[r]);
             for (var k = 0; k < perRing; k++)
             {
-                var index = start + (p - first) * perRing + k;
+                var index = start + r * perRing + k;
                 var v = builder.Vertices[index];
                 v.Data.W = junction;
                 builder.Vertices[index] = v;
             }
         }
+
+        if (!bridge)
+        {
+            if (first == 0)
+                EndPatch(builder, lines, line, 0, surface);
+            if (last == line.Count - 1)
+                EndPatch(builder, lines, line, last, surface);
+        }
     }
 
-    private static void Cap(Builder builder, NetworkLine line, int p, float radius, float code)
+    /// The points of a road that need a ring: the rest lie on the straight between their neighbours, across the ground and
+    /// in height, closely enough not to show, and their markings' distance from a junction runs evenly. No span crosses where
+    /// the texture's distance wraps.
+    private static List<int> RoadRings(NetworkLine line, int first, int last, Func<int, float> junction)
     {
-        const int segments = 16;
-        var (center, _) = Frame(line, p, builder.Origin);
-        center += new float3(0f, RoadRise - 0.01f, 0f);
-        var up = new float3(0f, 1f, 0f);
-        var v = line.S[p] % Wrap;
-        var hub = builder.Add(center, up, new float4(0f, v, code, 0f));
-        for (var i = 0; i < segments; i++)
+        const double across = 0.03;
+        const float height = 0.015f;
+        const float marking = 0.25f;
+        const int longest = 100;
+
+        var kept = new List<int> { first };
+        var from = first;
+        for (var to = first + 2; to <= last; to++)
         {
-            var a0 = MathF.Tau * i / segments;
-            var a1 = MathF.Tau * (i + 1) / segments;
-            var e0 = builder.Add(center + new float3(MathF.Cos(a0), 0f, MathF.Sin(a0)) * radius, up, new float4(0f, v, code, 0f));
-            var e1 = builder.Add(center + new float3(MathF.Cos(a1), 0f, MathF.Sin(a1)) * radius, up, new float4(0f, v, code, 0f));
-            builder.Indices.AddRange([hub, e0, e1]);
+            var (dx, dz) = (line.X[to] - line.X[from], line.Z[to] - line.Z[from]);
+            var length = Math.Max(Math.Sqrt(dx * dx + dz * dz), 1e-6);
+            var fits = to - from <= longest && (int)(line.S[to] / Wrap) == (int)(line.S[from] / Wrap);
+            for (var q = from + 1; q < to && fits; q++)
+            {
+                var t = (line.S[q] - line.S[from]) / MathF.Max(line.S[to] - line.S[from], 1e-5f);
+                fits = Math.Abs((line.X[q] - line.X[from]) * dz - (line.Z[q] - line.Z[from]) * dx) / length <= across &&
+                       MathF.Abs(line.Y[q] - (line.Y[from] + (line.Y[to] - line.Y[from]) * t)) <= height &&
+                       MathF.Abs(junction(q) - (junction(from) + (junction(to) - junction(from)) * t)) <= marking;
+            }
+
+            if (fits)
+                continue;
+            from = to - 1;
+            kept.Add(from);
         }
+
+        if (kept[^1] != last)
+            kept.Add(last);
+        return kept;
+    }
+
+    /// The surface between road ends meeting at a node, where they'd otherwise leave a wedge: the outline around their end
+    /// corners, as few triangles as it has corners less two, and nothing at all where they meet in line or a road just stops.
+    /// Laid by the first of the ends, a hair below the roads so their own surfaces win; no markings (junction distance 0).
+    private static void EndPatch(Builder builder, NetworkLines lines, NetworkLine line, int point, float code)
+    {
+        var ends = lines.EndsMeetingAt(line, point);
+        if (ends.Count < 2 || ends[0].Line != line || ends[0].Point != point)
+            return;
+
+        var corners = new List<float3>(ends.Count * 2);
+        var rise = RoadRise - 0.01f;
+        foreach (var (other, p) in ends)
+        {
+            var (center, right) = Frame(other, p, builder.Origin);
+            var half = other.Width * 0.5f;
+            var (near, far) = other.Mark
+                ? (other.Drape[p * NetworkLine.MarkPoints], other.Drape[p * NetworkLine.MarkPoints + NetworkLine.MarkPoints - 1])
+                : (center.Y, center.Y);
+            corners.Add(new float3(center.X - right.X * half, near + rise, center.Z - right.Z * half));
+            corners.Add(new float3(center.X + right.X * half, far + rise, center.Z + right.Z * half));
+        }
+
+        var hull = Outline(corners);
+        var area = 0f;
+        for (var i = 1; i + 1 < hull.Count; i++)
+            area += MathF.Abs((hull[i].X - hull[0].X) * (hull[i + 1].Z - hull[0].Z) - (hull[i].Z - hull[0].Z) * (hull[i + 1].X - hull[0].X)) * 0.5f;
+        if (hull.Count < 3 || area < 0.05f)
+            return;
+
+        var up = new float3(0f, 1f, 0f);
+        var data = new float4(0f, line.S[point] % Wrap, code, 0f);
+        var first = builder.Add(hull[0], up, data);
+        var previous = builder.Add(hull[1], up, data);
+        for (var i = 2; i < hull.Count; i++)
+        {
+            var next = builder.Add(hull[i], up, data);
+            builder.Indices.AddRange([first, previous, next]);
+            previous = next;
+        }
+    }
+
+    /// The convex outline around points on the ground, from +X towards +Z.
+    private static List<float3> Outline(List<float3> points)
+    {
+        var sorted = points.OrderBy(p => p.X).ThenBy(p => p.Z).ToList();
+        static float Turn(float3 a, float3 b, float3 c) => (b.X - a.X) * (c.Z - a.Z) - (b.Z - a.Z) * (c.X - a.X);
+        var hull = new List<float3>();
+        foreach (var pass in (IEnumerable<float3>[])[sorted, Enumerable.Reverse(sorted)])
+        {
+            var floor = hull.Count + 1;
+            foreach (var p in pass)
+            {
+                while (hull.Count > floor && Turn(hull[^2], hull[^1], p) <= 1e-4f)
+                    hull.RemoveAt(hull.Count - 1);
+                hull.Add(p);
+            }
+
+            hull.RemoveAt(hull.Count - 1);
+        }
+
+        return hull;
     }
 
     /// Piers every 25 m or so under a bridge, wherever the deck stands well clear of the ground.

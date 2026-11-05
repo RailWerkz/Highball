@@ -6,11 +6,12 @@ using RailWerkz.UI;
 
 namespace Highball.Builder;
 
-public enum PlaceMode { Signal, HandThrow, GradeCrossing, Diamond }
+public enum PlaceMode { Signal, HandThrow, GradeCrossing, Diamond, Track }
 
 /// Placing what stands on or beside the track. A signal snaps beside the nearest track, on the side clicked, facing trains
 /// running on that side. A hand throw goes on the nearest switch in place of its power machine. A grade crossing snaps onto the
 /// nearest track and takes its road's line and width, if one crosses there. A diamond joins two tracks where they cross.
+/// A track piece is laid as real track from the palette (TrackStamps), its switches sized as it says.
 public sealed class PlaceTool
 {
     /// How far off a track a click may be and still go on it, and how far off the track's centre a signal stands.
@@ -27,6 +28,33 @@ public sealed class PlaceTool
 
     /// The object picked, and whether it's in hand.
     public long? Selected;
+
+    /// The palette of track pieces, the one in hand, the track spacing its double-track pieces are built to, and how it's
+    /// turned where it isn't lined up with a track.
+    public List<TrackStamp> Catalogue { get; private set; } = [];
+    public TrackStamp? Stamp;
+    public float Spacing = 4.6f;
+    public double Heading;
+    public bool Mirror;
+
+    /// What the piece in hand would lay at the pointer, for the marker and the click.
+    public StampPlan? Plan { get; private set; }
+
+    private (float Spacing, bool Imperial)? _built;
+
+    /// Builds the palette afresh if the spacing or units changed; keeps the piece in hand.
+    public void Rebuild(bool imperial)
+    {
+        if (_built == (Spacing, imperial))
+            return;
+        _built = (Spacing, imperial);
+        var held = Stamp?.Id;
+        Catalogue = TrackStamps.All(Spacing, imperial);
+        Stamp = Catalogue.FirstOrDefault(s => s.Id == held);
+    }
+
+    /// Turns the piece by this many degrees. On a track it lies along the track, whichever way along it is nearer this.
+    public void Turn(double degrees) => Heading += degrees * Math.PI / 180.0;
 
     /// Where the pointer is, snapped; and what to say about it.
     public (double X, double Z)? Snapped { get; private set; }
@@ -134,9 +162,18 @@ public sealed class PlaceTool
     /// Works out what a click at the pointer would do, for the panel and the marker.
     public void Update(NetworkLines lines, TrackEditor tracks, (double X, double Z)? ground, Func<double, string> length)
     {
-        (Snapped, Note) = (null, null);
+        (Snapped, Note, Plan) = (null, null, null);
         if (ground is not { } at)
             return;
+        if (Mode == PlaceMode.Track)
+        {
+            if (Stamp is { } stamp)
+                Plan = TrackStamps.Plan(stamp, tracks, at.X, at.Z, Heading, Mirror, length);
+            if (Plan is { } plan)
+                (Snapped, Note) = ((plan.AtX, plan.AtZ), plan.Problem ?? plan.Summary);
+            return;
+        }
+
         switch (Mode)
         {
             case PlaceMode.Signal when SignalAt(lines, at.X, at.Z) is { } signal:
@@ -169,11 +206,25 @@ public sealed class PlaceTool
             draw.AddCircle(at, r, new Rgba(0f, 0f, 0f, 0.8f), 12, 1.5f * scale);
         }
 
+        var color = Plan?.Problem is null ? Style.Caution : Style.Stop;
+        if (Plan is { } plan)
+            foreach (var way in plan.Ways)
+            {
+                float2? previous = null;
+                foreach (var point in way.Points)
+                {
+                    var here = project(point.X, point.Z);
+                    if (previous is { } a && here is { } b)
+                        draw.AddLine(a, b, color, 3f * scale);
+                    previous = here;
+                }
+            }
+
         if (Snapped is { } snapped && project(snapped.X, snapped.Z) is { } marker)
         {
-            draw.AddCircle(marker, 7f * scale, Style.Caution, 16, 2f * scale);
+            draw.AddCircle(marker, 7f * scale, color, 16, 2f * scale);
             if (Note is { } note)
-                PenTool.Label(draw, marker, note, Style.Caution);
+                PenTool.Label(draw, marker, note, color);
         }
     }
 }

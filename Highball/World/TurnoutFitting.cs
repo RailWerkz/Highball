@@ -71,7 +71,7 @@ public static class TurnoutFitting
             var switches = legs.Count switch
             {
                 3 => [legs],
-                4 => Turnout.Pairs(legs).ToList(),
+                4 when !Turnout.IsCrossing(legs) => Turnout.Pairs(legs).ToList(),
                 _ => [],
             };
 

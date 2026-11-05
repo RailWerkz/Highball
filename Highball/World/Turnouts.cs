@@ -151,6 +151,9 @@ public sealed class Turnout
                     legs.Add(new Leg(line, point, 1));
             }
 
+            if (legs.Count == 4 && IsCrossing(legs))
+                continue;
+
             if (legs.Count == 4 && legs.All(Plain))
             {
                 // Two tracks merging and two dividing at the one node: two turnouts point to point, one facing each
@@ -182,6 +185,22 @@ public sealed class Turnout
             if (legs[k].Line.TurnoutZones.Count > zones[k])
                 legs[k].Line.TurnoutZones.RemoveRange(zones[k], legs[k].Line.TurnoutZones.Count - zones[k]);
         return made is not null ? "would make one" : why ?? "unknown";
+    }
+
+    /// Four legs as two tracks each running through the node dead straight: a crossing however shallow, which two switches
+    /// point to point would only be if their diverging routes happened to line up exactly.
+    internal static bool IsCrossing(List<Leg> legs)
+    {
+        if (legs.Count != 4 || legs.GroupBy(l => (l.Line, l.Point)).Any(g => g.Count() != 2))
+            return false;
+        foreach (var through in legs.GroupBy(l => (l.Line, l.Point)))
+        {
+            var (a, b) = (Heading(through.First()), Heading(through.Last()));
+            if (a.X * b.X + a.Z * b.Z > -0.995f)
+                return false;
+        }
+
+        return true;
     }
 
     internal static bool Plain(Leg leg) =>

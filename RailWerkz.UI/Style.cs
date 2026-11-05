@@ -1,4 +1,5 @@
 using Brutal.ImGuiApi;
+using Brutal.Numerics;
 using RailWerkz.Core.IO;
 using RailWerkz.Core.Logging;
 
@@ -11,6 +12,8 @@ public static class Style
     // Neutrals: near-black, the enamel of the plates, hairlines, and three strengths of text.
     public static Rgba Background = Rgba.Hex(0x07090D);
     public static Rgba Surface = Rgba.Hex(0x0C0D0F, 0.97f);
+    public static Rgba Raised = Rgba.Hex(0x1A1D22);
+    public static Rgba RaisedHover = Rgba.Hex(0x262A31);
     public static Rgba Stroke = new(1f, 1f, 1f, 0.08f);
     public static Rgba StrokeStrong = new(1f, 1f, 1f, 0.16f);
     public static Rgba Text = Rgba.Hex(0xEDF1F7);
@@ -48,7 +51,78 @@ public static class Style
         return 0;
     }
 
-    public static void SetAccent(string name) => Accent = Accents[FindAccent(name)].Color;
+    public static void SetAccent(string name)
+    {
+        Accent = Accents[FindAccent(name)].Color;
+        ApplyImGui();
+    }
+
+    /// ImGui's own widgets in the same palette and proportions as the rest of the interface.
+    public static void ApplyImGui()
+    {
+        var style = ImGui.GetStyle();
+        style.WindowPadding = new float2(12f, 10f);
+        style.WindowRounding = 0f;
+        style.WindowBorderSize = 1f;
+        style.PopupRounding = 4f;
+        style.PopupBorderSize = 1f;
+        style.FramePadding = new float2(8f, 5f);
+        style.FrameRounding = 4f;
+        style.ItemSpacing = new float2(6f, 6f);
+        style.ItemInnerSpacing = new float2(6f, 4f);
+        style.ScrollbarSize = 10f;
+        style.ScrollbarRounding = 4f;
+        style.GrabMinSize = 10f;
+        style.GrabRounding = 3f;
+        style.SeparatorTextBorderSize = 1f;
+        style.SeparatorTextPadding = new float2(0f, 4f);
+
+        void Set(ImGuiCol slot, Rgba c) => style.Colors[(int)slot] = new float4(c.R, c.G, c.B, c.A);
+        var clear = new Rgba(0f, 0f, 0f, 0f);
+        Set(ImGuiCol.Text, Text);
+        Set(ImGuiCol.TextDisabled, TextDim);
+        Set(ImGuiCol.WindowBg, Surface);
+        Set(ImGuiCol.ChildBg, clear);
+        Set(ImGuiCol.PopupBg, Rgba.Hex(0x121417));
+        Set(ImGuiCol.Border, StrokeStrong);
+        Set(ImGuiCol.BorderShadow, clear);
+        Set(ImGuiCol.FrameBg, Raised);
+        Set(ImGuiCol.FrameBgHovered, RaisedHover);
+        Set(ImGuiCol.FrameBgActive, RaisedHover);
+        Set(ImGuiCol.TitleBg, Surface);
+        Set(ImGuiCol.TitleBgActive, Raised);
+        Set(ImGuiCol.TitleBgCollapsed, Surface);
+        Set(ImGuiCol.MenuBarBg, Surface);
+        Set(ImGuiCol.ScrollbarBg, clear);
+        Set(ImGuiCol.ScrollbarGrab, StrokeStrong);
+        Set(ImGuiCol.ScrollbarGrabHovered, TextFaint);
+        Set(ImGuiCol.ScrollbarGrabActive, TextDim);
+        Set(ImGuiCol.CheckMark, Accent);
+        Set(ImGuiCol.SliderGrab, Accent);
+        Set(ImGuiCol.SliderGrabActive, Accent);
+        Set(ImGuiCol.Button, Raised);
+        Set(ImGuiCol.ButtonHovered, RaisedHover);
+        Set(ImGuiCol.ButtonActive, Accent.WithAlpha(0.55f));
+        Set(ImGuiCol.Header, Raised);
+        Set(ImGuiCol.HeaderHovered, RaisedHover);
+        Set(ImGuiCol.HeaderActive, RaisedHover);
+        Set(ImGuiCol.Separator, StrokeStrong);
+        Set(ImGuiCol.SeparatorHovered, StrokeStrong);
+        Set(ImGuiCol.SeparatorActive, Accent);
+        Set(ImGuiCol.ResizeGrip, clear);
+        Set(ImGuiCol.ResizeGripHovered, StrokeStrong);
+        Set(ImGuiCol.ResizeGripActive, Accent);
+        Set(ImGuiCol.PlotLines, Accent);
+        Set(ImGuiCol.PlotLinesHovered, Text);
+        Set(ImGuiCol.PlotHistogram, Accent);
+        Set(ImGuiCol.PlotHistogramHovered, Text);
+        Set(ImGuiCol.TableHeaderBg, Raised);
+        Set(ImGuiCol.TableBorderStrong, StrokeStrong);
+        Set(ImGuiCol.TableBorderLight, Stroke);
+        Set(ImGuiCol.TableRowBg, clear);
+        Set(ImGuiCol.TableRowBgAlt, Stroke);
+        Set(ImGuiCol.TextSelectedBg, Accent.WithAlpha(0.3f));
+    }
 
     /// Text drawn on the accent: dark on light accents, white on dark ones.
     public static Rgba OnAccent => Accent.R * 0.299f + Accent.G * 0.587f + Accent.B * 0.114f > 0.55f ? Rgba.Hex(0x0B0D12) : Rgba.White;

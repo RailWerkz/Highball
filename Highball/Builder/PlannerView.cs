@@ -264,12 +264,6 @@ public sealed class PlannerView : IDisposable
 
     // --- Menus and the side panel (ImGui). ---
 
-    public void MenuEdit()
-    {
-        if (ImGui.MenuItem("Clear Selection", "", false, _selected.Count > 0))
-            _selected.Clear();
-    }
-
     public void Panel()
     {
         ImGui.SeparatorText("Go To"u8);
@@ -355,7 +349,7 @@ public sealed class PlannerView : IDisposable
         foreach (var (label, count, marker) in (ReadOnlySpan<(string, int, World.TrackLayouts.Marker)>)
                  [
                      ("Switch", _layouts.Count(l => l.Kind is World.JunctionKind.Turnout or World.JunctionKind.TwoAtOneNode && l.Issue is null), sample),
-                     ("Crossover or ladder link", _layouts.Count(l => l.Kind is World.JunctionKind.Crossover or World.JunctionKind.LadderLink && l.Issue is null),
+                     ("Crossover, ladder", _layouts.Count(l => l.Kind is World.JunctionKind.Crossover or World.JunctionKind.LadderLink && l.Issue is null),
                          sample with { Kind = World.JunctionKind.Crossover }),
                      ("Needs fixing", _layouts.Count(l => l.Issue is not null), sample with { Kind = World.JunctionKind.Unknown, Modelled = false, Issue = "" }),
                  ])

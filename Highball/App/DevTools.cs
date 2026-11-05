@@ -47,7 +47,7 @@ public static class DevTools
 
     /// --regenerate: the Planner regenerates every built tile as it opens.
     public static bool Regenerate { get; set; }
-    /// Scripted Shape tool steps, one per finished rebuild: move,LAT,LON,EAST,NORTH; straighten,LAT,LON (from the handle there to the next but one); remove,LAT,LON; reset,LAT,LON; undo; redo; save; clearyard,LAT,LON; restoreyard,LAT,LON; follow,LAT,LON,LAT,LON...; view,LAT,LON,HEIGHT.
+    /// Scripted Shape tool steps, one per finished rebuild: move,LAT,LON,EAST,NORTH; straighten,LAT,LON (from the handle there to the next but one); remove,LAT,LON; reset,LAT,LON; undo; redo; save; clearyard,LAT,LON; restoreyard,LAT,LON; follow,LAT,LON,LAT,LON...; view,LAT,LON,HEIGHT; stamp,ID,LAT,LON[,DEGREES[,m]] (a Place palette piece, m mirrored); stampcheck,LAT,LON,REACH (logs the switches and issues there); wireframe,on|off.
     public static Queue<string>? ShapeOps { get; set; }
     /// Solve the track again on opening, rather than use what's saved with the route.
     public static bool Refit { get; private set; }

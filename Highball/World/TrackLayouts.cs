@@ -74,6 +74,10 @@ public static class TrackLayouts
                 var (qx, qz) = Middle(q.A, q.B);
                 if ((px - qx) * (px - qx) + (pz - qz) * (pz - qz) > 30.0 * 30.0)
                     continue;
+
+                // With a real crossing between them it's built: each crossover stands as it is, and the crossing's a diamond.
+                if (uses.Any(u => u.Value.Count == 2 && Near(u.Value[0].Line, u.Value[0].Point, (px + qx) / 2, (pz + qz) / 2, 20.0) && Turnout.IsCrossing(LegsOf(u.Value))))
+                    continue;
                 scissored.Add(i);
                 scissored.Add(j);
                 foreach (var (node, list) in uses)
@@ -147,6 +151,20 @@ public static class TrackLayouts
         }
 
         return layouts;
+    }
+
+    private static List<Leg> LegsOf(List<(NetworkLine Line, int Point)> at)
+    {
+        var legs = new List<Leg>();
+        foreach (var (line, point) in at)
+        {
+            if (point > 0)
+                legs.Add(new Leg(line, point, -1));
+            if (point < line.Count - 1)
+                legs.Add(new Leg(line, point, 1));
+        }
+
+        return legs;
     }
 
     private static Layout Single(Turnout t, SwitchOptions? options)
