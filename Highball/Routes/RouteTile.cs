@@ -21,6 +21,8 @@ public sealed class RouteTile
         public string Roads { get; set; } = "";
         public string Rails { get; set; } = "";
         public string Built { get; set; } = "";
+        /// Where its heights came from.
+        public string HeightSource { get; set; } = "";
     }
 
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };

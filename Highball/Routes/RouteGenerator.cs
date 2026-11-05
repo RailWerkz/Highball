@@ -10,7 +10,8 @@ using RailWerkz.Core.Logging;
 namespace Highball.Routes;
 
 /// Builds tiles of a route on a worker thread:
-///   heights from the AWS Terrain Tiles (Terrarium PNGs at zoom 15, metres to a 256th), sampled on the route's lattice;
+///   heights from the USGS's 3D Elevation Program where it has them (bare earth, 1 m lidar in much of the US), and the
+///   AWS Terrain Tiles (Terrarium PNGs at zoom 15, metres to a 256th) everywhere else, sampled on the route's lattice;
 ///   ground cover from ESA WorldCover 2021 (10 m classes), read straight out of its cloud-optimised GeoTIFFs by range
 ///   requests;
 ///   roads and rail lines from OpenStreetMap through the Overpass API, at the detail asked for, merged into the
@@ -31,7 +32,7 @@ public sealed class RouteGenerator
         public bool ReplaceNetwork { get; init; }
     }
 
-    public const string Attribution = "Elevation: AWS Terrain Tiles (SRTM, NED, GMTED and others). Land cover: ESA WorldCover 2021, CC BY 4.0. Roads and rail: (c) OpenStreetMap contributors, ODbL.";
+    public const string Attribution = "Elevation: U.S. Geological Survey 3DEP; AWS Terrain Tiles (SRTM, NED, GMTED and others). Land cover: ESA WorldCover 2021, CC BY 4.0. Roads and rail: (c) OpenStreetMap contributors, ODbL.";
 
     private static readonly HttpClient Http = CreateClient();
 
@@ -110,6 +111,8 @@ public sealed class RouteGenerator
         var roads = Detail.RoadLevels[r.RoadLevel];
         var rails = Detail.RailLevels[r.RailLevel];
         var elevation = new Terrarium(15);
+        var usgs = new Usgs3dep();
+        var unavailable = 0;
         var cover = new WorldCover();
 
         // Tiles nearest the middle of the selection first.
@@ -132,13 +135,32 @@ public sealed class RouteGenerator
                     geo[z * samples + x] = projection.Inverse(grid.Sample(tile, x, z));
             });
 
-            await elevation.Fetch(Bounds(geo), token);
-            var heights = new float[geo.Length];
-            Parallel.For(0, samples, z =>
+            float[]? exact = null;
+            try
             {
-                for (var x = 0; x < samples; x++)
-                    heights[z * samples + x] = elevation.Elevation(geo[z * samples + x]);
-            });
+                exact = await usgs.Heights(geo, grid.Spacing, token);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                unavailable++;
+                Log.Warn($"USGS heights: tile {tile} fell back to the coarser source ({e.Message})");
+            }
+
+            var complete = exact is not null && !exact.Any(float.IsNaN);
+            var heights = new float[geo.Length];
+            if (!complete)
+            {
+                await elevation.Fetch(Bounds(geo), token);
+                Parallel.For(0, samples, z =>
+                {
+                    for (var x = 0; x < samples; x++)
+                        heights[z * samples + x] = elevation.Elevation(geo[z * samples + x]);
+                });
+            }
+
+            var source = exact is null ? "AWS Terrain Tiles" : complete ? "USGS 3DEP" : "USGS 3DEP, AWS Terrain Tiles";
+            if (exact is not null)
+                Usgs3dep.Blend(heights, exact, samples);
 
             Say($"{label}: land cover", (n + 0.6f) * share);
             var cells = grid.CoverCells;
@@ -162,6 +184,7 @@ public sealed class RouteGenerator
                 Roads = roads.Name,
                 Rails = rails.Name,
                 Built = DateTime.UtcNow.ToString("u", CultureInfo.InvariantCulture),
+                HeightSource = source,
             }, heights, classes);
             built.Save(route.TileFolder(tile));
             Version++;
@@ -182,11 +205,199 @@ public sealed class RouteGenerator
             Say($"{ways.Count(w => w.Rail)} rail lines, {ways.Count(w => !w.Rail)} roads, {nodes.Count} switches and crossings tagged", 0.98f);
         }
 
+        if (unavailable > 0)
+            Say($"USGS heights unavailable for {unavailable} of {tiles.Count} tiles: those used the coarser source. Build them again to retry.", 1f);
         Progress = 1f;
     }
 
     private static (double South, double West, double North, double East) Bounds(IReadOnlyCollection<GeoPoint> points) =>
         (points.Min(p => p.Lat), points.Min(p => p.Lon), points.Max(p => p.Lat), points.Max(p => p.Lon));
+
+    // --- Elevation: USGS 3DEP. ---
+
+    /// The USGS's elevation service, which mosaics the best bare-earth data it has for a place. Each tile's lattice is
+    /// read from one image in degrees, at twice the lattice's resolution.
+    private sealed class Usgs3dep
+    {
+        private const string Service = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage";
+        private const double Margin = 0.0002;
+        private const int MaxImage = 8000;
+        private const int Attempts = 6;
+        /// The service's mark for no data is -999999.
+        private const float NoData = -100000f;
+
+        /// How many samples the coarser source fades into this one over, where this one's data stops.
+        private const int FadeSamples = 50;
+
+        /// The height at each sample (NaN where there's no data), or null if there's none anywhere in the tile.
+        public async Task<float[]?> Heights(GeoPoint[] samples, double spacing, CancellationToken token)
+        {
+            var (south, west, north, east) = Bounds(samples);
+            if (north < 17.0 || south > 72.0 || west > -64.0)
+                return null;
+
+            south -= Margin;
+            west -= Margin;
+            north += Margin;
+            east += Margin;
+            var middle = (south + north) * 0.5 * Math.PI / 180.0;
+            var width = Math.Clamp((int)Math.Ceiling((east - west) * 111320.0 * Math.Cos(middle) / (spacing * 0.5)), 2, MaxImage);
+            var height = Math.Clamp((int)Math.Ceiling((north - south) * 110940.0 / (spacing * 0.5)), 2, MaxImage);
+
+            var box = string.Create(CultureInfo.InvariantCulture, $"{west:F8},{south:F8},{east:F8},{north:F8}");
+            var path = Path.Combine(CacheFolder("usgs3dep"), string.Create(CultureInfo.InvariantCulture, $"{south:F6}_{west:F6}_{width}x{height}.tif"));
+            var cached = File.Exists(path);
+            var bytes = cached ? await File.ReadAllBytesAsync(path, token) : await Fetch(box, width, height, token);
+            var (w, h, image) = ReadTiff(bytes);
+
+            var heights = new float[samples.Length];
+            var found = 0;
+            Parallel.For(0, samples.Length, () => 0, (i, _, count) =>
+            {
+                var px = (samples[i].Lon - west) / (east - west) * w - 0.5;
+                var py = (north - samples[i].Lat) / (north - south) * h - 0.5;
+                var x0 = Math.Clamp((int)Math.Floor(px), 0, w - 2);
+                var y0 = Math.Clamp((int)Math.Floor(py), 0, h - 2);
+                var tx = (float)(px - x0);
+                var ty = (float)(py - y0);
+                var (a, b, c, d) = (image[y0 * w + x0], image[y0 * w + x0 + 1], image[(y0 + 1) * w + x0], image[(y0 + 1) * w + x0 + 1]);
+                if (a < NoData || b < NoData || c < NoData || d < NoData)
+                {
+                    heights[i] = float.NaN;
+                    return count;
+                }
+
+                var top = a + (b - a) * tx;
+                heights[i] = top + (c + (d - c) * tx - top) * ty;
+                return count + 1;
+            }, count => Interlocked.Add(ref found, count));
+
+            if (found == 0)
+                return null;
+
+            // (Nowhere to be had means nothing worth keeping.)
+            if (!cached)
+                await File.WriteAllBytesAsync(path, bytes, token);
+            return heights;
+        }
+
+        /// Replaces heights with exact, fading from one to the other beside where exact has no data so there's no step.
+        public static void Blend(float[] heights, float[] exact, int samples)
+        {
+            // How many samples each is from the nearest without data, in two sweeps.
+            var far = new int[exact.Length];
+            for (var i = 0; i < far.Length; i++)
+                far[i] = float.IsNaN(exact[i]) ? 0 : FadeSamples;
+            for (var z = 0; z < samples; z++)
+                for (var x = 0; x < samples; x++)
+                {
+                    if (x > 0)
+                        far[z * samples + x] = Math.Min(far[z * samples + x], far[z * samples + x - 1] + 1);
+                    if (z > 0)
+                        far[z * samples + x] = Math.Min(far[z * samples + x], far[(z - 1) * samples + x] + 1);
+                }
+
+            for (var z = samples - 1; z >= 0; z--)
+                for (var x = samples - 1; x >= 0; x--)
+                {
+                    if (x < samples - 1)
+                        far[z * samples + x] = Math.Min(far[z * samples + x], far[z * samples + x + 1] + 1);
+                    if (z < samples - 1)
+                        far[z * samples + x] = Math.Min(far[z * samples + x], far[(z + 1) * samples + x] + 1);
+                }
+
+            for (var i = 0; i < heights.Length; i++)
+                if (far[i] > 0)
+                    heights[i] += (exact[i] - heights[i]) * far[i] / FadeSamples;
+        }
+
+        private static async Task<byte[]> Fetch(string box, int width, int height, CancellationToken token)
+        {
+            var url = $"{Service}?bbox={box}&bboxSR=4326&imageSR=4326&size={width},{height}&format=tiff&pixelType=F32&noData=-999999" +
+                "&interpolation=RSP_BilinearInterpolation&adjustAspectRatio=false&f=image";
+
+            // (The service answers 502 now and then under load, and an error can come back as a page.)
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    var bytes = await Http.GetByteArrayAsync(url, token);
+                    if (bytes.Length > 8 && bytes[0] == 'I' && bytes[1] == 'I')
+                        return bytes;
+                    if (attempt >= Attempts)
+                        throw new InvalidDataException("the service didn't send an image");
+                }
+                catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !token.IsCancellationRequested && attempt < Attempts)
+                {
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(5 * attempt), token);
+            }
+        }
+
+        /// An uncompressed, little-endian, tiled or stripped TIFF of one 32-bit float channel, which is what the service sends.
+        private static (int Width, int Height, float[] Pixels) ReadTiff(byte[] data)
+        {
+            var (width, height, tileWidth, tileHeight, rows, compression, bits, format) = (0, 0, 0, 0, 0, 1, 0, 0);
+            long[] offsets = [];
+            var ifd = (int)BitConverter.ToUInt32(data, 4);
+            int count = BitConverter.ToUInt16(data, ifd);
+            for (var e = 0; e < count; e++)
+            {
+                var o = ifd + 2 + e * 12;
+                var tag = BitConverter.ToUInt16(data, o);
+                var type = BitConverter.ToUInt16(data, o + 2);
+                var n = (int)BitConverter.ToUInt32(data, o + 4);
+                int Single() => type == 3 ? BitConverter.ToUInt16(data, o + 8) : (int)BitConverter.ToUInt32(data, o + 8);
+                switch (tag)
+                {
+                    case 256: width = Single(); break;
+                    case 257: height = Single(); break;
+                    case 258: bits = Single(); break;
+                    case 259: compression = Single(); break;
+                    case 278: rows = Single(); break;
+                    case 322: tileWidth = Single(); break;
+                    case 323: tileHeight = Single(); break;
+                    case 339: format = Single(); break;
+                    case 273 or 324:
+                        var size = type == 3 ? 2 : 4;
+                        var at = n * size <= 4 ? o + 8 : (int)BitConverter.ToUInt32(data, o + 8);
+                        offsets = new long[n];
+                        for (var i = 0; i < n; i++)
+                            offsets[i] = size == 2 ? BitConverter.ToUInt16(data, at + i * 2) : BitConverter.ToUInt32(data, at + i * 4);
+                        break;
+                }
+            }
+
+            if (compression != 1 || bits != 32 || format != 3 || width <= 0 || height <= 0)
+                throw new InvalidDataException($"unexpected TIFF: compression {compression}, {bits} bits, format {format}");
+
+            // Strips are tiles the width of the image.
+            if (tileWidth == 0)
+                (tileWidth, tileHeight) = (width, rows > 0 && rows < height ? rows : height);
+            var across = (width + tileWidth - 1) / tileWidth;
+            var pixels = new float[width * height];
+            var (columns, lines) = (tileWidth, tileHeight);
+            Parallel.For(0, offsets.Length, t =>
+            {
+                var x0 = t % across * columns;
+                var y0 = t / across * lines;
+                var length = Math.Min(columns, width - x0);
+
+                // A block with nothing in it (open sea, say) has no place in the file.
+                if (offsets[t] == 0)
+                {
+                    for (var y = 0; y < lines && y0 + y < height; y++)
+                        pixels.AsSpan((y0 + y) * width + x0, length).Fill(-999999f);
+                    return;
+                }
+
+                for (var y = 0; y < lines && y0 + y < height; y++)
+                    Buffer.BlockCopy(data, (int)offsets[t] + y * columns * 4, pixels, ((y0 + y) * width + x0) * 4, length * 4);
+            });
+            return (width, height, pixels);
+        }
+    }
 
     // --- Elevation: Terrarium tiles. ---
 

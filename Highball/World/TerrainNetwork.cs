@@ -33,6 +33,7 @@ public sealed partial class TerrainSource
                 lines.SampleGround(id, data.Heights, samples);
             });
             lines.FinishProfiles();
+            lines.AdoptDrapes(previous);
             lines.FindLayouts(tagged);
             TrackLayouts.SaveMarkers(_route, lines.Layouts);
 
@@ -69,6 +70,7 @@ public sealed partial class TerrainSource
                 var reshaped = RouteTile.Load(_route.TileFolder(id)).Heights;
                 lines.Conform(id, reshaped, samples);
                 ApplyEdits(reshaped, _tiles[id].Edits);
+                lines.DrapeMarks(id, reshaped, samples);
                 heights[id] = reshaped;
             });
 

@@ -122,6 +122,7 @@ public sealed partial class TerrainSource
                 var data = RouteTile.Load(folder);
                 lines.Conform(ids[i], data.Heights, data.Meta.Samples);
                 tiles[i] = MakeTile(ids[i], data.Heights, data.Cover, data.Meta.Samples, LoadEdits(folder, data.Meta.Samples));
+                lines.DrapeMarks(ids[i], data.Heights, data.Meta.Samples);
             }
             catch (Exception e)
             {

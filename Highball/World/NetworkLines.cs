@@ -54,6 +54,12 @@ public sealed class NetworkLine
     /// Laid by hand along a guide: already what it should be, so it isn't fitted.
     public bool Exact { get; init; }
 
+    /// A mapped track's mark on the ground: it lies on the ground as it is and doesn't reshape it.
+    public bool Mark { get; init; }
+    /// A mark's height at MarkPoints places across it, at each point: the finished ground under it.
+    public float[] Drape { get; set; } = [];
+    public const int MarkPoints = 5;
+
     // Roads.
     public float Width { get; init; }
     public int Lanes { get; init; }
@@ -225,7 +231,7 @@ public sealed partial class NetworkLines
         // Crossovers laid out to a real design first, on the ways (their switch points slide along the tracks).
         var crossovers = CrossoverFitting.Apply(network, route, chosen);
 
-        // (Marks don't join anything: each keeps to its own mapped line.)
+        // (Marks don't join anything: each keeps to its own mapped line, at the height of the ground under it.)
         foreach (var chain in Chains(marks))
         {
             var (mx, mz, ms, mn) = Resample(chain, projection);
@@ -353,6 +359,8 @@ public sealed partial class NetworkLines
         var lines = this;
         foreach (var line in lines._lines)
         {
+            if (line.Mark)
+                line.Drape = new float[line.Count * NetworkLine.MarkPoints];
             var reach = line.Formation + MaxReach;
             var size = lines._quads * lines._spacing;
             for (var j = (int)Math.Floor(-(line.MaxZ + reach) / size); j <= (int)Math.Floor(-(line.MinZ - reach) / size); j++)
@@ -710,16 +718,17 @@ public sealed partial class NetworkLines
             }), 1, 7);
             var laneWidth = roadClass switch { RoadClass.Highway => 3.6f, RoadClass.Major => 3.4f, RoadClass.Minor => 3.2f, RoadClass.Local => 3.0f, _ => 2.5f };
             var shoulders = roadClass switch { RoadClass.Highway => 4.2f, RoadClass.Major => 1.0f, RoadClass.Minor => 0.6f, _ => 0f };
-            var width = chain.Tags.ContainsKey(RouteNetwork.TrackMarkTag) ? TrackMarkWidth : roadClass == RoadClass.Service ? (Tag("highway") == "track" ? 3f : 4f) : lanes * laneWidth + shoulders;
+            var mark = chain.Tags.ContainsKey(RouteNetwork.TrackMarkTag);
+            var width = mark ? TrackMarkWidth : roadClass == RoadClass.Service ? (Tag("highway") == "track" ? 3f : 4f) : lanes * laneWidth + shoulders;
             var surface = Tag("surface");
             line = new NetworkLine
             {
                 Index = index, Rail = false, Class = chain.Class, X = x, Z = z, Y = new float[count], Ground = new float[count], Key = shape, S = s,
                 Structures = structures.GetRange(from, count - 1).ToArray(),
-                Nodes = nodes.Where(n => n.Point >= from && n.Point < to).Select(n => (n.Node, n.Point - from)).ToList(),
-                Width = width, Lanes = lanes, Oneway = oneway,
+                Nodes = mark ? [] : nodes.Where(n => n.Point >= from && n.Point < to).Select(n => (n.Node, n.Point - from)).ToList(),
+                Mark = mark, Width = width, Lanes = lanes, Oneway = oneway,
                 Unpaved = Tag("highway") == "track" || surface is "unpaved" or "gravel" or "dirt" or "ground" or "compacted" or "fine_gravel" or "grass" or "sand" or "earth",
-                Formation = chain.Tags.ContainsKey(RouteNetwork.TrackMarkTag) ? width * 0.5f + 1f : width * 0.5f + 1.5f,
+                Formation = width * 0.5f + 1.5f,
             };
         }
 
@@ -795,7 +804,13 @@ public sealed partial class NetworkLines
         Parallel.ForEach(_lines, line =>
         {
             Array.Copy(line.Ground, line.Y, line.Count);
-            if (line.Rail)
+            if (line.Mark)
+            {
+                Bridge(line);
+                for (var p = 0; p < line.Count; p++)
+                    line.Drape.AsSpan(p * NetworkLine.MarkPoints, NetworkLine.MarkPoints).Fill(line.Y[p]);
+            }
+            else if (line.Rail)
             {
                 // Bridged first, so the valley under a bridge doesn't drag its approaches down.
                 Bridge(line);
@@ -1303,6 +1318,54 @@ public sealed partial class NetworkLines
         _junctionNodes = seen.Where(p => p.Value > 1).Select(p => p.Key).ToHashSet();
     }
 
+    // --- Marks on the ground. ---
+
+    /// Takes the drape of every mark that came out the same as one of the previous lines, for those in tiles that aren't reshaped again.
+    public void AdoptDrapes(NetworkLines previous)
+    {
+        var known = new Dictionary<long, NetworkLine>();
+        foreach (var line in previous._lines.Where(l => l.Mark))
+            known.TryAdd(line.Key, line);
+        foreach (var line in _lines.Where(l => l.Mark))
+            if (known.TryGetValue(line.Key, out var same) && same.Drape.Length == line.Drape.Length)
+                Array.Copy(same.Drape, line.Drape, line.Drape.Length);
+    }
+
+    /// Lays the marks with points in a tile on its finished heights (Samples x Samples, rows north to south).
+    public void DrapeMarks(TileId tile, float[] heights, int samples)
+    {
+        if (!_pointsByTile.TryGetValue(tile, out var points))
+            return;
+
+        var gx0 = tile.I * _quads;
+        var gz0 = -(tile.J + 1) * _quads;
+        foreach (var (l, p) in points)
+        {
+            var line = _lines[l];
+            if (!line.Mark)
+                continue;
+
+            var a = Math.Max(p - 1, 0);
+            var b = Math.Min(p + 1, line.Count - 1);
+            var dx = line.X[b] - line.X[a];
+            var dz = line.Z[b] - line.Z[a];
+            var length = Math.Max(Math.Sqrt(dx * dx + dz * dz), 1e-5);
+            for (var k = 0; k < NetworkLine.MarkPoints; k++)
+            {
+                var u = line.Width * ((double)k / (NetworkLine.MarkPoints - 1) - 0.5);
+                var fx = (float)((line.X[p] - dz / length * u) / _spacing - gx0);
+                var fz = (float)((line.Z[p] + dx / length * u) / _spacing - gz0);
+                var x0 = Math.Clamp((int)MathF.Floor(fx), 0, samples - 2);
+                var z0 = Math.Clamp((int)MathF.Floor(fz), 0, samples - 2);
+                var tx = Math.Clamp(fx - x0, 0f, 1f);
+                var tz = Math.Clamp(fz - z0, 0f, 1f);
+                var top = heights[z0 * samples + x0] + (heights[z0 * samples + x0 + 1] - heights[z0 * samples + x0]) * tx;
+                var bottom = heights[(z0 + 1) * samples + x0] + (heights[(z0 + 1) * samples + x0 + 1] - heights[(z0 + 1) * samples + x0]) * tx;
+                line.Drape[p * NetworkLine.MarkPoints + k] = top + (bottom - top) * tz;
+            }
+        }
+    }
+
     // --- Reshaping the ground. ---
 
     /// Flattens a tile's heights (Samples x Samples, rows north to south) under every line's formation, with cut and
@@ -1328,7 +1391,7 @@ public sealed partial class NetworkLines
             foreach (var index in list)
             {
                 var line = _lines[index];
-                if (railOnly && !line.Rail)
+                if (line.Mark || (railOnly && !line.Rail))
                     continue;
                 var reach = line.Formation + MaxReach;
                 var corners = Corners(line);

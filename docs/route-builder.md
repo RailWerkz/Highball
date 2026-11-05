@@ -273,11 +273,21 @@ was worked out about its switches. After that the route opens to what's saved, s
 code changed. It's solved again only if the map data, a hand-picked switch size or the built tiles changed, on an edit
 (of the map data, with Edit Track or the Pen), with File > Solve Track Again, or with `--refit`.
 
+## Where the heights come from
+
+A tile's heights come from the USGS's 3D Elevation Program where it has them: bare earth, 1 m lidar in much of the US and coarser
+elsewhere. Where it has none, including outside the US, they come from the AWS Terrain Tiles, fading from one to the other inside a
+tile over 100 m. If the service can't be reached, that tile uses the Terrain Tiles and the build says so; building it again retries.
+Downloads are cached under the user's data folder, about 16 MB a tile at 2 m. `Tile.json` records each tile's `HeightSource`.
+Build all of a route's tiles at once: tiles from the two sources can differ by a metre or two where they meet. Bridge decks aren't in
+bare-earth data, so built bridges carry lines over the gaps.
+
 ## Mapped track is a mark on the ground
 
 Mapped track isn't built. Everything else is generated (terrain, roads, bridges, cover), and each mapped track is a 2.8 m strip of
-gravel on the ground where it would go, in 2D and 3D, with no rails, ties, switches, signals or trains. The strips are lines like
-roads, so nothing that works on track sees them. Track only exists once it's laid by hand, and mapped ways are all guides to lay
+gravel on the ground where it would go, in 2D and 3D, with no rails, ties, switches, signals or trains. A strip lies on the ground
+as it is and never reshapes it, so what's under it is the real land until track is laid there. The strips are lines like roads, so
+nothing that works on track sees them. Track only exists once it's laid by hand, and mapped ways are all guides to lay
 it along. The fitting that used to build mapped track is on the `generation` branch as it last stood; the same code still fits
 hand-laid track.
 

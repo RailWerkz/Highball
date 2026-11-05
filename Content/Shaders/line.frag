@@ -58,8 +58,8 @@ vec3 paint(vec3 base, vec3 color, float amount)
 void main()
 {
     vec3 world = pc.camera.xyz + vRelative;
-    // Noise coordinates, wrapped every 4 km so the finest octaves keep their precision on big routes.
-    vec2 tex = mod(world.xz, 4096.0);
+    // (Not wrapped: nothing here repeats at any round distance, so a wrap would show as a line across the ground.)
+    vec2 tex = world.xz;
     float dist = length(vRelative);
     vec3 view = vRelative / max(dist, 1e-3);
     vec3 n = normalize(vNormal);

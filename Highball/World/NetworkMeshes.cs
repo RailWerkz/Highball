@@ -626,6 +626,8 @@ public sealed partial class NetworkMeshes : IDisposable
 
                 if (line.Rail)
                     FarRail(builder, line, first, last, structure == Structure.Bridge);
+                else if (line.Mark && structure != Structure.Bridge)
+                    Mark(builder, line, first, last);
                 else
                     Road(builder, line, first, last, structure == Structure.Bridge);
 
@@ -726,6 +728,44 @@ public sealed partial class NetworkMeshes : IDisposable
             (w + 0.6f, wall), (w + 0.9f, wall), (w + 0.9f, -deck), (-w - 0.9f, -deck),
         ];
         Sweep(builder, line, first, last, section, e => e is 3 or 4 or 5 ? ballast : concrete, (_, _, _) => railOffset);
+    }
+
+    /// A mapped track's mark: a strip of gravel lying on the ground, following it across as well as along.
+    private static void Mark(Builder builder, NetworkLine line, int first, int last)
+    {
+        const int across = NetworkLine.MarkPoints;
+        var gravel = Code(LineMaterial.Gravel);
+        var start = (uint)builder.Vertices.Count;
+        for (var p = first; p <= last; p++)
+        {
+            var (center, right) = Frame(line, p, builder.Origin);
+            var forward = new float3(right.Z, 0f, -right.X);
+            var (behind, ahead) = (Math.Max(p - 1, 0), Math.Min(p + 1, line.Count - 1));
+            var run = MathF.Max(line.S[ahead] - line.S[behind], 1e-3f);
+            var rise = (line.Drape[ahead * across + across / 2] - line.Drape[behind * across + across / 2]) / run;
+            var tilt = (line.Drape[p * across + across - 1] - line.Drape[p * across]) / MathF.Max(line.Width, 1e-3f);
+            var normal = new float3(0f, 1f, 0f) - right * tilt - forward * rise;
+            normal /= MathF.Sqrt(normal.X * normal.X + normal.Y * normal.Y + normal.Z * normal.Z);
+            var v = line.S[p] % Wrap;
+            for (var k = 0; k < across; k++)
+            {
+                var u = line.Width * ((float)k / (across - 1) - 0.5f);
+                var position = new float3(center.X + right.X * u, line.Drape[p * across + k] + RoadRise, center.Z + right.Z * u);
+                builder.Add(position, normal, new float4(u, v, gravel, 1000f));
+            }
+        }
+
+        for (var p = 0; p < last - first; p++)
+            for (var k = 0; k < across - 1; k++)
+            {
+                var a = start + (uint)(p * across + k);
+                builder.Quad(a, a + 1, a + across, a + across + 1);
+            }
+
+        if (first == 0)
+            Cap(builder, line, 0, line.Width * 0.5f, gravel);
+        if (last == line.Count - 1)
+            Cap(builder, line, last, line.Width * 0.5f, gravel);
     }
 
     private static void Road(Builder builder, NetworkLine line, int first, int last, bool bridge)

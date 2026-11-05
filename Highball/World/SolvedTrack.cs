@@ -40,7 +40,7 @@ internal struct StableHash
 public sealed partial class NetworkLines
 {
     /// Bumped when the file's layout changes; an older file is solved again.
-    private const int SolvedVersion = 18;
+    private const int SolvedVersion = 19;
 
     private static string SolvedPath(RouteInfo route) => Path.Combine(route.Folder, "Track.bin.gz");
 
@@ -145,6 +145,7 @@ public sealed partial class NetworkLines
             w.Write(line.Disused);
             w.Write(line.Embedded);
             w.Write(line.Exact);
+            w.Write(line.Mark);
             w.Write(line.Width);
             w.Write(line.Lanes);
             w.Write(line.Oneway);
@@ -292,7 +293,7 @@ public sealed partial class NetworkLines
         var line = new NetworkLine
         {
             Index = index, Rail = rail, Class = kind, X = x, Z = z, Y = new float[count], Ground = new float[count], Key = key, S = s, Structures = structures, Nodes = nodes,
-            Tracks = r.ReadInt32(), Gauge = r.ReadSingle(), Disused = r.ReadBoolean(), Embedded = r.ReadBoolean(), Exact = r.ReadBoolean(),
+            Tracks = r.ReadInt32(), Gauge = r.ReadSingle(), Disused = r.ReadBoolean(), Embedded = r.ReadBoolean(), Exact = r.ReadBoolean(), Mark = r.ReadBoolean(),
             Width = r.ReadSingle(), Lanes = r.ReadInt32(), Oneway = r.ReadBoolean(), Unpaved = r.ReadBoolean(), Formation = r.ReadSingle(),
         };
 

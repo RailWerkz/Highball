@@ -62,8 +62,8 @@ vec2 relief2(sampler2D map, vec2 p, float tile)
 void main()
 {
     vec3 world = pc.camera.xyz + vRelative;
-    // Texture coordinates, wrapped every 4 km so they keep their precision on big routes.
-    vec2 tex = mod(world.xz, 4096.0);
+    // (Not wrapped: nothing here repeats at any round distance, so a wrap would show as a line across the ground.)
+    vec2 tex = world.xz;
     float dist = length(vRelative);
     vec3 view = vRelative / max(dist, 1e-3);
     vec3 n = normalize(vNormal);
@@ -92,7 +92,7 @@ void main()
     {
         vec3 blend = pow(abs(n), vec3(4.0));
         blend /= blend.x + blend.y + blend.z;
-        vec3 wx = mod(world, 4096.0);
+        vec3 wx = world;
         vec3 rockColor = vec3(0.17, 0.16, 0.145) * (detail2(cliffAlbedo, wx.zy, CliffTile) * blend.x
             + detail2(cliffAlbedo, wx.xz, CliffTile) * blend.y + detail2(cliffAlbedo, wx.xy, CliffTile) * blend.z);
         // Gentler than the ground's: on a slope the relief tilts faces right away from the sun.
