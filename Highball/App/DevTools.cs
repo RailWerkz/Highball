@@ -8,7 +8,11 @@ using RailWerkz.Vulkan;
 namespace Highball.App;
 
 /// Command-line helpers for development and testing:
-///   --menu SCREEN                                   open a menu after the splash: single, multi, builder, options, credits
+///   --menu SCREEN                                   open a menu after the splash: single, multi, builder, options, credits,
+///                                                   lighting (the lighting test scene)
+///   --lighting PRESET [MODEL]                       with --menu lighting, start at noon, golden or night, with the model
+///                                                   csx (the game's SD40) or source (its source file, with PBR maps)
+///   --orbit YAW PITCH DISTANCE                      with --menu lighting, where the camera starts (degrees, metres)
 ///   --tab NAME                                      with --menu options, open on that tab: display, graphics, audio, simulation
 ///   --route NAME                                    open that route in the Route Builder (made if there isn't one)
 ///   --select LAT LON N                              with --route, pick N x N tiles there and build them
@@ -32,6 +36,7 @@ namespace Highball.App;
 ///   --shot SECONDS FILE.png [SECONDS FILE.png ...]  save the screen at those times
 ///   --quit SECONDS                                  close after that long
 ///   --novsync                                       run uncapped, to time frames (not saved)
+///   --noshadows                                     no sun shadows, to see what they cost
 ///   --skipsplash                                    skip the BRUTAL logo and the splash animation
 ///   --validation                                    Vulkan validation layers (needs the Vulkan SDK; on in Debug builds)
 public static class DevTools
@@ -39,6 +44,12 @@ public static class DevTools
     private static readonly List<(double At, string Path)> Shots = [];
     private static double _quitAt = double.MaxValue;
     private static string? _menu;
+
+    /// The lighting test scene's first time of day and model (--lighting), read once by it.
+    public static (string Preset, string? Model)? Lighting { get; set; }
+
+    /// Where the lighting test scene's camera starts (--orbit), read once by it.
+    public static (float Yaw, float Pitch, float Distance)? Orbit { get; set; }
 
     /// The options tab asked for on the command line, read once by the options screen.
     public static string? Tab { get; set; }
@@ -104,6 +115,7 @@ public static class DevTools
     public static float? FlySpeed { get; private set; }
 
     public static bool NoVSync { get; private set; }
+    public static bool NoShadows { get; private set; }
     public static bool SkipSplash { get; private set; }
 #if DEBUG
     public static bool Validation { get; private set; } = true;
@@ -122,6 +134,15 @@ public static class DevTools
             {
                 case "--menu" when i + 1 < args.Length:
                     _menu = args[++i];
+                    break;
+                case "--lighting" when i + 1 < args.Length:
+                    var preset = args[++i];
+                    Lighting = (preset, i + 1 < args.Length && !args[i + 1].StartsWith('-') ? args[++i] : null);
+                    break;
+                case "--orbit" when i + 3 < args.Length:
+                    var o = System.Globalization.CultureInfo.InvariantCulture;
+                    Orbit = (float.Parse(args[i + 1], o), float.Parse(args[i + 2], o), float.Parse(args[i + 3], o));
+                    i += 3;
                     break;
                 case "--tab" when i + 1 < args.Length:
                     Tab = args[++i];
@@ -210,6 +231,9 @@ public static class DevTools
                 case "--fly" when i + 1 < args.Length:
                     FlySpeed = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
                     break;
+                case "--noshadows":
+                    NoShadows = true;
+                    break;
                 case "--novsync":
                     NoVSync = true;
                     break;
@@ -253,6 +277,7 @@ public static class DevTools
             "builder" => new RouteBuilderScreen(),
             "options" => new OptionsScreen(),
             "credits" => new CreditsScreen(),
+            "lighting" => new LightingScreen(),
             _ => null,
         };
 

@@ -55,6 +55,9 @@ public sealed class Terrain : IDisposable
         public required Key Key { get; init; }
         public required float3 Origin { get; init; }
         public required Mesh Mesh { get; init; }
+        /// The middle of its vertices, relative to Origin, and the distance from there to the furthest.
+        public required float3 Centre { get; init; }
+        public required float Radius { get; init; }
         /// Vertices outside the built tiles, or null when every vertex is inside.
         public bool[]? Valid { get; init; }
         /// The quads split the other way, to lie along the slope; null when none are.
@@ -136,7 +139,8 @@ public sealed class Terrain : IDisposable
                 Release(old);
 
             var mesh = Mesh.Create<TerrainVertex>(built.Vertices, TerrainVertex.Layout, later: true);
-            _patches[built.Key] = new Patch { Key = built.Key, Origin = built.Origin, Mesh = mesh, Valid = built.Valid, Flips = built.Flips, Used = _frame };
+            var (centre, radius) = Bounds(built.Vertices);
+            _patches[built.Key] = new Patch { Key = built.Key, Origin = built.Origin, Mesh = mesh, Centre = centre, Radius = radius, Valid = built.Valid, Flips = built.Flips, Used = _frame };
         }
 
         _leaves.Clear();
@@ -547,6 +551,33 @@ public sealed class Terrain : IDisposable
             push(new float3((float)(patch.Origin.X - cx), (float)-cy, (float)(patch.Origin.Z - cz)));
             patch.Mesh.DrawWith(cmd, indices, count);
         }
+    }
+
+    /// Draws the patches that pass the test (a patch's middle relative to the camera, and its radius), for a shadow.
+    public void DrawCasters(CommandBuffer cmd, double cx, double cy, double cz, Func<float3, float, bool> reaches, Action<float3> push)
+    {
+        foreach (var (patch, indices, count) in _drawList)
+        {
+            var offset = new float3((float)(patch.Origin.X - cx), (float)-cy, (float)(patch.Origin.Z - cz));
+            if (!reaches(offset + patch.Centre, patch.Radius))
+                continue;
+
+            push(offset);
+            patch.Mesh.DrawWith(cmd, indices, count);
+        }
+    }
+
+    private static (float3 Centre, float Radius) Bounds(TerrainVertex[] vertices)
+    {
+        var min = new float3(float.MaxValue);
+        var max = new float3(float.MinValue);
+        foreach (var vertex in vertices)
+        {
+            min = float3.Min(min, vertex.Position);
+            max = float3.Max(max, vertex.Position);
+        }
+
+        return ((min + max) * 0.5f, RailWerkz.Core.Utils.MathEx.Length(max - min) * 0.5f);
     }
 
     private static void Release(BufferEx buffer)

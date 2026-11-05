@@ -1,5 +1,6 @@
 #version 450
 #include "atmosphere.glsl"
+#include "shadows.glsl"
 
 layout(location = 0) in vec3 vRelative;
 layout(location = 1) in vec3 vNormal;
@@ -32,7 +33,7 @@ void main()
     // Each one a little lighter or darker than the next.
     vec3 albedo = texture(albedoMap, vUv).rgb * (0.75 + 0.5 * vTint);
 
-    float direct = max(dot(n, sun), 0.0);
+    float direct = max(dot(n, sun), 0.0) * sunShadow(vRelative, n, sun);
     vec3 color = albedo * (SunColor * direct + skyAmbient(n));
     color = applyFog(color, view, dist, pc.camera.y, sun);
     outColor = vec4(color, 1.0);

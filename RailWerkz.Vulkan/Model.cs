@@ -18,7 +18,9 @@ public sealed class Model : IDisposable
 
     /// AlphaCutoff is 0 for an opaque material; for a cut-out one (leaves, grass cards) the alpha below which a pixel is
     /// thrown away.
-    public readonly record struct Surface(float4 BaseColor, Texture2D? Texture, float AlphaCutoff);
+    /// Metallic and Roughness are the material's factors; MetallicRoughness, if it has one, is its glTF map of them (green
+    /// roughness, blue metalness), multiplied by those factors.
+    public readonly record struct Surface(float4 BaseColor, Texture2D? Texture, float AlphaCutoff, float Metallic = 1f, float Roughness = 1f, Texture2D? MetallicRoughness = null);
 
     /// How the file's coordinates were turned, moved and scaled into the model's, so a part loaded on its own (a
     /// rotor, say) can be put in exactly the same place.
@@ -522,35 +524,40 @@ public sealed class Model : IDisposable
     }
 
 
-    // Base colour factor, texture and alpha cutoff per material; textures are embedded images decoded with stb. Blended
-    // materials are cut out too: nothing in the game sorts its triangles, and they're nearly all leaves and grass.
+    // Base colour, metalness and roughness (factors and maps) and alpha cutoff per material; textures are embedded images
+    // decoded with stb. Blended materials are cut out too: nothing in the game sorts its triangles, and they're nearly all
+    // leaves and grass.
     private static List<Surface> LoadSurfaces(GltfLoader loader, int count)
     {
         var gltf = loader.GltfJson;
         var surfaces = new List<Surface>(count);
-        var images = new Dictionary<int, Texture2D?>();
+        var images = new Dictionary<(int Source, bool Srgb), Texture2D?>();
+
+        Texture2D? Image(int textureIndex, bool srgb)
+        {
+            if (gltf.Textures?[textureIndex].Source is not { } source)
+                return null;
+            if (!images.TryGetValue((source, srgb), out var texture))
+                images[(source, srgb)] = texture = LoadImage(loader, source, srgb);
+            return texture;
+        }
 
         for (var m = 0; m < count; m++)
         {
             var material = gltf.Materials is { } materials && m < materials.Length ? materials[m] : null;
             var pbr = material?.PbrMetallicRoughness;
             float4 factor = pbr?.BaseColorFactor ?? new float4(1f);
-            Texture2D? texture = null;
-
-            if (pbr?.BaseColorTexture is { } info && gltf.Textures?[info.Index].Source is { } source)
-            {
-                if (!images.TryGetValue(source, out texture))
-                    images[source] = texture = LoadImage(loader, source);
-            }
+            var texture = pbr?.BaseColorTexture is { } color ? Image(color.Index, true) : null;
+            var metallicRoughness = pbr?.MetallicRoughnessTexture is { } map ? Image(map.Index, false) : null;
 
             var cutoff = material is null || material.AlphaMode == Material.AlphaModeEnum.Opaque ? 0f : material.AlphaCutoff;
-            surfaces.Add(new Surface(factor, texture, cutoff));
+            surfaces.Add(new Surface(factor, texture, cutoff, pbr?.MetallicFactor ?? 1f, pbr?.RoughnessFactor ?? 1f, metallicRoughness));
         }
 
         return surfaces;
     }
 
-    private static Texture2D? LoadImage(GltfLoader loader, int imageIndex)
+    private static Texture2D? LoadImage(GltfLoader loader, int imageIndex, bool srgb)
     {
         try
         {
@@ -558,7 +565,7 @@ public sealed class Model : IDisposable
                 return null;
 
             using var image = Stb.LoadFromMemory(loader.GetBufferView(view), 4);
-            return Texture2D.FromPixels(image.Width, image.Height, MemoryMarshal.AsBytes(image.AsSpan<byte4>()), true, true, srgb: true, name: $"gltf.image{imageIndex}");
+            return Texture2D.FromPixels(image.Width, image.Height, MemoryMarshal.AsBytes(image.AsSpan<byte4>()), true, true, srgb: srgb, name: $"gltf.image{imageIndex}");
         }
         catch (Exception e)
         {
@@ -677,7 +684,7 @@ public sealed class Model : IDisposable
     public void Dispose()
     {
         Mesh.Dispose();
-        foreach (var texture in Surfaces.Select(s => s.Texture).OfType<Texture2D>().Distinct())
+        foreach (var texture in Surfaces.SelectMany(s => new[] { s.Texture, s.MetallicRoughness }).OfType<Texture2D>().Distinct())
             texture.Dispose();
     }
 }

@@ -61,7 +61,7 @@ public sealed partial class NetworkMeshes : IDisposable
     private const float PlateDepth = 0.014f;   // the plate's rail seat above the tie
     private const float RoadRise = 0.06f;
     private const float RailHeadHalf = 0.0373f;
-    private const float RailTop = 0.1857f;
+    internal const float RailTop = 0.1857f;
     private const float Wrap = 1200f;
     /// Parts are sorted into Cells x Cells squares of each chunk, so each square can be drawn in the detail its
     /// distance calls for.
@@ -69,7 +69,7 @@ public sealed partial class NetworkMeshes : IDisposable
     private const float CellSize = ChunkSize / Cells;
 
     /// 136 lb rail, clockwise from the outside of the foot (x across, y up).
-    private static readonly (float U, float Y)[] RailProfile =
+    internal static readonly (float U, float Y)[] RailProfile =
     [
         (-0.0762f, 0f), (-0.0762f, 0.011f), (-0.012f, 0.030f), (-0.0088f, 0.045f), (-0.0088f, 0.125f), (-0.025f, 0.140f),
         (-0.0373f, 0.145f), (-0.0373f, 0.178f), (-0.030f, RailTop), (0.030f, RailTop), (0.0373f, 0.178f), (0.0373f, 0.145f),

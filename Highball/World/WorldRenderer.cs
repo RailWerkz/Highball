@@ -30,12 +30,25 @@ public sealed unsafe class WorldRenderer : IDisposable
         public float4 Camera;
     }
 
+    /// Exactly the 128 bytes every GPU guarantees for push constants.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ModelPush
+    {
+        public float4x4 ViewProjection;
+        public float4 Rotation;
+        public float4 PlaceAndScale;
+        public float4 BaseColor;
+        public float4 Material;
+    }
+
     private const VkShaderStageFlags Stages = VkShaderStageFlags.VertexBit | VkShaderStageFlags.FragmentBit;
 
     private readonly RenderTarget _target = new();
     private readonly VkPipelineLayout _layout;
     private readonly VkPipelineLayout _terrainLayout;
+    private readonly VkPipelineLayout _modelLayout;
     private readonly GroundTextures _ground = new();
+    private readonly SunShadows _shadows = new();
     private VkPipeline _sky;
     private VkPipeline _terrain;
     private VkPipeline _terrainWire;
@@ -43,6 +56,7 @@ public sealed unsafe class WorldRenderer : IDisposable
     private VkPipeline _lineWire;
     private VkPipeline _part;
     private VkPipeline _partWire;
+    private VkPipeline _model;
     private readonly VkDescriptorSetLayout _tonemapSetLayout;
     private readonly VkPipelineLayout _tonemapLayout;
     private readonly VkPipeline _tonemap;
@@ -58,12 +72,14 @@ public sealed unsafe class WorldRenderer : IDisposable
     public Sky Sky { get; } = new(RailWerkz.Core.Settings.Settings.Current.Skybox);
     public float Exposure { get; set; } = 1f;
     public bool Wireframe { get; set; }
+    public bool Shadows { get => _shadows.Enabled; set => _shadows.Enabled = value; }
 
     public WorldRenderer()
     {
         // One layout for every world pipeline: push constants, and a texture at set 0 for those that sample one.
-        _layout = Pipelines.Layout(128, TextureBinding.SetLayout, Sky.SetLayout);
-        _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout);
+        _layout = Pipelines.Layout(128, TextureBinding.SetLayout, Sky.SetLayout, SunShadows.SetLayout);
+        _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout, SunShadows.SetLayout);
+        _modelLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(2), Sky.SetLayout, SunShadows.SetLayout);
         CreateWorldPipelines();
 
         using var fullscreen = Shader.Load("fullscreen.vert");
@@ -97,6 +113,8 @@ public sealed unsafe class WorldRenderer : IDisposable
         using var lineFrag = Shader.Load("line.frag");
         using var partVert = Shader.Load("part.vert");
         using var partFrag = Shader.Load("part.frag");
+        using var modelVert = Shader.Load("model.vert");
+        using var modelFrag = Shader.Load("model.frag");
 
         _sky = Pipelines.Create(new PipelineDesc { Vertex = fullscreen, Fragment = sky, Layout = _layout, Cull = VkCullModeFlags.None, DepthTest = false, DepthWrite = false });
         var terrain = new PipelineDesc { Vertex = terrainVert, Fragment = terrainFrag, Layout = _terrainLayout, Attributes = TerrainVertex.Layout, Stride = Marshal.SizeOf<TerrainVertex>() };
@@ -125,6 +143,11 @@ public sealed unsafe class WorldRenderer : IDisposable
             Vertex = partVert, Fragment = partFrag, Layout = _layout, Attributes = Mesh.VertexLayout, Stride = part.Stride,
             InstanceAttributes = TieInstance.Layout, InstanceStride = part.InstanceStride, Cull = VkCullModeFlags.None, Wireframe = true,
         });
+        // Whole models under physically based light (lighting.glsl). Nothing's culled: the shader lights the side it sees.
+        _model = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = modelVert, Fragment = modelFrag, Layout = _modelLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(), Cull = VkCullModeFlags.None,
+        });
     }
 
     private void DestroyWorldPipelines()
@@ -136,12 +159,13 @@ public sealed unsafe class WorldRenderer : IDisposable
         Pipelines.Destroy(_lineWire, default);
         Pipelines.Destroy(_part, default);
         Pipelines.Destroy(_partWire, default);
+        Pipelines.Destroy(_model, default);
     }
 
     private static float3 Normalize(float3 v) => v / MathF.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
 
     /// Records the world into the HDR target. Outside any render pass.
-    public void Render(CommandBuffer cmd, int2 size, Camera camera, Terrain? terrain, NetworkMeshes? network)
+    public void Render(CommandBuffer cmd, int2 size, Camera camera, Terrain? terrain, NetworkMeshes? network, IReadOnlyList<ModelDraw>? models = null)
     {
         if (_pipelineSamples != RenderTarget.Samples)
         {
@@ -153,6 +177,9 @@ public sealed unsafe class WorldRenderer : IDisposable
         var aspect = size.X / (float)size.Y;
         var camPos = new float4((float)camera.X, (float)camera.Y, (float)camera.Z, 0f);
         var sun = new float4(Sun, 0f);
+
+        using (Profiler.Sample("Sun shadows"))
+            _shadows.Render(cmd, camera, aspect, Sun, terrain, models);
 
         _target.Begin(cmd, new float4(0f, 0f, 0f, 1f));
 
@@ -179,6 +206,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             var push = new TerrainPush { ViewProjection = camera.ViewProjection(aspect), Camera = camPos, Sun = sun };
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _terrainWire : _terrain);
             Sky.Bind(cmd, _terrainLayout);
+            _shadows.Bind(cmd, _terrainLayout);
             _ground.Binding.Bind(cmd, _terrainLayout);
             terrain.Draw(cmd, camera.X, camera.Y, camera.Z, offset =>
             {
@@ -205,6 +233,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             {
                 cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _lineWire : _line);
                 Sky.Bind(cmd, _layout);
+                _shadows.Bind(cmd, _layout);
                 network.BindBallast(cmd, _layout);
                 network.DrawLines(cmd, camera.X, camera.Y, camera.Z, Push);
             }
@@ -216,7 +245,41 @@ public sealed unsafe class WorldRenderer : IDisposable
             }
         }
 
+        if (models is not null)
+        {
+            using var _ = Profiler.Sample("Models");
+            DrawModels(cmd, camera, aspect, models);
+        }
+
         _target.End(cmd);
+    }
+
+    private void DrawModels(CommandBuffer cmd, Camera camera, float aspect, IReadOnlyList<ModelDraw> models)
+    {
+        cmd.BindPipeline(VkPipelineBindPoint.Graphics, _model);
+        Sky.Bind(cmd, _modelLayout);
+        _shadows.Bind(cmd, _modelLayout);
+        var viewProjection = camera.ViewProjection(aspect);
+
+        foreach (var draw in models)
+        {
+            var (sin, cos) = MathF.SinCos(draw.Yaw * 0.5f);
+            var relative = new float3((float)(draw.Position.X - camera.X), (float)(draw.Position.Y - camera.Y), (float)(draw.Position.Z - camera.Z));
+            foreach (var part in draw.Model.Parts)
+            {
+                var push = new ModelPush
+                {
+                    ViewProjection = viewProjection,
+                    Rotation = new float4(0f, sin, 0f, cos),
+                    PlaceAndScale = new float4(relative, draw.Scale),
+                    BaseColor = draw.BaseColor ?? part.BaseColor,
+                    Material = new float4(draw.Metallic ?? part.Metallic, draw.Roughness ?? part.Roughness, (float)camera.Y, part.AlphaCutoff),
+                };
+                part.Textures.Bind(cmd, _modelLayout);
+                cmd.PushConstants(_modelLayout, Stages, ByteSize.Zero, push);
+                draw.Model.Mesh.DrawRange(cmd, part.FirstIndex, part.IndexCount);
+            }
+        }
     }
 
     /// Draws the tonemapped world over the screen. Inside the present pass, before the interface.
@@ -279,7 +342,9 @@ public sealed unsafe class WorldRenderer : IDisposable
         _target.Dispose();
         DestroyWorldPipelines();
         Pipelines.Destroy(default, _terrainLayout);
+        Pipelines.Destroy(default, _modelLayout);
         _ground.Dispose();
+        _shadows.Dispose();
         Pipelines.Destroy(default, _layout);
         Sky.Dispose();
         Pipelines.Destroy(_tonemap, _tonemapLayout);

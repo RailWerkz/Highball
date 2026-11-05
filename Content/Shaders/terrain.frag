@@ -1,6 +1,8 @@
 #version 450
 #include "atmosphere.glsl"
 #include "noise.glsl"
+#include "lighting.glsl"
+#include "shadows.glsl"
 
 layout(location = 0) in vec3 vRelative;
 layout(location = 1) in vec3 vNormal;
@@ -15,6 +17,9 @@ layout(set = 0, binding = 2) uniform sampler2D earthAlbedo;
 layout(set = 0, binding = 3) uniform sampler2D earthNormal;
 layout(set = 0, binding = 4) uniform sampler2D cliffAlbedo;
 layout(set = 0, binding = 5) uniform sampler2D cliffNormal;
+layout(set = 0, binding = 6) uniform sampler2D grassSurface; // ambient occlusion in red, roughness in green
+layout(set = 0, binding = 7) uniform sampler2D earthSurface;
+layout(set = 0, binding = 8) uniform sampler2D cliffSurface;
 
 layout(push_constant) uniform Push
 {
@@ -59,6 +64,10 @@ vec2 relief2(sampler2D map, vec2 p, float tile)
     return (relief(map, p / tile) + large * 0.35) * 0.75;
 }
 
+// Open water, which has no maps: smooth, and with nothing to hide the sky.
+const vec2 WaterSurface = vec2(1.0, 0.12);
+const float GroundSpecular = 0.25;
+
 void main()
 {
     vec3 world = pc.camera.xyz + vRelative;
@@ -81,6 +90,9 @@ void main()
     // Their relief, laid onto the ground's own normal (projected straight down; flat ground mostly faces up).
     vec2 bump = relief2(grassNormal, tex, GrassTile) * m.x + relief2(earthNormal, tex, EarthTile) * m.y;
     vec3 surface = normalize(vec3(n.x + bump.x, n.y, n.z + bump.y));
+
+    // How much sky reaches it, and how rough it is, in the same proportions.
+    vec2 finish = texture(grassSurface, tex / GrassTile).rg * m.x + texture(earthSurface, tex / EarthTile).rg * m.y + WaterSurface * (m.z + m.w);
 
     // Tree canopy: dark clumps with lighter crowns.
     float canopy = vCover.a * smoothstep(0.35, 0.6, fbm(tex * 0.06, pixel * 0.06));
@@ -105,10 +117,24 @@ void main()
             + vec3(rz.x + n.x, rz.y + n.y, n.z) * blend.z);
         albedo = mix(albedo, rockColor, rock);
         surface = normalize(mix(surface, cliff, rock));
+
+        vec2 rockFinish = texture(cliffSurface, wx.zy / CliffTile).rg * blend.x + texture(cliffSurface, wx.xz / CliffTile).rg * blend.y
+            + texture(cliffSurface, wx.xy / CliffTile).rg * blend.z;
+        finish = mix(finish, rockFinish, rock);
     }
 
-    float direct = max(dot(surface, sun), 0.0);
-    vec3 color = albedo * (SunColor * direct + skyAmbient(surface));
+    Surface s;
+    s.albedo = albedo;
+    s.metallic = 0.0;
+    s.roughness = finish.y;
+    s.normal = surface;
+    s.view = -view;
+    s.occlusion = finish.x;
+    // Soil and grass at this scale are far bumpier than their maps say; water isn't.
+    s.specular = mix(GroundSpecular, 1.0, clamp(m.z + m.w, 0.0, 1.0));
+
+    // Shadow from the ground's own shape: the relief is too fine for the map to resolve, and would only speckle it.
+    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative, n, sun)) + shadeSky(s, sun);
 
     color = applyFog(color, view, dist, pc.camera.y, sun);
     outColor = vec4(color, 1.0);

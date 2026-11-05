@@ -5,6 +5,7 @@ using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
 using RailWerkz.Core.IO;
 using RailWerkz.Core.Logging;
+using RailWerkz.Core.Utils;
 using RailWerkz.Vulkan;
 
 namespace Highball.World;
@@ -115,6 +116,43 @@ public sealed unsafe class Sky : IDisposable
         Release();
         _map = map ?? Texture2D.Solid(new byte4(128, 160, 200, 255));
         Name = name;
+        Apply(in uniforms);
+    }
+
+    /// Puts the procedural sky's sun at this height over the horizon and this bearing (degrees, 0 north, 90 east), with
+    /// the colours of that time of day: warm near the horizon, dim through dusk, a faint blue at night (there's no moonlight yet).
+    public void SetSun(float elevation, float azimuth)
+    {
+        if (Name != Procedural)
+            Use(Procedural);
+
+        var (sinElevation, cosElevation) = MathF.SinCos(elevation * MathF.PI / 180f);
+        var (sinAzimuth, cosAzimuth) = MathF.SinCos(azimuth * MathF.PI / 180f);
+        var low = 1f - MathEx.SmoothStep(0f, 0.35f, sinElevation);
+        var day = MathEx.SmoothStep(-0.12f, 0.08f, sinElevation);
+        var risen = MathEx.SmoothStep(-0.02f, 0.05f, sinElevation);
+
+        var sunColor = MathEx.Lerp(new float3(1.0f, 0.94f, 0.84f) * 3f, new float3(1.0f, 0.52f, 0.24f) * 2.4f, low) * risen;
+        var zenith = MathEx.Lerp(new float3(0.09f, 0.22f, 0.52f), new float3(0.05f, 0.10f, 0.25f), low) * day + new float3(0.012f, 0.018f, 0.036f);
+        var horizon = MathEx.Lerp(new float3(0.50f, 0.64f, 0.82f), new float3(0.85f, 0.50f, 0.30f), low) * day + new float3(0.016f, 0.022f, 0.040f);
+        var ground = MathEx.Lerp(new float3(0.24f, 0.26f, 0.28f), new float3(0.16f, 0.12f, 0.10f), low) * day + new float3(0.006f, 0.008f, 0.012f);
+
+        var uniforms = new Uniforms
+        {
+            // x east, y up, z south.
+            SunDirection = new float4(sinAzimuth * cosElevation, sinElevation, -cosAzimuth * cosElevation, 1f),
+            SunColor = new float4(sunColor, 0f),
+            Zenith = new float4(zenith, 0f),
+            Horizon = new float4(horizon, 0f),
+            Ground = new float4(ground, 0f),
+        };
+        ReleaseUniforms();
+        Apply(in uniforms);
+    }
+
+    /// A uniform buffer and a set for these values over the current map.
+    private void Apply(in Uniforms uniforms)
+    {
         SunDirection = uniforms.SunDirection.XYZ;
 
         _uniforms = Buffers.Upload(MemoryMarshal.AsBytes(new ReadOnlySpan<Uniforms>(in uniforms)), VkBufferUsageFlags.UniformBufferBit, "sky.uniforms");
@@ -133,7 +171,7 @@ public sealed unsafe class Sky : IDisposable
 
         var buffer = new VkDescriptorBufferInfo { Buffer = _uniforms.VkBuffer, Offset = ByteSize.Zero, Range = ByteSize.Of(sizeof(Uniforms)) };
         var images = stackalloc VkDescriptorImageInfo[3];
-        Texture2D[] textures = [_map, _sun, _moon];
+        Texture2D[] textures = [_map!, _sun, _moon];
         for (var i = 0; i < 3; i++)
             images[i] = new VkDescriptorImageInfo { Sampler = textures[i].Sampler, ImageView = textures[i].View, ImageLayout = VkImageLayout.ShaderReadOnlyOptimal };
 
@@ -298,6 +336,11 @@ public sealed unsafe class Sky : IDisposable
     {
         _map?.Dispose();
         _map = null;
+        ReleaseUniforms();
+    }
+
+    private void ReleaseUniforms()
+    {
         if (!_uniforms.IsNull())
         {
             var uniforms = _uniforms;

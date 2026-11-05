@@ -7,7 +7,8 @@ namespace RailWerkz.Vulkan;
 public sealed class PipelineDesc
 {
     public required Shader Vertex { get; init; }
-    public required Shader Fragment { get; init; }
+    /// None for a depth-only pass.
+    public Shader? Fragment { get; init; }
     public required VkPipelineLayout Layout { get; init; }
 
     /// Vertex layout and stride; none for pipelines that make their vertices in the shader (fullscreen passes).
@@ -24,6 +25,11 @@ public sealed class PipelineDesc
     /// Reverse-Z: GreaterOrEqual. Off for fullscreen passes.
     public bool DepthTest { get; init; } = true;
     public bool DepthWrite { get; init; } = true;
+
+    /// Draws depth alone, one sample per pixel (a shadow map).
+    public bool DepthOnly { get; init; }
+    public float DepthBiasConstant { get; init; }
+    public float DepthBiasSlope { get; init; }
 
     public VkFormat ColorFormat { get; init; } = VkFormat.R16G16B16A16SFloat;
     public VkFormat DepthFormat { get; init; } = RenderTarget.DepthFormat;
@@ -51,7 +57,8 @@ public static unsafe class Pipelines
         {
             var stages = stackalloc VkPipelineShaderStageCreateInfo[2];
             stages[0] = new VkPipelineShaderStageCreateInfo { Stage = VkShaderStageFlags.VertexBit, Module = desc.Vertex.Module, Name = main };
-            stages[1] = new VkPipelineShaderStageCreateInfo { Stage = VkShaderStageFlags.FragmentBit, Module = desc.Fragment.Module, Name = main };
+            if (desc.Fragment is not null)
+                stages[1] = new VkPipelineShaderStageCreateInfo { Stage = VkShaderStageFlags.FragmentBit, Module = desc.Fragment.Module, Name = main };
 
             var emptyInput = new VkPipelineVertexInputStateCreateInfo();
             var vertexInput = Mesh.Input(desc.Attributes, Math.Max(desc.Stride, 4), desc.InstanceAttributes, desc.InstanceStride);
@@ -66,8 +73,11 @@ public static unsafe class Pipelines
                 CullMode = desc.Cull,
                 FrontFace = VkFrontFace.CounterClockwise,
                 LineWidth = 1f,
+                DepthBiasEnable = new Bool32(desc.DepthBiasConstant != 0f || desc.DepthBiasSlope != 0f),
+                DepthBiasConstantFactor = desc.DepthBiasConstant,
+                DepthBiasSlopeFactor = desc.DepthBiasSlope,
             };
-            var multisample = new VkPipelineMultisampleStateCreateInfo { RasterizationSamples = desc.RenderPass.IsNull() ? RenderTarget.Samples : VkSampleCountFlags._1Bit };
+            var multisample = new VkPipelineMultisampleStateCreateInfo { RasterizationSamples = desc.RenderPass.IsNull() && !desc.DepthOnly ? RenderTarget.Samples : VkSampleCountFlags._1Bit };
             var depth = new VkPipelineDepthStencilStateCreateInfo
             {
                 DepthTestEnable = new Bool32(desc.DepthTest),
@@ -78,22 +88,22 @@ public static unsafe class Pipelines
             {
                 ColorWriteMask = VkColorComponentFlags.RBit | VkColorComponentFlags.GBit | VkColorComponentFlags.BBit | VkColorComponentFlags.ABit,
             };
-            var blend = new VkPipelineColorBlendStateCreateInfo { AttachmentCount = 1, Attachments = &attachment };
+            var blend = new VkPipelineColorBlendStateCreateInfo { AttachmentCount = desc.DepthOnly ? 0 : 1, Attachments = desc.DepthOnly ? null : &attachment };
             var dynamicStates = stackalloc VkDynamicState[] { VkDynamicState.Viewport, VkDynamicState.Scissor };
             var dynamic = new VkPipelineDynamicStateCreateInfo { DynamicStateCount = 2, DynamicStates = dynamicStates };
 
             var colorFormat = desc.ColorFormat;
             var rendering = new VkPipelineRenderingCreateInfo
             {
-                ColorAttachmentCount = 1,
-                ColorAttachmentFormats = &colorFormat,
+                ColorAttachmentCount = desc.DepthOnly ? 0 : 1,
+                ColorAttachmentFormats = desc.DepthOnly ? null : &colorFormat,
                 DepthAttachmentFormat = desc.DepthFormat,
             };
 
             var info = new VkGraphicsPipelineCreateInfo
             {
                 Next = desc.RenderPass.IsNull() ? &rendering : null,
-                StageCount = 2,
+                StageCount = desc.Fragment is null ? 1 : 2,
                 Stages = stages,
                 VertexInputState = input,
                 InputAssemblyState = &inputAssembly,

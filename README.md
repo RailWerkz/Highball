@@ -55,11 +55,26 @@ Keyboard: arrows or W/S, Enter, Esc, left/right to change a value, Q/E for tabs.
 Highball --skipsplash --menu options --shot 3 options.png --quit 3.5
 ```
 
-`--menu single|multi|builder|options|credits` (open that screen after the main menu), `--skipsplash`,
+`--menu single|multi|builder|options|credits|lighting` (open that screen after the main menu), `--skipsplash`,
 `--shot SECONDS FILE.png [SECONDS FILE.png ...]`, `--quit SECONDS`, `--novsync`. Runs that take screenshots or quit
 on a timer never write the player's settings.
 
 Settings are saved to `%APPDATA%/Highball/Settings.json`, and the log is written next to them.
+
+## The lighting test scene
+
+```bash
+Highball --skipsplash --menu lighting
+```
+
+The SD40 on a short length of track beside rows of test spheres (metal over non-metal, rough to polished), with
+sliders for the sun and exposure and a sky picker. Drag to orbit, wheel to zoom. To compare the same view after a
+shader change, fix it with `--lighting noon|golden|night [csx|source]` and `--orbit YAW PITCH DISTANCE`, then use `--shot`.
+
+This scene and the terrain use physically based light (`Content/Shaders/lighting.glsl`): each direct light goes through
+`shadeLight`, and there are no local lights yet. Track and roads keep their own shaders. Everything receives the sun's
+shadows (`Content/Shaders/shadows.glsl`, `SunShadows`); terrain and whole models cast them, track and roads don't yet.
+`--noshadows` turns them off, to see what they cost.
 
 ## Licences
 

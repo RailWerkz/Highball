@@ -380,6 +380,7 @@ public sealed class HighballApp : IDisposable
         AudioEngine.Shutdown();
         Gpu.Flush(); // textures the screens let go of are removed from ImGui while its renderer still exists
         World.Sky.Shutdown();
+        World.SunShadows.Shutdown();
         _vulkanBackend?.Dispose();
         _glfwBackend?.Dispose();
 

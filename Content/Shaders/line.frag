@@ -1,6 +1,7 @@
 #version 450
 #include "atmosphere.glsl"
 #include "noise.glsl"
+#include "shadows.glsl"
 
 layout(location = 0) in vec3 vRelative;
 layout(location = 1) in vec3 vNormal;
@@ -182,7 +183,7 @@ void main()
         gloss = 40.0;
     }
 
-    float direct = max(dot(n, sun), 0.0);
+    float direct = max(dot(n, sun), 0.0) * sunShadow(vRelative, n, sun);
     vec3 skyLight = skyAmbient(n);
     vec3 color = albedo * (SunColor * direct + skyLight);
     vec3 halfway = normalize(sun - view);
