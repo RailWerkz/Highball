@@ -105,7 +105,9 @@ public sealed unsafe class Texture2D : IDisposable
 
     /// A block-compressed DDS from Content/Textures (BC1, BC3, BC4 or BC5, with its own mip chain), uploaded as it is.
     /// srgb for colour maps: the blocks are read back linear whatever the file says.
-    public static Texture2D LoadDds(string relativePath, bool srgb)
+    /// skip: how many of its largest levels to leave out, so it takes a quarter of the memory for each (it always keeps at least a
+    /// 256 pixel level, if it has one).
+    public static Texture2D LoadDds(string relativePath, bool srgb, int skip = 0)
     {
         var path = ContentPath.Texture(relativePath);
         using var dds = new Gli.Texture(path);
@@ -119,8 +121,11 @@ public sealed unsafe class Texture2D : IDisposable
             _ => throw new InvalidDataException($"{relativePath}: {dds.Format} isn't a format this reads"),
         };
 
-        var extent = dds.Extent;
-        var mips = (int)dds.Levels;
+        var first = 0;
+        while (first < skip && first + 1 < (int)dds.Levels && Math.Min(dds.ImageExtent(first + 1).X, dds.ImageExtent(first + 1).Y) >= 256)
+            first++;
+        var extent = dds.ImageExtent(first);
+        var mips = (int)dds.Levels - first;
         var texture = new Texture2D(extent.X, extent.Y, mips);
         texture._image = Gpu.Device.CreateImage(new ImageEx.CreateInfo
         {
@@ -142,13 +147,13 @@ public sealed unsafe class Texture2D : IDisposable
 
         // Every level, one after another, in one staging buffer.
         var regions = new VkBufferImageCopy[mips];
-        var data = new byte[Enumerable.Range(0, mips).Sum(level => dds.ImageSize(level))];
+        var data = new byte[Enumerable.Range(first, mips).Sum(level => dds.ImageSize(level))];
         var offset = 0;
         for (var level = 0; level < mips; level++)
         {
-            var bytes = (int)dds.ImageSize(level);
-            new ReadOnlySpan<byte>(dds.ImageData(level, 0, 0), bytes).CopyTo(data.AsSpan(offset));
-            var size = dds.ImageExtent(level);
+            var bytes = (int)dds.ImageSize(first + level);
+            new ReadOnlySpan<byte>(dds.ImageData(first + level, 0, 0), bytes).CopyTo(data.AsSpan(offset));
+            var size = dds.ImageExtent(first + level);
             regions[level] = new VkBufferImageCopy
             {
                 BufferOffset = Brutal.ByteSize.Of(offset),

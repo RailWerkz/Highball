@@ -47,6 +47,10 @@ public sealed class Settings
     public bool Vegetation { get; set; } = true;
     public bool AmbientOcclusion { get; set; } = true;
     public bool SunShadows { get; set; } = true;
+    /// The track's materials, pixels a side: 1024 or 2048.
+    public int TrackTextureSize { get; set; } = 2048;
+    /// The ground's materials: 0 as they come, 1 half the size, 2 a quarter.
+    public int TerrainTextureDetail { get; set; }
     public bool TemporalAA { get; set; } = true;
 
     /// What's falling, by an id in Weather.Kinds, and how hard, 0 to 1.

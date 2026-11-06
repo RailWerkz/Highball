@@ -22,6 +22,17 @@ layout(push_constant) uniform Push
 // Crushed stone from Tools/Blender/track_parts.py: a seamless tile 1.5 m across.
 layout(set = 0, binding = 0) uniform sampler2D ballastMap;
 
+// TrackTextures: colour, normal, and green roughness and blue metalness, for the ballast, the top of a rail and the sides of one.
+layout(set = 4, binding = 0) uniform sampler2D rockColor;
+layout(set = 4, binding = 1) uniform sampler2D rockNormal;
+layout(set = 4, binding = 2) uniform sampler2D rockPacked;
+layout(set = 4, binding = 3) uniform sampler2D railTopColor;
+layout(set = 4, binding = 4) uniform sampler2D railTopNormal;
+layout(set = 4, binding = 5) uniform sampler2D railTopPacked;
+layout(set = 4, binding = 6) uniform sampler2D railSideColor;
+layout(set = 4, binding = 7) uniform sampler2D railSideNormal;
+layout(set = 4, binding = 8) uniform sampler2D railSidePacked;
+
 // LineMaterial, and what each packs into vData (see LineVertex).
 const int Ballast = 0;
 const int Rail = 1;
@@ -60,6 +71,26 @@ vec3 paint(vec3 base, vec3 color, float amount)
     return mix(base, color, clamp(amount, 0.0, 1.0));
 }
 
+// A normal map's bump, with the surface's directions worked out from how the position and map change across the pixel.
+vec3 bumped(vec3 n, vec3 bump, vec2 uv)
+{
+    vec3 dpx = dFdx(vRelative);
+    vec3 dpy = dFdy(vRelative);
+    vec2 dux = dFdx(uv);
+    vec2 duy = dFdy(uv);
+    vec3 t = cross(dpy, n) * dux.x + cross(n, dpx) * duy.x;
+    vec3 b = cross(dpy, n) * dux.y + cross(n, dpx) * duy.y;
+    float scale = max(dot(t, t), dot(b, b));
+    return scale < 1e-20 ? n : normalize(t * bump.x + b * bump.y + n * bump.z * sqrt(scale));
+}
+
+// A material's map seen straight down its strongest axis, so a part with no map of its own can still wear one.
+vec2 boxUv(vec3 position, vec3 n)
+{
+    vec3 a = abs(n);
+    return a.y > a.x && a.y > a.z ? position.xz : a.x > a.z ? position.zy : position.xy;
+}
+
 void main()
 {
     vec3 world = pc.camera.xyz + vRelative;
@@ -93,9 +124,12 @@ void main()
     if (material == Ballast)
     {
         float patches = fbm(tex * 0.35, pixel * 0.35);
-        albedo = texture(ballastMap, tex / 1.5).rgb * 0.65 * (0.85 + 0.3 * patches);
-        roughness = 0.95;
+        vec2 stone = tex / 1.5;
+        // Crushed rock weathered by dust and oil: the map on its own is clean river stone.
+        albedo = texture(rockColor, stone).rgb * vec3(0.46, 0.44, 0.42) * (0.8 + 0.3 * patches);
+        roughness = texture(rockPacked, stone).g;
         occlusion = 0.8;
+        n = bumped(n, texture(rockNormal, stone).xyz * 2.0 - 1.0, stone);
 
         int tracks = style & 7;
         bool disused = (style & 8) != 0;
@@ -127,13 +161,19 @@ void main()
     {
         float height = vData.w;
         float worn = smoothstep(0.170, 0.180, height) * smoothstep(0.5, 0.9, n.y);
-        float rust = noise(vec2(v * 3.0, height * 40.0));
+        // The top wears Metal021 and the rest Metal024, running along the rail so its streaks do too.
+        vec2 along = vec2(v, u + height) / 0.6;
+        vec2 topPacked = texture(railTopPacked, along).gb;
+        vec2 sidePacked = texture(railSidePacked, along).gb;
+        vec3 bump = mix(texture(railSideNormal, along).xyz, mix(texture(railTopNormal, along).xyz, vec3(0.5, 0.5, 1.0), 0.7), worn) * 2.0 - 1.0;
+        n = bumped(n, bump, along);
         // The railhead is polished bare steel and the rest rust, which isn't a metal to look at. Past a few pixels a rail is too
         // thin for a sharp highlight to do anything but sparkle.
-        albedo = mix(Rust * (0.8 + 0.4 * rust), BareSteel, worn);
-        metallic = worn;
+        // The top's polished by wheels, brighter than any map of a sheet of steel; the sides are more rust than metal.
+        albedo = mix(texture(railSideColor, along).rgb, mix(texture(railTopColor, along).rgb, BareSteel, 0.65), worn);
+        metallic = mix(sidePacked.y * 0.5, 1.0, worn);
         hold = 1.0 - worn;
-        roughness = max(mix(0.8, 0.28, worn), min(pixel * 2.0, 0.6));
+        roughness = max(mix(sidePacked.x, topPacked.x * 0.45, worn), min(pixel * 2.0, 0.6));
         specular = 1.0;
     }
     else if (material == Asphalt)
@@ -199,10 +239,15 @@ void main()
     else if (material == Painted)
     {
         albedo = Paints[clamp(style, 0, 6)];
-        // Galvanised steel, or paint.
+        // Galvanised steel, or paint, either weathered by Metal024.
+        vec2 worn = boxUv(world, n) / 0.8;
+        vec2 packed = texture(railSidePacked, worn).gb;
+        vec3 grime = texture(railSideColor, worn).rgb;
+        albedo *= mix(vec3(1.0), grime * 2.0, style == 2 ? 0.8 : 0.3);
         metallic = style == 2 ? 1.0 : 0.0;
-        roughness = style == 2 ? 0.5 : 0.45;
+        roughness = mix(style == 2 ? 0.5 : 0.45, packed.x, 0.6);
         specular = 1.0;
+        n = bumped(n, texture(railSideNormal, worn).xyz * 2.0 - 1.0, worn);
     }
 
     if (dot(n, view) > 0.0)

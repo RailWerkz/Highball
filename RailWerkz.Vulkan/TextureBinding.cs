@@ -72,6 +72,10 @@ public sealed unsafe class TextureBinding : IDisposable
         }
     }
 
+    /// Binds it as a set other than the first.
+    public void BindAt(CommandBuffer cmd, VkPipelineLayout layout, int set) =>
+        cmd.BindDescriptorSets(VkPipelineBindPoint.Graphics, layout, set, [Set], []);
+
     public void Bind(CommandBuffer cmd, VkPipelineLayout layout) =>
         cmd.BindDescriptorSets(VkPipelineBindPoint.Graphics, layout, 0, [Set], []);
 

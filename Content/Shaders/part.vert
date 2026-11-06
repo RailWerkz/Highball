@@ -10,6 +10,8 @@ layout(location = 0) out vec3 vRelative;
 layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec2 vUv;
 layout(location = 3) out float vTint;
+layout(location = 4) out vec3 vModel;
+layout(location = 5) out vec3 vModelNormal;
 
 layout(push_constant) uniform Push
 {
@@ -32,6 +34,8 @@ void main()
     vNormal = basis * inNormal;
     vUv = inUv;
     vTint = inPlace.w;
+    vModel = model;
+    vModelNormal = inNormal;
     // Pulled a fraction towards the camera like the rest of the track (see line.vert).
     gl_Position = pc.viewProjection * vec4(relative * 0.9985, 1.0);
 }

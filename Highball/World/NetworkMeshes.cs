@@ -115,6 +115,7 @@ public sealed partial class NetworkMeshes : IDisposable
     private readonly Model _tieFar;
     private readonly Model _plate;
     private readonly Texture2D _ballast;
+    private readonly TrackTextures _trackTextures = new();
     private readonly TextureBinding _tieTexture;
     private readonly TextureBinding _plateTexture;
     private readonly TextureBinding _ballastTexture;
@@ -1791,16 +1792,24 @@ public sealed partial class NetworkMeshes : IDisposable
     }
 
     /// Binds the ballast's texture for the line pipeline.
-    public void BindBallast(CommandBuffer cmd, VkPipelineLayout layout) => _ballastTexture.Bind(cmd, layout);
+    public void BindBallast(CommandBuffer cmd, VkPipelineLayout layout)
+    {
+        _trackTextures.Refresh();
+        _ballastTexture.Bind(cmd, layout);
+        _trackTextures.BindLines(cmd, layout);
+    }
 
     /// Draws the ties and tie plates with the part pipeline bound: the full models out to DetailRadius, decimated ties
     /// past it, cell by cell.
     public void DrawParts(CommandBuffer cmd, VkPipelineLayout layout, double cx, double cy, double cz, Action<float3> push)
     {
         _tieTexture.Bind(cmd, layout);
+        _trackTextures.BindTies(cmd, layout);
         DrawInstances(cmd, cx, cy, cz, push, c => (c.Ties, c.TieCells), detail => detail ? _tie.Mesh : _tieFar.Mesh);
         _plateTexture.Bind(cmd, layout);
+        _trackTextures.BindPlates(cmd, layout);
         DrawInstances(cmd, cx, cy, cz, push, c => (c.Plates, c.PlateCells), detail => detail ? _plate.Mesh : null);
+        _trackTextures.BindNone(cmd, layout);
     }
 
     private void DrawInstances(CommandBuffer cmd, double cx, double cy, double cz, Action<float3> push, Func<Chunk, (BufferEx, int[])> instances,
@@ -1870,6 +1879,7 @@ public sealed partial class NetworkMeshes : IDisposable
         _tieFar.Dispose();
         _plate.Dispose();
         _ballast.Dispose();
+        _trackTextures.Dispose();
         _fallback?.Dispose();
     }
 }

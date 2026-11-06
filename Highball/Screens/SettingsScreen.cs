@@ -22,6 +22,7 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
     private int _tabDirection = 1;
 
     private static readonly string[] Qualities = ["LOW", "MEDIUM", "HIGH", "ULTRA"];
+    private static readonly string[] TerrainDetails = ["FULL", "HALF", "QUARTER"];
     private static readonly float[] Scales = [0.8f, 0.9f, 1f, 1.1f, 1.25f, 1.5f];
 
     public override WorldView View => _under?.View ?? WorldView.None;
@@ -44,6 +45,8 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
 
         var graphics = NewTab("Graphics")
             .Add(new MenuItem { Label = "Quality", Value = () => Qualities[Math.Clamp(s.Quality, 0, 3)], OnChange = d => s.Quality = Math.Clamp(s.Quality + d, 0, 3) })
+            .Add(new MenuItem { Label = "Track textures", Value = () => s.TrackTextureSize >= 2048 ? "2K" : "1K", OnChange = _ => s.TrackTextureSize = s.TrackTextureSize >= 2048 ? 1024 : 2048 })
+            .Add(new MenuItem { Label = "Terrain textures", Value = () => TerrainDetails[Math.Clamp(s.TerrainTextureDetail, 0, 2)], OnChange = d => s.TerrainTextureDetail = (Math.Clamp(s.TerrainTextureDetail, 0, 2) + d + 3) % 3 })
             .Add(new MenuItem { Label = "Anti-aliasing (MSAA)", Value = () => s.Msaa <= 1 ? "OFF" : $"{s.Msaa}x", OnChange = d => s.Msaa = StepMsaa(s.Msaa, d) })
             .Add(new MenuItem { Label = "View distance", Value = () => Distance(s.ViewDistance), Meter = () => (s.ViewDistance - MetersPerMile) / (20000f - MetersPerMile), OnChange = d => s.ViewDistance = StepDistance(s.ViewDistance, d) })
             .Add(new MenuItem { Label = "Field of view", Value = () => $"{s.FieldOfView:0}°", Meter = () => (s.FieldOfView - 40f) / 50f, OnChange = d => s.FieldOfView = Math.Clamp(s.FieldOfView + d * 5f, 40f, 90f), SeparatorAfter = true })
