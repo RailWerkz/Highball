@@ -148,7 +148,11 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         }
     }
 
-    public void RenderWorld(CommandBuffer cmd, int width, int height) => _editor?.RenderWorld(cmd, width, height);
+    public void RenderWorld(CommandBuffer cmd, int width, int height)
+    {
+        _editor?.Lighting.Apply();
+        _editor?.RenderWorld(cmd, width, height);
+    }
 
     public void CompositeWorld(CommandBuffer cmd) => _editor?.CompositeWorld(cmd);
 
@@ -200,6 +204,8 @@ public sealed class BuilderScreen : Screen, IWorldScreen
                     ImGui.Separator();
                 }
 
+                if (ImGui.MenuItem("Settings"))
+                    HighballApp.Instance.Push(new Screens.SettingsScreen(this, _route.Origin.Latitude, _route.Origin.Longitude));
                 if (ImGui.MenuItem("Exit Route Builder", editing ? "" : "Esc"))
                     _exit = true;
                 ImGui.EndMenu();
@@ -222,16 +228,9 @@ public sealed class BuilderScreen : Screen, IWorldScreen
                 }
 
                 ImGui.Separator();
-                DebugWindows.Menu();
-                ImGui.EndMenu();
-            }
-
-            if (ImGui.BeginMenu("Lighting"))
-            {
-                if (ImGui.MenuItem("Sky and Time of Day", "", editing && _editor!.Lighting.Open, editing))
-                    _editor!.Lighting.Open = !_editor.Lighting.Open;
-                if (ImGui.MenuItem("Test Scene"))
+                if (ImGui.MenuItem("Lighting Test Scene"))
                     HighballApp.Instance.Push(new Screens.LightingScreen());
+                DebugWindows.Menu();
                 ImGui.EndMenu();
             }
 
@@ -242,11 +241,7 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         if (_showPanel && (_mode == Mode.Planner || _editor?.HasPanel == true))
             Panel();
         if (_mode != Mode.Planner)
-        {
             _editor?.Windows();
-            _editor?.Lighting.Draw();
-            _editor?.Lighting.Apply();
-        }
 
         var left = (_mode == Mode.Planner ? 0f : EditorView.StripWidth) + (_showPanel ? PanelWidth : 0f) + 12f;
         Action lines = _mode == Mode.Planner || _editor is null ? _planner.DebugStats : _editor.DebugStats;

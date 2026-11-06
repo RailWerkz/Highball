@@ -46,6 +46,7 @@ public sealed class Settings
     /// Grass, shrubs, trees and rocks over the terrain.
     public bool Vegetation { get; set; } = true;
     public bool AmbientOcclusion { get; set; } = true;
+    public bool SunShadows { get; set; } = true;
     public bool TemporalAA { get; set; } = true;
 
     /// What's falling, by an id in Weather.Kinds, and how hard, 0 to 1.

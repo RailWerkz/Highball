@@ -38,6 +38,8 @@ public sealed class Menu
     private int _selected;
     private double _openedAt;
     private int _dragging = -1;
+    private float _scroll;
+    private bool _reveal;
 
     /// Split-flap characters a meter row's readout always takes, so its arrow stays put as the value changes.
     private const int MeterChars = 6;
@@ -52,6 +54,9 @@ public sealed class Menu
 
     /// Rows layout: the card's width.
     public float RowWidth { get; set; } = 720f;
+
+    /// Rows layout: how tall the list may be on screen. Past this it scrolls, with the wheel or by following the selection.
+    public float MaxListHeight { get; set; } = float.MaxValue;
 
     public int Selected
     {
@@ -77,6 +82,7 @@ public sealed class Menu
     public void Open()
     {
         _openedAt = Tween.Now;
+        _reveal = true;
 
         if (Items.Count > 0 && !Items[_selected].IsEnabled)
             Move(1);
@@ -87,6 +93,7 @@ public sealed class Menu
         if (Items.Count == 0)
             return;
 
+        _reveal = true;
         for (var i = 0; i < Items.Count; i++)
         {
             _selected = (_selected + direction + Items.Count) % Items.Count;
@@ -301,7 +308,26 @@ public sealed class Menu
         var pad = S(16f);
         var enter = Tween.Progress(_openedAt, 0.35f, Ease.OutCubic);
 
-        Canvas.Plate(draw, new float2(left - pad, listTop - pad), new float2(left + width + pad, RowTop(listTop, Items.Count) + pad), enter);
+        var total = RowTop(0f, Items.Count);
+        var view = MathF.Min(total, MaxListHeight);
+        var viewTop = listTop;
+        var viewBottom = viewTop + view;
+        var overflow = total - view;
+        var overList = !Keyboard.PointerBlocked && mouse.X >= left - pad && mouse.X <= left + width + pad && mouse.Y >= viewTop && mouse.Y <= viewBottom;
+        if (overflow > 0f && overList && focused)
+            _scroll -= ImGui.GetIO().MouseWheel * height;
+        if (_reveal && Items.Count > 0)
+        {
+            var rowTop = RowTop(0f, _selected);
+            _scroll = Math.Clamp(_scroll, rowTop + height - view, rowTop);
+            _reveal = false;
+        }
+
+        _scroll = Math.Clamp(_scroll, 0f, MathF.Max(overflow, 0f));
+        listTop -= Tween.Spring(Tween.Key(_id, "scroll"), _scroll, 420f, 40f);
+
+        Canvas.Plate(draw, new float2(left - pad, viewTop - pad), new float2(left + width + pad, viewBottom + pad), enter);
+        draw.PushClipRect(new float2(left - pad, viewTop), new float2(left + width + pad, viewBottom), true);
 
         var barY = Tween.Spring(Tween.Key(_id, "bar"), RowTop(listTop, _selected), 420f, 40f);
         if (focused && Items.Count > 0)
@@ -331,7 +357,7 @@ public sealed class Menu
             var rightArrowX = right - S(4f);
             var hit = S(14f);
 
-            var hovered = focused && enabled && !Keyboard.PointerBlocked && mouse.X >= rowMin.X && mouse.X <= rowMax.X && mouse.Y >= rowMin.Y && mouse.Y <= rowMax.Y;
+            var hovered = focused && enabled && overList && mouse.X >= rowMin.X && mouse.X <= rowMax.X && mouse.Y >= rowMin.Y && mouse.Y <= rowMax.Y;
             var onLeftArrow = hovered && changeable && MathF.Abs(mouse.X - leftArrowX) <= hit;
             var onRightArrow = hovered && changeable && mouse.X >= rightArrowX - hit;
             var onBar = hovered && changeable && item.Meter is not null && mouse.X >= barMin.X && mouse.X <= barMin.X + barWidth;
@@ -434,6 +460,17 @@ public sealed class Menu
                 y += SeparatorGap;
         }
 
-        return y;
+        draw.PopClipRect();
+
+        if (overflow > 0f)
+        {
+            var thumb = view * view / total;
+            var at = viewTop + (view - thumb) * (_scroll / overflow);
+            var x = left + width + pad - S(5f);
+            draw.AddRectFilled(new float2(x, viewTop), new float2(x + S(2f), viewBottom), Stroke.Fade(enter));
+            draw.AddRectFilled(new float2(x, at), new float2(x + S(2f), at + thumb), Accent.Fade(enter));
+        }
+
+        return viewBottom;
     }
 }

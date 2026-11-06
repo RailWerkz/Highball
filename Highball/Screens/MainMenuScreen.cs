@@ -18,7 +18,7 @@ public sealed class MainMenuScreen : MenuScreen
         Menu.Add(new MenuItem { Label = "SINGLE PLAYER", OnSelect = () => HighballApp.Instance.Push(new SinglePlayerScreen()) })
             .Add(new MenuItem { Label = "MULTIPLAYER", OnSelect = () => HighballApp.Instance.Push(new MultiplayerScreen()) })
             .Add(new MenuItem { Label = "ROUTE BUILDER", OnSelect = () => HighballApp.Instance.Push(new RouteBuilderScreen()), SeparatorAfter = true })
-            .Add(new MenuItem { Label = "OPTIONS", OnSelect = () => HighballApp.Instance.Push(new OptionsScreen()) })
+            .Add(new MenuItem { Label = "SETTINGS", OnSelect = () => HighballApp.Instance.Push(new SettingsScreen()) })
             .Add(new MenuItem { Label = "CREDITS", OnSelect = () => HighballApp.Instance.Push(new CreditsScreen()) })
             .Add(new MenuItem { Label = "QUIT", OnSelect = () => HighballApp.Instance.Quit() });
     }

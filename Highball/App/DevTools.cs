@@ -8,14 +8,14 @@ using RailWerkz.Vulkan;
 namespace Highball.App;
 
 /// Command-line helpers for development and testing:
-///   --menu SCREEN                                   open a menu after the splash: single, multi, builder, options, credits,
+///   --menu SCREEN                                   open a menu after the splash: single, multi, builder, settings, credits,
 ///                                                   lighting (the lighting test scene)
 ///   --lighting PRESET [MODEL]                       with --menu lighting, start at noon, golden or night, with the model
 ///                                                   csx (the game's SD40) or source (its source file, with PBR maps)
 ///   --orbit YAW PITCH DISTANCE                      with --menu lighting, where the camera starts (degrees, metres)
 ///   --skytime YYYY-MM-DD HOUR                       the procedural sky's date and time, in hours on the route's clock
 ///   --clouds COVERAGE                               how much of the procedural sky is cloud, 0 to 1
-///   --tab NAME                                      with --menu options, open on that tab: display, graphics, audio, simulation
+///   --tab NAME                                      with --menu settings, open on that tab: display, graphics, lighting, audio, simulation
 ///   --route NAME                                    open that route in the Route Builder (made if there isn't one)
 ///   --select LAT LON N                              with --route, pick N x N tiles there and build them
 ///   --trackbuild                                    with --select, build lidar only where track runs, standard elsewhere
@@ -71,7 +71,7 @@ public static class DevTools
     /// Where the lighting test scene's camera starts (--orbit), read once by it.
     public static (float Yaw, float Pitch, float Distance)? Orbit { get; set; }
 
-    /// The options tab asked for on the command line, read once by the options screen.
+    /// The settings tab asked for on the command line, read once by the settings screen.
     public static string? Tab { get; set; }
 
     /// Tiles to pick and build on opening the route editor (--select), read once by it.
@@ -327,7 +327,7 @@ public static class DevTools
             "single" => new SinglePlayerScreen(),
             "multi" => new MultiplayerScreen(),
             "builder" => new RouteBuilderScreen(),
-            "options" => new OptionsScreen(),
+            "settings" or "options" => new SettingsScreen(),
             "credits" => new CreditsScreen(),
             "lighting" => new LightingScreen(),
             _ => null,

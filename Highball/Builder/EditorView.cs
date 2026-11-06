@@ -53,7 +53,7 @@ public sealed partial class EditorView : IDisposable
     private readonly Task<TerrainSource> _opening;
     private readonly WorldRenderer _renderer = new();
 
-    /// The sky, time of day and exposure, in the menu bar's Lighting menu.
+    /// Puts the sky, time of day and exposure from Settings onto the renderer.
     public LightingPanel Lighting { get; }
     private readonly Camera _camera = new();
     private readonly RoutePoint? _start;
@@ -149,7 +149,7 @@ public sealed partial class EditorView : IDisposable
     {
         _route = route;
         _start = start;
-        Lighting = new LightingPanel(_renderer, route.Origin.Latitude, route.Origin.Longitude) { Open = DevTools.Panels };
+        Lighting = new LightingPanel(_renderer, route.Origin.Latitude, route.Origin.Longitude);
         _opening = TerrainSource.Open(route);
         if (DevTools.Clean)
             _showGrades = false;
@@ -2229,21 +2229,6 @@ public sealed partial class EditorView : IDisposable
 
     public void MenuView()
     {
-        if (ImGui.BeginMenu("Skybox"))
-        {
-            foreach (var name in Sky.Available)
-            {
-                if (ImGui.MenuItem(Sky.Label(name), "", _renderer.Sky.Name == name, true))
-                {
-                    _renderer.Sky.Use(name);
-                    Settings.Current.Skybox = name;
-                    Settings.Save();
-                }
-            }
-
-            ImGui.EndMenu();
-        }
-
         if (ImGui.MenuItem("Wireframe", "F", _renderer.Wireframe, true))
             _renderer.Wireframe = !_renderer.Wireframe;
         ImGui.MenuItem("Track Grades"u8, "G"u8, ref _showGrades);

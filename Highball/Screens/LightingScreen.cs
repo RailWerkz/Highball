@@ -192,8 +192,11 @@ public sealed class LightingScreen : Screen, IWorldScreen
             AddSpheres(_draws);
     }
 
-    public void RenderWorld(CommandBuffer cmd, int width, int height) =>
+    public void RenderWorld(CommandBuffer cmd, int width, int height)
+    {
+        _panel.Apply();
         _renderer.Render(cmd, new int2(width, height), _camera, null, null, _draws);
+    }
 
     public void CompositeWorld(CommandBuffer cmd) => _renderer.Composite(cmd);
 
@@ -214,9 +217,11 @@ public sealed class LightingScreen : Screen, IWorldScreen
 
             ImGui.Checkbox("Test spheres"u8, ref _showSpheres);
             ImGui.Separator();
+            if (ImGui.Button("Settings"u8))
+                HighballApp.Instance.Push(new SettingsScreen(this));
+            ImGui.Separator();
             ImGui.TextDisabled("Drag to orbit, wheel to zoom, Esc to leave"u8);
         });
-        _panel.Apply();
     }
 
     private static Mesh Plane(float half, float tile)

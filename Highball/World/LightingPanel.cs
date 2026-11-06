@@ -4,9 +4,8 @@ using RailWerkz.Core.Settings;
 
 namespace Highball.World;
 
-/// The sky, the time of day and the exposure for a world renderer, as a window. The date and time are kept in the
-/// settings, and the sun comes from them and the route's place on Earth. A skybox brings its own sun, so they only apply to
-/// the procedural sky.
+/// Puts the Settings screen's sky, time of day and exposure onto a world renderer. The sun comes from the date and time and the
+/// route's place on Earth. A skybox brings its own sun, so they only apply to the procedural sky.
 public sealed class LightingPanel
 {
     private readonly WorldRenderer _renderer;
@@ -14,9 +13,12 @@ public sealed class LightingPanel
     private readonly double _longitude;
     private (string Sky, int Version, int Year, int Month, int Day, float Hour, float Overcast) _applied = ("", -1, 0, 0, 0, 0f, 0f);
 
+    private string _skySetting = Settings.Current.Skybox;
+
     public bool Open;
 
-    /// The most auto exposure opens up: it should still look like night at night.
+    /// The named times of a day.
+    public static readonly (string Id, string Label)[] Presets = [("dawn", "Dawn"), ("noon", "Noon"), ("golden", "Golden hour"), ("dusk", "Dusk"), ("night", "Night")];
 
     /// Barstow, for a scene with no route of its own.
     public LightingPanel(WorldRenderer renderer, double latitude = 34.9, double longitude = -117.09)
@@ -93,9 +95,13 @@ public sealed class LightingPanel
     }
 
     /// Moves the clock to a time of the current day, by name: dawn, noon, golden, dusk or night.
-    public void Preset(string name)
+    public void Preset(string name) => Settings.Current.SkyHour = (float)PresetHour(name, _latitude, _longitude);
+
+    /// When that named time is on the current day, there.
+    public static double PresetHour(string name, double latitude, double longitude)
     {
-        var sun = Sun();
+        var s = Settings.Current;
+        var sun = SunPosition.At(latitude, longitude, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour);
         var rise = double.IsNaN(sun.Sunrise) ? sun.SolarNoon - 6.0 : sun.Sunrise;
         var set = double.IsNaN(sun.Sunset) ? sun.SolarNoon + 6.0 : sun.Sunset;
         var hour = name.ToLowerInvariant() switch
@@ -105,9 +111,9 @@ public sealed class LightingPanel
             "golden" => set - 0.75,
             "dusk" => set + 0.2,
             "night" => set + 3.0,
-            _ => (double)Settings.Current.SkyHour,
+            _ => (double)s.SkyHour,
         };
-        Settings.Current.SkyHour = (float)((hour % 24.0 + 24.0) % 24.0);
+        return (hour % 24.0 + 24.0) % 24.0;
     }
 
     /// Brings the sky and the exposure up to date. Call before the frame's world is recorded.
@@ -115,6 +121,13 @@ public sealed class LightingPanel
     {
         var s = Settings.Current;
         var sky = _renderer.Sky;
+        if (s.Skybox != _skySetting)
+        {
+            _skySetting = s.Skybox;
+            sky.Use(s.Skybox);
+        }
+
+        _renderer.Shadows = s.SunShadows && !DevTools.NoShadows;
         var type = CloudType.Find(s.CloudType);
         _renderer.Clouds.Type = type;
         _renderer.Clouds.Amount = s.CloudCoverage;
@@ -137,7 +150,7 @@ public sealed class LightingPanel
         _renderer.MeasureExposure = s.AutoExposure;
     }
 
-    /// The window, if it's open, with anything else the screen wants in it.
+    /// The test scene's window: the named times, where the sun is, and anything else the screen wants in it. The rest is in Settings.
     public void Draw(Action? extra = null)
     {
         if (!Open)
@@ -147,93 +160,10 @@ public sealed class LightingPanel
         ImGui.SetNextWindowSize(new float2(380f, 0f), ImGuiCond.FirstUseEver);
         if (ImGui.Begin("Lighting"u8, ref Open))
         {
-            var s = Settings.Current;
-            var sky = _renderer.Sky;
-
-            if (ImGui.BeginCombo("Sky"u8, Sky.Label(sky.Name)))
-            {
-                foreach (var name in Sky.Available)
-                {
-                    if (ImGui.Selectable(Sky.Label(name), name == sky.Name))
-                    {
-                        sky.Use(name);
-                        s.Skybox = name;
-                    }
-                }
-
-                ImGui.EndCombo();
-            }
-
-            ImGui.Separator();
-            if (sky.Name == Sky.Procedural)
-                DrawClock(s);
+            if (_renderer.Sky.Name == Sky.Procedural)
+                DrawClock(Settings.Current);
             else
-                ImGui.TextDisabled("A skybox has its own sun. Pick Procedural for time of day."u8);
-
-            ImGui.Separator();
-            var exposure = s.Exposure;
-            if (ImGui.SliderFloat("Exposure"u8, ref exposure, 0.1f, 4f))
-                s.Exposure = exposure;
-
-            var auto = s.AutoExposure;
-            if (ImGui.Checkbox("Auto exposure"u8, ref auto))
-                s.AutoExposure = auto;
-
-            var shadows = _renderer.Shadows;
-            if (ImGui.Checkbox("Sun shadows"u8, ref shadows))
-                _renderer.Shadows = shadows;
-
-            var falling = Array.Find(Weather.Kinds, kind => kind.Id == s.Weather);
-            if (ImGui.BeginCombo("Weather"u8, falling.Label ?? "Dry"))
-            {
-                foreach (var kind in Weather.Kinds)
-                {
-                    if (ImGui.Selectable(kind.Label, kind.Id == s.Weather))
-                    {
-                        s.Weather = kind.Id;
-                        if (kind.Clouds is not null)
-                            s.CloudType = kind.Clouds;
-                    }
-                }
-
-                ImGui.EndCombo();
-            }
-
-            var hard = s.WeatherAmount;
-            if (ImGui.SliderFloat("How hard"u8, ref hard, 0f, 1f))
-                s.WeatherAmount = hard;
-
-            var temporal = s.TemporalAA;
-            if (ImGui.Checkbox("Temporal anti-aliasing"u8, ref temporal))
-                s.TemporalAA = temporal;
-
-            var bloom = s.Bloom;
-            if (ImGui.Checkbox("Bloom"u8, ref bloom))
-                s.Bloom = bloom;
-
-            var rays = s.GodRays;
-            if (ImGui.Checkbox("God rays and glare"u8, ref rays))
-                s.GodRays = rays;
-
-            var look = ColorGrade.Find(s.ColorGrade);
-            if (ImGui.BeginCombo("Look"u8, look.Label))
-            {
-                foreach (var grade in ColorGrade.All)
-                {
-                    if (ImGui.Selectable(grade.Label, grade == look))
-                        s.ColorGrade = grade.Id;
-                }
-
-                ImGui.EndCombo();
-            }
-
-            var occluded = s.AmbientOcclusion;
-            if (ImGui.Checkbox("Ambient occlusion"u8, ref occluded))
-                s.AmbientOcclusion = occluded;
-
-            var plants = s.Vegetation;
-            if (ImGui.Checkbox("Plants and rocks"u8, ref plants))
-                s.Vegetation = plants;
+                ImGui.TextDisabled("A skybox has its own sun. Pick Procedural in Settings for time of day."u8);
 
             extra?.Invoke();
         }
@@ -243,7 +173,7 @@ public sealed class LightingPanel
 
     private void DrawClock(Settings s)
     {
-        foreach (var (label, id) in ((string, string)[])[("Dawn", "dawn"), ("Noon", "noon"), ("Golden hour", "golden"), ("Dusk", "dusk"), ("Night", "night")])
+        foreach (var (id, label) in Presets)
         {
             if (ImGui.Button(label))
                 Preset(id);
@@ -251,47 +181,6 @@ public sealed class LightingPanel
         }
 
         ImGui.NewLine();
-
-        var current = CloudType.Find(s.CloudType);
-        if (ImGui.BeginCombo("Clouds"u8, current.Label))
-        {
-            var group = "";
-            foreach (var type in CloudType.All)
-            {
-                if (type.Group != group)
-                {
-                    group = type.Group;
-                    if (group.Length > 0)
-                        ImGui.SeparatorText(group);
-                }
-
-                if (ImGui.Selectable(type.Label, type == current))
-                    s.CloudType = type.Id;
-            }
-
-            ImGui.EndCombo();
-        }
-
-        var coverage = s.CloudCoverage;
-        if (ImGui.SliderFloat("Amount"u8, ref coverage, 0f, 1f))
-            s.CloudCoverage = coverage;
-
-        var hour = s.SkyHour;
-        if (ImGui.SliderFloat("Time"u8, ref hour, 0f, 23.99f))
-            s.SkyHour = hour;
-
-        var month = s.SkyMonth;
-        if (ImGui.SliderInt("Month"u8, ref month, 1, 12))
-            s.SkyMonth = month;
-
-        s.SkyDay = Math.Clamp(s.SkyDay, 1, DateTime.DaysInMonth(s.SkyYear, s.SkyMonth));
-        var day = s.SkyDay;
-        if (ImGui.SliderInt("Day"u8, ref day, 1, DateTime.DaysInMonth(s.SkyYear, s.SkyMonth)))
-            s.SkyDay = day;
-
-        var year = s.SkyYear;
-        if (ImGui.SliderInt("Year"u8, ref year, 1900, 2100))
-            s.SkyYear = year;
 
         var zone = SunPosition.TimeZone(_longitude);
         var sun = Sun();
@@ -303,7 +192,7 @@ public sealed class LightingPanel
             ImGui.Text($"Sunrise {Clock(sun.Sunrise)}, noon {Clock(sun.SolarNoon)}, sunset {Clock(sun.Sunset)}");
     }
 
-    private static string Clock(double hour)
+    public static string Clock(double hour)
     {
         var minutes = (int)Math.Round(((hour % 24.0 + 24.0) % 24.0) * 60.0) % 1440;
         return $"{minutes / 60:00}:{minutes % 60:00}";
