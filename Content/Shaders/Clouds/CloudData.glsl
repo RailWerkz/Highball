@@ -12,6 +12,7 @@ struct CloudLayer
     vec4 profile; // base fade, top start, top reach, anvil
     vec4 look;    // cells, ramp, erosion, sharpness
     vec4 look2;   // skylight, banks, shear, sun
+    vec4 relief;  // how far the base rises and the top falls from place to place, as parts of the layer's height
 };
 
 layout(set = CLOUD_DATA_SET, binding = CLOUD_DATA_BINDING) uniform CloudUniforms

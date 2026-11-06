@@ -24,6 +24,10 @@ public sealed record CloudLayerShape(float Base, float Top, float Coverage, floa
     public float SunGain { get; init; } = 1f;
     /// How much of the layer's height its base fades in over: small is a flat base.
     public float BottomFade { get; init; } = 0.05f;
+    /// How far a place's base can rise above the layer's bottom and its top fall below the layer's top, as parts of the layer's height.
+    /// Base and Top are only the furthest the clouds reach.
+    public float BaseWobble { get; init; } = 0.1f;
+    public float TopWobble { get; init; } = 0.3f;
     /// How far the top spreads into an anvil, 0 to 1.
     public float Anvil { get; init; }
 }
@@ -49,37 +53,37 @@ public sealed record CloudType(string Id, string Label, string Group, CloudLayer
 
     private static readonly CloudLayerShape Cumulus = new(1100f, 3000f, 0.42f, 0.025f, 9000f, 9000f, 3000f, 700f)
     {
-        Cells = 0.25f, Ramp = 0.3f, Banks = 0.4f, Ambient = 0.85f, Shear = 250f, TopStart = 0.04f, TopReach = 0.55f, BottomFade = 0.04f,
+        Cells = 0.25f, Ramp = 0.3f, Banks = 0.4f, Ambient = 0.85f, Shear = 250f, TopStart = 0.04f, TopReach = 0.55f, BottomFade = 0.04f, BaseWobble = 0.06f, TopWobble = 0.25f,
     };
 
     private static readonly CloudLayerShape Cumulonimbus = new(900f, 11000f, 0.28f, 0.02f, 60000f, 60000f, 8000f, 1800f)
     {
-        Cells = 0.1f, Ramp = 0.45f, Banks = 0.2f, Ambient = 0.55f, Shear = 1200f, TopStart = 0.15f, TopReach = 0.85f, BottomFade = 0.015f, Anvil = 1f,
+        Cells = 0.1f, Ramp = 0.45f, Banks = 0.2f, Ambient = 0.55f, Shear = 1200f, TopStart = 0.15f, TopReach = 0.85f, BottomFade = 0.015f, Anvil = 1f, BaseWobble = 0.02f, TopWobble = 0.15f,
     };
 
-    private static readonly CloudLayerShape Stratocumulus = new(700f, 1500f, 0.75f, 0.02f, 4000f, 6000f, 1600f, 500f)
+    private static readonly CloudLayerShape Stratocumulus = new(650f, 1700f, 0.75f, 0.02f, 4000f, 6000f, 1600f, 500f)
     {
-        Cells = 0.75f, Ramp = 0.25f, Banks = 0.25f, Ambient = 0.6f, Shear = 100f, TopStart = 0.45f, TopReach = 0.5f, BottomFade = 0.1f,
+        Cells = 0.75f, Ramp = 0.25f, Banks = 0.25f, Ambient = 0.6f, Shear = 100f, TopStart = 0.45f, TopReach = 0.5f, BottomFade = 0.1f, BaseWobble = 0.15f, TopWobble = 0.35f,
     };
 
-    private static readonly CloudLayerShape Stratus = new(250f, 650f, 1.15f, 0.006f, 12000f, 12000f, 6000f, 1500f)
+    private static readonly CloudLayerShape Stratus = new(200f, 850f, 1.15f, 0.006f, 12000f, 12000f, 6000f, 1500f)
     {
-        SunGain = 0.3f, Ramp = 0.5f, Banks = 0.2f, Ambient = 0.5f, Erosion = 0.35f, Sharpness = 0.1f, Shear = 0f, TopStart = 0.7f, TopReach = 0.3f, BottomFade = 0.25f,
+        SunGain = 0.3f, Ramp = 0.5f, Banks = 0.2f, Ambient = 0.5f, Erosion = 0.5f, Sharpness = 0.15f, Shear = 0f, TopStart = 0.6f, TopReach = 0.3f, BottomFade = 0.25f, BaseWobble = 0.3f, TopWobble = 0.4f,
     };
 
-    private static readonly CloudLayerShape Nimbostratus = new(600f, 3600f, 1.2f, 0.012f, 20000f, 20000f, 5000f, 1200f)
+    private static readonly CloudLayerShape Nimbostratus = new(500f, 4300f, 1.2f, 0.012f, 20000f, 20000f, 5000f, 1200f)
     {
-        SunGain = 0.5f, Ramp = 0.5f, Banks = 0.25f, Ambient = 0.42f, Erosion = 0.4f, Sharpness = 0.15f, Shear = 0f, TopStart = 0.7f, TopReach = 0.3f, BottomFade = 0.12f,
+        SunGain = 0.5f, Ramp = 0.5f, Banks = 0.25f, Ambient = 0.42f, Erosion = 0.6f, Sharpness = 0.2f, Shear = 0f, TopStart = 0.6f, TopReach = 0.3f, BottomFade = 0.12f, BaseWobble = 0.2f, TopWobble = 0.45f,
     };
 
-    private static readonly CloudLayerShape Altostratus = new(3000f, 4200f, 1.2f, 0.0016f, 24000f, 24000f, 8000f, 1800f)
+    private static readonly CloudLayerShape Altostratus = new(2900f, 4600f, 1.2f, 0.0016f, 21000f, 21000f, 8000f, 1800f)
     {
-        SunGain = 0.35f, Ramp = 0.5f, Banks = 0.3f, Ambient = 0.6f, Erosion = 0.25f, Sharpness = 0.1f, Shear = 0f, TopStart = 0.7f, TopReach = 0.3f, BottomFade = 0.2f,
+        SunGain = 0.35f, Ramp = 0.5f, Banks = 0.3f, Ambient = 0.6f, Erosion = 0.4f, Sharpness = 0.1f, Shear = 0f, TopStart = 0.6f, TopReach = 0.3f, BottomFade = 0.2f, BaseWobble = 0.25f, TopWobble = 0.4f,
     };
 
     private static readonly CloudLayerShape Altocumulus = new(3400f, 4000f, 0.62f, 0.012f, 2400f, 3600f, 1000f, 300f)
     {
-        Cells = 0.85f, Ramp = 0.2f, Banks = 0.45f, Ambient = 0.85f, Shear = 60f, TopStart = 0.3f, TopReach = 0.6f, BottomFade = 0.12f,
+        Cells = 0.85f, Ramp = 0.2f, Banks = 0.45f, Ambient = 0.85f, Shear = 60f, TopStart = 0.3f, TopReach = 0.6f, BottomFade = 0.12f, BaseWobble = 0.2f, TopWobble = 0.35f,
     };
 
     public static readonly IReadOnlyList<CloudType> All =

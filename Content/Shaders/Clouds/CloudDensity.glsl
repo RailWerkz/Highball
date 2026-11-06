@@ -41,18 +41,34 @@ float CloudDensity(int index, vec3 relative, float lod, out float dimensional, o
     vec4 look2 = clouds.layers[index].look2;
 
     float height = length(relative - PlanetCentre()) - EarthRadius;
-    h = (height - heights.x) / (heights.y - heights.x);
-    if (h <= 0.0 || h >= 1.0)
+    float shell = (height - heights.x) / (heights.y - heights.x);
+    h = shell;
+    if (shell <= 0.0 || shell >= 1.0)
         return 0.0;
 
     vec3 p = relative + clouds.offset.xyz;
 
     // Lean the map over with height, and let broad noise push it about, or every cloud is a straight-sided column. Only smooth
     // noise will do for this: anything sharper, pulled this far, folds the map over itself into ripples and swirls.
-    float anvil = profile.w * smoothstep(0.6, 0.85, h);
+    float anvil = profile.w * smoothstep(0.6, 0.85, shell);
     float shear = look2.z * h + anvil * 5000.0;
     float push = textureLod(noiseTexture, p / tiles.z, 2.0).b;
-    vec2 map = p.xz + vec2(shear, shear * 0.35) + (push - 0.5) * tiles.z * 0.35;
+    float pushOther = textureLod(noiseTexture, p / tiles.z + vec3(0.37, 0.11, 0.73), 2.0).b;
+    vec2 map = p.xz + vec2(shear, shear * 0.35) + (vec2(push, pushOther) - 0.5) * tiles.z * 0.5;
+
+    // The layer's height is only how far clouds can reach. Each place has its own base and top, rising and falling in broad swells and
+    // smaller rolls, so a deck has no flat top or underside, and nothing touches the layer's limits except here and there.
+    float swell = textureLod(noiseTexture, vec3(map.x / (tiles.x * 2.0), 0.59, map.y / (tiles.y * 2.0)), 1.0).b;
+    float roll = textureLod(noiseTexture, vec3(map.x / (tiles.x * 0.5), 0.77, map.y / (tiles.y * 0.5)), 1.0).b;
+    float swellLow = textureLod(noiseTexture, vec3(map.y / (tiles.y * 2.0), 0.23, map.x / (tiles.x * 2.0)), 1.0).b;
+    float rollLow = textureLod(noiseTexture, vec3(map.y / (tiles.y * 0.5), 0.91, map.x / (tiles.x * 0.5)), 1.0).b;
+    float raised = clamp(((swell * 0.6 + roll * 0.4) - 0.5) * 2.2 + 0.5, 0.0, 1.0);
+    float lowered = clamp(((swellLow * 0.6 + rollLow * 0.4) - 0.5) * 2.2 + 0.5, 0.0, 1.0);
+    float localBase = clouds.layers[index].relief.x * lowered;
+    float localTop = 1.0 - clouds.layers[index].relief.y * (1.0 - raised);
+    h = (shell - localBase) / max(localTop - localBase, 0.02);
+    if (h <= 0.0 || h >= 1.0)
+        return 0.0;
 
     // Where clouds are: smooth blobs, or a honeycomb of cells, thresholded by how much of the sky should be covered.
     vec3 uv = vec3(map.x / tiles.x, 0.17, map.y / tiles.y);
@@ -61,13 +77,14 @@ float CloudDensity(int index, vec3 relative, float lod, out float dimensional, o
         spread = mix(spread, textureLod(noiseTexture, uv, 0.5).r, look.x);
 
     float banks = textureLod(noiseTexture, vec3(map.y / (tiles.y * 5.0), 0.37, map.x / (tiles.x * 5.0)), 1.0).b;
-    spread = clamp((mix(spread, banks, look2.y) - 0.5) * 1.7 + 0.5, 0.0, 1.0);
+    // Bitten by noise in three dimensions too, or clouds are the same outline all the way up, with straight sides.
+    spread = clamp((mix(spread, banks, look2.y) - 0.5) * 1.7 + 0.5 + (pushOther - 0.5) * 0.35, 0.0, 1.0);
 
     // A storm's top spreads out only round the storm: a broad blurred version of where clouds are says how far.
     if (anvil > 0.0)
     {
         float round = textureLod(noiseTexture, uv, 3.5).b;
-        spread = max(spread, ((round - 0.5) * 5.0 + 0.5) * anvil * (1.0 - smoothstep(0.92, 1.0, h)));
+        spread = max(spread, ((round - 0.5) * 5.0 + 0.5) * anvil * (1.0 - smoothstep(0.92, 1.0, shell)));
     }
 
     float threshold = 1.0 - heights.z;
@@ -75,9 +92,9 @@ float CloudDensity(int index, vec3 relative, float lod, out float dimensional, o
     if (coverage < 0.01)
         return 0.0;
 
-    // Flat bases and rounded tops, reaching higher where there's more cloud.
+    // Bases and rounded tops, reaching higher where there's more cloud.
     float topFalls = profile.y + profile.z * coverage;
-    float shapeGradient = smoothstep(0.0, profile.x, h) * (1.0 - smoothstep(topFalls, topFalls + 0.15 + 0.3 * coverage, h)) * (1.0 - smoothstep(0.96, 1.0, h));
+    float shapeGradient = smoothstep(0.0, profile.x, h) * (1.0 - smoothstep(min(topFalls, 0.8), min(topFalls + 0.15 + 0.3 * coverage, 1.0), h));
     float densityGradient = mix(0.55, 1.0, smoothstep(0.0, 0.5, h));
 
     dimensional = coverage + shapeGradient - 1.0;
@@ -90,7 +107,7 @@ float CloudDensity(int index, vec3 relative, float lod, out float dimensional, o
     return ApplyErosion(noise, dimensional, look.z, look.w, noiseDepth) * heights.w * densityGradient;
 }
 
-// How much a thin ice cloud at a point in its sheet covers, 0 to 1. Noise is stretched along x, so streaks run with the high wind.
+// How much a thin ice cloud at a point in its sheet covers, 0 to 1. Noise is stretched along x, so its strands run with the high wind.
 float HighCloudCover(vec3 relative, float lod)
 {
     vec2 p = relative.xz + clouds.offset.xz;
@@ -101,13 +118,16 @@ float HighCloudCover(vec3 relative, float lod)
 
     if (kind < 0.5)
     {
-        // Cirrus: long combed streaks, bent by broad noise into hooks.
-        float bend = textureLod(noiseTexture, vec3(p.x / 60000.0, 0.63, p.y / 30000.0), 1.0).b - 0.5;
-        float curl = textureLod(noiseTexture, vec3(p.y / 24000.0, 0.13, p.x / 12000.0), 1.0).b - 0.5;
-        vec2 q = p + vec2(bend * 9000.0, bend * 3500.0 + curl * 500.0);
-        float streak = textureLod(noiseTexture, vec3(q.x / 72000.0, 0.47, q.y / 7200.0), lod).b;
-        float fine = textureLod(noiseTexture, vec3(q.x / 24000.0, 0.83, q.y / 1800.0), lod).b;
-        cover = smoothstep(0.46, 0.84, streak * 0.55 + fine * 0.45) * smoothstep(0.38 + thin, 0.62 + thin, patches);
+        // Cirrus: separate soft tufts, mostly a thin veil, with short strands in it rather than lines ruled across the sky. Broad noise
+        // turns the strands' direction from one part of the sky to another.
+        vec2 turn = vec2(textureLod(noiseTexture, vec3(p.x / 90000.0, 0.63, p.y / 90000.0), 1.5).b, textureLod(noiseTexture, vec3(p.y / 90000.0, 0.13, p.x / 90000.0), 1.5).b) - 0.5;
+        vec2 q = p + vec2(turn.x * 12000.0, turn.y * 14000.0);
+        float tuft = textureLod(noiseTexture, vec3(p.x / 36000.0, 0.41, p.y / 24000.0), 1.0).b;
+        float soft = textureLod(noiseTexture, vec3(q.x / 12600.0, 0.57, q.y / 7200.0), lod).b;
+        float wisp = textureLod(noiseTexture, vec3(q.x / 14400.0, 0.47, q.y / 1800.0), lod).b;
+        float strand = textureLod(noiseTexture, vec3(q.x / 5040.0, 0.83, q.y / 630.0), lod).b;
+        float where = smoothstep(0.5 + thin, 0.76 + thin, patches * 0.3 + tuft * 0.7 + (soft - 0.5) * 0.25);
+        cover = where * (0.5 + 0.5 * smoothstep(0.38, 0.75, wisp * 0.6 + strand * 0.4));
     }
     else if (kind < 1.5)
     {

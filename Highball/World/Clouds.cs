@@ -29,6 +29,7 @@ public sealed unsafe class Clouds : IDisposable
         public float4 Profile;
         public float4 Look;
         public float4 Look2;
+        public float4 Relief;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -342,6 +343,7 @@ public sealed unsafe class Clouds : IDisposable
             Profile = new float4(shape.BottomFade, shape.TopStart, shape.TopReach, shape.Anvil),
             Look = new float4(shape.Cells, shape.Ramp, shape.Erosion, shape.Sharpness),
             Look2 = new float4(shape.Ambient, shape.Banks, shape.Shear, shape.SunGain),
+            Relief = new float4(shape.BaseWobble, shape.TopWobble, 0f, 0f),
         };
     }
 
