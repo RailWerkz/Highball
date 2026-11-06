@@ -271,7 +271,7 @@ void main()
         if (vData.w < 0.0)
         {
             float scatter = fbm(tex * 2.2, pixel * 2.2) * 0.6 + texture(rockPacked, tex / 1.5).a * 0.4;
-            if (-vData.w < scatter * 1.6 - 0.25)
+            if (-vData.w < scatter * 0.85 - 0.1)
                 discard;
         }
 

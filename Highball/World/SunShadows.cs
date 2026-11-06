@@ -117,6 +117,7 @@ public sealed unsafe class SunShadows : IDisposable
         _layout = Pipelines.Layout(128);
         using var terrainVert = Shader.Load("shadow_terrain.vert");
         using var modelVert = Shader.Load("shadow_model.vert");
+        using var lineVert = Shader.Load("shadow_line.vert");
         VertexAttribute[] position = [new(0, 3, 0)];
         _terrain = Pipelines.Create(new PipelineDesc
         {
@@ -131,7 +132,7 @@ public sealed unsafe class SunShadows : IDisposable
 
         _line = Pipelines.Create(new PipelineDesc
         {
-            Vertex = terrainVert, Layout = _layout, Attributes = position, Stride = Marshal.SizeOf<LineVertex>(), Cull = VkCullModeFlags.None, DepthOnly = true,
+            Vertex = lineVert, Layout = _layout, Attributes = LineVertex.Layout, Stride = Marshal.SizeOf<LineVertex>(), Cull = VkCullModeFlags.None, DepthOnly = true,
             DepthBiasConstant = -60f, DepthBiasSlope = -1.75f,
         });
         using var partVert = Shader.Load("shadow_part.vert");
