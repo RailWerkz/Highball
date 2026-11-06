@@ -14,7 +14,9 @@ void main()
     // Loose stone lying on the ground (see line.frag) has nothing under it to shade, and where it thins out it would show that it had:
     // it goes in under the ground here, so it casts nothing onto it.
     vec3 place = inPosition + pc.offset.xyz;
-    if (inData.w < 0.0)
+    int code = int(inData.z + 0.5);
+    bool lowBed = (code & 7) == 0 && ((code >> 3) & 16) != 0;
+    if (inData.w < 0.0 || lowBed)
         place.y -= 1.5;
     gl_Position = pc.light * vec4(place, 1.0);
 }

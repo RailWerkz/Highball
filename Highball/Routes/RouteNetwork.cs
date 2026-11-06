@@ -129,6 +129,10 @@ public sealed class RouteNetwork
 
     public static bool IsGuide(NetworkWay way) => way.Tags.ContainsKey(GuideTag) || (way.Rail && way.Id > 0 && !way.Tags.ContainsKey(ExactTag));
 
+    /// What a track's laid on, by TrackBed's name, and how high above the ground in metres, if set by hand.
+    public const string BedTag = "highball:bed";
+    public const string BedHeightTag = "highball:bedheight";
+
     /// A mapped track's mark on the ground, drawn where the track would go until it's laid by hand.
     public const string TrackMarkTag = "highball:trackmark";
 

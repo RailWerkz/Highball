@@ -852,10 +852,48 @@ public sealed class TrackEditor
         return new LayPoint(at.X + fx * length - fz * offset * side, at.Z + fz * length + fx * offset * side);
     }
 
+    /// What new track's laid on, by TrackBed's name, and how high in metres; null: as its class would have it, or the bed's usual height.
+    public string? NewBed;
+    public float? NewBedHeight;
+
+    /// The rail ways touching these control points given a bed and a height (null: the usual, as above).
+    public NetworkEdit? SetBed(IReadOnlySet<long> nodes, string? bed, float? height) =>
+        SetBed(_network.Ways.Values.Where(w => w.Rail && w.Nodes.Any(nodes.Contains)).Select(w => w.Id), bed, height);
+
+    public NetworkEdit? SetBed(IEnumerable<long> ways, string? bed, float? height)
+    {
+        var changes = new List<(long, NetworkWay?, NetworkWay?)>();
+        foreach (var id in ways.Distinct().ToList())
+        {
+            var way = _network.Ways[id];
+            var after = Copy(way, way.Nodes, way.Lat, way.Lon);
+            WithBed(after, bed, height);
+            changes.Add((id, way, after));
+        }
+
+        return Commit(changes);
+    }
+
+    private static void WithBed(NetworkWay way, string? bed, float? height)
+    {
+        way.Tags.Remove(RouteNetwork.BedTag);
+        way.Tags.Remove(RouteNetwork.BedHeightTag);
+        if (bed is not null)
+            way.Tags[RouteNetwork.BedTag] = bed;
+        if (height is { } metres)
+            way.Tags[RouteNetwork.BedHeightTag] = metres.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     private NetworkEdit? Commit(List<(long Id, NetworkWay? Before, NetworkWay? After)> changes)
     {
         if (changes.Count == 0)
             return null;
+
+        // Track that's new takes the bed in hand.
+        if (NewBed is not null || NewBedHeight is not null)
+            foreach (var (_, before, after) in changes)
+                if (before is null && after is { Rail: true })
+                    WithBed(after, NewBed, NewBedHeight);
 
         var edit = new NetworkEdit(changes);
         Apply(edit, undo: false);

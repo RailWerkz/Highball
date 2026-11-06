@@ -625,8 +625,8 @@ public sealed partial class NetworkMeshes : IDisposable
         return (start, end);
     }
 
-    /// How far past the flattened ground's edge the ballast's last stones lie, and how far under the ground they end up.
-    private const float Thinning = 0.9f;
+    /// How far out from its toe the ballast fades into the ground, and how far under the ground it ends up.
+    private const float Fading = 1.8f;
     private const float GivesOut = -0.06f;
 
     /// Runs split where the structure changes, each with points first..last (inclusive).
@@ -672,23 +672,31 @@ public sealed partial class NetworkMeshes : IDisposable
     private static void FarRail(Builder builder, NetworkLine line, int first, int last, bool bridge)
     {
         if (line.Embedded)
+        {
+            // Street track laid by hand has a pavement of its own; a mapped tramway's already in its road.
+            if (line.Bed == TrackBed.Street)
+                Sweep(builder, line, first, last, [(-1.9f, RoadRise), (1.9f, RoadRise)], _ => Code(LineMaterial.Asphalt, 2 + (int)MathF.Round(1.9f * 8f) * 64), (_, _, _) => 1000f);
             return;
+        }
 
-        var w = line.BallastHalfTop;
+        // On sunken track the rock's only solid between the rails and starts to give way under the ties' ends.
+        var sunken = line.Bed == TrackBed.Sunken && !bridge;
+        var w = sunken ? line.BallastHalfTop - 0.7f : line.BallastHalfTop;
+        var fading = sunken ? Fading * 1.4f : Fading;
         var h = NetworkLine.BallastHeight;
         var railOffset = line.Gauge * 0.5f + RailHeadHalf;
-        var ballast = Code(LineMaterial.Ballast, line.Tracks + (line.Disused ? 8 : 0));
+        // (A bed this low lies on the ground: it's told to cast no shadow, see shadow_line.vert.)
+        var ballast = Code(LineMaterial.Ballast, line.Tracks + (line.Disused ? 8 : 0) + (!bridge && line.BedHeight < 0.12f ? 16 : 0));
 
         if (!bridge)
         {
-            // The ballast, heaped as loose rock lies: rounded over from the top, down its slope, and easing out across the flattened
-            // ground, where the last of it thins out to nothing (between tracks a few metres apart, the beds overlap into one).
+            // The ballast, heaped as loose rock lies: rounded over from the top, down its slope, and easing out onto the ground, where
+            // the last of it fades in among the ground's own. The lower the bed, the shorter its slope.
             const float walk = 0.02f;
             const int curve = 5;
-            var slope = (h - walk) * NetworkLine.BallastSlope;
-            var f = MathF.Max(line.Formation - 0.5f, w + slope + 0.3f);
+            const int edges = curve * 2 + 3;
             var gravel = Code(LineMaterial.Gravel);
-            float Edge(int e) => e == 0 || e == curve * 2 + 2 ? gravel : ballast;
+            float Edge(int e) => e == 0 || e == edges - 1 ? gravel : ballast;
 
             // From the shoulder (t = 0) to the toe (t = 1): more of the way spent on the long easing out than on rounding over the top.
             static float Fall(float t)
@@ -697,46 +705,41 @@ public sealed partial class NetworkMeshes : IDisposable
                 return 1f - eased * eased * (3f - 2f * eased);
             }
 
-            (float, float)[] Section(float left, float right, float drop = 0f)
+            (float U, float Y)[] Section(float left, float right, float drop, float sink)
             {
-                var points = new List<(float, float)>(curve * 2 + 4) { (-f - left - Thinning, GivesOut), (-f - left, walk) };
+                var toeY = sink + walk;
+                var run = MathF.Max(0.35f, (h - drop - toeY) * NetworkLine.BallastSlope * 1.8f);
+                var points = new (float, float)[curve * 2 + 4];
+                var n = 0;
+                points[n++] = (-w - left - run - fading, sink + GivesOut);
+                points[n++] = (-w - left - run, toeY);
                 for (var i = curve - 1; i >= 0; i--)
                 {
                     var t = i / (float)curve;
-                    points.Add((-w - left - (f - w) * t, walk + (h - drop - walk) * Fall(t)));
+                    points[n++] = (-w - left - run * t, toeY + (h - drop - toeY) * Fall(t));
                 }
 
                 for (var i = 0; i < curve; i++)
                 {
                     var t = i / (float)curve;
-                    points.Add((w + right + (f - w) * t, walk + (h - drop - walk) * Fall(t)));
+                    points[n++] = (w + right + run * t, toeY + (h - drop - toeY) * Fall(t));
                 }
 
-                points.Add((f + right, walk));
-                points.Add((f + right + Thinning, GivesOut));
-                return [.. points];
-            }
-
-            // Data.w: for the rock's shader, the rail centres' offset, or under the toe how far in from where it gives out.
-            static float Thinned(float y, float railOffset) => y < 0.0199f ? -(y - GivesOut) / (0.02f - GivesOut) * Thinning - 0.001f : railOffset;
-
-            var zones = line.TurnoutZones.Where(z => z.Ballast.To > z.Ballast.From).ToList();
-            if (zones.Count == 0)
-            {
-                Sweep(builder, line, first, last, Section(0f, 0f), Edge, (_, _, y) => Thinned(y, railOffset), smooth: true);
-                return;
+                points[n++] = (w + right + run, toeY);
+                points[n] = (w + right + run + fading, sink + GivesOut);
+                return points;
             }
 
             // Through a turnout the normal route's bed widens out to the reverse route's far side. The reverse route lays its own
             // bed all the same, just under it where they overlap, so whatever the turnouts around do there's always ballast
             // under the track.
+            var zones = line.TurnoutZones.Where(z => z.Ballast.To > z.Ballast.From).ToList();
             var widen = zones.Where(z => z.Normal).ToList();
             var under = zones.Where(z => !z.Normal).Select(z => z.Ballast).ToList();
             var depth = 0.003f * (1 + line.Index % 5);
             var at = new List<float> { line.S[first], line.S[last] };
-            foreach (var s in line.S)
-                if (s > line.S[first] && s < line.S[last])
-                    at.Add(s);
+            for (var p = first + 1; p < last; p++)
+                at.Add(line.S[p]);
             foreach (var zone in widen)
             {
                 for (var s = zone.Ballast.From; s <= zone.Ballast.To; s += Turnout.SpreadStep)
@@ -749,7 +752,8 @@ public sealed partial class NetworkMeshes : IDisposable
             foreach (var (from, to) in under)
                 at.AddRange((float[])[from - 0.5f, from, to, to + 0.5f]);
 
-            var rings = new List<(float3, float3, float, float, (float, float)[])>();
+            var start = (uint)builder.Vertices.Count;
+            var rings = 0;
             foreach (var s in at.Where(s => s >= line.S[first] && s <= line.S[last]).Order().Distinct())
             {
                 var (left, right) = (0f, 0f);
@@ -768,11 +772,32 @@ public sealed partial class NetworkMeshes : IDisposable
                 var drop = 0f;
                 foreach (var (from, to) in under)
                     drop = MathF.Max(drop, depth * Math.Clamp(MathF.Min(s - from + 0.5f, to + 0.5f - s) / 0.5f, 0f, 1f));
+
                 var (center, across) = FrameAt(line, s, builder.Origin);
-                rings.Add((center, across, s % Wrap, 0f, Section(left, right, drop)));
+                var profile = Section(left, right, drop, line.SinkAt(s));
+                for (var e = 0; e < edges; e++)
+                {
+                    var (n0, n1) = JoinNormals(profile, e, across);
+                    var (u0, y0) = profile[e];
+                    var (u1, y1) = profile[e + 1];
+                    // Data.w: the rail centres' offset for the shader's rock, or in the fade how far in from where it gives out.
+                    var (w0, w1) = e == 0 ? (-0.001f, -Fading - 0.001f) : e == edges - 1 ? (-Fading - 0.001f, -0.001f) : (railOffset, railOffset);
+                    builder.Add(center + across * u0 + new float3(0f, y0, 0f), n0, new float4(u0, s % Wrap, Edge(e), w0));
+                    builder.Add(center + across * u1 + new float3(0f, y1, 0f), n1, new float4(u1, s % Wrap, Edge(e), w1));
+                }
+
+                rings++;
             }
 
-            SweepRings(builder, rings, Edge, (_, y) => Thinned(y, railOffset), 0f, smooth: true);
+            var ring = (uint)(edges * 2);
+            for (var r = 0; r < rings - 1; r++)
+            {
+                for (var e = 0; e < edges; e++)
+                {
+                    var q = start + (uint)r * ring + (uint)e * 2;
+                    builder.Quad(q, q + 1, q + ring, q + ring + 1);
+                }
+            }
 
             return;
         }

@@ -154,6 +154,7 @@ void main()
     float occlusion = 1.0;
     float puddle = 0.0;
     float hold = 1.0;
+    float coverage = 1.0; // how much of each pixel it covers, of the ground underneath (alpha to coverage)
 
     if (material == Ballast)
     {
@@ -267,11 +268,14 @@ void main()
     else if (material == Gravel)
     {
         // The ballast's rock run on: the edge of the bed, road shoulders, unpaved roads and the marks where track is to go.
-        // Data.w below zero is how far in from where it gives out: it thins to scattered stones, not a straight edge.
+        // Data.w below zero is how far in from where it gives out: it fades into the ground, the tallest stones last, in patches.
         if (vData.w < 0.0)
         {
-            float scatter = fbm(tex * 2.2, pixel * 2.2) * 0.6 + texture(rockPacked, tex / 1.5).a * 0.4;
-            if (-vData.w < scatter * 0.85 - 0.1)
+            float rise = clamp(-vData.w / 1.8, 0.0, 1.0);
+            float stones = texture(rockPacked, tex / 1.5).a;
+            float drift = fbm(tex * 0.9, pixel * 0.9);
+            coverage = smoothstep(0.0, 0.55, rise * 1.35 + (stones - 0.5) * 0.7 + (drift - 0.5) * 0.8 - 0.1);
+            if (coverage < 0.04)
                 discard;
         }
 
@@ -323,5 +327,5 @@ void main()
 
     vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative, n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative);
     color = applyFog(color, view, dist, pc.camera.y, sun);
-    outColor = vec4(color, 1.0);
+    outColor = vec4(color, coverage);
 }

@@ -1682,6 +1682,17 @@ public sealed partial class EditorView : IDisposable
                 break;
             }
 
+            case "bed":
+            {
+                // bed,lat,lon,KIND[,HEIGHT]: the rail way nearest there.
+                var (bx0, bz0) = At(1);
+                var hit = Roads.Nearest(bx0, bz0, 60.0, w => w.Rail);
+                Log.Info($"Bed: {parts[3]} on way {hit?.Way}");
+                if (hit is { } on)
+                    Committed(_tracks!.SetBed([on.Way], parts[3], parts.Length > 4 ? (float)Number(4) : null));
+                break;
+            }
+
             case "background":
                 (_showBackground, MapTiles.Background, _backgroundOpacity) = (parts[1] != "off", parts[1] == "satellite" ? MapBackground.Satellite : MapBackground.Map, 1f);
                 SetTopDown(true);
@@ -2539,6 +2550,8 @@ public sealed partial class EditorView : IDisposable
             ImGui.EndDisabled();
         }
 
+        if (_tool is Tool.Track or Tool.Pen or Tool.Follow or Tool.Parallel || (_tool == Tool.Place && _place.Mode == PlaceMode.Track))
+            BedPanel();
         if (_tool == Tool.Place)
             PlacePanel(_terrain.Source);
         if (_tool == Tool.Road)

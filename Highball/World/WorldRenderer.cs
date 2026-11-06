@@ -124,7 +124,7 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         // Lines are open ribbons and parapets seen from either side, so nothing's culled.
         var stride = Marshal.SizeOf<LineVertex>();
-        _line = Pipelines.Create(new PipelineDesc { Vertex = lineVert, Fragment = lineFrag, Layout = _layout, Attributes = LineVertex.Layout, Stride = stride, Cull = VkCullModeFlags.None });
+        _line = Pipelines.Create(new PipelineDesc { Vertex = lineVert, Fragment = lineFrag, Layout = _layout, Attributes = LineVertex.Layout, Stride = stride, Cull = VkCullModeFlags.None, AlphaToCoverage = true });
         _lineWire = Pipelines.Create(new PipelineDesc
         {
             Vertex = lineVert, Fragment = lineFrag, Layout = _layout, Attributes = LineVertex.Layout, Stride = stride, Cull = VkCullModeFlags.None, Wireframe = true,

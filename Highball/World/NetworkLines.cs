@@ -6,6 +6,10 @@ namespace Highball.World;
 /// What a stretch of line is carried on.
 public enum Structure : byte { Ground, Bridge, Tunnel }
 
+/// What a track's laid on. Mainline: a full bed of ballast, raised on the ground. Low: a lesser one, for yards and branches. Sunken: no
+/// bed to speak of, the ties in the ground and the rock worked into it, for industrial track. Street: rails flush in a pavement.
+public enum TrackBed { Mainline, Low, Sunken, Street }
+
 /// One road or rail line in world metres (x east, z south), cut to the built tiles: a smooth centreline every couple
 /// of metres, the height it runs at (its formation: the ground it's laid on, smoothed, carried straight over bridges
 /// and through tunnels, and agreeing with every line it meets), and how wide it is.
@@ -77,6 +81,39 @@ public sealed class NetworkLine
     /// Ballast top beyond the outermost rails' centreline: the tie ends and a foot of shoulder.
     public const float BallastShoulder = 1.6f;
     public const float BallastHeight = 0.40f;
+
+    /// How high a track's bed stands on the ground, as it comes (see TrackBed).
+    public static float BedHeightOf(TrackBed bed) => bed switch
+    {
+        TrackBed.Low => 0.15f,
+        TrackBed.Sunken => 0.04f,
+        TrackBed.Street => 0f,
+        _ => BallastHeight,
+    };
+
+    public TrackBed Bed { get; init; }
+    public float BedHeight { get; init; } = BallastHeight;
+
+    /// How far under the rails' usual height over the ground it's been let down, at each point. The rails and all that goes with them
+    /// stand BallastHeight over Y as ever, so a lower bed is Y let down by this and the ground below it left where it was.
+    public float[] Sink { get; set; } = [];
+
+    public float SinkOf(int point) => point < Sink.Length ? Sink[point] : 0f;
+
+    public float SinkAt(float s)
+    {
+        if (Sink.Length == 0)
+            return 0f;
+        var at = Array.BinarySearch(S, s);
+        if (at >= 0)
+            return Sink[at];
+        at = ~at;
+        if (at <= 0)
+            return Sink[0];
+        if (at >= Count)
+            return Sink[Count - 1];
+        return Sink[at - 1] + (Sink[at] - Sink[at - 1]) * (s - S[at - 1]) / MathF.Max(S[at] - S[at - 1], 1e-5f);
+    }
     public const float BallastSlope = 1.5f;
     public const float BallastToe = 0.15f;
 
@@ -520,7 +557,7 @@ public sealed partial class NetworkLines
     {
         string Tag(string name) => way.Tags.GetValueOrDefault(name, "");
         return way.Rail
-            ? $"R{way.Class}|{Tag("railway")}|{Tag("tracks")}|{Tag("gauge")}|{Tag(RouteNetwork.ExactTag)}"
+            ? $"R{way.Class}|{Tag("railway")}|{Tag("tracks")}|{Tag("gauge")}|{Tag(RouteNetwork.ExactTag)}|{Tag(RouteNetwork.BedTag)}|{Tag(RouteNetwork.BedHeightTag)}"
             : $"H{way.Class}|{Tag("lanes")}|{Tag("oneway")}|{Tag("surface")}|{Tag("highway").Replace("_link", "")}";
     }
 
@@ -727,7 +764,16 @@ public sealed partial class NetworkLines
             if (int.TryParse(Tag("gauge").Split(';')[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var mm) && mm is > 500 and < 2000)
                 gauge = mm / 1000f;
             var tracks = Math.Clamp(Int("tracks", 1), 1, 4);
-            var embedded = Tag("railway") == "tram";
+            var bed = Enum.TryParse<TrackBed>(Tag(RouteNetwork.BedTag), true, out var chosen) ? chosen : railClass switch
+            {
+                RailClass.Yard => TrackBed.Low,
+                RailClass.Industrial => TrackBed.Sunken,
+                _ => TrackBed.Mainline,
+            };
+            var bedHeight = float.TryParse(Tag(RouteNetwork.BedHeightTag), NumberStyles.Float, CultureInfo.InvariantCulture, out var high)
+                ? Math.Clamp(high, 0.02f, 1.5f)
+                : NetworkLine.BedHeightOf(bed);
+            var embedded = Tag("railway") == "tram" || bed == TrackBed.Street;
             var halfTop = (tracks - 1) * 0.5f * NetworkLine.TrackSpacing + NetworkLine.BallastShoulder;
             line = new NetworkLine
             {
@@ -735,7 +781,8 @@ public sealed partial class NetworkLines
                 Structures = structures.GetRange(from, count - 1).ToArray(),
                 Nodes = nodes.Where(n => n.Point >= from && n.Point < to).Select(n => (n.Node, n.Point - from)).ToList(),
                 Tracks = tracks, Gauge = gauge, Disused = railClass == RailClass.Disused, Embedded = embedded, Exact = chain.Tags.ContainsKey(RouteNetwork.ExactTag),
-                Formation = embedded ? 2f : halfTop + (NetworkLine.BallastHeight + NetworkLine.BallastToe) * NetworkLine.BallastSlope + 1.0f,
+                Bed = bed, BedHeight = embedded ? 0f : bedHeight,
+                Formation = embedded ? 2f : halfTop + (bedHeight + NetworkLine.BallastToe) * NetworkLine.BallastSlope + 1.0f,
             };
         }
         else
@@ -886,6 +933,7 @@ public sealed partial class NetworkLines
 
         Junctions();
         FindJunctions();
+        LetDownBeds();
 
         Parallel.ForEach(_lines, line => line.Junction = JunctionDistances(line));
         Layer();
@@ -1338,6 +1386,38 @@ public sealed partial class NetworkLines
         return distances;
     }
 
+    /// How steeply a track eases between one bed's height and another's.
+    private const float BedRamp = 0.012f;
+
+    /// Lets each track down to its bed's height. Where tracks of different beds meet they meet at the highest of them, and the lower
+    /// eases down from there, so every junction stays one height and no train meets a step.
+    private void LetDownBeds()
+    {
+        var atNode = new Dictionary<long, float>();
+        foreach (var line in _lines.Where(l => l.Rail))
+        {
+            // (Rails in a pavement stand at the height of the line itself, not on a bed.)
+            var own = line.Embedded ? 0f : NetworkLine.BallastHeight - line.BedHeight;
+            line.Sink = new float[line.Count];
+            Array.Fill(line.Sink, own);
+            foreach (var (node, _) in line.Nodes)
+                atNode[node] = atNode.TryGetValue(node, out var lowest) ? Math.Min(lowest, own) : own;
+        }
+
+        Parallel.ForEach(_lines.Where(l => l.Rail), line =>
+        {
+            foreach (var (node, point) in line.Nodes)
+            {
+                var there = atNode[node];
+                for (var p = 0; p < line.Count; p++)
+                    line.Sink[p] = Math.Min(line.Sink[p], there + MathF.Abs(line.S[p] - line.S[point]) * BedRamp);
+            }
+
+            for (var p = 0; p < line.Count; p++)
+                line.Y[p] -= line.Sink[p];
+        });
+    }
+
     private HashSet<long> _junctionNodes = [];
 
     /// Nodes more than one line touches.
@@ -1495,8 +1575,11 @@ public sealed partial class NetworkLines
                     var dx = bx - ax;
                     var dz = bz - az;
                     var length2 = dx * dx + dz * dz;
-                    var ya = line.Y[a];
-                    var yb = line.Y[b];
+                    // The ground the bed stands on, not the track's own height. Under a low bed a little lower, or the ground's
+                    // own unevenness would come up through the rock.
+                    float Under(int p) => line.SinkOf(p) - MathF.Min(line.SinkOf(p) * 0.3f, 0.06f);
+                    var ya = line.Y[a] + Under(a);
+                    var yb = line.Y[b] + Under(b);
                     for (var z = z0; z <= z1; z++)
                     {
                         for (var x = x0; x <= x1; x++)

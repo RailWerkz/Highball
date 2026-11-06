@@ -236,6 +236,64 @@ public sealed partial class EditorView
         }
     }
 
+    private static readonly (string? Id, string Name)[] Beds =
+    [
+        (null, "Automatic"), (nameof(TrackBed.Mainline), "Mainline"), (nameof(TrackBed.Low), "Low"), (nameof(TrackBed.Sunken), "Sunken"), (nameof(TrackBed.Street), "Street"),
+    ];
+
+    private bool _bedHeightSet;
+    private float _bedHeight = NetworkLine.BallastHeight;
+
+    /// What track's laid on: for what's laid next, and for what's selected in the Edit tool.
+    private void BedPanel()
+    {
+        ImGui.SeparatorText("Track bed"u8);
+        var imperial = Settings.Current.Units == UnitSystem.Imperial;
+        var tracks = _tracks!;
+        var shown = Array.Find(Beds, b => b.Id == tracks.NewBed).Name;
+        if (ImGui.BeginCombo("Bed"u8, shown))
+        {
+            foreach (var (id, name) in Beds)
+            {
+                if (ImGui.Selectable(name, id == tracks.NewBed))
+                {
+                    tracks.NewBed = id;
+                    _bedHeightSet = false;
+                    if (Enum.TryParse<TrackBed>(id, out var chosen))
+                        _bedHeight = NetworkLine.BedHeightOf(chosen);
+                }
+            }
+
+            ImGui.EndCombo();
+        }
+
+        var street = tracks.NewBed == nameof(TrackBed.Street);
+        ImGui.BeginDisabled(street);
+        var height = imperial ? _bedHeight * FeetPerMeter * 12f : _bedHeight * 100f;
+        if (ImGui.SliderFloat(imperial ? "Height (in)"u8 : "Height (cm)"u8, ref height, imperial ? 1f : 2f, imperial ? 59f : 150f, imperial ? "%.0f"u8 : "%.0f"u8, ImGuiSliderFlags.None))
+        {
+            _bedHeight = imperial ? height / 12f / FeetPerMeter : height / 100f;
+            _bedHeightSet = true;
+        }
+
+        ImGui.EndDisabled();
+        tracks.NewBedHeight = _bedHeightSet && !street ? _bedHeight : null;
+
+        ImGui.PushStyleColor(ImGuiCol.Text, TextDim);
+        ImGui.TextWrapped(tracks.NewBed switch
+        {
+            null => "As the track's class has it: mainline, or lower in yards and sidings."u8,
+            nameof(TrackBed.Mainline) => "A full bed of ballast, raised on the ground."u8,
+            nameof(TrackBed.Low) => "A lesser bed, for yards and branches."u8,
+            nameof(TrackBed.Sunken) => "No bed to speak of: ties in the ground, the rock worked into it."u8,
+            _ => "Rails flush in a pavement. Switches can't be laid on it."u8,
+        });
+        ImGui.PopStyleColor();
+
+        if (_tool == Tool.Track && _selection.Count > 0 && ImGui.Button("Apply to selected track"u8))
+            Committed(tracks.SetBed(_selection, tracks.NewBed, tracks.NewBedHeight));
+    }
+
     /// The Roads tool's panel: how it draws, and what.
     private void RoadPanel()
     {
