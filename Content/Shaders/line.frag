@@ -76,17 +76,27 @@ vec3 paint(vec3 base, vec3 color, float amount)
     return mix(base, color, clamp(amount, 0.0, 1.0));
 }
 
-// A normal map's bump, with the surface's directions worked out from how the position and map change across the pixel.
-vec3 bumped(vec3 n, vec3 bump, vec2 uv)
+// The ways a map's u and v run across the surface, worked out from how the position and map change across the pixel, both to the
+// same scale (its square is returned). Which way round the pixel's own directions lie decides the sign: screen y runs down.
+float mapAxes(vec2 uv, vec3 n, out vec3 t, out vec3 b)
 {
     vec3 dpx = dFdx(vRelative);
     vec3 dpy = dFdy(vRelative);
     vec2 dux = dFdx(uv);
     vec2 duy = dFdy(uv);
-    vec3 t = cross(dpy, n) * dux.x + cross(n, dpx) * duy.x;
-    vec3 b = cross(dpy, n) * dux.y + cross(n, dpx) * duy.y;
-    float scale = max(dot(t, t), dot(b, b));
-    return scale < 1e-20 ? n : normalize(t * bump.x + b * bump.y + n * bump.z * sqrt(scale));
+    vec3 acrossY = cross(dpy, n);
+    float side = dot(dpx, acrossY) < 0.0 ? -1.0 : 1.0;
+    t = (acrossY * dux.x + cross(n, dpx) * duy.x) * side;
+    b = (acrossY * dux.y + cross(n, dpx) * duy.y) * side;
+    return max(dot(t, t), dot(b, b));
+}
+
+// A normal map's bump. Its green points up its image, which is against the way v runs.
+vec3 bumped(vec3 n, vec3 bump, vec2 uv)
+{
+    vec3 t, b;
+    float scale = mapAxes(uv, n, t, b);
+    return scale < 1e-20 ? n : normalize(t * bump.x - b * bump.y + n * bump.z * sqrt(scale));
 }
 
 // Moves a map's position by what its height does to the line of sight, so what stands proud covers what's behind it. relief: how many
@@ -97,13 +107,8 @@ vec2 parallax(sampler2D packed, vec2 uv, vec3 n, vec3 view, float relief, float 
     if (fade <= 0.0)
         return uv;
 
-    vec3 dpx = dFdx(vRelative);
-    vec3 dpy = dFdy(vRelative);
-    vec2 dux = dFdx(uv);
-    vec2 duy = dFdy(uv);
-    vec3 t = cross(dpy, n) * dux.x + cross(n, dpx) * duy.x;
-    vec3 b = cross(dpy, n) * dux.y + cross(n, dpx) * duy.y;
-    float scale = max(dot(t, t), dot(b, b));
+    vec3 t, b;
+    float scale = mapAxes(uv, n, t, b);
     if (scale < 1e-20)
         return uv;
 
@@ -112,10 +117,41 @@ vec2 parallax(sampler2D packed, vec2 uv, vec3 n, vec3 view, float relief, float 
     vec3 toEye = -view;
     vec2 across = vec2(dot(toEye, t), dot(toEye, b)) * inverse / max(dot(toEye, n), 0.25);
     vec2 reach = across * relief / tile * fade;
-    vec2 moved = uv;
-    for (int i = 0; i < 3; i++)
-        moved = uv + reach * (texture(packed, moved).a - 0.5);
-    return moved;
+
+    // Down the line of sight from the top of the relief to where it first goes in under the map's height.
+    const int steps = 10;
+    float lod = textureQueryLod(packed, uv).x;
+    float above = 1.0;
+    float gap = 1.0 - textureLod(packed, uv + reach * 0.5, lod).a;
+    for (int i = 1; i <= steps; i++)
+    {
+        float level = 1.0 - float(i) / float(steps);
+        float next = level - textureLod(packed, uv + reach * (level - 0.5), lod).a;
+        if (next <= 0.0)
+            return uv + reach * (mix(above, level, gap / max(gap - next, 1e-4)) - 0.5);
+        above = level;
+        gap = next;
+    }
+
+    return uv - reach * 0.5;
+}
+
+// The ballast's rock at where parallax took base to. What's read goes by base's own rate of change, since where stones overlap the
+// moved position jumps, and would pick a blurred mip all along each stone's edge.
+void rock(vec2 base, vec2 stone, float weather, inout vec3 n, out vec3 albedo, out float roughness, out float occlusion)
+{
+    vec2 dx = dFdx(base);
+    vec2 dy = dFdy(base);
+    vec4 maps = textureGrad(rockPacked, stone, dx, dy);
+    // Crushed rock weathered by dust and oil: the map on its own is clean river stone.
+    albedo = textureGrad(rockColor, stone, dx, dy).rgb * vec3(0.46, 0.44, 0.42) * (0.8 + 0.3 * weather);
+    // Dark in the gaps between the stones whatever the light, which is what still reads from far off.
+    albedo *= mix(0.45, 1.0, smoothstep(0.25, 0.7, maps.a));
+    roughness = maps.g;
+    occlusion = 0.8 * maps.r;
+    vec3 bump = textureGrad(rockNormal, stone, dx, dy).xyz * 2.0 - 1.0;
+    bump.xy *= 1.5;
+    n = bumped(n, bump, base);
 }
 
 // A material's map seen straight down its strongest axis, so a part with no map of its own can still wear one.
@@ -155,24 +191,16 @@ void main()
     float puddle = 0.0;
     float hold = 1.0;
     float coverage = 1.0; // how much of each pixel it covers, of the ground underneath (alpha to coverage)
+    vec3 shadowFrom = vRelative;
+    vec3 shadowNormal = n;
 
     if (material == Ballast)
     {
         float patches = fbm(tex * 0.35, pixel * 0.35);
         // Along the track and across it as the surface runs, so the shoulder's stones aren't drawn out down its slope.
         vec3 shape = n;
-        vec2 stone = vec2(u, v) / 1.5;
-        stone = parallax(rockPacked, stone, n, view, 0.06, 1.5, dist);
-        vec4 rockMaps = texture(rockPacked, stone);
-        // Crushed rock weathered by dust and oil: the map on its own is clean river stone.
-        albedo = texture(rockColor, stone).rgb * vec3(0.46, 0.44, 0.42) * (0.8 + 0.3 * patches);
-        // Dark in the gaps between the stones whatever the light, which is what still reads from far off.
-        albedo *= mix(0.45, 1.0, smoothstep(0.25, 0.7, rockMaps.a));
-        roughness = rockMaps.g;
-        occlusion = 0.8 * rockMaps.r;
-        vec3 rockBump = texture(rockNormal, stone).xyz * 2.0 - 1.0;
-        rockBump.xy *= 1.5;
-        n = bumped(n, rockBump, stone);
+        vec2 base = vec2(u, v) / 1.5;
+        rock(base, parallax(rockPacked, base, n, view, 0.06, 1.5, dist), patches, n, albedo, roughness, occlusion);
 
         int tracks = style & 7;
         bool disused = (style & 8) != 0;
@@ -269,27 +297,25 @@ void main()
     {
         // The ballast's rock run on: the edge of the bed, road shoulders, unpaved roads and the marks where track is to go.
         // Data.w below zero is how far in from where it gives out: it fades into the ground, the tallest stones last, in patches.
+        vec2 base = tex / 1.5;
+        vec2 stone = parallax(rockPacked, base, n, view, 0.06, 1.5, dist);
         if (vData.w < 0.0)
         {
             float rise = clamp(-vData.w / 1.8, 0.0, 1.0);
-            float stones = texture(rockPacked, tex / 1.5).a;
+            // Where it's seen, so that what's left is stones and not the gaps between them.
+            float stones = textureGrad(rockPacked, stone, dFdx(base), dFdy(base)).a;
             float drift = fbm(tex * 0.9, pixel * 0.9);
             coverage = smoothstep(0.0, 0.55, rise * 1.35 + (stones - 0.5) * 0.7 + (drift - 0.5) * 0.8 - 0.1);
             if (coverage < 0.04)
                 discard;
+
+            // This lies at the ground's own height and goes under it: asked from there, the ground shades it wherever the sun's
+            // low. Asked from a little above, it's still shaded by anything that really stands in the way.
+            shadowFrom.y += 0.35 * (1.0 - smoothstep(0.6, 1.0, rise));
         }
 
         float patches = fbm(tex * 0.35, pixel * 0.35);
-        vec2 stone = tex / 1.5;
-        stone = parallax(rockPacked, stone, n, view, 0.06, 1.5, dist);
-        vec4 rockMaps = texture(rockPacked, stone);
-        albedo = texture(rockColor, stone).rgb * vec3(0.46, 0.44, 0.42) * (0.8 + 0.3 * patches);
-        albedo *= mix(0.45, 1.0, smoothstep(0.25, 0.7, rockMaps.a));
-        roughness = rockMaps.g;
-        occlusion = 0.8 * rockMaps.r;
-        vec3 rockBump = texture(rockNormal, stone).xyz * 2.0 - 1.0;
-        rockBump.xy *= 1.5;
-        n = bumped(n, rockBump, stone);
+        rock(base, stone, patches, n, albedo, roughness, occlusion);
     }
     else if (material == Concrete)
     {
@@ -325,7 +351,7 @@ void main()
     s.specular = specular;
     weatherSurface(s, puddle, hold);
 
-    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative, n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative);
+    vec3 color = shadeLight(s, sun, SunColor * sunShadow(shadowFrom, material == Gravel ? shadowNormal : n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative);
     color = applyFog(color, view, dist, pc.camera.y, sun);
     outColor = vec4(color, coverage);
 }

@@ -45,13 +45,16 @@ vec3 mapped(vec3 n, vec3 position, vec2 uv)
     vec3 dpy = dFdy(position);
     vec2 dux = dFdx(uv);
     vec2 duy = dFdy(uv);
-    vec3 t = cross(dpy, n) * dux.x + cross(n, dpx) * duy.x;
-    vec3 b = cross(dpy, n) * dux.y + cross(n, dpx) * duy.y;
+    // Which way round the pixel's own directions lie decides the sign: screen y runs down.
+    float side = dot(dpx, cross(dpy, n)) < 0.0 ? -1.0 : 1.0;
+    vec3 t = (cross(dpy, n) * dux.x + cross(n, dpx) * duy.x) * side;
+    vec3 b = (cross(dpy, n) * dux.y + cross(n, dpx) * duy.y) * side;
     float scale = max(dot(t, t), dot(b, b));
     if (scale < 1e-20)
         return n;
     vec3 bump = texture(materialNormal, uv).xyz * 2.0 - 1.0;
-    return normalize(t * bump.x + b * bump.y + n * bump.z * sqrt(scale));
+    // A map's green points up its image, which is against the way v runs.
+    return normalize(t * bump.x - b * bump.y + n * bump.z * sqrt(scale));
 }
 
 void main()
