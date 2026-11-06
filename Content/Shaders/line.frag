@@ -22,7 +22,8 @@ layout(push_constant) uniform Push
 // Crushed stone from Tools/Blender/track_parts.py: a seamless tile 1.5 m across.
 layout(set = 0, binding = 0) uniform sampler2D ballastMap;
 
-// TrackTextures: colour, normal, and green roughness and blue metalness, for the ballast, the top of a rail and the sides of one.
+// TrackTextures: colour, normal, and green roughness and blue metalness, for the ballast, the top of a rail, the sides of one
+// (Metal054C) and the weathering on painted parts (Metal024).
 layout(set = 4, binding = 0) uniform sampler2D rockColor;
 layout(set = 4, binding = 1) uniform sampler2D rockNormal;
 layout(set = 4, binding = 2) uniform sampler2D rockPacked;
@@ -32,6 +33,9 @@ layout(set = 4, binding = 5) uniform sampler2D railTopPacked;
 layout(set = 4, binding = 6) uniform sampler2D railSideColor;
 layout(set = 4, binding = 7) uniform sampler2D railSideNormal;
 layout(set = 4, binding = 8) uniform sampler2D railSidePacked;
+layout(set = 4, binding = 9) uniform sampler2D paintedColor;
+layout(set = 4, binding = 10) uniform sampler2D paintedNormal;
+layout(set = 4, binding = 11) uniform sampler2D paintedPacked;
 
 // LineMaterial, and what each packs into vData (see LineVertex).
 const int Ballast = 0;
@@ -161,7 +165,7 @@ void main()
     {
         float height = vData.w;
         float worn = smoothstep(0.170, 0.180, height) * smoothstep(0.5, 0.9, n.y);
-        // The top wears Metal021 and the rest Metal024, running along the rail so its streaks do too.
+        // The top wears Metal021 and the rest Metal054C, running along the rail so its streaks do too.
         vec2 along = vec2(v, u + height) / 0.6;
         vec2 topPacked = texture(railTopPacked, along).gb;
         vec2 sidePacked = texture(railSidePacked, along).gb;
@@ -241,13 +245,13 @@ void main()
         albedo = Paints[clamp(style, 0, 6)];
         // Galvanised steel, or paint, either weathered by Metal024.
         vec2 worn = boxUv(world, n) / 0.8;
-        vec2 packed = texture(railSidePacked, worn).gb;
-        vec3 grime = texture(railSideColor, worn).rgb;
+        vec2 packed = texture(paintedPacked, worn).gb;
+        vec3 grime = texture(paintedColor, worn).rgb;
         albedo *= mix(vec3(1.0), grime * 2.0, style == 2 ? 0.8 : 0.3);
         metallic = style == 2 ? 1.0 : 0.0;
         roughness = mix(style == 2 ? 0.5 : 0.45, packed.x, 0.6);
         specular = 1.0;
-        n = bumped(n, texture(railSideNormal, worn).xyz * 2.0 - 1.0, worn);
+        n = bumped(n, texture(paintedNormal, worn).xyz * 2.0 - 1.0, worn);
     }
 
     if (dot(n, view) > 0.0)
