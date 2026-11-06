@@ -69,7 +69,7 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
             .Add(new MenuItem { Label = "Clouds", Value = () => CloudType.Find(s.CloudType).Label.Split(" (")[0].ToUpperInvariant(), OnChange = d => s.CloudType = Next(CloudType.All, CloudType.Find(s.CloudType), d).Id, Enabled = procedural })
             .Add(new MenuItem { Label = "Cloud amount", Value = () => $"{s.CloudCoverage * 100f:0}", Meter = () => s.CloudCoverage, OnChange = d => s.CloudCoverage = MathF.Round(Math.Clamp(s.CloudCoverage + d * 0.05f, 0f, 1f), 2), Enabled = procedural })
             .Add(new MenuItem { Label = "Weather", Value = () => Array.Find(Weather.Kinds, k => k.Id == s.Weather).Label?.ToUpperInvariant() ?? "DRY", OnChange = d => StepWeather(s, d) })
-            .Add(new MenuItem { Label = "How hard", Value = () => $"{s.WeatherAmount * 100f:0}", Meter = () => s.WeatherAmount, OnChange = d => s.WeatherAmount = MathF.Round(Math.Clamp(s.WeatherAmount + d * 0.05f, 0f, 1f), 2), SeparatorAfter = true })
+            .Add(new MenuItem { Label = "Weather strength", Value = () => $"{s.WeatherAmount * 100f:0}", Meter = () => s.WeatherAmount, OnChange = d => s.WeatherAmount = MathF.Round(Math.Clamp(s.WeatherAmount + d * 0.05f, 0f, 1f), 2), SeparatorAfter = true })
             .Add(new MenuItem { Label = "Auto exposure", Value = () => OnOff(s.AutoExposure), OnChange = _ => s.AutoExposure = !s.AutoExposure })
             .Add(new MenuItem { Label = "Exposure", Value = () => $"{s.Exposure:0.00}", Meter = () => (s.Exposure - 0.1f) / 3.9f, OnChange = d => s.Exposure = MathF.Round(Math.Clamp(s.Exposure + d * 0.05f, 0.1f, 4f), 2) });
 
