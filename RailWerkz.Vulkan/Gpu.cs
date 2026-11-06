@@ -396,7 +396,7 @@ public static unsafe class Gpu
 
     private static void RecreateSwapchain(int2 size)
     {
-        Device.WaitIdle();
+        WaitIdle();
         DestroySwapchainViews();
         CreateSwapchain(size);
     }
@@ -418,7 +418,16 @@ public static unsafe class Gpu
             release();
         frame.Garbage.Clear();
 
-        var result = Device.AcquireNextImageKHR(_swapchain, -1, frame.ImageReady, default, out _image);
+        VkResult result;
+        try
+        {
+            result = Device.AcquireNextImageKHR(_swapchain, -1, frame.ImageReady, default, out _image);
+        }
+        catch (VkResultError e) when (e.Result == VkResult.ErrorOutOfDateKHR) // the wrapper throws this rather than returning it
+        {
+            result = e.Result;
+        }
+
         if (result == VkResult.ErrorOutOfDateKHR)
         {
             RecreateSwapchain(size);
@@ -492,7 +501,16 @@ public static unsafe class Gpu
             Swapchains = &swapchain,
             ImageIndices = &index,
         };
-        var result = Queue.PresentKHR(present);
+        VkResult result;
+        try
+        {
+            result = Queue.PresentKHR(present);
+        }
+        catch (VkResultError e) when (e.Result == VkResult.ErrorOutOfDateKHR)
+        {
+            result = e.Result;
+        }
+
         if (result is VkResult.ErrorOutOfDateKHR or VkResult.SuboptimalKHR)
             _swapchainDirty = true;
         else if (result != VkResult.Success)
@@ -589,8 +607,18 @@ public static unsafe class Gpu
 
     public static void WaitIdle()
     {
-        if (Device is not null && !Device.IsNull())
+        if (Device is null || Device.IsNull())
+            return;
+
+        // A lost GPU has nothing left to wait for. Throwing here would also replace, on the way out, the error that says what lost it.
+        try
+        {
             Device.WaitIdle();
+        }
+        catch (VkResultError e) when (e.Result == VkResult.ErrorDeviceLost)
+        {
+            Log.Error($"Vulkan: {e.Message}");
+        }
     }
 
     /// Waits for the GPU and runs every deferred release now (before shutting down what they release into).
@@ -616,7 +644,7 @@ public static unsafe class Gpu
         if (Device is null)
             return;
 
-        Device.WaitIdle();
+        WaitIdle();
         foreach (var release in _deferred)
             release();
         _deferred.Clear();
