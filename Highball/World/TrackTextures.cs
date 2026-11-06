@@ -9,18 +9,19 @@ using RailWerkz.Vulkan;
 namespace Highball.World;
 
 /// The track's PBR materials, read straight from the zips in Content/Textures/Track at the size the settings ask for: colour, normal,
-/// and roughness and metalness packed into one (green and blue, as glTF does). Metal021 is the clean top of a rail, Metal025 its
-/// sides and the tie plates, Metal024 the weathering on painted parts, Rocks022 the ballast and Wood062 the ties. Bound as the world's set 4 while track is drawn.
+/// and ambient occlusion, roughness, metalness and height packed into one, in that order. Metal021 is the clean top of a rail, Metal025
+/// its sides and the tie plates, Metal024 the weathering on painted parts, Rocks022 the ballast, Ground079S the dirt and Wood062 the ties.
+/// Bound as the world's set 4 while track is drawn.
 public sealed class TrackTextures : IDisposable
 {
-    /// Rocks, rail top, rail side and painted parts, three maps each, in the set the line shader reads. A tie's or plate's first three maps are in
+    /// Rocks, rail top, rail side, painted parts and dirt, three maps each, in the set the line shader reads. A tie's or plate's first three maps are in
     /// the same places, with the rest repeated so that every binding fits the one layout.
-    public const int SetSize = 12;
+    public const int SetSize = 15;
     public const int SetIndex = 4;
 
     public static VkDescriptorSetLayout SetLayout => TextureBinding.SetLayoutFor(SetSize);
 
-    private static readonly string[] Materials = ["Rocks022", "Metal021", "Metal025", "Wood062", "Metal024"];
+    private static readonly string[] Materials = ["Rocks022", "Metal021", "Metal025", "Wood062", "Metal024", "Ground079S"];
 
     private Texture2D _neutral;
     private TextureBinding _none;
@@ -70,8 +71,8 @@ public sealed class TrackTextures : IDisposable
         }
 
         Texture2D[] Of(int i) => sets[i];
-        Texture2D[] Alone(int i) => [.. Of(i), .. Of(i), .. Of(i), .. Of(i)];
-        _lines = new TextureBinding([.. Of(0), .. Of(1), .. Of(2), .. Of(4)]);
+        Texture2D[] Alone(int i) => [.. Of(i), .. Of(i), .. Of(i), .. Of(i), .. Of(i)];
+        _lines = new TextureBinding([.. Of(0), .. Of(1), .. Of(2), .. Of(4), .. Of(5)]);
         _plates = new TextureBinding(Alone(2));
         _ties = new TextureBinding(Alone(3));
         Log.Info($"Track textures: {label} in {clock.ElapsedMilliseconds} ms");
@@ -98,15 +99,17 @@ public sealed class TrackTextures : IDisposable
             var (normal, _, _) = Image(Bytes("NormalGL") ?? throw new InvalidDataException("no normal map"));
             var (rough, _, _) = Image(Bytes("Roughness") ?? throw new InvalidDataException("no roughness map"));
             var metal = Bytes("Metalness") is { } m ? Image(m).Pixels : null;
+            var occlusion = Bytes("AmbientOcclusion") is { } o ? Image(o).Pixels : null;
+            var height2 = Bytes("Displacement") is { } h ? Image(h).Pixels : null;
 
-            // Stone and wood have no metalness map: nothing in them is metal.
+            // Stone and wood have no metalness map, nothing in them being metal; the metals have no occlusion map.
             var packed = new byte[rough.Length];
             for (var p = 0; p < packed.Length; p += 4)
             {
-                packed[p] = 255;
+                packed[p] = occlusion is null ? (byte)255 : occlusion[p];
                 packed[p + 1] = rough[p];
                 packed[p + 2] = metal is null ? (byte)0 : metal[p];
-                packed[p + 3] = 255;
+                packed[p + 3] = height2 is null ? (byte)128 : height2[p];
             }
 
             return (color, normal, packed, width, height);

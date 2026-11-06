@@ -23,7 +23,8 @@ layout(push_constant) uniform Push
 layout(set = 0, binding = 0) uniform sampler2D ballastMap;
 
 // TrackTextures: colour, normal, and green roughness and blue metalness, for the ballast, the top of a rail, the sides of one
-// (Metal025, as the tie plates) and the weathering on painted parts (Metal024).
+// (Metal025, as the tie plates), the weathering on painted parts (Metal024) and dirt (Ground079S). The packed map also has ambient
+// occlusion in red and height in alpha.
 layout(set = 4, binding = 0) uniform sampler2D rockColor;
 layout(set = 4, binding = 1) uniform sampler2D rockNormal;
 layout(set = 4, binding = 2) uniform sampler2D rockPacked;
@@ -36,6 +37,9 @@ layout(set = 4, binding = 8) uniform sampler2D railSidePacked;
 layout(set = 4, binding = 9) uniform sampler2D paintedColor;
 layout(set = 4, binding = 10) uniform sampler2D paintedNormal;
 layout(set = 4, binding = 11) uniform sampler2D paintedPacked;
+layout(set = 4, binding = 12) uniform sampler2D dirtColor;
+layout(set = 4, binding = 13) uniform sampler2D dirtNormal;
+layout(set = 4, binding = 14) uniform sampler2D dirtPacked;
 
 // LineMaterial, and what each packs into vData (see LineVertex).
 const int Ballast = 0;
@@ -88,6 +92,35 @@ vec3 bumped(vec3 n, vec3 bump, vec2 uv)
     return scale < 1e-20 ? n : normalize(t * bump.x + b * bump.y + n * bump.z * sqrt(scale));
 }
 
+// Moves a map's position by what its height does to the line of sight, so what stands proud covers what's behind it. relief: how many
+// metres the map's height spans, and tile how many metres it repeats over. Fades out with distance, where it'd only shimmer.
+vec2 parallax(sampler2D packed, vec2 uv, vec3 n, vec3 view, float relief, float tile, float dist)
+{
+    float fade = 1.0 - smoothstep(12.0, 40.0, dist);
+    if (fade <= 0.0)
+        return uv;
+
+    vec3 dpx = dFdx(vRelative);
+    vec3 dpy = dFdy(vRelative);
+    vec2 dux = dFdx(uv);
+    vec2 duy = dFdy(uv);
+    vec3 t = cross(dpy, n) * dux.x + cross(n, dpx) * duy.x;
+    vec3 b = cross(dpy, n) * dux.y + cross(n, dpx) * duy.y;
+    float scale = max(dot(t, t), dot(b, b));
+    if (scale < 1e-20)
+        return uv;
+
+    float inverse = 1.0 / sqrt(scale);
+    // From the surface towards the eye, along the map's directions. Not too near the grazing, where it'd run away.
+    vec3 toEye = -view;
+    vec2 across = vec2(dot(toEye, t), dot(toEye, b)) * inverse / max(dot(toEye, n), 0.25);
+    vec2 reach = across * relief / tile * fade;
+    vec2 moved = uv;
+    for (int i = 0; i < 3; i++)
+        moved = uv + reach * (texture(packed, moved).a - 0.5);
+    return moved;
+}
+
 // A material's map seen straight down its strongest axis, so a part with no map of its own can still wear one.
 vec2 boxUv(vec3 position, vec3 n)
 {
@@ -128,18 +161,26 @@ void main()
     if (material == Ballast)
     {
         float patches = fbm(tex * 0.35, pixel * 0.35);
-        vec2 stone = tex / 1.5;
+        // Along the track and across it as the surface runs, so the shoulder's stones aren't drawn out down its slope.
+        vec3 shape = n;
+        vec2 stone = vec2(u / max(abs(n.y), 0.3), v) / 1.5;
+        stone = parallax(rockPacked, stone, n, view, 0.06, 1.5, dist);
+        vec4 rockMaps = texture(rockPacked, stone);
         // Crushed rock weathered by dust and oil: the map on its own is clean river stone.
         albedo = texture(rockColor, stone).rgb * vec3(0.46, 0.44, 0.42) * (0.8 + 0.3 * patches);
-        roughness = texture(rockPacked, stone).g;
-        occlusion = 0.8;
-        n = bumped(n, texture(rockNormal, stone).xyz * 2.0 - 1.0, stone);
+        // Dark in the gaps between the stones whatever the light, which is what still reads from far off.
+        albedo *= mix(0.45, 1.0, smoothstep(0.25, 0.7, rockMaps.a));
+        roughness = rockMaps.g;
+        occlusion = 0.8 * rockMaps.r;
+        vec3 rockBump = texture(rockNormal, stone).xyz * 2.0 - 1.0;
+        rockBump.xy *= 1.5;
+        n = bumped(n, rockBump, stone);
 
         int tracks = style & 7;
         bool disused = (style & 8) != 0;
         float railOffset = vData.w;
         float far = smoothstep(nearRadius - 60.0, nearRadius, dist);
-        if (n.y > 0.95)
+        if (shape.y > 0.95)
         {
             for (int k = 0; k < tracks; k++)
             {
@@ -228,10 +269,15 @@ void main()
     }
     else if (material == Gravel)
     {
-        // The ballast's stone, finer and browner: the walkways and road shoulders.
+        // Dirt, Ground079S: the walkways, road shoulders, unpaved roads and the marks where track is to go.
         float patches = fbm(tex * 0.5, pixel * 0.5);
-        albedo = texture(ballastMap, tex / 0.9).rgb * vec3(0.78, 0.72, 0.6) * (0.8 + 0.4 * patches);
-        roughness = 0.95;
+        vec2 dirt = tex / 2.5;
+        dirt = parallax(dirtPacked, dirt, n, view, 0.03, 2.5, dist);
+        vec4 dirtMaps = texture(dirtPacked, dirt);
+        albedo = texture(dirtColor, dirt).rgb * 0.38 * (0.8 + 0.4 * patches);
+        roughness = dirtMaps.g;
+        occlusion = dirtMaps.r;
+        n = bumped(n, texture(dirtNormal, dirt).xyz * 2.0 - 1.0, dirt);
     }
     else if (material == Concrete)
     {
