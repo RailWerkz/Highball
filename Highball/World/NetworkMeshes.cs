@@ -730,10 +730,11 @@ public sealed partial class NetworkMeshes : IDisposable
         const float deck = 1.8f;
         var wall = h + 0.5f;
         var concrete = Code(LineMaterial.Concrete);
+        const float slab = 0.5f;
         (float, float)[] section =
         [
-            (-w - 0.9f, -deck), (-w - 0.9f, wall), (-w - 0.6f, wall), (-w - 0.6f, 0f), (-w, h), (w, h), (w + 0.6f, 0f),
-            (w + 0.6f, wall), (w + 0.9f, wall), (w + 0.9f, -deck), (-w - 0.9f, -deck),
+            (-w - 0.9f, -slab), (-w - 0.9f, wall), (-w - 0.6f, wall), (-w - 0.6f, 0f), (-w, h), (w, h), (w + 0.6f, 0f),
+            (w + 0.6f, wall), (w + 0.9f, wall), (w + 0.9f, -slab), (w - 0.1f, -slab - 0.1f), (w - 0.1f, -deck), (-w + 0.1f, -deck), (-w + 0.1f, -slab - 0.1f), (-w - 0.9f, -slab),
         ];
         Sweep(builder, line, first, last, section, e => e is 3 or 4 or 5 ? ballast : concrete, (_, _, _) => railOffset);
     }
@@ -804,10 +805,12 @@ public sealed partial class NetworkMeshes : IDisposable
             const float deck = 1.4f;
             const float wall = 0.9f;
             var concrete = Code(LineMaterial.Concrete);
+            // A slab with a parapet each side, over girders set in from its edge so they throw a line of shade.
+            const float slab = 0.4f;
             RoadSweep(builder, lines, line, rings, taper, h =>
             [
-                (-h - 0.4f, -deck), (-h - 0.4f, wall), (-h, wall), (-h, RoadRise), (h, RoadRise), (h, wall),
-                (h + 0.4f, wall), (h + 0.4f, -deck), (-h - 0.4f, -deck),
+                (-h - 0.5f, -slab), (-h - 0.5f, wall), (-h, wall), (-h, RoadRise), (h, RoadRise), (h, wall),
+                (h + 0.5f, wall), (h + 0.5f, -slab), (h - 0.9f, -slab - 0.1f), (h - 0.9f, -deck), (-h + 0.9f, -deck), (-h + 0.9f, -slab - 0.1f), (-h - 0.5f, -slab),
             ], e => e == 3 ? surface : concrete);
         }
 
@@ -1038,6 +1041,29 @@ public sealed partial class NetworkMeshes : IDisposable
         var concrete = new float4(0f, 0f, Code(LineMaterial.Concrete), 0f);
         var span = 25f;
         var next = MathF.Ceiling(line.S[first] / span) * span;
+
+        // An abutment under each end of the deck, holding the bank back.
+        void Abutment(int p, int inward)
+        {
+            var (ax, az) = (line.X[p], line.Z[p]);
+            var ground = _source.HeightAt(ax, az);
+            var top = line.Y[p] - deckDepth;
+            if (top - ground < 0.3f)
+                return;
+            var fx = (float)(line.X[inward] - ax);
+            var fz = (float)(line.Z[inward] - az);
+            var length = MathF.Max(MathF.Sqrt(fx * fx + fz * fz), 1e-5f);
+            var forward = new float3(fx / length, 0f, fz / length);
+            var right = new float3(-forward.Z, 0f, forward.X);
+            var center = new float3((float)(ax - builder.Origin.X), 0f, (float)(az - builder.Origin.Z));
+            Box(builder, center + forward * 0.2f, right * (deckWidth * 0.56f), forward * 1.2f, ground - 1.5f, top + deckDepth * 0.5f, concrete);
+        }
+
+        if (first == 0 || line.Structures[first - 1] != Structure.Bridge)
+            Abutment(first, Math.Min(first + 1, line.Count - 1));
+        if (last == line.Count - 1 || line.Structures[last] != Structure.Bridge)
+            Abutment(last, Math.Max(last - 1, 0));
+
         for (var p = first; p < last; p++)
         {
             while (next < line.S[p + 1])
@@ -1057,7 +1083,8 @@ public sealed partial class NetworkMeshes : IDisposable
                 var forward = new float3(fx / length, 0f, fz / length);
                 var right = new float3(-forward.Z, 0f, forward.X);
                 var center = new float3((float)(x - builder.Origin.X), 0f, (float)(z - builder.Origin.Z));
-                Box(builder, center, right * (deckWidth * 0.3f), forward * 0.75f, ground - 1f, top, concrete);
+                Box(builder, center, right * (deckWidth * 0.26f), forward * 0.6f, ground - 1f, top - 0.8f, concrete);
+                Box(builder, center, right * (deckWidth * 0.46f), forward * 0.8f, top - 0.8f, top, concrete);
             }
         }
     }

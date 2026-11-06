@@ -33,6 +33,7 @@ public sealed partial class EditorView
         (Tool.Parallel, ToolIcon.Parallel, "Parallel", "P", false),
         (Tool.Switches, ToolIcon.Switches, "Switches", "0", true),
         (Tool.Place, ToolIcon.Place, "Objects", "O", false),
+        (Tool.Road, ToolIcon.Road, "Roads", ";", false),
         (Tool.Circuits, ToolIcon.Circuits, "Circuits", "9", true),
         (Tool.Raise, ToolIcon.Terrain, "Terrain", "2-6", false),
     ];
@@ -223,6 +224,48 @@ public sealed partial class EditorView
             if (PaletteRow(icon, name, _place.Mode == mode))
                 (_place.Mode, _switchRefused) = (mode, null);
         }
+
+        if (ImGui.CollapsingHeader("Bridges"u8, ImGuiTreeNodeFlags.None))
+        {
+            if (PaletteRow(ToolIcon.Bridge, "Place bridge", _place.Mode == PlaceMode.Bridge))
+                (_place.Mode, _bridgeFrom, _switchRefused) = (PlaceMode.Bridge, null, null);
+            if (PaletteRow(ToolIcon.RemoveBridge, "Remove bridge", _place.Mode == PlaceMode.RemoveBridge))
+                (_place.Mode, _bridgeFrom, _switchRefused) = (PlaceMode.RemoveBridge, null, null);
+            if (_place.Mode == PlaceMode.Bridge)
+                ImGui.TextWrapped(_bridgeFrom is null ? "Click where the bridge starts, on a road or a track."u8 : "Now click where it ends, along the same line."u8);
+        }
+    }
+
+    /// The Roads tool's panel: how it draws, and what.
+    private void RoadPanel()
+    {
+        ImGui.SeparatorText("Draw"u8);
+        foreach (var (mode, name) in ((RoadMode, string)[])[(RoadMode.Straight, "Straight"), (RoadMode.Curved, "Curved"), (RoadMode.Freeform, "Freeform"), (RoadMode.Remove, "Remove")])
+        {
+            if (ImGui.RadioButton(name, _road.Mode == mode))
+            {
+                _road.Mode = mode;
+                _road.Clear();
+            }
+
+            if (mode is RoadMode.Straight or RoadMode.Curved)
+                ImGui.SameLine(0f, -1f);
+        }
+
+        ImGui.TextWrapped(_road.Mode switch
+        {
+            RoadMode.Straight => "Click a start, then click on from there. Shift keeps to 15 degree steps.",
+            RoadMode.Curved => "Click a start, a point the curve pulls towards, then an end.",
+            RoadMode.Freeform => "Click a start, then each next point: it curves on from the way it was going.",
+            _ => "Click a road to take it out.",
+        });
+
+        if (_road.Mode == RoadMode.Remove)
+            return;
+        ImGui.SeparatorText("Road"u8);
+        for (var i = 0; i < RoadTool.Kinds.Length; i++)
+            if (ImGui.Selectable(RoadTool.Kinds[i].Name, _road.Kind == i))
+                _road.Kind = i;
     }
 
     /// A piece on the palette: its plan, its name, lit when it's in hand.

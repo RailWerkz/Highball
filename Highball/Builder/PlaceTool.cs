@@ -6,7 +6,7 @@ using RailWerkz.UI;
 
 namespace Highball.Builder;
 
-public enum PlaceMode { Signal, HandThrow, GradeCrossing, Diamond, Track }
+public enum PlaceMode { Signal, HandThrow, GradeCrossing, Diamond, Track, Bridge, RemoveBridge }
 
 /// Placing what stands on or beside the track. A signal snaps beside the nearest track, on the side clicked, facing trains
 /// running on that side. A hand throw goes on the nearest switch in place of its power machine. A grade crossing snaps onto the

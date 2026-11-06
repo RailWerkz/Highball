@@ -26,7 +26,7 @@ namespace Highball.Builder;
 /// back to the Planner or leaving saves too).
 public sealed partial class EditorView : IDisposable
 {
-    private enum Tool { Look, Raise, Lower, Smooth, Flatten, Paint, Track, Pen, Circuits, Switches, Shape, Follow, Place, Parallel }
+    private enum Tool { Look, Raise, Lower, Smooth, Flatten, Paint, Track, Pen, Circuits, Switches, Shape, Follow, Place, Parallel, Road }
 
     private static readonly (byte Class, string Name)[] PaintCovers =
     [
@@ -89,6 +89,11 @@ public sealed partial class EditorView : IDisposable
     private (double X, double Z)? _dragOffset;
     private float2? _boxFrom;
     private readonly PenTool _pen = new();
+    private readonly RoadTool _road = new();
+    private RoadEditor? _roads;
+    private RoadEditor.Hit? _bridgeFrom;
+    private long? _roadHover;
+    private LayPoint? _roadNext;
     private LayPoint? _layNext;
     private PenTool.Measure? _penMeasure;
     private Task<NetworkChange>? _rebuild;
@@ -186,6 +191,10 @@ public sealed partial class EditorView : IDisposable
     {
         if (_pen.Count > 0)
             _pen.Clear();
+        else if (_tool == Tool.Road && _road.Busy)
+            _road.Clear();
+        else if (_tool == Tool.Place && _bridgeFrom is not null)
+            _bridgeFrom = null;
         else if (_selection.Count > 0)
             _selection.Clear();
         else if (_tool == Tool.Parallel && _parallel.Anchor is not null)
@@ -535,6 +544,8 @@ public sealed partial class EditorView : IDisposable
                 _tool = Tool.Follow;
             if (Input.KeyDown(GlfwKey.Backslash) || Input.KeyDown(GlfwKey.O))
                 _tool = Tool.Place;
+            if (Input.KeyDown(GlfwKey.Semicolon))
+                _tool = Tool.Road;
             if (Input.KeyDown(GlfwKey.LeftBracket))
                 _radius = MathF.Max(MinRadius, _radius / 1.25f);
             if (Input.KeyDown(GlfwKey.RightBracket))
@@ -570,10 +581,12 @@ public sealed partial class EditorView : IDisposable
             YardUpdate(Blocked);
         if (_tool == Tool.Place && source.Lines is { } placing)
             PlaceUpdate(source, placing);
+        if (_tool == Tool.Road)
+            RoadUpdate();
         if (DevTools.ShapeOps is { Count: > 0 } && _rebuild is null)
             ShapeOp(source, DevTools.ShapeOps.Dequeue());
 
-        if (_tool is Tool.Track or Tool.Pen or Tool.Circuits or Tool.Switches or Tool.Shape or Tool.Follow or Tool.Place or Tool.Parallel)
+        if (_tool is Tool.Track or Tool.Pen or Tool.Circuits or Tool.Switches or Tool.Shape or Tool.Follow or Tool.Place or Tool.Road or Tool.Parallel)
             return;
 
         if (DevTools.SculptHold is { } hold && RailWerkz.Core.Time.Time.Now >= hold.From)
@@ -762,6 +775,15 @@ public sealed partial class EditorView : IDisposable
             case PlaceMode.Track:
                 LayStamp(lines, x, z);
                 break;
+            case PlaceMode.Bridge:
+                BridgeClick(x, z);
+                break;
+            case PlaceMode.RemoveBridge:
+                if (Roads.Nearest(x, z, PickReach(x, z), RoadEditor.IsBridge) is { } bridge)
+                    Committed(Roads.RemoveBridge(bridge.Way));
+                else
+                    _switchRefused = "No bridge here";
+                break;
             case PlaceMode.Diamond when _tracks!.CrossingNear(x, z, PlaceTool.SnapReach) is { } diamond:
                 if (diamond.Degrees < 8.0)
                     _switchRefused = "Tracks cross under 8 degrees: too shallow for a diamond";
@@ -772,6 +794,67 @@ public sealed partial class EditorView : IDisposable
                 _switchRefused = _place.Mode == PlaceMode.Diamond ? "No tracks cross here" : _place.Mode == PlaceMode.HandThrow ? "No switch here" : "No track here";
                 break;
         }
+    }
+
+    private RoadEditor Roads => _roads ??= new RoadEditor(_route, _terrain!.Source.Network, _tracks!);
+
+    /// How many metres of ground a few pixels cover, at a place on it.
+    private double PickReach(double x, double z)
+    {
+        var (dx, dy, dz) = (x - _camera.X, _terrain!.Source.HeightAt(x, z) - _camera.Y, z - _camera.Z);
+        return Math.Max(3.0, Math.Sqrt(dx * dx + dy * dy + dz * dz) * 2.0 * Math.Tan(_camera.FieldOfView * 0.5) / Math.Max(_screen.Y, 1f) * S(14f));
+    }
+
+    /// A bridge's first click holds its place, and the second builds it. It goes on the line nearest, road or track.
+    private void BridgeClick(double x, double z)
+    {
+        if (Roads.Nearest(x, z, PickReach(x, z), w => !w.Tags.ContainsKey(RouteNetwork.RemovedTag)) is not { } hit)
+        {
+            _switchRefused = "Click on a road or a track";
+            return;
+        }
+
+        if (_bridgeFrom is not { } from)
+        {
+            _bridgeFrom = hit;
+            return;
+        }
+
+        _bridgeFrom = null;
+        if (Roads.AddBridge(from, hit, out var refused) is { } edit)
+            Committed(edit);
+        else
+            _switchRefused = refused;
+    }
+
+    private void RoadUpdate()
+    {
+        _roadHover = null;
+        _roadNext = null;
+        if (Blocked || _hit is not { } hit)
+            return;
+
+        var (x, z) = (hit.X, hit.Z);
+        var reach = PickReach(x, z);
+        if (_road.Mode == RoadMode.Remove)
+        {
+            if (Roads.Nearest(x, z, reach, RoadEditor.IsRoad) is { } under)
+            {
+                _roadHover = under.Way;
+                if (Input.MouseDown(GlfwMouseButton.Left))
+                    Committed(Roads.Remove(under.Way));
+            }
+
+            return;
+        }
+
+        if ((Input.Key(GlfwKey.LeftShift) || Input.Key(GlfwKey.RightShift)) && _road.Mode == RoadMode.Straight)
+            (x, z) = _road.Stepped(x, z);
+
+        // The control point of a curve stands free; everything else joins what it lands on.
+        _roadNext = _road.Mode == RoadMode.Curved && _road.From is not null && _road.Control is null ? new LayPoint(x, z) : Roads.Snap(x, z, reach);
+        if (Input.MouseDown(GlfwMouseButton.Left) && _road.Click(_roadNext.Value) is { } points)
+            Committed(Roads.Lay(points, RoadTool.Kinds[_road.Kind]));
     }
 
     /// Lays the track piece in hand, as it's shown at this place, and sets its switches to its size.
@@ -1547,6 +1630,58 @@ public sealed partial class EditorView : IDisposable
                 break;
             }
 
+            case "road":
+            {
+                // road,KIND,MODE,lat,lon,lat,lon[,lat,lon...]: each point a click.
+                _tool = Tool.Road;
+                _road.Clear();
+                (_road.Kind, _road.Mode) = (int.Parse(parts[1], CultureInfo.InvariantCulture), Enum.Parse<RoadMode>(parts[2], true));
+                for (var i = 3; i + 1 < parts.Length; i += 2)
+                {
+                    var (rx, rz) = At(i);
+                    if (_road.Click(Roads.Snap(rx, rz, 5.0)) is { } laid)
+                        Committed(Roads.Lay(laid, RoadTool.Kinds[_road.Kind]));
+                }
+
+                Log.Info($"Road: laid, {source.Network.Ways.Count} ways");
+                break;
+            }
+
+            case "roadoff":
+            {
+                var (rx, rz) = At(1);
+                var picked = Roads.Nearest(rx, rz, 40.0, RoadEditor.IsRoad);
+                Log.Info($"Road off: {picked?.Way}");
+                if (picked is { } off)
+                    Committed(Roads.Remove(off.Way));
+                break;
+            }
+
+            case "bridge":
+            {
+                var (ax, az) = At(1);
+                var (bx, bz) = At(3);
+                bool Any(NetworkWay w) => !w.Tags.ContainsKey(RouteNetwork.RemovedTag);
+                if (Roads.Nearest(ax, az, 40.0, Any) is { } first && Roads.Nearest(bx, bz, 40.0, Any) is { } second)
+                {
+                    var made = Roads.AddBridge(first, second, out var refused);
+                    Log.Info($"Bridge: {(made is null ? refused ?? "nothing" : $"{made.Ways.Count} ways changed")}");
+                    Committed(made);
+                }
+
+                break;
+            }
+
+            case "unbridge":
+            {
+                var (ax, az) = At(1);
+                var found = Roads.Nearest(ax, az, 40.0, RoadEditor.IsBridge);
+                Log.Info($"Unbridge: {found?.Way}");
+                if (found is { } bridged)
+                    Committed(Roads.RemoveBridge(bridged.Way));
+                break;
+            }
+
             case "background":
                 (_showBackground, MapTiles.Background, _backgroundOpacity) = (parts[1] != "off", parts[1] == "satellite" ? MapBackground.Satellite : MapBackground.Map, 1f);
                 SetTopDown(true);
@@ -2095,7 +2230,7 @@ public sealed partial class EditorView : IDisposable
             return;
         }
 
-        if (_hit is not { } hit || _tool is Tool.Look or Tool.Switches or Tool.Shape or Tool.Follow or Tool.Place or Tool.Parallel)
+        if (_hit is not { } hit || _tool is Tool.Look or Tool.Switches or Tool.Shape or Tool.Follow or Tool.Place or Tool.Road or Tool.Parallel)
             return;
 
         const int segments = 64;
@@ -2160,6 +2295,29 @@ public sealed partial class EditorView : IDisposable
             _parallel.Draw(draw, ProjectGround, S(1f));
         if (_tool == Tool.Place && _terrain is { } shown)
             _place.Draw(draw, ProjectGround, shown.Source.Objects, PlacedAtWorld, S(1f));
+        if (_tool == Tool.Road)
+        {
+            _road.Draw(draw, ProjectGround, _roadNext, S(1f));
+            if (_roadHover is { } doomed && _roads?.Shape(doomed) is { } shape)
+                DrawPicked(draw, shape.X, shape.Z, Style.Stop);
+        }
+
+        if (_tool == Tool.Place && _place.Mode is PlaceMode.Bridge or PlaceMode.RemoveBridge && !Blocked && _hit is { } at2)
+        {
+            Func<Highball.Routes.NetworkWay, bool> wanted = _place.Mode == PlaceMode.Bridge ? w => !w.Tags.ContainsKey(RouteNetwork.RemovedTag) : RoadEditor.IsBridge;
+            if (Roads.Nearest(at2.X, at2.Z, PickReach(at2.X, at2.Z), wanted) is { } near)
+            {
+                if (_roads?.Shape(near.Way) is { } line)
+                    DrawPicked(draw, line.X, line.Z, _place.Mode == PlaceMode.Bridge ? Style.Accent : Style.Stop);
+                if (_bridgeFrom is { } from && ProjectGround(from.X, from.Z) is { } a && ProjectGround(near.X, near.Z) is { } b)
+                {
+                    draw.AddLine(a, b, Style.Accent, S(3f));
+                    draw.AddCircleFilled(a, S(5f), Style.Accent);
+                    draw.AddCircleFilled(b, S(5f), Style.Accent);
+                }
+            }
+        }
+
         if (_tool == Tool.Follow)
             _area?.Draw(draw, ProjectGround, Style.Caution);
         if (_gradeAt is { } at && !(_tool == Tool.Pen && _penMeasure is not null))
@@ -2168,6 +2326,14 @@ public sealed partial class EditorView : IDisposable
             var height = imperial ? $"{at.Height * FeetPerMeter:#,0} ft" : $"{at.Height:#,0} m";
             PenTool.Label(draw, at.Screen, string.Create(CultureInfo.InvariantCulture, $"Grade {at.Grade * 100:0.00}%   {height}"), GradeColor(at.Grade));
         }
+    }
+
+    /// A line over the view, to show what a click would act on.
+    private void DrawPicked(ImDrawListPtr draw, double[] x, double[] z, Rgba color)
+    {
+        for (var i = 0; i + 1 < x.Length; i++)
+            if (ProjectGround(x[i], z[i]) is { } a && ProjectGround(x[i + 1], z[i + 1]) is { } b)
+                draw.AddLine(a, b, color, S(3f));
     }
 
     private static Rgba GradeColor(float grade) => MathF.Abs(grade) switch
@@ -2375,6 +2541,8 @@ public sealed partial class EditorView : IDisposable
 
         if (_tool == Tool.Place)
             PlacePanel(_terrain.Source);
+        if (_tool == Tool.Road)
+            RoadPanel();
 
         if (_topDown)
         {
@@ -2668,6 +2836,8 @@ public sealed partial class EditorView : IDisposable
             (string, string)[] tool = _tool switch
             {
                 Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", _topDown ? "Zoom" : "Speed"), ("G", "Grades"), ("T", "Throw switch")],
+                Tool.Road when _road.Mode == RoadMode.Remove => [("LMB", "Remove road"), ("CTRL+Z", "Undo")],
+                Tool.Road => [("LMB", "Next point"), ("SHIFT", "15 degree steps"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Parallel => [("LMB", "Start, then end"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
                 Tool.Switches => [("LMB", "Pick a switch"), ("DRAG", "Move points, curve end or crossover"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.Mode == PlaceMode.Track && _place.Selected is null => [("LMB", "Lay piece"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Mirror"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
