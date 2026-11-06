@@ -23,7 +23,7 @@ layout(push_constant) uniform Push
 layout(set = 0, binding = 0) uniform sampler2D ballastMap;
 
 // TrackTextures: colour, normal, and green roughness and blue metalness, for the ballast, the top of a rail, the sides of one
-// (Metal054C) and the weathering on painted parts (Metal024).
+// (Metal025, as the tie plates) and the weathering on painted parts (Metal024).
 layout(set = 4, binding = 0) uniform sampler2D rockColor;
 layout(set = 4, binding = 1) uniform sampler2D rockNormal;
 layout(set = 4, binding = 2) uniform sampler2D rockPacked;
@@ -165,7 +165,7 @@ void main()
     {
         float height = vData.w;
         float worn = smoothstep(0.170, 0.180, height) * smoothstep(0.5, 0.9, n.y);
-        // The top wears Metal021 and the rest Metal054C, running along the rail so its streaks do too.
+        // The top wears Metal021 and the rest Metal025, running along the rail so its streaks do too.
         vec2 along = vec2(v, u + height) / 0.6;
         vec2 topPacked = texture(railTopPacked, along).gb;
         vec2 sidePacked = texture(railSidePacked, along).gb;
