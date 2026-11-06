@@ -1328,7 +1328,7 @@ public sealed partial class NetworkLines
         var distances = new float[line.Count];
         Array.Fill(distances, float.MaxValue);
         foreach (var (node, point) in line.Nodes)
-            if (_junctionNodes.Contains(node))
+            if (_junctionNodes.Contains(node) && !_continuing.ContainsKey((line.Index, point)))
                 distances[point] = 0f;
 
         for (var p = 1; p < line.Count; p++)
@@ -1348,6 +1348,52 @@ public sealed partial class NetworkLines
             foreach (var (node, _) in line.Nodes)
                 seen[node] = seen.GetValueOrDefault(node) + 1;
         _junctionNodes = seen.Where(p => p.Value > 1).Select(p => p.Key).ToHashSet();
+        FindContinuing(seen);
+    }
+
+    /// Road ends that just carry on into another road: the same road split where its lanes or a tag change, not a junction.
+    private readonly Dictionary<(int Line, int Point), (NetworkLine Line, int Point)> _continuing = [];
+
+    /// The road this end of a road carries straight on into, if that's all that happens there.
+    public (NetworkLine Line, int Point)? Continuing(NetworkLine line, int point) =>
+        _continuing.TryGetValue((line.Index, point), out var other) ? other : null;
+
+    private void FindContinuing(Dictionary<long, int> touching)
+    {
+        _continuing.Clear();
+        var ends = new Dictionary<long, List<(NetworkLine Line, int Point)>>();
+        foreach (var line in _lines.Where(l => !l.Rail && !l.Mark))
+        {
+            foreach (var (node, point) in line.Nodes)
+            {
+                if ((point != 0 && point != line.Count - 1) || touching.GetValueOrDefault(node) != 2)
+                    continue;
+                if (!ends.TryGetValue(node, out var list))
+                    ends[node] = list = [];
+                list.Add((line, point));
+            }
+        }
+
+        foreach (var list in ends.Values.Where(l => l.Count == 2))
+        {
+            var (a, b) = (list[0], list[1]);
+            var (ax, az) = Outward(a.Line, a.Point);
+            var (bx, bz) = Outward(b.Line, b.Point);
+            // Facing opposite ways, within about 35 degrees of straight on.
+            if (ax * bx + az * bz > -0.82)
+                continue;
+            _continuing[(a.Line.Index, a.Point)] = b;
+            _continuing[(b.Line.Index, b.Point)] = a;
+        }
+    }
+
+    /// The direction out of the line at this end of it, across the ground.
+    private static (double X, double Z) Outward(NetworkLine line, int point)
+    {
+        var inner = point == 0 ? Math.Min(1, line.Count - 1) : Math.Max(point - 1, 0);
+        var (x, z) = (line.X[point] - line.X[inner], line.Z[point] - line.Z[inner]);
+        var length = Math.Max(Math.Sqrt(x * x + z * z), 1e-6);
+        return (x / length, z / length);
     }
 
     // --- Marks on the ground. ---

@@ -779,6 +779,7 @@ public sealed partial class NetworkMeshes : IDisposable
     private static void Road(Builder builder, NetworkLines lines, NetworkLine line, int first, int last, bool bridge)
     {
         var half = line.Width * 0.5f;
+        var taper = RoadTaper(lines, line);
         var marks = line.Unpaved ? 0 : (RoadClass)line.Class switch
         {
             RoadClass.Highway => 3,
@@ -793,22 +794,21 @@ public sealed partial class NetworkMeshes : IDisposable
 
         // Data.w is per point, so the sweep's value callback can't see it; patch it in after.
         var start = builder.Vertices.Count;
-        var rings = RoadRings(line, first, last, Junction);
+        var rings = RoadRings(line, first, last, Junction, taper);
         if (!bridge)
         {
-            Sweep(builder, line, rings, [(-half, RoadRise), (half, RoadRise)], _ => surface, (_, _, _) => 0f);
+            RoadSweep(builder, lines, line, rings, taper, h => [(-h, RoadRise), (h, RoadRise)], _ => surface);
         }
         else
         {
             const float deck = 1.4f;
             const float wall = 0.9f;
             var concrete = Code(LineMaterial.Concrete);
-            (float, float)[] section =
+            RoadSweep(builder, lines, line, rings, taper, h =>
             [
-                (-half - 0.4f, -deck), (-half - 0.4f, wall), (-half, wall), (-half, RoadRise), (half, RoadRise), (half, wall),
-                (half + 0.4f, wall), (half + 0.4f, -deck), (-half - 0.4f, -deck),
-            ];
-            Sweep(builder, line, rings, section, e => e == 3 ? surface : concrete, (_, _, _) => 0f);
+                (-h - 0.4f, -deck), (-h - 0.4f, wall), (-h, wall), (-h, RoadRise), (h, RoadRise), (h, wall),
+                (h + 0.4f, wall), (h + 0.4f, -deck), (-h - 0.4f, -deck),
+            ], e => e == 3 ? surface : concrete);
         }
 
         var perRing = (builder.Vertices.Count - start) / rings.Count;
@@ -819,8 +819,8 @@ public sealed partial class NetworkMeshes : IDisposable
         {
             const float under = RoadRise - 0.02f;
             var gravel = Code(LineMaterial.Gravel);
-            Sweep(builder, line, rings, [(-half - 0.6f, -0.35f), (-half + 0.05f, under)], _ => gravel, (_, _, _) => 0f);
-            Sweep(builder, line, rings, [(half - 0.05f, under), (half + 0.6f, -0.35f)], _ => gravel, (_, _, _) => 0f);
+            RoadSweep(builder, lines, line, rings, taper, h => [(-h - 0.6f, -0.35f), (-h + 0.05f, under)], _ => gravel);
+            RoadSweep(builder, lines, line, rings, taper, h => [(h - 0.05f, under), (h + 0.6f, -0.35f)], _ => gravel);
         }
 
         for (var r = 0; r < rings.Count; r++)
@@ -844,10 +844,96 @@ public sealed partial class NetworkMeshes : IDisposable
         }
     }
 
+    /// The half width of a road at each point. Where it carries on into a road of another width, both ease to the width halfway
+    /// between them over the last stretch, so the edge runs on without a step.
+    private static Func<int, float> RoadTaper(NetworkLines lines, NetworkLine line)
+    {
+        var half = line.Width * 0.5f;
+        var length = line.S[line.Count - 1];
+        var ends = new List<(float From, float Reach, float Change)>();
+        foreach (var point in (int[])[0, line.Count - 1])
+        {
+            if (lines.Continuing(line, point) is not { } other || MathF.Abs(other.Line.Width - line.Width) < 0.01f)
+                continue;
+            var change = (other.Line.Width - line.Width) * 0.25f;
+            // Long enough to read as a road widening, and it never reaches past the road's middle.
+            var reach = MathF.Min(MathF.Max(30f, MathF.Abs(change) * 16f), length * 0.5f);
+            ends.Add((line.S[point], reach, change));
+        }
+
+        if (ends.Count == 0)
+            return _ => half;
+        return p =>
+        {
+            var at = half;
+            foreach (var (from, reach, change) in ends)
+            {
+                var t = Math.Clamp(1f - MathF.Abs(line.S[p] - from) / MathF.Max(reach, 1e-3f), 0f, 1f);
+                at += change * t * t * (3f - 2f * t);
+            }
+
+            return at;
+        };
+    }
+
+    /// A road's frame at a point: at an end that carries on into another road, square to the two of them, so they meet edge to edge.
+    private static (float3 Center, float3 Right) RoadFrame(NetworkLines lines, NetworkLine line, int p, float3 origin)
+    {
+        var (center, right) = Frame(line, p, origin);
+        if ((p != 0 && p != line.Count - 1) || lines.Continuing(line, p) is not { } other)
+            return (center, right);
+
+        var (_, theirs) = Frame(other.Line, other.Point, origin);
+        // Running the same way along the join when one line's end meets the other's start; the opposite when ends meet ends.
+        if ((p == 0) == (other.Point == 0))
+            theirs = new float3(-theirs.X, 0f, -theirs.Z);
+        var sum = right + theirs;
+        return (center, sum / MathF.Max(MathF.Sqrt(sum.X * sum.X + sum.Z * sum.Z), 1e-5f));
+    }
+
+    /// Sweeps a road's cross-section, made for the half width at each ring. The markings' position across is kept in proportion to
+    /// the nominal width, so lane lines narrow with the road rather than running off its edge.
+    private static void RoadSweep(Builder builder, NetworkLines lines, NetworkLine line, List<int> points, Func<int, float> halfAt,
+        Func<float, (float U, float Y)[]> section, Func<int, float> code)
+    {
+        var nominal = line.Width * 0.5f;
+        var start = (uint)builder.Vertices.Count;
+        var edges = 0;
+        foreach (var p in points)
+        {
+            var (center, right) = RoadFrame(lines, line, p, builder.Origin);
+            var half = halfAt(p);
+            var scale = nominal / MathF.Max(half, 0.1f);
+            var ring = section(half);
+            edges = ring.Length - 1;
+            var v = line.S[p] % Wrap;
+            for (var e = 0; e < edges; e++)
+            {
+                var (u0, y0) = ring[e];
+                var (u1, y1) = ring[e + 1];
+                var (du, dy) = (u1 - u0, y1 - y0);
+                var len = MathF.Max(MathF.Sqrt(du * du + dy * dy), 1e-6f);
+                var normal = right * (-dy / len) + new float3(0f, du / len, 0f);
+                builder.Add(center + right * u0 + new float3(0f, y0, 0f), normal, new float4(u0 * scale, v, code(e), 0f));
+                builder.Add(center + right * u1 + new float3(0f, y1, 0f), normal, new float4(u1 * scale, v, code(e), 0f));
+            }
+        }
+
+        var rings = (uint)(edges * 2);
+        for (var p = 0; p < points.Count - 1; p++)
+        {
+            for (var e = 0; e < edges; e++)
+            {
+                var a = start + (uint)p * rings + (uint)e * 2;
+                builder.Quad(a, a + 1, a + rings, a + rings + 1);
+            }
+        }
+    }
+
     /// The points of a road that need a ring: the rest lie on the straight between their neighbours, across the ground and
-    /// in height, closely enough not to show, and their markings' distance from a junction runs evenly. No span crosses where
-    /// the texture's distance wraps.
-    private static List<int> RoadRings(NetworkLine line, int first, int last, Func<int, float> junction)
+    /// in height, closely enough not to show, and their markings' distance from a junction and its width run evenly. No span
+    /// crosses where the texture's distance wraps.
+    private static List<int> RoadRings(NetworkLine line, int first, int last, Func<int, float> junction, Func<int, float> halfAt)
     {
         const double across = 0.03;
         const float height = 0.015f;
@@ -866,7 +952,8 @@ public sealed partial class NetworkMeshes : IDisposable
                 var t = (line.S[q] - line.S[from]) / MathF.Max(line.S[to] - line.S[from], 1e-5f);
                 fits = Math.Abs((line.X[q] - line.X[from]) * dz - (line.Z[q] - line.Z[from]) * dx) / length <= across &&
                        MathF.Abs(line.Y[q] - (line.Y[from] + (line.Y[to] - line.Y[from]) * t)) <= height &&
-                       MathF.Abs(junction(q) - (junction(from) + (junction(to) - junction(from)) * t)) <= marking;
+                       MathF.Abs(junction(q) - (junction(from) + (junction(to) - junction(from)) * t)) <= marking &&
+                       MathF.Abs(halfAt(q) - (halfAt(from) + (halfAt(to) - halfAt(from)) * t)) <= 0.04f;
             }
 
             if (fits)
@@ -886,7 +973,7 @@ public sealed partial class NetworkMeshes : IDisposable
     private static void EndPatch(Builder builder, NetworkLines lines, NetworkLine line, int point, float code)
     {
         var ends = lines.EndsMeetingAt(line, point);
-        if (ends.Count < 2 || ends[0].Line != line || ends[0].Point != point)
+        if (ends.Count < 2 || ends[0].Line != line || ends[0].Point != point || lines.Continuing(line, point) is not null)
             return;
 
         var corners = new List<float3>(ends.Count * 2);
