@@ -56,10 +56,14 @@ public static unsafe class Gpu
         public CommandBuffer Cmd;
         public VkSemaphore ImageReady;
         public VkFence Fence;
-        public readonly List<Action> Garbage = [];
     }
 
     private static readonly Frame[] _frames = new Frame[FramesInFlight];
+
+    /// What's been let go of, and the last frame that could still be using it: the one it was let go in, or the one after, whose
+    /// commands start with the uploads asked for in the one before.
+    private static readonly Queue<(long LastUse, Action Release)> Retiring = new();
+    private static long _frameNumber;
     private static VkSurfaceKHR _surface;
     private static VkDebugUtilsMessengerEXT _messenger;
     private static VkSwapchainKHR _swapchain;
@@ -414,9 +418,10 @@ public static unsafe class Gpu
         var frame = _frames[_frame];
         Device.WaitForFence(frame.Fence, -1);
 
-        foreach (var release in frame.Garbage)
-            release();
-        frame.Garbage.Clear();
+        // This slot's fence has passed, so every frame up to the one it last held has finished.
+        var finished = _frameNumber - FramesInFlight;
+        while (Retiring.TryPeek(out var next) && next.LastUse <= finished)
+            Retiring.Dequeue().Release();
 
         VkResult result;
         try
@@ -516,8 +521,10 @@ public static unsafe class Gpu
         else if (result != VkResult.Success)
             throw new InvalidOperationException($"Vulkan: present failed ({result})");
 
-        _frames[_frame].Garbage.AddRange(_deferred);
+        foreach (var release in _deferred)
+            Retiring.Enqueue((_frameNumber + 1, release));
         _deferred.Clear();
+        _frameNumber++;
         _frame = (_frame + 1) % FramesInFlight;
     }
 
@@ -628,15 +635,8 @@ public static unsafe class Gpu
         foreach (var release in _deferred)
             release();
         _deferred.Clear();
-        foreach (var frame in _frames)
-        {
-            if (frame is null)
-                continue;
-
-            foreach (var release in frame.Garbage)
-                release();
-            frame.Garbage.Clear();
-        }
+        while (Retiring.TryDequeue(out var retired))
+            retired.Release();
     }
 
     public static void Shutdown()
@@ -648,14 +648,14 @@ public static unsafe class Gpu
         foreach (var release in _deferred)
             release();
         _deferred.Clear();
+        while (Retiring.TryDequeue(out var retired))
+            retired.Release();
+
         foreach (var frame in _frames)
         {
             if (frame is null)
                 continue;
 
-            foreach (var release in frame.Garbage)
-                release();
-            frame.Garbage.Clear();
             Device.DestroyFence(frame.Fence, Device.VkAllocator);
             Device.DestroySemaphore(frame.ImageReady, Device.VkAllocator);
             Device.DestroyCommandPool(frame.Pool, Device.VkAllocator);
