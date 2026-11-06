@@ -14,7 +14,6 @@ namespace Highball.World;
 public sealed unsafe class SunShadows : IDisposable
 {
     public const int Cascades = 4;
-    private const int MapSize = 2048;
 
     /// How far each cascade reaches along the view, in metres. Past the last there are no shadows.
     private static readonly float[] Reach = [15f, 60f, 250f, 1500f];
@@ -56,7 +55,9 @@ public sealed unsafe class SunShadows : IDisposable
 
     private static VkDescriptorSetLayout _setLayout;
 
-    private readonly ShadowMap _map = new(MapSize, Cascades);
+    private ShadowMap _map = new(Quality.ShadowSize, Cascades);
+    private Texture2D? _horizon0;
+    private Texture2D? _horizon1;
     private readonly BufferEx _uniforms;
     private VkDescriptorPool _pool;
     private VkDescriptorSet _set;
@@ -155,6 +156,7 @@ public sealed unsafe class SunShadows : IDisposable
     /// A set of its own for each horizon map, since the last may still be in use by a frame in flight.
     private void MakeSet(Texture2D horizon0, Texture2D horizon1)
     {
+        (_horizon0, _horizon1) = (horizon0, horizon1);
         var old = _pool;
         if (!old.IsNull())
             Gpu.Defer(() => Gpu.Device.DestroyDescriptorPool(old, Gpu.Device.VkAllocator));
@@ -207,6 +209,15 @@ public sealed unsafe class SunShadows : IDisposable
     /// Draws the cascades and updates what shadows.glsl reads. Outside any render pass, before the world.
     public void Render(CommandBuffer cmd, Camera camera, float aspect, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation = null, NetworkMeshes? network = null, YardLights? yards = null)
     {
+        // The Quality setting's changed: the old map's freed once the frames using it are done.
+        if (_map.Size != Quality.ShadowSize)
+        {
+            var old = _map;
+            _map = new ShadowMap(Quality.ShadowSize, Cascades);
+            Gpu.Defer(old.Dispose);
+            MakeSet(_horizon0!, _horizon1!);
+        }
+
         // A sun on the horizon has no sensible shadows, and one under it gives no light to shade.
         var active = Enabled && sun.Y > 0.02f;
         var uniforms = new Uniforms
@@ -231,7 +242,7 @@ public sealed unsafe class SunShadows : IDisposable
             var far = Reach[c];
             var (centre, radius) = Slice(camera, aspect, near, far);
             near = far;
-            var texel = radius * 2f / MapSize;
+            var texel = radius * 2f / _map.Size;
             texels[c] = texel;
 
             // In whole texels of the world, not of the camera, so the map's grid stays put as the camera moves.

@@ -14,7 +14,8 @@ public sealed class Camera
     public float Yaw;
     public float Pitch;
 
-    public float FieldOfView = 60f * MathF.PI / 180f;
+    /// Radians, from the setting.
+    public float FieldOfView => RailWerkz.Core.Settings.Settings.Current.FieldOfView * MathF.PI / 180f;
     public float Near = 0.5f;
 
     /// How far off, in clip space, the world is drawn this frame for temporal anti-aliasing.

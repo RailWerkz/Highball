@@ -17,5 +17,5 @@ void main()
 {
     vec3 dir = normalize(pc.forward.xyz + vNdc.x * pc.right.xyz + vNdc.y * pc.up.xyz);
     vec3 sun = pc.sun.xyz;
-    outColor = vec4(skyColor(dir, sun) + sunDisc(dir, sun), 1.0);
+    outColor = vec4(skyBelowCutOffLand(skyColor(dir, sun), dir, sun) + sunDisc(dir, sun), 1.0);
 }

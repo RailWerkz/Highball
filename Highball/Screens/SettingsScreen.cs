@@ -245,6 +245,8 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
 
     public override void Update(float dt)
     {
+        _under?.UpdateBehind();
+
         if (Keyboard.Pressed(ImGuiKey.Q) || Keyboard.Pressed(ImGuiKey.PageUp))
             SwitchTab(_tab - 1);
         if (Keyboard.Pressed(ImGuiKey.E) || Keyboard.Pressed(ImGuiKey.PageDown) || Keyboard.Pressed(ImGuiKey.Tab))

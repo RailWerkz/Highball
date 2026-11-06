@@ -189,8 +189,8 @@ public sealed unsafe class Vegetation : IDisposable
             return;
 
         _wanted.Clear();
-        Want(false, NearCell, NearReach, camera);
-        Want(true, FarCell, FarReach, camera);
+        Want(false, NearCell, NearReach * Quality.PlantReach, camera);
+        Want(true, FarCell, FarReach * Quality.PlantReach, camera);
         if (_wanted.Count == 0)
             return;
 
@@ -237,7 +237,7 @@ public sealed unsafe class Vegetation : IDisposable
         List<Key>? gone = null;
         foreach (var (key, _) in _cells)
         {
-            var (size, reach) = key.Far ? (FarCell, FarReach) : (NearCell, NearReach);
+            var (size, reach) = key.Far ? (FarCell, FarReach * Quality.PlantReach) : (NearCell, NearReach * Quality.PlantReach);
             var dx = (key.X + 0.5) * size - camera.X;
             var dz = (key.Z + 0.5) * size - camera.Z;
             if (Math.Sqrt(dx * dx + dz * dz) > reach * 1.25 + size)
@@ -586,7 +586,7 @@ public sealed unsafe class Vegetation : IDisposable
                     continue;
 
                 var nearest = MathF.Max(MathEx.Length(centre) - radius, 0f);
-                var showing = Showing(count, nearest, kind.Fade);
+                var showing = Showing(count, nearest, kind.Fade * Quality.PlantReach);
                 if (showing == 0)
                     continue;
 
@@ -597,7 +597,7 @@ public sealed unsafe class Vegetation : IDisposable
                 }
 
                 push.Offset = new float4((float)ox, -(float)camera.Y, (float)oz, phases.Z);
-                push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade, kind.Cutout);
+                push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, kind.Cutout);
                 push.Shift = new float4(kind.Shift, (float)camera.Y);
                 push.Wind = new float4(WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size), phases.X, phases.Y);
                 cmd.PushConstants(layout, Stages, ByteSize.Zero, push);
@@ -635,7 +635,7 @@ public sealed unsafe class Vegetation : IDisposable
                 if (!reaches(centre, radius))
                     continue;
 
-                var showing = Showing(count, MathF.Max(MathEx.Length(centre) - radius, 0f), kind.Fade);
+                var showing = Showing(count, MathF.Max(MathEx.Length(centre) - radius, 0f), kind.Fade * Quality.PlantReach);
                 if (showing == 0)
                     continue;
 
@@ -646,7 +646,7 @@ public sealed unsafe class Vegetation : IDisposable
                 }
 
                 push.Offset = new float4((float)ox, -(float)camera.Y, (float)oz, phases.Z);
-                push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade, kind.Cutout);
+                push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, kind.Cutout);
                 push.Shift = new float4(kind.Shift, (float)camera.Y);
                 push.Wind = new float4(WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size), phases.X, phases.Y);
                 cmd.PushConstants(layout, Stages, ByteSize.Zero, push);

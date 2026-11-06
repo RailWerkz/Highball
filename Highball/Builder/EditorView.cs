@@ -307,10 +307,7 @@ public sealed partial class EditorView : IDisposable
             _circuitEditor!.Update(_terrain.Source.Network);
         }
 
-        using (Profiler.Sample("Terrain LOD"))
-            _terrain.Update(_camera.X, _camera.Y, _camera.Z);
-        using (Profiler.Sample("Line chunks"))
-            _network!.Update(_camera.X, _camera.Y, _camera.Z);
+        KeepWorldCurrent();
 
         if (ImGui.IsKeyPressed(ImGuiKey.F))
             _renderer.Wireframe = !_renderer.Wireframe;
@@ -346,6 +343,29 @@ public sealed partial class EditorView : IDisposable
                 }
         }
     }
+
+    /// Brings the ground and the track up to date with the camera and the settings.
+    public void KeepWorldCurrent()
+    {
+        if (_terrain is null)
+            return;
+
+        // How far the land reaches, past however high the camera is. Looking straight down in the 2D view, all of it.
+        var settings = Settings.Current;
+        var above = Math.Max(0.0, _camera.Y - _terrain.Source.HeightAt(_camera.X, _camera.Z));
+        var limit = _topDown ? 0.0 : settings.ViewDistance + above;
+        _terrain.DetailFactor = Quality.TerrainDetail;
+        _terrain.ViewLimit = limit;
+        _renderer.Sky.SetViewLimit((float)limit);
+        _network!.FarRadius = limit > 0.0 ? (float)Math.Min(FarestTrack, limit) : FarestTrack;
+
+        using (Profiler.Sample("Terrain LOD"))
+            _terrain.Update(_camera.X, _camera.Y, _camera.Z);
+        using (Profiler.Sample("Line chunks"))
+            _network.Update(_camera.X, _camera.Y, _camera.Z);
+    }
+
+    private const float FarestTrack = 6000f;
 
     /// Seen from above: drag with the right or middle button (or WASD) to pan, the wheel zooms about the pointer.
     private void Pan(float dt)

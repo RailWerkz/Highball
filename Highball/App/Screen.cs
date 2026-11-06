@@ -27,6 +27,9 @@ public abstract class Screen
 
     public abstract void Update(float dt);
 
+    /// Another screen is open over this one and shows its world: keeps that world up to date without taking any input.
+    public virtual void UpdateBehind() { }
+
     /// Draws the screen's interface on the deck's draw list.
     public abstract void Draw(ImDrawListPtr draw, float2 size);
 }

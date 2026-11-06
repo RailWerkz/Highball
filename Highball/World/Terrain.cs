@@ -96,6 +96,9 @@ public sealed class Terrain : IDisposable
     /// How many vertex spacings away a patch must be before it's drawn that coarse; higher is finer.
     public float DetailFactor { get; set; } = 70f;
 
+    /// How far off, in metres, ground stops being drawn or built. 0: no limit.
+    public double ViewLimit { get; set; }
+
     public TerrainSource Source => _source;
     public int PatchCount => _patches.Count;
     public int DrawnPatches => _drawList.Count;
@@ -233,6 +236,9 @@ public sealed class Terrain : IDisposable
             patch.Used = _frame;
 
         var distance = Distance(k, cx, cy, cz);
+        if (ViewLimit > 0.0 && distance > ViewLimit)
+            return;
+
         var wantSplit = k.Level > 0 && distance < DetailFactor * SpacingOf(k.Level);
 
         // Children are built a little before they're needed, so splitting rarely waits.

@@ -204,6 +204,14 @@ float airAlong(vec3 dir, float dist, float eyeHeight, float falloff)
     return dist * exp(-falloff * max(eyeHeight, 0.0)) * integral;
 }
 
+// The colour of far air seen in a direction.
+vec3 airHaze(vec3 dir, vec3 sun)
+{
+    vec3 haze = skyHaze(normalize(vec3(dir.x, max(dir.y, 0.0) * 0.5 + 0.02, dir.z)), sun);
+    // Under cloud thick enough to rain or snow, the air's lit by less than the open sky would.
+    return haze * (1.0 - clamp(sky.groundLit.w * 9000.0, 0.0, 1.0) * 0.4);
+}
+
 // The air between the eye and a surface, with the same scattering as Atmosphere.cs, a little thicker for dust. Blue is lost first
 // and scattered in first, so distant land goes blue, then fades into the horizon's colour, and low in the valleys there's more.
 vec3 applyFog(vec3 color, vec3 dir, float dist, float eyeHeight, vec3 sun)
@@ -214,8 +222,16 @@ vec3 applyFog(vec3 color, vec3 dir, float dist, float eyeHeight, vec3 sun)
     const float Dust = 1.2;
     vec3 optical = Rayleigh * airAlong(dir, dist, eyeHeight, 1.0 / 8000.0) + vec3(Mie * airAlong(dir, dist, eyeHeight, 1.0 / 1200.0));
     vec3 through = exp(-optical * Dust - vec3(sky.groundLit.w * dist));
-    vec3 haze = skyHaze(normalize(vec3(dir.x, max(dir.y, 0.0) * 0.5 + 0.02, dir.z)), sun);
-    // Under cloud thick enough to rain or snow, the air's lit by less than the open sky would.
-    haze *= 1.0 - clamp(sky.groundLit.w * 9000.0, 0.0, 1.0) * 0.4;
-    return mix(haze, color, through);
+    // The view distance setting: everything's gone into the haze by there, so nothing's seen to stop.
+    if (sky.mode.y > 0.0)
+        through *= 1.0 - smoothstep(sky.mode.y * 0.7, sky.mode.y, dist);
+    return mix(airHaze(dir, sun), color, through);
+}
+
+// Where the view distance has cut the land off, the sky's drawn below the horizon: it's the same haze the land faded into.
+vec3 skyBelowCutOffLand(vec3 color, vec3 dir, vec3 sun)
+{
+    if (sky.mode.y <= 0.0)
+        return color;
+    return mix(color, airHaze(dir, sun), smoothstep(0.0, -0.004, dir.y));
 }

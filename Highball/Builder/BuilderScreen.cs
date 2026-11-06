@@ -148,6 +148,12 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         }
     }
 
+    public override void UpdateBehind()
+    {
+        if (_mode != Mode.Planner)
+            _editor?.KeepWorldCurrent();
+    }
+
     public void RenderWorld(CommandBuffer cmd, int width, int height)
     {
         _editor?.Lighting.Apply();

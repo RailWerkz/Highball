@@ -31,7 +31,7 @@ public sealed unsafe class Sky : IDisposable
         public float4 Zenith;
         public float4 Horizon;
         public float4 Ground;
-        public float4 Mode; // x: 1 for a skybox
+        public float4 Mode; // x: 1 for a skybox. y: how far the world reaches, in metres, or 0
         public float4 HorizonTowardsSun;
         public float4 Moon;
         public float4 RealSun; // w: 1 while it's the sun that lights the world, not the moon
@@ -49,6 +49,7 @@ public sealed unsafe class Sky : IDisposable
     private BufferEx _uniforms;
     private Uniforms _applied;
     private float _extraHaze;
+    private float _viewLimit;
     private float3 _groundColor = new(0.2f, 0.19f, 0.17f);
     private VkDescriptorPool _pool;
 
@@ -221,10 +222,23 @@ public sealed unsafe class Sky : IDisposable
         Apply(in applied);
     }
 
+    /// How far off, in metres, the world has wholly faded into the haze. 0: it doesn't. Small changes aren't worth a new buffer.
+    public void SetViewLimit(float metres)
+    {
+        if (metres == _viewLimit || (metres > 0f && _viewLimit > 0f && MathF.Abs(metres - _viewLimit) < _viewLimit * 0.02f))
+            return;
+
+        _viewLimit = metres;
+        var applied = _applied;
+        ReleaseUniforms();
+        Apply(in applied);
+    }
+
     /// A uniform buffer and a set for these values over the current map.
     private void Apply(in Uniforms given)
     {
         var uniforms = given;
+        uniforms.Mode = new float4(uniforms.Mode.X, _viewLimit, uniforms.Mode.Z, uniforms.Mode.W);
         var upward = uniforms.SunColor.XYZ * MathF.Max(uniforms.SunDirection.Y, 0f) + uniforms.Zenith.XYZ * 0.9f + uniforms.Horizon.XYZ * 0.45f;
         uniforms.GroundLit = new float4(_groundColor.X * upward.X, _groundColor.Y * upward.Y, _groundColor.Z * upward.Z, _extraHaze);
         RealSunHeight = uniforms.Mode.X > 0.5f ? uniforms.SunDirection.Y : uniforms.RealSun.Y;
