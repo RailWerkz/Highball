@@ -10,18 +10,18 @@ namespace Highball.World;
 
 /// The track's PBR materials, read straight from the zips in Content/Textures/Track at the size the settings ask for: colour, normal,
 /// and ambient occlusion, roughness, metalness and height packed into one, in that order. Metal021 is the clean top of a rail, Metal025
-/// its sides and the tie plates, Metal024 the weathering on painted parts, Rocks022 the ballast, Ground079S the dirt and Wood062 the ties.
+/// its sides and the tie plates, Metal024 the weathering on painted parts, Rocks022 the ballast and the ground beside it, and Wood062 the ties.
 /// Bound as the world's set 4 while track is drawn.
 public sealed class TrackTextures : IDisposable
 {
-    /// Rocks, rail top, rail side, painted parts and dirt, three maps each, in the set the line shader reads. A tie's or plate's first three maps are in
+    /// Rocks, rail top, rail side and painted parts, three maps each, in the set the line shader reads. A tie's or plate's first three maps are in
     /// the same places, with the rest repeated so that every binding fits the one layout.
-    public const int SetSize = 15;
+    public const int SetSize = 12;
     public const int SetIndex = 4;
 
     public static VkDescriptorSetLayout SetLayout => TextureBinding.SetLayoutFor(SetSize);
 
-    private static readonly string[] Materials = ["Rocks022", "Metal021", "Metal025", "Wood062", "Metal024", "Ground079S"];
+    private static readonly string[] Materials = ["Rocks022", "Metal021", "Metal025", "Wood062", "Metal024"];
 
     private Texture2D _neutral;
     private TextureBinding _none;
@@ -71,8 +71,8 @@ public sealed class TrackTextures : IDisposable
         }
 
         Texture2D[] Of(int i) => sets[i];
-        Texture2D[] Alone(int i) => [.. Of(i), .. Of(i), .. Of(i), .. Of(i), .. Of(i)];
-        _lines = new TextureBinding([.. Of(0), .. Of(1), .. Of(2), .. Of(4), .. Of(5)]);
+        Texture2D[] Alone(int i) => [.. Of(i), .. Of(i), .. Of(i), .. Of(i)];
+        _lines = new TextureBinding([.. Of(0), .. Of(1), .. Of(2), .. Of(4)]);
         _plates = new TextureBinding(Alone(2));
         _ties = new TextureBinding(Alone(3));
         Log.Info($"Track textures: {label} in {clock.ElapsedMilliseconds} ms");

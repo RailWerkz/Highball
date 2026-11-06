@@ -23,7 +23,7 @@ layout(push_constant) uniform Push
 layout(set = 0, binding = 0) uniform sampler2D ballastMap;
 
 // TrackTextures: colour, normal, and green roughness and blue metalness, for the ballast, the top of a rail, the sides of one
-// (Metal025, as the tie plates), the weathering on painted parts (Metal024) and dirt (Ground079S). The packed map also has ambient
+// (Metal025, as the tie plates), the weathering on painted parts (Metal024). The packed map also has ambient
 // occlusion in red and height in alpha.
 layout(set = 4, binding = 0) uniform sampler2D rockColor;
 layout(set = 4, binding = 1) uniform sampler2D rockNormal;
@@ -37,9 +37,6 @@ layout(set = 4, binding = 8) uniform sampler2D railSidePacked;
 layout(set = 4, binding = 9) uniform sampler2D paintedColor;
 layout(set = 4, binding = 10) uniform sampler2D paintedNormal;
 layout(set = 4, binding = 11) uniform sampler2D paintedPacked;
-layout(set = 4, binding = 12) uniform sampler2D dirtColor;
-layout(set = 4, binding = 13) uniform sampler2D dirtNormal;
-layout(set = 4, binding = 14) uniform sampler2D dirtPacked;
 
 // LineMaterial, and what each packs into vData (see LineVertex).
 const int Ballast = 0;
@@ -163,7 +160,7 @@ void main()
         float patches = fbm(tex * 0.35, pixel * 0.35);
         // Along the track and across it as the surface runs, so the shoulder's stones aren't drawn out down its slope.
         vec3 shape = n;
-        vec2 stone = vec2(u / max(abs(n.y), 0.3), v) / 1.5;
+        vec2 stone = vec2(u, v) / 1.5;
         stone = parallax(rockPacked, stone, n, view, 0.06, 1.5, dist);
         vec4 rockMaps = texture(rockPacked, stone);
         // Crushed rock weathered by dust and oil: the map on its own is clean river stone.
@@ -269,15 +266,26 @@ void main()
     }
     else if (material == Gravel)
     {
-        // Dirt, Ground079S: the walkways, road shoulders, unpaved roads and the marks where track is to go.
-        float patches = fbm(tex * 0.5, pixel * 0.5);
-        vec2 dirt = tex / 2.5;
-        dirt = parallax(dirtPacked, dirt, n, view, 0.03, 2.5, dist);
-        vec4 dirtMaps = texture(dirtPacked, dirt);
-        albedo = texture(dirtColor, dirt).rgb * 0.38 * (0.8 + 0.4 * patches);
-        roughness = dirtMaps.g;
-        occlusion = dirtMaps.r;
-        n = bumped(n, texture(dirtNormal, dirt).xyz * 2.0 - 1.0, dirt);
+        // The ballast's rock run on: the edge of the bed, road shoulders, unpaved roads and the marks where track is to go.
+        // Data.w below zero is how far in from where it gives out: it thins to scattered stones, not a straight edge.
+        if (vData.w < 0.0)
+        {
+            float scatter = fbm(tex * 2.2, pixel * 2.2) * 0.6 + texture(rockPacked, tex / 1.5).a * 0.4;
+            if (-vData.w < scatter * 1.6 - 0.25)
+                discard;
+        }
+
+        float patches = fbm(tex * 0.35, pixel * 0.35);
+        vec2 stone = tex / 1.5;
+        stone = parallax(rockPacked, stone, n, view, 0.06, 1.5, dist);
+        vec4 rockMaps = texture(rockPacked, stone);
+        albedo = texture(rockColor, stone).rgb * vec3(0.46, 0.44, 0.42) * (0.8 + 0.3 * patches);
+        albedo *= mix(0.45, 1.0, smoothstep(0.25, 0.7, rockMaps.a));
+        roughness = rockMaps.g;
+        occlusion = 0.8 * rockMaps.r;
+        vec3 rockBump = texture(rockNormal, stone).xyz * 2.0 - 1.0;
+        rockBump.xy *= 1.5;
+        n = bumped(n, rockBump, stone);
     }
     else if (material == Concrete)
     {

@@ -571,12 +571,12 @@ public sealed partial class NetworkMeshes : IDisposable
     /// first..last, flat-shaded across and smooth along. material(edge) picks each edge's material; value(edge, u, y)
     /// its Data.w.
     private static void Sweep(Builder builder, NetworkLine line, int first, int last, (float U, float Y)[] section, Func<int, float> code,
-        Func<int, float, float, float> value, float offset = 0f, float rise = 0f) =>
-        Sweep(builder, line, Enumerable.Range(first, last - first + 1).ToList(), section, code, value, offset, rise);
+        Func<int, float, float, float> value, float offset = 0f, float rise = 0f, bool smooth = false) =>
+        Sweep(builder, line, Enumerable.Range(first, last - first + 1).ToList(), section, code, value, offset, rise, smooth);
 
     /// As above, with rings at only these points.
     private static void Sweep(Builder builder, NetworkLine line, List<int> points, (float U, float Y)[] section, Func<int, float> code,
-        Func<int, float, float, float> value, float offset = 0f, float rise = 0f)
+        Func<int, float, float, float> value, float offset = 0f, float rise = 0f, bool smooth = false)
     {
         var edges = section.Length - 1;
         var start = (uint)builder.Vertices.Count;
@@ -592,8 +592,9 @@ public sealed partial class NetworkMeshes : IDisposable
                 var dy = y1 - y0;
                 var len = MathF.Max(MathF.Sqrt(du * du + dy * dy), 1e-6f);
                 var normal = right * (-dy / len) + new float3(0f, du / len, 0f);
-                builder.Add(center + right * (offset + u0) + new float3(0f, rise + y0, 0f), normal, new float4(offset + u0, v, code(e), value(e, u0, y0)));
-                builder.Add(center + right * (offset + u1) + new float3(0f, rise + y1, 0f), normal, new float4(offset + u1, v, code(e), value(e, u1, y1)));
+                var (n0, n1) = smooth ? JoinNormals(section, e, right) : (normal, normal);
+                builder.Add(center + right * (offset + u0) + new float3(0f, rise + y0, 0f), n0, new float4(offset + u0, v, code(e), value(e, u0, y0)));
+                builder.Add(center + right * (offset + u1) + new float3(0f, rise + y1, 0f), n1, new float4(offset + u1, v, code(e), value(e, u1, y1)));
             }
         }
 
@@ -607,6 +608,26 @@ public sealed partial class NetworkMeshes : IDisposable
             }
         }
     }
+
+    /// The normals at the ends of a cross-section's edge, each halfway to its neighbour's, so a curved section shades as a curve.
+    private static (float3 Start, float3 End) JoinNormals((float U, float Y)[] section, int e, float3 right)
+    {
+        float3 Of(int i)
+        {
+            var (du, dy) = (section[i + 1].U - section[i].U, section[i + 1].Y - section[i].Y);
+            var len = MathF.Max(MathF.Sqrt(du * du + dy * dy), 1e-6f);
+            return right * (-dy / len) + new float3(0f, du / len, 0f);
+        }
+
+        var own = Of(e);
+        var start = e > 0 ? MathEx.Normalize(own + Of(e - 1)) : own;
+        var end = e + 2 < section.Length ? MathEx.Normalize(own + Of(e + 1)) : own;
+        return (start, end);
+    }
+
+    /// How far past the flattened ground's edge the ballast's last stones lie, and how far under the ground they end up.
+    private const float Thinning = 0.9f;
+    private const float GivesOut = -0.06f;
 
     /// Runs split where the structure changes, each with points first..last (inclusive).
     private static IEnumerable<(int First, int Last, Structure Structure)> Spans(NetworkLine line, Run run)
@@ -660,20 +681,49 @@ public sealed partial class NetworkMeshes : IDisposable
 
         if (!bridge)
         {
-            // The ballast, and a gravel walkway either side out to the edge of the flattened ground (between tracks
-            // a few metres apart, the walkways overlap into one bed).
+            // The ballast, heaped as loose rock lies: rounded over from the top, down its slope, and easing out across the flattened
+            // ground, where the last of it thins out to nothing (between tracks a few metres apart, the beds overlap into one).
             const float walk = 0.02f;
+            const int curve = 5;
             var slope = (h - walk) * NetworkLine.BallastSlope;
             var f = MathF.Max(line.Formation - 0.5f, w + slope + 0.3f);
             var gravel = Code(LineMaterial.Gravel);
-            float Edge(int e) => e is 0 or 4 ? gravel : ballast;
-            (float, float)[] Section(float left, float right, float drop = 0f) =>
-                [(-f - left, walk), (-w - left - slope, walk), (-w - left, h - drop), (w + right, h - drop), (w + right + slope, walk), (f + right, walk)];
+            float Edge(int e) => e == 0 || e == curve * 2 + 2 ? gravel : ballast;
+
+            // From the shoulder (t = 0) to the toe (t = 1): more of the way spent on the long easing out than on rounding over the top.
+            static float Fall(float t)
+            {
+                var eased = MathF.Pow(t, 0.72f);
+                return 1f - eased * eased * (3f - 2f * eased);
+            }
+
+            (float, float)[] Section(float left, float right, float drop = 0f)
+            {
+                var points = new List<(float, float)>(curve * 2 + 4) { (-f - left - Thinning, GivesOut), (-f - left, walk) };
+                for (var i = curve - 1; i >= 0; i--)
+                {
+                    var t = i / (float)curve;
+                    points.Add((-w - left - (f - w) * t, walk + (h - drop - walk) * Fall(t)));
+                }
+
+                for (var i = 0; i < curve; i++)
+                {
+                    var t = i / (float)curve;
+                    points.Add((w + right + (f - w) * t, walk + (h - drop - walk) * Fall(t)));
+                }
+
+                points.Add((f + right, walk));
+                points.Add((f + right + Thinning, GivesOut));
+                return [.. points];
+            }
+
+            // Data.w: for the rock's shader, the rail centres' offset, or under the toe how far in from where it gives out.
+            static float Thinned(float y, float railOffset) => y < 0.0199f ? -(y - GivesOut) / (0.02f - GivesOut) * Thinning - 0.001f : railOffset;
 
             var zones = line.TurnoutZones.Where(z => z.Ballast.To > z.Ballast.From).ToList();
             if (zones.Count == 0)
             {
-                Sweep(builder, line, first, last, Section(0f, 0f), Edge, (_, _, _) => railOffset);
+                Sweep(builder, line, first, last, Section(0f, 0f), Edge, (_, _, y) => Thinned(y, railOffset), smooth: true);
                 return;
             }
 
@@ -722,7 +772,7 @@ public sealed partial class NetworkMeshes : IDisposable
                 rings.Add((center, across, s % Wrap, 0f, Section(left, right, drop)));
             }
 
-            SweepRings(builder, rings, Edge, (_, _) => railOffset, 0f);
+            SweepRings(builder, rings, Edge, (_, y) => Thinned(y, railOffset), 0f, smooth: true);
 
             return;
         }
@@ -761,7 +811,8 @@ public sealed partial class NetworkMeshes : IDisposable
             {
                 var u = line.Width * ((float)k / (across - 1) - 0.5f);
                 var position = new float3(center.X + right.X * u, line.Drape[p * across + k] + RoadRise, center.Z + right.Z * u);
-                builder.Add(position, normal, new float4(u, v, gravel, 1000f));
+                // How far in from the edge, so a mark's edge thins out like the ballast's.
+                builder.Add(position, normal, new float4(u, v, gravel, -(line.Width * 0.5f - MathF.Abs(u)) - 0.001f));
             }
         }
 
@@ -1226,7 +1277,7 @@ public sealed partial class NetworkMeshes : IDisposable
 
     /// As above, code(edge) picking each edge's material and value(u, y) its Data.w.
     private static void SweepRings(Builder builder, List<(float3 Center, float3 Right, float V, float Offset, (float U, float Y)[] Section)> rings,
-        Func<int, float> code, Func<float, float, float> value, float rise)
+        Func<int, float> code, Func<float, float, float> value, float rise, bool smooth = false)
     {
         if (rings.Count < 2)
             return;
@@ -1242,8 +1293,9 @@ public sealed partial class NetworkMeshes : IDisposable
                 var dy = y1 - y0;
                 var len = MathF.Max(MathF.Sqrt(du * du + dy * dy), 1e-6f);
                 var normal = right * (-dy / len) + new float3(0f, du / len, 0f);
-                builder.Add(center + right * (offset + u0) + new float3(0f, rise + y0, 0f), normal, new float4(offset + u0, v, code(e), value(u0, y0)));
-                builder.Add(center + right * (offset + u1) + new float3(0f, rise + y1, 0f), normal, new float4(offset + u1, v, code(e), value(u1, y1)));
+                var (n0, n1) = smooth ? JoinNormals(section, e, right) : (normal, normal);
+                builder.Add(center + right * (offset + u0) + new float3(0f, rise + y0, 0f), n0, new float4(offset + u0, v, code(e), value(u0, y0)));
+                builder.Add(center + right * (offset + u1) + new float3(0f, rise + y1, 0f), n1, new float4(offset + u1, v, code(e), value(u1, y1)));
             }
         }
 
