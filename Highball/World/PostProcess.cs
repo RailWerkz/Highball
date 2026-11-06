@@ -208,8 +208,8 @@ public sealed unsafe class PostProcess : IDisposable
         _targetVersion = target.Version;
         _historyValid = false;
         var (w, h) = (_size.X, _size.Y);
-        _history[0] = Hdr(w, h, "post.a");
-        _history[1] = Hdr(w, h, "post.b");
+        _history[0] = new StorageImage(w, h, 1, VkFormat.R16G16B16A16SFloat, false, false, "post.a", drawnTo: true);
+        _history[1] = new StorageImage(w, h, 1, VkFormat.R16G16B16A16SFloat, false, false, "post.b", drawnTo: true);
         for (var i = 0; i < BloomLevels; i++)
             _downs[i] = Hdr(w >> (i + 1), h >> (i + 1), "post.down");
         for (var i = 0; i < BloomLevels - 1; i++)
@@ -278,7 +278,7 @@ public sealed unsafe class PostProcess : IDisposable
     }
 
     /// Outside any render pass, with the world and everything over it finished.
-    public void Draw(CommandBuffer cmd, RenderTarget target, Camera camera, float aspect, Sky sky)
+    public void Draw(CommandBuffer cmd, RenderTarget target, Camera camera, float aspect, Sky sky, Action<CommandBuffer>? overPicture = null)
     {
         Resize(target);
 
@@ -321,6 +321,28 @@ public sealed unsafe class PostProcess : IDisposable
         _current = 1 - _current;
         var (w, h) = (_size.X, _size.Y);
         Run(cmd, _temporal, _temporalSets[_current], w, h);
+
+        // What temporal anti-aliasing would only smear goes on after it. It's in next frame's history too, but that doesn't match
+        // what's round it there, so it's clamped away.
+        if (overPicture is not null)
+        {
+            var into = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.ShaderWriteBit, DstAccessMask = VkAccessFlags.ColorAttachmentReadBit | VkAccessFlags.ColorAttachmentWriteBit };
+            cmd.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit, VkPipelineStageFlags.ColorAttachmentOutputBit, VkDependencyFlags.None, [into], [], []);
+            var color = new VkRenderingAttachmentInfo
+            {
+                ImageView = _history[_current]!.View,
+                ImageLayout = VkImageLayout.General,
+                LoadOp = VkAttachmentLoadOp.Load,
+                StoreOp = VkAttachmentStoreOp.Store,
+            };
+            var info = new VkRenderingInfo { RenderArea = new VkRect2D(w, h), LayerCount = 1, ColorAttachmentCount = 1, ColorAttachments = &color };
+            cmd.BeginRendering(in info);
+            Pipelines.SetViewport(cmd, _size);
+            overPicture(cmd);
+            cmd.EndRendering();
+            var outOf = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.ColorAttachmentWriteBit, DstAccessMask = VkAccessFlags.ShaderReadBit };
+            cmd.PipelineBarrier(VkPipelineStageFlags.ColorAttachmentOutputBit, VkPipelineStageFlags.ComputeShaderBit | VkPipelineStageFlags.FragmentShaderBit, VkDependencyFlags.None, [outOf], [], []);
+        }
 
         Run(cmd, _down, _firstDownSets[_current], w >> 1, h >> 1);
         for (var i = 1; i < BloomLevels; i++)

@@ -33,6 +33,8 @@ public sealed unsafe class SunShadows : IDisposable
         public float4 Forward; // w: 1 when there are shadows to read
         public float4 Texels;  // each cascade's texel, in metres
         public float4 Horizon; // xy: the horizon map's middle relative to the camera; z: 1 / its width; w: 1 when there is one
+        public float4 Lights;
+        public float4 Weather;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -61,6 +63,10 @@ public sealed unsafe class SunShadows : IDisposable
     private readonly Texture2D _noHorizon = Texture2D.Solid(new byte4(0, 0, 0, 0));
     private TerrainHorizon? _horizon;
     private int _horizonVersion;
+    private readonly LocalLights _localLights;
+
+    /// How wet the ground is and how much snow lies, for shaders: set before Render.
+    public float4 Weather { get; set; }
     private readonly VkPipelineLayout _layout;
     private readonly VkPipeline _terrain;
     private readonly VkPipeline _model;
@@ -72,7 +78,7 @@ public sealed unsafe class SunShadows : IDisposable
 
     public bool Enabled { get; set; } = !DevTools.NoShadows;
 
-    /// The layout of the shadows' set: their uniforms, the depth array and the horizon map's two images.
+    /// The layout of the shadows' set: their uniforms, the depth array, the horizon map's two images, and the lamps and their grid.
     public static VkDescriptorSetLayout SetLayout
     {
         get
@@ -80,11 +86,13 @@ public sealed unsafe class SunShadows : IDisposable
             if (!_setLayout.IsNull())
                 return _setLayout;
 
-            var bindings = stackalloc VkDescriptorSetLayoutBinding[4];
+            var bindings = stackalloc VkDescriptorSetLayoutBinding[6];
             bindings[0] = new VkDescriptorSetLayoutBinding { Binding = 0, DescriptorType = VkDescriptorType.UniformBuffer, DescriptorCount = 1, StageFlags = VkShaderStageFlags.FragmentBit };
             for (var i = 1; i < 4; i++)
                 bindings[i] = new VkDescriptorSetLayoutBinding { Binding = i, DescriptorType = VkDescriptorType.CombinedImageSampler, DescriptorCount = 1, StageFlags = VkShaderStageFlags.FragmentBit };
-            var info = new VkDescriptorSetLayoutCreateInfo { BindingCount = 4, Bindings = bindings };
+            for (var i = 4; i < 6; i++)
+                bindings[i] = new VkDescriptorSetLayoutBinding { Binding = i, DescriptorType = VkDescriptorType.StorageBuffer, DescriptorCount = 1, StageFlags = VkShaderStageFlags.FragmentBit };
+            var info = new VkDescriptorSetLayoutCreateInfo { BindingCount = 6, Bindings = bindings };
             _setLayout = Gpu.Device.CreateDescriptorSetLayout(in info, Gpu.Device.VkAllocator);
             return _setLayout;
         }
@@ -98,8 +106,9 @@ public sealed unsafe class SunShadows : IDisposable
         _setLayout = default;
     }
 
-    public SunShadows()
+    public SunShadows(LocalLights lights)
     {
+        _localLights = lights;
         _uniforms = Buffers.Create(sizeof(Uniforms), VkBufferUsageFlags.UniformBufferBit | VkBufferUsageFlags.TransferDstBit, MemoryPreference.PreferGpu, "shadows.uniforms");
 
         MakeSet(_noHorizon, _noHorizon);
@@ -150,10 +159,11 @@ public sealed unsafe class SunShadows : IDisposable
         if (!old.IsNull())
             Gpu.Defer(() => Gpu.Device.DestroyDescriptorPool(old, Gpu.Device.VkAllocator));
 
-        var sizes = stackalloc VkDescriptorPoolSize[2];
+        var sizes = stackalloc VkDescriptorPoolSize[3];
         sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.UniformBuffer, DescriptorCount = 1 };
         sizes[1] = new VkDescriptorPoolSize { Type = VkDescriptorType.CombinedImageSampler, DescriptorCount = 3 };
-        var pool = new VkDescriptorPoolCreateInfo { MaxSets = 1, PoolSizeCount = 2, PoolSizes = sizes };
+        sizes[2] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageBuffer, DescriptorCount = 2 };
+        var pool = new VkDescriptorPoolCreateInfo { MaxSets = 1, PoolSizeCount = 3, PoolSizes = sizes };
         _pool = Gpu.Device.CreateDescriptorPool(in pool, Gpu.Device.VkAllocator);
 
         var layout = SetLayout;
@@ -166,12 +176,16 @@ public sealed unsafe class SunShadows : IDisposable
         var image = new VkDescriptorImageInfo { Sampler = _map.Sampler, ImageView = _map.View, ImageLayout = VkImageLayout.ShaderReadOnlyOptimal };
         var image0 = new VkDescriptorImageInfo { Sampler = horizon0.Sampler, ImageView = horizon0.View, ImageLayout = VkImageLayout.ShaderReadOnlyOptimal };
         var image1 = new VkDescriptorImageInfo { Sampler = horizon1.Sampler, ImageView = horizon1.View, ImageLayout = VkImageLayout.ShaderReadOnlyOptimal };
+        var lampList = new VkDescriptorBufferInfo { Buffer = _localLights.LightBuffer, Offset = ByteSize.Zero, Range = ByteSize.Of(LocalLights.LightBufferSize) };
+        var lampCells = new VkDescriptorBufferInfo { Buffer = _localLights.CellBuffer, Offset = ByteSize.Zero, Range = ByteSize.Of(LocalLights.CellBufferSize) };
         VkWriteDescriptorSet[] writes =
         [
             new() { DstSet = _set, DstBinding = 0, DescriptorCount = 1, DescriptorType = VkDescriptorType.UniformBuffer, BufferInfo = &buffer },
             new() { DstSet = _set, DstBinding = 1, DescriptorCount = 1, DescriptorType = VkDescriptorType.CombinedImageSampler, ImageInfo = &image },
             new() { DstSet = _set, DstBinding = 2, DescriptorCount = 1, DescriptorType = VkDescriptorType.CombinedImageSampler, ImageInfo = &image0 },
             new() { DstSet = _set, DstBinding = 3, DescriptorCount = 1, DescriptorType = VkDescriptorType.CombinedImageSampler, ImageInfo = &image1 },
+            new() { DstSet = _set, DstBinding = 4, DescriptorCount = 1, DescriptorType = VkDescriptorType.StorageBuffer, BufferInfo = &lampList },
+            new() { DstSet = _set, DstBinding = 5, DescriptorCount = 1, DescriptorType = VkDescriptorType.StorageBuffer, BufferInfo = &lampCells },
         ];
         Gpu.Device.UpdateDescriptorSets(writes, []);
     }
@@ -191,7 +205,7 @@ public sealed unsafe class SunShadows : IDisposable
         cmd.BindDescriptorSets(VkPipelineBindPoint.Graphics, layout, 2, [_set], []);
 
     /// Draws the cascades and updates what shadows.glsl reads. Outside any render pass, before the world.
-    public void Render(CommandBuffer cmd, Camera camera, float aspect, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation = null, NetworkMeshes? network = null)
+    public void Render(CommandBuffer cmd, Camera camera, float aspect, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation = null, NetworkMeshes? network = null, YardLights? yards = null)
     {
         // A sun on the horizon has no sensible shadows, and one under it gives no light to shade.
         var active = Enabled && sun.Y > 0.02f;
@@ -199,6 +213,8 @@ public sealed unsafe class SunShadows : IDisposable
         {
             Splits = new float4(Reach[0], Reach[1], Reach[2], Reach[3]),
             Forward = new float4(camera.Forward, active ? 1f : 0f),
+            Lights = _localLights.Measures,
+            Weather = Weather,
             Horizon = _horizon is { Sectors0: not null } horizon && Enabled
                 ? new float4((float)(horizon.CentreX - camera.X), (float)(horizon.CentreZ - camera.Z), 1f / TerrainHorizon.Width, 1f)
                 : default,
@@ -224,7 +240,7 @@ public sealed unsafe class SunShadows : IDisposable
 
             _map.BeginLayer(cmd, c);
             if (active)
-                DrawCasters(cmd, camera, c, centre, right, up, sun, radius, terrain, models, vegetation, network);
+                DrawCasters(cmd, camera, c, centre, right, up, sun, radius, terrain, models, vegetation, network, yards);
             _map.EndLayer(cmd);
         }
 
@@ -274,7 +290,7 @@ public sealed unsafe class SunShadows : IDisposable
     }
 
     private void DrawCasters(CommandBuffer cmd, Camera camera, int cascade, float3 centre, float3 right, float3 up, float3 sun, float radius,
-        Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation, NetworkMeshes? network)
+        Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation, NetworkMeshes? network, YardLights? yards)
     {
         // Could something this size at this place shade anything in the cascade? Anywhere towards the sun can.
         bool Reaches(float3 relative, float size)
@@ -303,6 +319,8 @@ public sealed unsafe class SunShadows : IDisposable
             network.DrawLineCasters(cmd, camera.X, camera.Y, camera.Z, cascade, Reaches, Place);
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, _part);
             network.DrawPartCasters(cmd, camera.X, camera.Y, camera.Z, cascade, Reaches, Place);
+            if (cascade <= 2)
+                yards?.DrawCasters(cmd, camera, Reaches, Place);
         }
 
         if (models is not null)

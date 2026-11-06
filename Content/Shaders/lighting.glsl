@@ -69,6 +69,7 @@ vec3 skyReflection(vec3 dir, float roughness, vec3 sun)
 {
     // Fading to the average hides the seams of a skybox's cross, which its blurrier levels can't blend across.
     vec3 sharp = sky.mode.x > 0.5 ? textureLod(skyMap, skyMapUv(dir, 0.02), roughness * 6.0).rgb : analyticSky(dir, sun);
+    sharp *= 1.0 - clamp(sky.groundLit.w * 9000.0, 0.0, 1.0) * 0.5; // the thick cloud of rain or snow is darker than the sky under it
     sharp = mix(sharp, sky.groundLit.rgb, smoothstep(0.0, 0.06, -dir.y));
     return mix(sharp, skyIrradiance(dir), roughness * roughness);
 }

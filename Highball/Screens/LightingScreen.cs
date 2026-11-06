@@ -176,6 +176,18 @@ public sealed class LightingScreen : Screen, IWorldScreen
         _draws.Clear();
         _draws.AddRange(_scene);
         _draws.Add(new ModelDraw(Engine(_engine), default));
+
+        // Its headlight and ditch lights, on towards dusk.
+        var lamps = _renderer.SceneLights;
+        lamps.Clear();
+        var on = 1f - MathEx.SmoothStep(-0.02f, 0.1f, _renderer.Sky.RealSunHeight);
+        if (on > 0f)
+        {
+            var ahead = new float3(0f, -0.04f, 1f);
+            lamps.Add(new LocalLight(0.0, 3.05, 9.15, 350f, new float3(2000f, 1800f, 1500f) * on, ahead, 0.985f, 0.95f, 0.35f, new float3(5f, 4.4f, 3.4f) * on));
+            foreach (var side in (float[])[-1f, 1f])
+                lamps.Add(new LocalLight(side * 1.1, 1.35, 10.0, 120f, new float3(350f, 320f, 265f) * on, new float3(0f, -0.08f, 1f), 0.97f, 0.9f, 0.2f, new float3(4f, 3.6f, 2.8f) * on));
+        }
         if (_showSpheres)
             AddSpheres(_draws);
     }

@@ -3,6 +3,8 @@
 #include "noise.glsl"
 #include "lighting.glsl"
 #include "shadows.glsl"
+#include "local_lights.glsl"
+#include "weather.glsl"
 
 layout(location = 0) in vec3 vRelative;
 layout(location = 1) in vec3 vNormal;
@@ -170,9 +172,11 @@ void main()
     s.occlusion = finish.x;
     // Soil and grass at this scale are far bumpier than their maps say; water isn't.
     s.specular = mix(GroundSpecular, 1.0, clamp(m.z + m.w, 0.0, 1.0));
+    float water = clamp(m.z + m.w, 0.0, 1.0);
+    weatherSurface(s, smoothstep(0.68, 0.76, fbm(tex * 0.05, pixel * 0.05)) * smoothstep(0.985, 0.998, n.y) * (1.0 - water), 1.0 - water);
 
     // Shadow from the ground's own shape: the relief is too fine for the map to resolve, and would only speckle it.
-    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative, n, sun)) + shadeSky(s, sun);
+    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative, n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative);
 
     color = applyFog(color, view, dist, pc.camera.y, sun);
     outColor = vec4(color, 1.0);

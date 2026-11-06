@@ -48,7 +48,12 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly VkPipelineLayout _terrainLayout;
     private readonly VkPipelineLayout _modelLayout;
     private readonly GroundTextures _ground = new();
-    private readonly SunShadows _shadows = new();
+    private readonly LocalLights _lights = new();
+    private readonly YardLights _yards = new();
+    private readonly Weather _weather = new();
+    private readonly SunShadows _shadows;
+    private VkPipeline _glow;
+    private readonly Precipitation _precipitation = new();
     private readonly Clouds _clouds = new();
     private readonly AmbientOcclusion _occlusion = new();
     private readonly PostProcess _post = new();
@@ -77,8 +82,12 @@ public sealed unsafe class WorldRenderer : IDisposable
     public Clouds Clouds => _clouds;
     public Vegetation Vegetation => _vegetation;
 
+    /// Lamps a screen adds this frame, like an engine's headlights.
+    public List<LocalLight> SceneLights { get; } = [];
+
     public WorldRenderer()
     {
+        _shadows = new SunShadows(_lights);
         // One layout for every world pipeline: push constants, and a texture at set 0 for those that sample one.
         _layout = Pipelines.Layout(128, TextureBinding.SetLayout, Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
         _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
@@ -102,6 +111,8 @@ public sealed unsafe class WorldRenderer : IDisposable
         using var modelFrag = Shader.Load("model.frag");
         using var plantVert = Shader.Load("plant.vert");
         using var plantFrag = Shader.Load("plant.frag");
+        using var glowVert = Shader.Load("glow.vert");
+        using var glowFrag = Shader.Load("glow.frag");
 
         _sky = Pipelines.Create(new PipelineDesc { Vertex = fullscreen, Fragment = sky, Layout = _layout, Cull = VkCullModeFlags.None, DepthTest = false, DepthWrite = false });
         var terrain = new PipelineDesc { Vertex = terrainVert, Fragment = terrainFrag, Layout = _terrainLayout, Attributes = TerrainVertex.Layout, Stride = Marshal.SizeOf<TerrainVertex>() };
@@ -135,6 +146,8 @@ public sealed unsafe class WorldRenderer : IDisposable
         {
             Vertex = modelVert, Fragment = modelFrag, Layout = _modelLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(), Cull = VkCullModeFlags.None,
         });
+        // Drawn over what's solid, and no part of it.
+        _glow = Pipelines.Create(new PipelineDesc { Vertex = glowVert, Fragment = glowFrag, Layout = _layout, Cull = VkCullModeFlags.None, DepthWrite = false, Blend = true });
         // Plants and rocks, many of one mesh. Cards are seen from both sides.
         _plant = Pipelines.Create(new PipelineDesc
         {
@@ -154,6 +167,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         Pipelines.Destroy(_partWire, default);
         Pipelines.Destroy(_model, default);
         Pipelines.Destroy(_plant, default);
+        Pipelines.Destroy(_glow, default);
     }
 
     private TerrainSource? _groundLightSource;
@@ -186,8 +200,22 @@ public sealed unsafe class WorldRenderer : IDisposable
             _vegetation.Update(terrain, camera);
         }
 
+        _weather.Update();
+        Sky.SetExtraHaze(_weather.ExtraHaze);
+        _shadows.Weather = new float4(_weather.Wetness, _weather.SnowCover, 0f, 0f);
+
+        // Lamps come on towards dusk, a little before the sun's gone.
+        var lampsOn = 1f - RailWerkz.Core.Utils.MathEx.SmoothStep(-0.02f, 0.1f, Sky.RealSunHeight);
+        _lights.Begin();
+        _yards.Update(terrain?.Source.Lines, camera, lampsOn, _lights);
+        if (network is not null)
+            AddSignals(network);
+        foreach (var light in SceneLights)
+            _lights.Add(in light);
+        _lights.Upload(cmd, camera, size, aspect);
+
         using (Profiler.Sample("Sun shadows"))
-            _shadows.Render(cmd, camera, aspect, Sun, terrain, models, terrain is null ? null : _vegetation, network);
+            _shadows.Render(cmd, camera, aspect, Sun, terrain, models, terrain is null ? null : _vegetation, network, _yards);
         if (terrain is not null)
             _clouds.GroundLevel = terrain.Source.HeightAt(0.0, 0.0);
         using (Profiler.Sample("Cloud shade"))
@@ -256,6 +284,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             {
                 cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _partWire : _part);
                 network.DrawParts(cmd, _layout, camera.X, camera.Y, camera.Z, Push);
+                _yards.Draw(cmd, _layout, camera, Push);
             }
         }
 
@@ -275,6 +304,8 @@ public sealed unsafe class WorldRenderer : IDisposable
             DrawModels(cmd, camera, aspect, models);
         }
 
+        DrawGlows(cmd, camera, aspect);
+
         _target.End(cmd);
 
         if (RailWerkz.Core.Settings.Settings.Current.AmbientOcclusion)
@@ -293,7 +324,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             _clouds.Draw(cmd, _target);
 
         using (Profiler.Sample("After the world"))
-            _post.Draw(cmd, _target, camera, aspect, Sky);
+            _post.Draw(cmd, _target, camera, aspect, Sky, !Precipitation.Falling(_weather) ? null : over => _precipitation.Draw(over, _target, camera, aspect, _weather, Sky));
     }
 
     /// The land cover's colour round the camera, for what's reflected in metal and lights things from beneath. It changes slowly,
@@ -330,6 +361,54 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         (_groundLightSource, _groundLightX, _groundLightZ) = (source, camera.X, camera.Z);
         Sky.SetGroundColor(sum / samples);
+    }
+
+    /// What every signal's showing. There are no signalling rules to set them yet, so they all stand at stop.
+    private void AddSignals(NetworkMeshes network)
+    {
+        foreach (var (x, y, z, heading) in network.Signals())
+        {
+            var angle = heading * Math.PI / 180.0;
+            var (fx, fz) = (Math.Cos(angle), Math.Sin(angle));
+            _lights.Add(new LocalLight(x + fx * 0.3, y + 4.35, z + fz * 0.3, 14f, new float3(3f, 0.12f, 0.05f), default, 0f, -1f, 0.35f, new float3(9f, 0.25f, 0.1f)));
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GlowPush
+    {
+        public float4x4 ViewProjection;
+        public float4 PlaceSize;
+        public float4 Color;
+        public float4 ScreenX;
+        public float4 ScreenY;
+    }
+
+    private void DrawGlows(CommandBuffer cmd, Camera camera, float aspect)
+    {
+        var lights = _lights.Used;
+        if (lights.Count == 0)
+            return;
+
+        var push = new GlowPush
+        {
+            ViewProjection = camera.JitteredViewProjection(aspect),
+            ScreenX = new float4(camera.Right, 0f),
+            ScreenY = new float4(camera.Up, 0f),
+        };
+        cmd.BindPipeline(VkPipelineBindPoint.Graphics, _glow);
+        foreach (var light in lights)
+        {
+            if (light.Glow <= 0f)
+                continue;
+
+            // About three pixels at any distance, on a screen a thousand high.
+            var pixel = MathF.Tan(camera.FieldOfView * 0.5f) * 2f / 1000f * 3f;
+            push.PlaceSize = new float4((float)(light.X - camera.X), (float)(light.Y - camera.Y), (float)(light.Z - camera.Z), light.Glow);
+            push.Color = new float4(light.GlowColor, pixel);
+            cmd.PushConstants(_layout, Stages, ByteSize.Zero, push);
+            cmd.Draw(6, 1, 0, 0);
+        }
     }
 
     private void DrawModels(CommandBuffer cmd, Camera camera, float aspect, IReadOnlyList<ModelDraw> models)
@@ -374,6 +453,9 @@ public sealed unsafe class WorldRenderer : IDisposable
         _shadows.Dispose();
         _clouds.Dispose();
         _occlusion.Dispose();
+        _yards.Dispose();
+        _precipitation.Dispose();
+        _lights.Dispose();
         _post.Dispose();
         _horizon.Dispose();
         _vegetation.Dispose();

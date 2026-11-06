@@ -16,7 +16,7 @@ layout(set = 1, binding = 0) uniform SkyUniforms
     vec4 starsX;  // with Y and Z, the turn from the world to the stars
     vec4 starsY;
     vec4 starsZ;
-    vec4 groundLit; // the light coming up off the ground round the camera
+    vec4 groundLit; // the light coming up off the ground round the camera; w: how much thicker the weather makes the air, per metre
 } sky;
 
 layout(set = 1, binding = 1) uniform sampler2D skyMap;  // horizontal cross: +Y over -X +Z +X -Z over -Y
@@ -213,7 +213,9 @@ vec3 applyFog(vec3 color, vec3 dir, float dist, float eyeHeight, vec3 sun)
     const float Mie = 12e-6;
     const float Dust = 1.2;
     vec3 optical = Rayleigh * airAlong(dir, dist, eyeHeight, 1.0 / 8000.0) + vec3(Mie * airAlong(dir, dist, eyeHeight, 1.0 / 1200.0));
-    vec3 through = exp(-optical * Dust);
+    vec3 through = exp(-optical * Dust - vec3(sky.groundLit.w * dist));
     vec3 haze = skyHaze(normalize(vec3(dir.x, max(dir.y, 0.0) * 0.5 + 0.02, dir.z)), sun);
+    // Under cloud thick enough to rain or snow, the air's lit by less than the open sky would.
+    haze *= 1.0 - clamp(sky.groundLit.w * 9000.0, 0.0, 1.0) * 0.4;
     return mix(haze, color, through);
 }

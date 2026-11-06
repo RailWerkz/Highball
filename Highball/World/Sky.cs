@@ -48,6 +48,7 @@ public sealed unsafe class Sky : IDisposable
     private Texture2D? _map;
     private BufferEx _uniforms;
     private Uniforms _applied;
+    private float _extraHaze;
     private float3 _groundColor = new(0.2f, 0.19f, 0.17f);
     private VkDescriptorPool _pool;
 
@@ -56,6 +57,9 @@ public sealed unsafe class Sky : IDisposable
     /// Counts the times the sky was switched, so whoever sets the sun knows to set it again.
     public int Version { get; private set; }
     public float3 SunDirection { get; private set; }
+
+    /// How high the sun itself is, even when it's the moon that lights the world.
+    public float RealSunHeight { get; private set; }
     public float3 SunColor { get; private set; }
     public float3 Zenith { get; private set; }
     public float3 Horizon { get; private set; }
@@ -205,12 +209,25 @@ public sealed unsafe class Sky : IDisposable
         Apply(in applied);
     }
 
+    /// How much thicker the weather makes the air, per metre. Small changes aren't worth a new buffer.
+    public void SetExtraHaze(float haze)
+    {
+        if (MathF.Abs(haze - _extraHaze) < 2e-6f && (haze > 0f || _extraHaze == 0f))
+            return;
+
+        _extraHaze = haze;
+        var applied = _applied;
+        ReleaseUniforms();
+        Apply(in applied);
+    }
+
     /// A uniform buffer and a set for these values over the current map.
     private void Apply(in Uniforms given)
     {
         var uniforms = given;
         var upward = uniforms.SunColor.XYZ * MathF.Max(uniforms.SunDirection.Y, 0f) + uniforms.Zenith.XYZ * 0.9f + uniforms.Horizon.XYZ * 0.45f;
-        uniforms.GroundLit = new float4(_groundColor.X * upward.X, _groundColor.Y * upward.Y, _groundColor.Z * upward.Z, 0f);
+        uniforms.GroundLit = new float4(_groundColor.X * upward.X, _groundColor.Y * upward.Y, _groundColor.Z * upward.Z, _extraHaze);
+        RealSunHeight = uniforms.Mode.X > 0.5f ? uniforms.SunDirection.Y : uniforms.RealSun.Y;
         _applied = uniforms;
 
         SunDirection = uniforms.SunDirection.XYZ;

@@ -9,6 +9,8 @@ layout(set = 2, binding = 0) uniform ShadowUniforms
     vec4 forward; // the view's direction; w: 1 when there are shadows to read
     vec4 texels;  // each cascade's texel, in metres
     vec4 horizon; // xy: the horizon map's middle relative to the camera; z: 1 / its width; w: 1 when there is one
+    vec4 lights;  // the lamps' grid: cells per pixel across and down; slices per log of a distance; w: 1 when there are lamps
+    vec4 weather; // x: how wet; y: how much snow lies
 } shadow;
 
 layout(set = 2, binding = 1) uniform sampler2DArrayShadow shadowMap;

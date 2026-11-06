@@ -2,6 +2,8 @@
 #include "atmosphere.glsl"
 #include "lighting.glsl"
 #include "shadows.glsl"
+#include "local_lights.glsl"
+#include "weather.glsl"
 
 layout(location = 0) in vec3 vRelative;
 layout(location = 1) in vec3 vNormal;
@@ -43,8 +45,9 @@ void main()
     s.view = -view;
     s.occlusion = 0.85;
     s.specular = 0.5;
+    weatherSurface(s, 0.0, 1.0);
 
-    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative, n, sun)) + shadeSky(s, sun);
+    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative, n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative);
     color = applyFog(color, view, dist, pc.camera.y, sun);
     outColor = vec4(color, 1.0);
 }

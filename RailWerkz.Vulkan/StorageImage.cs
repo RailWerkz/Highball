@@ -16,7 +16,7 @@ public sealed unsafe class StorageImage : IDisposable
     public VkSampler Sampler { get; }
 
     /// depth: 1 for a 2D image. repeat: the sampler wraps rather than clamps.
-    public StorageImage(int width, int height, int depth, VkFormat format, bool mipmaps, bool repeat, string name)
+    public StorageImage(int width, int height, int depth, VkFormat format, bool mipmaps, bool repeat, string name, bool drawnTo = false)
     {
         (Width, Height, Depth) = (width, height, depth);
         MipLevels = mipmaps ? VulkanHelpers.MaxMipLevels(width, Math.Max(height, depth)) : 1;
@@ -32,7 +32,8 @@ public sealed unsafe class StorageImage : IDisposable
             ImageArrayLayers = 1,
             ImageSamples = VkSampleCountFlags._1Bit,
             ImageTiling = VkImageTiling.Optimal,
-            ImageUsage = VkImageUsageFlags.StorageBit | VkImageUsageFlags.SampledBit | VkImageUsageFlags.TransferSrcBit | VkImageUsageFlags.TransferDstBit,
+            ImageUsage = VkImageUsageFlags.StorageBit | VkImageUsageFlags.SampledBit | VkImageUsageFlags.TransferSrcBit | VkImageUsageFlags.TransferDstBit
+                | (drawnTo ? VkImageUsageFlags.ColorAttachmentBit : 0),
             ImageSharingMode = VkSharingMode.Exclusive,
             ImageInitialLayout = VkImageLayout.Undefined,
             AllocPreference = MemoryPreference.PreferGpu,

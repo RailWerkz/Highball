@@ -76,6 +76,10 @@ sun worked out from the route's place on Earth.
 This scene and the terrain use physically based light (`Content/Shaders/lighting.glsl`): each direct light goes through
 `shadeLight`, and there are no local lights yet. Track and roads go through it too, and cast shadows: beds, roads and bridges in every cascade, rails and ties only in the nearer two. Metal reflects the sky above the horizon and the land cover's colour round the camera below it (no reflection probes yet). Everything receives the sun's
 shadows (`Content/Shaders/shadows.glsl`, `SunShadows`); terrain, plants and whole models cast them too.
+Lamps go through `LocalLights`, a grid over the view that says which reach which pixels: yard lights placed along yard track by
+`YardLights`, signals, and an engine's headlights, each with a glow that bloom picks up. `Weather` (`--weather Rain` or `Snow`, or the
+Lighting window) wets or snows on every surface through `weather.glsl`, thickens the air and draws what's falling round the camera.
+
 The picture is then finished by `PostProcess`: temporal anti-aliasing (`--notaa`), bloom (`--nobloom`), exposure measured from the image,
 god rays and the sun's glare (`--norays`), and a look (`ColorGrade`, `--grade`). `--noshadows` turns them off, to see what they cost. Past the cascades, `TerrainHorizon` keeps how high the land rises round each
 point in eight directions, over 41 km round the camera, so mountains shade the land at any distance. `AmbientOcclusion` darkens

@@ -31,6 +31,12 @@ public sealed class LightingPanel
             Settings.Current.CloudCoverage = coverage;
         }
 
+        if (DevTools.Weather is { } weather)
+        {
+            DevTools.Weather = null;
+            Settings.Current.Weather = weather;
+        }
+
         if (DevTools.NoTemporalAA)
         {
             DevTools.NoTemporalAA = false;
@@ -176,6 +182,26 @@ public sealed class LightingPanel
             var shadows = _renderer.Shadows;
             if (ImGui.Checkbox("Sun shadows"u8, ref shadows))
                 _renderer.Shadows = shadows;
+
+            var falling = Array.Find(Weather.Kinds, kind => kind.Id == s.Weather);
+            if (ImGui.BeginCombo("Weather"u8, falling.Label ?? "Dry"))
+            {
+                foreach (var kind in Weather.Kinds)
+                {
+                    if (ImGui.Selectable(kind.Label, kind.Id == s.Weather))
+                    {
+                        s.Weather = kind.Id;
+                        if (kind.Clouds is not null)
+                            s.CloudType = kind.Clouds;
+                    }
+                }
+
+                ImGui.EndCombo();
+            }
+
+            var hard = s.WeatherAmount;
+            if (ImGui.SliderFloat("How hard"u8, ref hard, 0f, 1f))
+                s.WeatherAmount = hard;
 
             var temporal = s.TemporalAA;
             if (ImGui.Checkbox("Temporal anti-aliasing"u8, ref temporal))

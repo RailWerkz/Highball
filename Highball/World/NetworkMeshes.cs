@@ -1663,6 +1663,19 @@ public sealed partial class NetworkMeshes : IDisposable
         }
     }
 
+    /// Where the signals placed on the route stand, and the way each faces (degrees from +X towards +Z).
+    public IEnumerable<(double X, float Y, double Z, double Heading)> Signals()
+    {
+        foreach (var list in _objectsByChunk.Values)
+        {
+            foreach (var placed in list)
+            {
+                if (placed.Object.Kind == PlacedKind.Signal)
+                    yield return (placed.X, placed.Y, placed.Z, placed.Object.Heading);
+            }
+        }
+    }
+
     /// Binds the ballast's texture for the line pipeline.
     public void BindBallast(CommandBuffer cmd, VkPipelineLayout layout) => _ballastTexture.Bind(cmd, layout);
 

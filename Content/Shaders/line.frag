@@ -3,6 +3,8 @@
 #include "lighting.glsl"
 #include "noise.glsl"
 #include "shadows.glsl"
+#include "local_lights.glsl"
+#include "weather.glsl"
 
 layout(location = 0) in vec3 vRelative;
 layout(location = 1) in vec3 vNormal;
@@ -85,6 +87,8 @@ void main()
     float roughness = 0.9;
     float specular = 0.1; // loose stone and rough ground hide most of their highlights from a low sun
     float occlusion = 1.0;
+    float puddle = 0.0;
+    float hold = 1.0;
 
     if (material == Ballast)
     {
@@ -128,6 +132,7 @@ void main()
         // thin for a sharp highlight to do anything but sparkle.
         albedo = mix(Rust * (0.8 + 0.4 * rust), BareSteel, worn);
         metallic = worn;
+        hold = 1.0 - worn;
         roughness = max(mix(0.8, 0.28, worn), min(pixel * 2.0, 0.6));
         specular = 1.0;
     }
@@ -137,6 +142,7 @@ void main()
         float wear = fbm(tex * 0.12, pixel * 0.12);
         albedo = vec3(0.036, 0.037, 0.039) * (0.85 + 0.3 * grit) * (0.85 + 0.3 * wear);
         roughness = mix(0.8, 0.95, grit);
+        puddle = smoothstep(0.55, 0.68, fbm(tex * 0.12, pixel * 0.12));
         specular = 0.18;
 
         int lanes = style & 7;
@@ -210,8 +216,9 @@ void main()
     s.view = -view;
     s.occlusion = occlusion;
     s.specular = specular;
+    weatherSurface(s, puddle, hold);
 
-    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative, n, sun)) + shadeSky(s, sun);
+    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative, n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative);
     color = applyFog(color, view, dist, pc.camera.y, sun);
     outColor = vec4(color, 1.0);
 }

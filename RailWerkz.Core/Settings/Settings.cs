@@ -47,6 +47,11 @@ public sealed class Settings
     public bool Vegetation { get; set; } = true;
     public bool AmbientOcclusion { get; set; } = true;
     public bool TemporalAA { get; set; } = true;
+
+    /// What's falling, by an id in Weather.Kinds, and how hard, 0 to 1.
+    public string Weather { get; set; } = "Clear";
+    public float WeatherAmount { get; set; } = 0.7f;
+
     public bool Bloom { get; set; } = true;
     public bool GodRays { get; set; } = true;
 
