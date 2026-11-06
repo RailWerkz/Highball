@@ -92,7 +92,10 @@ void main()
 
     float pixel = max(length(dFdx(world.xz)), length(dFdy(world.xz))) + 1e-4;
 
-    vec4 m = vMaterials / max(dot(vMaterials, vec4(1.0)), 1e-3);
+    // At the edge of a triangle MSAA can read these from beyond its corners, where they overshoot, by more the smaller it is: +30 of one and
+    // -29 of another still add up to 1, but anything left out because it weighs nothing leaves the rest 30 times too bright.
+    vec4 m = max(vMaterials, vec4(0.0));
+    m /= max(dot(m, vec4(1.0)), 1e-3);
 
     // Where grass meets earth, whichever stands taller at this spot wins, so the edge follows clumps and stones, not a smooth fade.
     float land = m.x + m.y;

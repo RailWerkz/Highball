@@ -261,6 +261,8 @@ public sealed class HighballApp : IDisposable
 
         if (Glfw.PInvoke.RawMouseMotionSupported() != 0)
             Glfw.PInvoke.SetInputMode(_window, Glfw.Constants.GLFW_RAW_MOUSE_MOTION, captured ? 1 : 0);
+
+        Input.SetCaptured(captured);
     }
 
     private void Loop()

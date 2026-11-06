@@ -15,6 +15,7 @@ public static class Input
 
     private static double2 _lastCursor;
     private static bool _haveCursor;
+    private static bool _captured;
 
     public static float2 MouseDelta { get; private set; }
     public static float Scroll { get; private set; }
@@ -64,7 +65,8 @@ public static class Input
 
             _lastCursor = pos;
             _haveCursor = true;
-            MousePosition = new float2((float)pos.X, (float)pos.Y);
+            if (!_captured)
+                MousePosition = new float2((float)pos.X, (float)pos.Y);
         };
 
         window.OnScroll += (_, offset) => _accumulatedScroll += (float)offset.Y;
@@ -75,6 +77,15 @@ public static class Input
             if (focus != GlfwFocusEvent.GainFocus)
                 ReleaseAll();
         };
+    }
+
+    /// When the window takes or gives back the cursor. While it's taken the position reported runs on without limit, so MousePosition stays
+    /// where the pointer was; and giving it back puts the pointer there again, a jump that isn't movement, so that isn't counted.
+    public static void SetCaptured(bool captured)
+    {
+        _captured = captured;
+        _haveCursor = false;
+        _accumulatedDelta = default;
     }
 
     /// Call after polling events, before the frame reads input.

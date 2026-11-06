@@ -422,7 +422,8 @@ public sealed partial class EditorView : IDisposable
 
     private void Fly(float dt)
     {
-        _looking = Input.Mouse(GlfwMouseButton.Right) && !Blocked;
+        // Only starting is up to where the pointer is: once looking, it's held until the button's let go.
+        _looking = Input.Mouse(GlfwMouseButton.Right) && (_looking || !Blocked);
         if (_looking)
         {
             const float sensitivity = 0.0025f;
