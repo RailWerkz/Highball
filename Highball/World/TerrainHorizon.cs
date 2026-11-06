@@ -20,6 +20,9 @@ public sealed class TerrainHorizon : IDisposable
     private Task<Built>? _building;
     private TerrainSource? _source;
     private int _epoch = -1;
+    private int _seenEpoch = -1;
+    private double _editedAt = double.MinValue;
+    private const double EditRest = 0.75;
     private double _x;
     private double _z;
 
@@ -39,6 +42,14 @@ public sealed class TerrainHorizon : IDisposable
     /// Before the frame's shadows. Starts a new map when the camera's strayed or the ground's changed, and takes in a finished one.
     public void Update(TerrainSource source, int epoch, double cameraX, double cameraZ)
     {
+        // Ground being edited waits until the brush has rested: a map this coarse has nothing to gain from every frame of a stroke,
+        // and each one taken in holds up the frame.
+        var now = RailWerkz.Core.Time.Time.Now;
+        if (epoch != _seenEpoch)
+            (_seenEpoch, _editedAt) = (epoch, now);
+        if (ReferenceEquals(source, _source) && epoch != _epoch && now - _editedAt < EditRest)
+            epoch = _epoch;
+
         if (_building is { IsCompleted: true } done)
         {
             _building = null;

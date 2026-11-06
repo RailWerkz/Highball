@@ -112,6 +112,17 @@ public sealed class Terrain : IDisposable
     /// Goes up whenever the ground changes shape.
     public int Epoch => _epoch;
 
+    private const int MaxEditsKept = 256;
+    private readonly List<(int Epoch, int X0, int Z0, int X1, int Z1)> _edits = [];
+
+    /// The sample rectangles edited since that epoch, or null if it's too long ago to say.
+    public IEnumerable<(int X0, int Z0, int X1, int Z1)>? EditsSince(int epoch)
+    {
+        if (_epoch - epoch > _edits.Count)
+            return null;
+        return _edits.Where(e => e.Epoch > epoch).Select(e => (e.X0, e.Z0, e.X1, e.Z1));
+    }
+
     private float SpacingOf(int level) => _source.Spacing * (1 << level);
 
     private static int SamplesOf(int level) => Quads << level;
@@ -342,6 +353,9 @@ public sealed class Terrain : IDisposable
     public void Invalidate(int gx0, int gz0, int gx1, int gz1)
     {
         var epoch = ++_epoch;
+        if (_edits.Count == MaxEditsKept)
+            _edits.RemoveAt(0);
+        _edits.Add((epoch, gx0, gz0, gx1, gz1));
         foreach (var key in _patches.Keys)
         {
             var (x0, z0, x1, z1) = Rect(key);

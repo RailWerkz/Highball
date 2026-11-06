@@ -128,6 +128,9 @@ public static class DevTools
     /// A scripted stroke in the 3D view (--sculpt), read once by it.
     public static (string Tool, int Steps)? Sculpt { get; set; }
 
+    /// A stroke held at the middle of the screen for a while, as a mouse would (--sculpthold).
+    public static (string Tool, float Radius, double From, double Until)? SculptHold { get; set; }
+
     /// Where the 3D view starts (--camera), read once by it.
     public static (double Lat, double Lon, float Height, float Yaw, float Pitch)? Camera { get; set; }
 
@@ -271,6 +274,13 @@ public static class DevTools
                     Lay = (double.Parse(args[i + 1], g), double.Parse(args[i + 2], g), double.Parse(args[i + 3], g), double.Parse(args[i + 4], g));
                     i += 4;
                     break;
+                case "--sculpthold" when i + 4 < args.Length:
+                {
+                    var n = System.Globalization.CultureInfo.InvariantCulture;
+                    SculptHold = (args[i + 1], float.Parse(args[i + 2], n), double.Parse(args[i + 3], n), double.Parse(args[i + 4], n));
+                    i += 4;
+                    break;
+                }
                 case "--sculpt" when i + 2 < args.Length:
                     Sculpt = (args[i + 1], int.Parse(args[i + 2], System.Globalization.CultureInfo.InvariantCulture));
                     i += 2;

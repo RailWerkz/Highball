@@ -87,7 +87,7 @@ public sealed unsafe class Vegetation : IDisposable
 
     private readonly record struct Key(bool Far, int X, int Z);
 
-    private sealed record Built(Key Key, int Generation, PlantInstance[] Instances, int[] Starts, float Low, float High);
+    private sealed record Built(Key Key, int Generation, int Stamp, PlantInstance[] Instances, int[] Starts, float Low, float High);
 
     private sealed class Cell
     {
@@ -112,6 +112,11 @@ public sealed unsafe class Vegetation : IDisposable
     private volatile Dictionary<(int, int), List<(double Ax, double Az, double Bx, double Bz, float Clear)>>? _clearances;
     private int _generation;
     private int _terrainEpoch = -1;
+
+    /// Cells whose ground or lines have changed, which keep drawing until the rebuild comes in, and the count of changes when each was
+    /// marked: one that changed again while being rebuilt stays marked.
+    private readonly Dictionary<Key, int> _stale = [];
+    private int _stamp;
     private volatile bool _treesWanted;
     private bool _treesLoaded;
 
@@ -158,17 +163,37 @@ public sealed unsafe class Vegetation : IDisposable
         if (_treesWanted && !_treesLoaded)
             LoadTrees();
 
-        // Anything that moved the ground or the lines starts the cells again.
-        if (!ReferenceEquals(source, _source) || !ReferenceEquals(source.Lines, _lines) || terrain.Epoch != _terrainEpoch)
+        // Other ground starts the cells again. New lines or edited ground only mark what they touched, which draws as it was until
+        // it's been rebuilt, in the background.
+        if (!ReferenceEquals(source, _source))
         {
             _source = source;
             _lines = source.Lines;
             _terrainEpoch = terrain.Epoch;
             _generation++;
-            _clearances = null;
-            var lines = _lines;
-            Task.Run(() => _clearances = BuildClearances(lines));
+            _stale.Clear();
             ClearCells();
+            LayOutClearances();
+        }
+        else if (!ReferenceEquals(source.Lines, _lines))
+        {
+            _lines = source.Lines;
+            _terrainEpoch = terrain.Epoch;
+            _stamp++;
+            foreach (var key in _cells.Keys)
+                _stale[key] = _stamp;
+            LayOutClearances();
+        }
+        else if (terrain.Epoch != _terrainEpoch)
+        {
+            _stamp++;
+            if (terrain.EditsSince(_terrainEpoch) is { } edits)
+                foreach (var (x0, z0, x1, z1) in edits)
+                    MarkEdited(source.Spacing, x0, z0, x1, z1);
+            else
+                foreach (var key in _cells.Keys)
+                    _stale[key] = _stamp;
+            _terrainEpoch = terrain.Epoch;
         }
 
         for (var n = 0; n < UploadsPerFrame && _built.TryDequeue(out var built); n++)
@@ -176,6 +201,11 @@ public sealed unsafe class Vegetation : IDisposable
             _inFlight.Remove(built.Key);
             if (built.Generation != _generation)
                 continue;
+
+            if (_stale.TryGetValue(built.Key, out var marked) && marked <= built.Stamp)
+                _stale.Remove(built.Key);
+            if (_cells.Remove(built.Key, out var replaced))
+                Release(replaced);
 
             var buffer = Buffers.UploadLater(
                 MemoryMarshal.AsBytes(built.Instances.Length > 0 ? built.Instances.AsSpan() : new PlantInstance[1].AsSpan()), VkBufferUsageFlags.VertexBufferBit, "vegetation.cell");
@@ -195,10 +225,34 @@ public sealed unsafe class Vegetation : IDisposable
             return;
 
         _wanted.Sort((a, b) => a.Distance.CompareTo(b.Distance));
-        var generation = _generation;
+        var (generation, stamp) = (_generation, _stamp);
         var batch = _wanted.Take(_jobs.BatchSize).Select(w => w.Key).ToList();
         _inFlight.UnionWith(batch);
-        _jobs.TryRun(batch.Select(k => ((Brutal.Concurrency.Jobs.IJob)new Job("vegetation cell", () => Build(k, generation)), 1)));
+        _jobs.TryRun(batch.Select(k => ((Brutal.Concurrency.Jobs.IJob)new Job("vegetation cell", () => Build(k, generation, stamp)), 1)));
+    }
+
+    /// One worker at a time isn't needed: a layout for lines that have since been replaced is just dropped.
+    private void LayOutClearances()
+    {
+        _clearances = null;
+        var lines = _lines;
+        Task.Run(() =>
+        {
+            var grid = BuildClearances(lines);
+            if (ReferenceEquals(lines, _lines))
+                _clearances = grid;
+        });
+    }
+
+    private void MarkEdited(float spacing, int x0, int z0, int x1, int z1)
+    {
+        var (left, right, top, bottom) = (x0 * (double)spacing, x1 * (double)spacing, z0 * (double)spacing, z1 * (double)spacing);
+        foreach (var key in _cells.Keys)
+        {
+            var size = key.Far ? FarCell : NearCell;
+            if ((key.X + 1) * (double)size >= left && key.X * (double)size <= right && (key.Z + 1) * (double)size >= top && key.Z * (double)size <= bottom)
+                _stale[key] = _stamp;
+        }
     }
 
     private void Want(bool far, float size, float reach, Camera camera)
@@ -213,7 +267,7 @@ public sealed unsafe class Vegetation : IDisposable
             for (var x = x0; x <= x1; x++)
             {
                 var key = new Key(far, x, z);
-                if (_cells.ContainsKey(key) || _inFlight.Contains(key))
+                if ((_cells.ContainsKey(key) && !_stale.ContainsKey(key)) || _inFlight.Contains(key))
                     continue;
 
                 var dx = (x + 0.5) * size - camera.X;
@@ -247,8 +301,11 @@ public sealed unsafe class Vegetation : IDisposable
         if (gone is null)
             return;
         foreach (var key in gone)
+        {
+            _stale.Remove(key);
             if (_cells.Remove(key, out var cell))
                 Release(cell);
+        }
     }
 
     private void Release(Cell cell)
@@ -367,7 +424,7 @@ public sealed unsafe class Vegetation : IDisposable
         return top + (bottom - top) * tz;
     }
 
-    private void Build(Key key, int generation)
+    private void Build(Key key, int generation, int stamp)
     {
         var size = key.Far ? FarCell : NearCell;
         var perKind = new List<PlantInstance>[KindCount];
@@ -513,7 +570,7 @@ public sealed unsafe class Vegetation : IDisposable
         }
 
         starts[KindCount] = at;
-        _built.Enqueue(new Built(key, generation, instances, starts, total > 0 ? low : 0f, total > 0 ? high : 0f));
+        _built.Enqueue(new Built(key, generation, stamp, instances, starts, total > 0 ? low : 0f, total > 0 ? high : 0f));
     }
 
     private void LoadTrees()

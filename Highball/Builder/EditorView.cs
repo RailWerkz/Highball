@@ -67,6 +67,8 @@ public sealed partial class EditorView : IDisposable
     private float _radius = 20f;
     private int _paint;
     private TerrainStroke? _stroke;
+    private Task<(int X0, int Z0, int X1, int Z1)?>? _dab;
+    private float _dabTime;
     private float _flattenTo;
     private double3? _hit;
     /// The ground under the pointer whatever the tool, for the status line.
@@ -502,7 +504,7 @@ public sealed partial class EditorView : IDisposable
             return;
         var slow = string.Join(", ", Profiler.Tree().Where(s => s.Section.Worst > 2.5f).Select(s => string.Create(CultureInfo.InvariantCulture, $"{s.Section.Name} {s.Section.Worst:0}")));
         Log.Info(string.Create(CultureInfo.InvariantCulture,
-            $"Fly: worst frame {_flyWorst:0.0} ms, {_flyWaitingWorst} patches waiting, {_terrain.Building} building, {_terrain.DrawnPatches} drawn; slow: {slow}"));
+            $"Fly: worst frame {_flyWorst:0.0} ms, {_flyWaitingWorst} patches waiting, {_terrain.Building} building, {_terrain.DrawnPatches} drawn, {_renderer.Vegetation.Instances} plants; slow: {slow}"));
         _flyLogAt = now;
         _flyWorst = 0f;
         _flyWaitingWorst = 0;
@@ -512,6 +514,7 @@ public sealed partial class EditorView : IDisposable
 
     private void Edit(float dt)
     {
+        CollectDab(false);
         var source = _terrain!.Source;
         var ctrl = Input.Key(GlfwKey.LeftControl) || Input.Key(GlfwKey.RightControl);
 
@@ -573,6 +576,24 @@ public sealed partial class EditorView : IDisposable
         if (_tool is Tool.Track or Tool.Pen or Tool.Circuits or Tool.Switches or Tool.Shape or Tool.Follow or Tool.Place or Tool.Parallel)
             return;
 
+        if (DevTools.SculptHold is { } hold && RailWerkz.Core.Time.Time.Now >= hold.From)
+        {
+            if (RailWerkz.Core.Time.Time.Now > hold.Until)
+            {
+                DevTools.SculptHold = null;
+                End();
+            }
+            else if (Pick(_screen * 0.5f) is { } held && Enum.TryParse<Tool>(hold.Tool, true, out var holding))
+            {
+                (_tool, _hit, _radius) = (holding, held, hold.Radius);
+                if (_stroke is null)
+                    Begin(source);
+                Apply(source, dt);
+            }
+
+            return;
+        }
+
         if (DevTools.Sculpt is { } dev)
         {
             // A scripted stroke at the middle of the screen, for testing; tried again each frame until the ground there
@@ -584,9 +605,10 @@ public sealed partial class EditorView : IDisposable
                 Begin(source);
                 for (var i = 0; i < dev.Steps; i++)
                     Apply(source, 1f / 30f);
-                if (!_stroke!.IsEmpty)
-                    DevTools.Sculpt = null;
+                var scripted = _stroke!;
                 End();
+                if (!scripted.IsEmpty)
+                    DevTools.Sculpt = null;
             }
         }
 
@@ -1941,24 +1963,61 @@ public sealed partial class EditorView : IDisposable
         _flattenTo = source.HeightAt(_hit!.Value.X, _hit.Value.Z);
     }
 
+    /// The brush works on another thread, one dab at a time: a big one takes longer than a frame. The time since the last dab goes
+    /// into the next, so the ground comes up just as fast.
     private void Apply(TerrainSource source, float dt)
+    {
+        _dabTime += dt;
+        CollectDab(false);
+        if (_dab is not null)
+            return;
+
+        var dab = NextDab(source);
+        _dab = Task.Run(dab);
+    }
+
+    private Func<(int X0, int Z0, int X1, int Z1)?> NextDab(TerrainSource source)
     {
         var hit = _hit!.Value;
         var fast = Input.Key(GlfwKey.LeftShift) ? 4f : 1f;
-        var changed = _tool switch
+        var (tool, radius, paint, flatten, stroke, time) = (_tool, _radius, PaintCovers[_paint].Class, _flattenTo, _stroke!, _dabTime);
+        _dabTime = 0f;
+        return () => tool switch
         {
-            Tool.Raise => source.Sculpt(hit.X, hit.Z, _radius, SculptMode.Raise, RaiseRate * fast * dt, 0f, _stroke!),
-            Tool.Lower => source.Sculpt(hit.X, hit.Z, _radius, SculptMode.Lower, RaiseRate * fast * dt, 0f, _stroke!),
-            Tool.Smooth => source.Sculpt(hit.X, hit.Z, _radius, SculptMode.Smooth, MathF.Min(1f, BlendRate * fast * dt), 0f, _stroke!),
-            Tool.Flatten => source.Sculpt(hit.X, hit.Z, _radius, SculptMode.Flatten, MathF.Min(1f, BlendRate * fast * dt), _flattenTo, _stroke!),
-            Tool.Paint => source.Paint(hit.X, hit.Z, _radius, PaintCovers[_paint].Class, _stroke!),
+            Tool.Raise => source.Sculpt(hit.X, hit.Z, radius, SculptMode.Raise, RaiseRate * fast * time, 0f, stroke),
+            Tool.Lower => source.Sculpt(hit.X, hit.Z, radius, SculptMode.Lower, RaiseRate * fast * time, 0f, stroke),
+            Tool.Smooth => source.Sculpt(hit.X, hit.Z, radius, SculptMode.Smooth, MathF.Min(1f, BlendRate * fast * time), 0f, stroke),
+            Tool.Flatten => source.Sculpt(hit.X, hit.Z, radius, SculptMode.Flatten, MathF.Min(1f, BlendRate * fast * time), flatten, stroke),
+            Tool.Paint => source.Paint(hit.X, hit.Z, radius, paint, stroke),
             _ => null,
         };
-        Rebuild(changed);
+    }
+
+    /// Takes in the last dab once it's done, or waits for it.
+    private void CollectDab(bool wait)
+    {
+        if (_dab is not { } dab || (!wait && !dab.IsCompleted))
+            return;
+
+        _dab = null;
+        try
+        {
+            Rebuild(dab.GetAwaiter().GetResult());
+        }
+        catch (Exception e)
+        {
+            Log.Error($"Brush: {e.Message}");
+        }
     }
 
     private void End()
     {
+        // The stroke isn't whole until the last dab is in, and what's left of its time has gone down.
+        CollectDab(true);
+        if (_dabTime > 0f && _stroke is not null && _hit is not null)
+            Rebuild(NextDab(_terrain!.Source)());
+        _dabTime = 0f;
+
         if (_stroke is { IsEmpty: false } stroke)
         {
             _undo.Push(stroke);
