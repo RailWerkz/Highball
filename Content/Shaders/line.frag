@@ -308,7 +308,8 @@ void main()
         bool fading = vData.w < 0.0;
         // (Data.w starts from -0.3 at the outer edge, so multisampling reading it a little past the edge still finds it fading.)
         float rise = fading ? clamp((-vData.w - 0.3) / 2.4, 0.0, 1.0) : 1.0;
-        fadeShadowDrop = 0.06 * (1.0 - rise);
+        // (Style 1 lies on the bank itself, where it would shade itself from the ground just under it.)
+        fadeShadowDrop = style == 1 ? -0.4 : 0.06 * (1.0 - rise);
         vec2 base = (fading ? vec2(u, v) : tex) / 1.5;
         vec2 stone = parallax(rockPacked, base, n, view, 0.06 * smoothstep(0.4, 1.0, rise), 1.5, dist);
         if (fading)

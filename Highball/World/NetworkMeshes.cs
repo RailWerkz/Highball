@@ -714,7 +714,7 @@ public sealed partial class NetworkMeshes : IDisposable
         return new Built(key, false, [.. builder.Vertices], indices, fades, [], [], [], []);
     }
 
-    private static void FarRail(Builder builder, NetworkLine line, int first, int last, bool bridge)
+    private void FarRail(Builder builder, NetworkLine line, int first, int last, bool bridge)
     {
         if (line.Embedded)
         {
@@ -854,6 +854,94 @@ public sealed partial class NetworkMeshes : IDisposable
                     builder.Quad(q, q + 1, q + ring, q + ring + 1);
                 }
             }
+
+            // Where the bed stops, at a bridge or with no more track, it's heaped up there as loose rock would be: its section falls away
+            // to the ground, curving as its sides do, and the fade carries on round it.
+            void BedEnd(float at, float way, bool atBridge)
+            {
+                var (centre, side) = FrameAt(line, at, builder.Origin);
+                var ahead = new float3(side.Z, 0f, -side.X) * way;
+                var sink = line.SinkAt(at);
+                var toeY = sink + walk;
+                var run = MathF.Max(0.35f, (h - toeY) * NetworkLine.BallastSlope * NetworkLine.BedRun);
+                var profile = Section(0f, 0f, 0f, sink);
+
+                // (Told to cast no shadow, see shadow_line.vert: it lies low, and would only shade the fade round it.)
+                var heap = Code(LineMaterial.Ballast, line.Tracks + (line.Disused ? 8 : 0) + 16);
+                const int steps = 6;
+                var solid = (uint)builder.Vertices.Count;
+                var solidEdges = edges - 2;
+                for (var i = 0; i <= steps + 1; i++)
+                {
+                    // The last ring goes on down under the ground, to leave nothing open.
+                    var t = MathF.Min(i / (float)steps, 1f);
+                    var (d, fall, under) = i <= steps ? (run * t, Fall(t), 0f) : (run + 0.5f, 0f, 1f);
+                    var steep = (Fall(t) - Fall(MathF.Min(t + 0.02f, 1f))) / 0.02f / run;
+                    for (var e = 1; e <= solidEdges; e++)
+                    {
+                        var (n0, n1) = JoinNormals(profile, e, side);
+                        foreach (var ((u, y), normal) in (ReadOnlySpan<((float, float), float3)>)[(profile[e], n0), (profile[e + 1], n1)])
+                        {
+                            var above = MathF.Max(y - toeY, 0f);
+                            var place = centre + side * u + ahead * d + new float3(0f, MathF.Min(y, toeY) + above * fall - under, 0f);
+                            builder.Add(place, MathEx.Normalize(normal + ahead * (above * steep)), new float4(u, (at + way * d) % Wrap, heap, railOffset));
+                        }
+                    }
+                }
+
+                var rim = (uint)(solidEdges * 2);
+                var deckHalf = DeckOf(line).Half;
+                for (var r = 0u; r <= steps; r++)
+                    for (var e = 0u; e < solidEdges; e++)
+                    {
+                        // At a bridge, only either side of the deck, which has its own rock.
+                        if (atBridge && MathF.Max(MathF.Abs(profile[e + 1].U), MathF.Abs(profile[e + 2].U)) < deckHalf)
+                            continue;
+                        var q = solid + r * rim + e * 2;
+                        builder.Quad(q, q + 1, q + rim, q + rim + 1);
+                    }
+
+                // The fade, lying on the ground as it is here: thinning out to the sides and past the end alike.
+                const int columns = 13;
+                const int rows = 9;
+                // A little past the toe: the bed's own fade already covers further out, alongside.
+                var toe = w + run;
+                var outer = toe + 1.6f;
+                var spread = (uint)builder.Vertices.Count;
+                for (var r = 0; r < rows; r++)
+                {
+                    var d = (run + fading) * r / (rows - 1);
+                    var along = 1f - Math.Clamp((d - run) / fading, 0f, 1f);
+                    for (var c = 0; c < columns; c++)
+                    {
+                        var u = outer * (c * 2f / (columns - 1) - 1f);
+                        // Out past the toe it comes in gradually from where it starts, leaving no edge across the bed's fade.
+                        var across = Math.Clamp((outer - MathF.Abs(u)) / 1.6f, 0f, 1f);
+                        if (MathF.Abs(u) > toe)
+                            across *= Math.Clamp(d / 1.5f, 0f, 1f);
+                        var place = centre + side * u + ahead * d;
+                        var (wx, wz) = (place.X + builder.Origin.X, place.Z + builder.Origin.Z);
+                        // Not under the bank, which falls from the bed's ground as the fill slope does: the height read here may not have it yet.
+                        var bank = centre.Y + sink - MathF.Max(0f, MathF.Max(d, MathF.Abs(u) - toe) - 0.3f) * 0.5f;
+                        place.Y = MathF.Max(_source.HeightAt(wx, wz), bank) + GivesOut;
+                        // As the ground slopes here, and style 1 for the shader: it lies on a bank, not on flattened ground.
+                        var slope = new float3(_source.HeightAt(wx - 1.0, wz) - _source.HeightAt(wx + 1.0, wz), 2f, _source.HeightAt(wx, wz - 1.0) - _source.HeightAt(wx, wz + 1.0));
+                        builder.Add(place, MathEx.Normalize(slope), new float4(u, (at + way * d) % Wrap, Code(LineMaterial.Gravel, 1), -0.3f - Fading * across * along));
+                    }
+                }
+
+                for (var r = 0u; r + 1 < rows; r++)
+                    for (var c = 0u; c + 1 < columns; c++)
+                    {
+                        var q = spread + r * columns + c;
+                        builder.Quad(q, q + 1, q + columns, q + columns + 1);
+                    }
+            }
+
+            if (first == 0 || line.Structures[first - 1] == Structure.Bridge)
+                BedEnd(line.S[first], -1f, first > 0);
+            if (last == line.Count - 1 || line.Structures[last] == Structure.Bridge)
+                BedEnd(line.S[last], 1f, last < line.Count - 1);
 
             return;
         }
@@ -1216,8 +1304,17 @@ public sealed partial class NetworkMeshes : IDisposable
                 var a = center - forward * 0.7f + right * (side * (half - 0.15f));
                 var way = MathEx.Normalize(forward * -0.7f + right * (side * 0.7f));
                 var b = a + way * reach;
-                var end = _source.HeightAt(b.X + builder.Origin.X, b.Z + builder.Origin.Z);
-                Wing(builder, a, b, 0.4f, ground - 1.5f, line.Y[p], MathF.Min(end + 0.05f, line.Y[p]), concrete);
+                float GroundAt(float t)
+                {
+                    var at = a + (b - a) * t;
+                    return _source.HeightAt(at.X + builder.Origin.X, at.Z + builder.Origin.Z);
+                }
+
+                // Well under where the ground's over it, or it'd shade the ground through it. Not at all if the bank buries the lot.
+                var deckTop = line.Y[p] - 0.3f;
+                if (((float[])[0f, 0.25f, 0.5f, 0.75f, 1f]).All(t => GroundAt(t) > deckTop - 0.2f))
+                    continue;
+                Wing(builder, a, b, 0.4f, ground - 1.5f, deckTop, MathF.Min(GroundAt(1f) - 0.5f, deckTop), concrete);
             }
         }
 

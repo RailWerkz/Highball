@@ -1755,7 +1755,7 @@ public sealed partial class NetworkLines
                         var (ex, ez) = (ax + dx * t - x, az + dz * t - z);
                         var d = (float)Math.Sqrt(ex * ex + ez * ez) * _spacing;
                         var s = line.S[p] + (line.S[p + 1] - line.S[p]) * (float)t;
-                        var ease = Math.Clamp(MathF.Min(s - start, end - s) / BridgeEndEase, 0f, 1f);
+                        var ease = Math.Clamp((MathF.Min(s - start, end - s) - BridgeBank) / BridgeEndEase, 0f, 1f);
                         var y = line.Y[p] + (line.Y[p + 1] - line.Y[p]) * (float)t;
                         var limit = y - (depth + BridgeClearance) * ease + MathF.Max(0f, d - half) * CutSlope;
                         if (heights[z * samples + x] > limit)
@@ -1770,6 +1770,8 @@ public sealed partial class NetworkLines
     private const float BridgeClearance = 0.3f;
     private const float BridgeClearReach = 8f;
     private const float BridgeEndEase = 6f;
+    /// How far under each end of a deck the bank stays as it is: past the abutment, whose seat's there, before the ground's cut away.
+    private const float BridgeBank = 1.6f;
 
     /// How far under a road's formation height the ground beneath it lies.
     private const float RoadClearance = 0.02f;
