@@ -236,7 +236,7 @@ public sealed class YardTool
             }
 
             var fit = TrackAlignment.FitPath(path);
-            fitted[t] = (fit.Fitted, fit.Radius, Alignment.LengthOf(fit.Pieces), Sampled(fit.Pieces, []).Points);
+            fitted[t] = (fit.Fitted, fit.Radius, Alignment.LengthOf(fit.Pieces), fit.Pieces.Count == 0 ? [] : Sampled(fit.Pieces, []).Points);
         });
 
         string? problem = null;

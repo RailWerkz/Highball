@@ -409,6 +409,12 @@ public sealed class FollowTool
         }
 
         var fit = TrackAlignment.FitPath(path);
+        if (fit.Pieces.Count == 0)
+        {
+            (Preview, Radius, Length, Unfitted) = (null, double.MaxValue, 0.0, false);
+            return;
+        }
+
         var (pieces, radius) = (fit.Pieces, fit.Radius);
         if (all[0].Runs is { } leaving && Led(pieces, leaving) is { } led)
             (pieces, radius) = (led.Pieces, Math.Min(radius, led.Radius));

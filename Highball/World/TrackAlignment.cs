@@ -253,6 +253,9 @@ public static class TrackAlignment
         for (var i = 0; i + 1 < path.Count; i++)
         {
             var (dx, dz) = (path[i + 1].X - path[i].X, path[i + 1].Z - path[i].Z);
+            // (The same place twice, as when the pointer's still on what it just clicked.)
+            if (dx * dx + dz * dz < 1e-6)
+                continue;
             var steps = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(dx * dx + dz * dz) / 2.0));
             for (var k = 1; k <= steps; k++)
             {
@@ -260,6 +263,9 @@ public static class TrackAlignment
                 zs.Add(path[i].Z + dz * k / steps);
             }
         }
+
+        if (xs.Count < 2)
+            return ([], double.MaxValue, false);
 
         var (x, z) = (xs.ToArray(), zs.ToArray());
         var s = new float[x.Length];
@@ -407,7 +413,8 @@ public static class TrackAlignment
 
         corners.Add((line.X[to], line.Z[to]));
         var pieces = Round(corners);
-        if (pieces.Any(q => Math.Abs(q.Curvature) > 1.0 / MinArc))
+        // (No pieces if the corners all lie in one place.)
+        if (pieces.Count == 0 || pieces.Any(q => Math.Abs(q.Curvature) > 1.0 / MinArc))
             return null;
 
         // Each point goes to the place on the fit nearest it. Too far off, and it isn't a fit.
