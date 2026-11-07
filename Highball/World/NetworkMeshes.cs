@@ -691,6 +691,10 @@ public sealed partial class NetworkMeshes : IDisposable
                 if (structure == Structure.Tunnel)
                     continue;
 
+                // A mapped track's bridge, once track's been laid across it, isn't needed either.
+                if (line.Mark && structure == Structure.Bridge && Enumerable.Range(first, last - first + 1).All(p => lines.UnderTrack(line.X[p], line.Z[p], MarkCovered)))
+                    continue;
+
                 if (line.Rail)
                     FarRail(builder, line, first, last, structure == Structure.Bridge);
                 else if (line.Mark && structure != Structure.Bridge)
@@ -865,14 +869,26 @@ public sealed partial class NetworkMeshes : IDisposable
         Sweep(builder, line, first, last, section, e => e is 3 or 4 or 5 ? ballast : concrete, (_, _, _) => railOffset);
     }
 
+    /// How near a mark's middle built track has to run for the mark to go, in metres: less than tracks side by side are apart.
+    private const double MarkCovered = 3.0;
+
     /// A mapped track's mark: a strip of gravel lying on the ground, following it across as well as along.
     private static void Mark(Builder builder, NetworkLines lines, NetworkLine line, int first, int last)
     {
         const int across = NetworkLine.MarkPoints;
         var gravel = Code(LineMaterial.Gravel);
-        var start = (uint)builder.Vertices.Count;
+
+        // Where track's been laid along it, there's no more mark: only the points of what's left, and one over at each end of that.
+        var covered = new bool[last - first + 1];
+        for (var p = first; p <= last; p++)
+            covered[p - first] = lines.UnderTrack(line.X[p], line.Z[p], MarkCovered);
+        bool Kept(int p) => p >= first && p <= last && !covered[p - first];
+        var rings = new uint[last - first + 1];
         for (var p = first; p <= last; p++)
         {
+            if (!Kept(p) && !Kept(p - 1) && !Kept(p + 1))
+                continue;
+            rings[p - first] = (uint)builder.Vertices.Count;
             var (center, right) = Frame(line, p, builder.Origin);
             var forward = new float3(right.Z, 0f, -right.X);
             var (behind, ahead) = (Math.Max(p - 1, 0), Math.Min(p + 1, line.Count - 1));
@@ -891,16 +907,20 @@ public sealed partial class NetworkMeshes : IDisposable
             }
         }
 
-        for (var p = 0; p < last - first; p++)
+        for (var p = first; p < last; p++)
+        {
+            if (!Kept(p) && !Kept(p + 1))
+                continue;
             for (var k = 0; k < across - 1; k++)
             {
-                var a = start + (uint)(p * across + k);
-                builder.Quad(a, a + 1, a + across, a + across + 1);
+                var (a, b) = (rings[p - first] + (uint)k, rings[p + 1 - first] + (uint)k);
+                builder.Quad(a, a + 1, b, b + 1);
             }
+        }
 
-        if (first == 0)
+        if (first == 0 && Kept(0))
             EndPatch(builder, lines, line, 0, gravel);
-        if (last == line.Count - 1)
+        if (last == line.Count - 1 && Kept(last))
             EndPatch(builder, lines, line, last, gravel);
     }
 

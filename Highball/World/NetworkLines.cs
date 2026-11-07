@@ -425,6 +425,49 @@ public sealed partial class NetworkLines
 
     private Dictionary<(long Node, bool Mark), List<(NetworkLine Line, int Point)>>? _roadEnds;
 
+    private const double RailCell = 25.0;
+    private Dictionary<(int X, int Z), List<(NetworkLine Line, int Segment)>>? _railCells;
+
+    /// Whether built track runs through this place, within so many metres to either side, for a mapped track's mark to give way to it.
+    /// Past the track's end it's clear again: it doesn't reach round the end. Safe from the workers building chunks.
+    public bool UnderTrack(double x, double z, double within)
+    {
+        var cells = Volatile.Read(ref _railCells);
+        if (cells is null)
+        {
+            cells = [];
+            foreach (var line in _lines.Where(l => l.Rail))
+                for (var s = 0; s + 1 < line.Count; s++)
+                {
+                    var (x0, x1) = (Math.Min(line.X[s], line.X[s + 1]) - within, Math.Max(line.X[s], line.X[s + 1]) + within);
+                    var (z0, z1) = (Math.Min(line.Z[s], line.Z[s + 1]) - within, Math.Max(line.Z[s], line.Z[s + 1]) + within);
+                    for (var j = (int)Math.Floor(z0 / RailCell); j <= (int)Math.Floor(z1 / RailCell); j++)
+                        for (var i = (int)Math.Floor(x0 / RailCell); i <= (int)Math.Floor(x1 / RailCell); i++)
+                        {
+                            if (!cells.TryGetValue((i, j), out var list))
+                                cells[(i, j)] = list = [];
+                            list.Add((line, s));
+                        }
+                }
+
+            Volatile.Write(ref _railCells, cells);
+        }
+
+        if (!cells.TryGetValue(((int)Math.Floor(x / RailCell), (int)Math.Floor(z / RailCell)), out var near))
+            return false;
+        foreach (var (line, s) in near)
+        {
+            var (dx, dz) = (line.X[s + 1] - line.X[s], line.Z[s + 1] - line.Z[s]);
+            var length = Math.Max(Math.Sqrt(dx * dx + dz * dz), 1e-6);
+            var along = ((x - line.X[s]) * dx + (z - line.Z[s]) * dz) / length;
+            var aside = Math.Abs((x - line.X[s]) * dz - (z - line.Z[s]) * dx) / length;
+            if (aside < within && along > -0.5 && along < length + 0.5)
+                return true;
+        }
+
+        return false;
+    }
+
     /// Which tiles each line reaches and has points on.
     private void IndexLines(HashSet<TileId> built)
     {
