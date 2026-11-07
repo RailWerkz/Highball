@@ -356,9 +356,12 @@ and as far as they both can go (15 m short of the next junction or either track'
 
 ## Parallel track
 
-The Parallel tool (P) lays any number of tracks at once. Started on open ground, they're straight and side by side, centred on the line
-between your two clicks; no track is needed first. Started on a built track, they run beside it, following its curves: click the track
-where they start, then level with where they end, on the side they go. The panel sets how many (2 to begin with, up to 500, a guard
+The Parallel tool (P) lays any number of tracks at once. It draws as Pen does, from a control point, a track's end or open ground:
+click for a corner, drag for a curve, Backspace takes the last point back, and Enter lays them. The path drawn is the first track,
+joined to whatever it starts or ends on, and the others go beside it, to its right going the way it was drawn; F puts them on the
+left. An end of one of the others that comes within 1.5 m of a track's loose end joins it, so a pair of tracks can be carried on
+together. A first click on a built track, away from its points, runs them beside that track instead, following its curves: then
+click level with where they end, on the side they go. The panel sets how many (2 to begin with, up to 500, a guard
 against a mistyped count) and their spacing (3.5 to 12 m, 4.6 m to begin with). They're shown as you move, in red with which track and why if any can't be laid: none of them are
 laid then. None is laid within 3 m of another track or across one, or tighter than the sharpest curve allowed; offsetting a curve
 by many tracks tightens the inner ones. Backspace or Esc starts over, and Ctrl+Z takes them all back at once.

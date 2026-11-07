@@ -37,7 +37,10 @@ public sealed class YardTool
 
     /// How near a new track may run to another along its length.
     private const double RunClearance = 3.0;
-    private const double ShortestParallel = 20.0;
+    private const double ShortestParallel = 2.0;
+
+    /// How near a drawn track's end has to come to a track's loose end to join it.
+    private const double JoinEnd = 1.5;
     private const double SampleStep = 2.0;
 
     /// A crossover or ladder keeps this far from any other junction on its tracks.
@@ -64,6 +67,12 @@ public sealed class YardTool
 
     /// Started on open ground rather than on a track.
     private bool _free;
+
+    /// Which side of a drawn path the other tracks go: 1 to its right, going the way it was drawn, -1 to its left.
+    public int Side = 1;
+
+    /// Shows a plan worked out elsewhere (a drawn path's), labelled at the pointer.
+    public void Show(YardPlan? plan, (double X, double Z)? pointer) => (Plan, _pointer) = (plan, pointer);
 
     public static YardTool ForParallel() => new() { Mode = YardMode.Parallel };
 
@@ -203,6 +212,50 @@ public sealed class YardTool
 
         var summary = $"{ParallelTracks} track{(ParallelTracks == 1 ? "" : "s")}, {length(along)} long, {length(Spacing)} apart";
         return new YardPlan(ways, summary, blocked ? "Runs into another track" : null, 0);
+    }
+
+    /// Drawn as with Pen: the path is the first track, joined to whatever it starts or ends on, and the rest go beside it at the
+    /// spacing, on Side. An end of one beside it that comes within JoinEnd of a track's loose end joins that track.
+    public YardPlan PenParallel(TrackEditor tracks, IReadOnlyList<LayPoint> drawn, Func<double, string> length)
+    {
+        if (drawn.Count < 2)
+            return YardPlan.Refused("Draw where they go");
+
+        var along = 0.0;
+        for (var i = 1; i < drawn.Count; i++)
+            along += Math.Sqrt((drawn[i].X - drawn[i - 1].X) * (drawn[i].X - drawn[i - 1].X) + (drawn[i].Z - drawn[i - 1].Z) * (drawn[i].Z - drawn[i - 1].Z));
+        if (along < ShortestParallel)
+            return YardPlan.Refused($"Shorter than {length(ShortestParallel)}");
+
+        // Each point's way across, from its neighbours.
+        var across = new (double X, double Z)[drawn.Count];
+        for (var i = 0; i < drawn.Count; i++)
+        {
+            var (a, b) = (drawn[Math.Max(0, i - 1)], drawn[Math.Min(drawn.Count - 1, i + 1)]);
+            var (dx, dz) = (b.X - a.X, b.Z - a.Z);
+            var l = Math.Max(Math.Sqrt(dx * dx + dz * dz), 1e-9);
+            across[i] = (-dz / l * Side, dx / l * Side);
+        }
+
+        var ways = new List<PlannedWay>(ParallelTracks) { new([.. drawn]) };
+        string? problem = null;
+        for (var t = 1; t < ParallelTracks; t++)
+        {
+            var off = Spacing * t;
+            var path = drawn.Select((p, i) => (X: p.X + across[i].X * off, Z: p.Z + across[i].Z * off)).ToList();
+            var (startEnd, endEnd) = (tracks.LooseEndNear(path[0].X, path[0].Z, JoinEnd), tracks.LooseEndNear(path[^1].X, path[^1].Z, JoinEnd));
+            if (problem is null && tracks.RunsInto(path, Math.Min(RunClearance, Spacing - 0.4), startEnd is not null, endEnd is not null))
+                problem = ParallelTracks > 2 ? $"Track {t + 1}: Runs into another track" : "Runs into another track";
+            var points = path.Select(p => new LayPoint(p.X, p.Z)).ToList();
+            if (startEnd is { } s)
+                points[0] = new LayPoint(tracks.PositionOf(s).X, tracks.PositionOf(s).Z, Node: s);
+            if (endEnd is { } e && e != startEnd)
+                points[^1] = new LayPoint(tracks.PositionOf(e).X, tracks.PositionOf(e).Z, Node: e);
+            ways.Add(new PlannedWay(points));
+        }
+
+        var summary = $"{ParallelTracks} track{(ParallelTracks == 1 ? "" : "s")}, {length(along)} long, {length(Spacing)} apart";
+        return new YardPlan(ways, summary, problem, 0);
     }
 
     private YardPlan Parallel(TrackEditor tracks, NetworkLines lines, (LayPoint Point, (double X, double Z) Runs) anchor, (double X, double Z) at, Func<double, string> length)

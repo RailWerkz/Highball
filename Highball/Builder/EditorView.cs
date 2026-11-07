@@ -136,6 +136,10 @@ public sealed partial class EditorView : IDisposable
     private readonly FollowTool _follow = new();
     private readonly YardTool _yard = new();
     private readonly YardTool _parallel = YardTool.ForParallel();
+
+    /// Parallel's path, drawn as with Pen, and where it would run on to if clicked now.
+    private readonly PenTool _parallelPen = new();
+    private (double X, double Z)? _parallelPreview;
     private readonly PlaceTool _place = new();
     private (double X, double Z)? _placeGrab;
     /// Turning with the wheel: what it was before, for one undo when R is let go, and whether the wheel moved this hold of R.
@@ -206,8 +210,11 @@ public sealed partial class EditorView : IDisposable
             (_place.RunFrom, _place.RunFirst) = (null, null);
         else if (_selection.Count > 0)
             _selection.Clear();
-        else if (_tool == Tool.Parallel && _parallel.Anchor is not null)
+        else if (_tool == Tool.Parallel && (_parallel.Anchor is not null || _parallelPen.Count > 0))
+        {
+            _parallelPen.Clear();
             _parallel.Clear();
+        }
         else if (_tool == Tool.Place && _place.Selected is not null)
             _place.Selected = null;
         else if (_tool == Tool.Place && _place.Stamp is not null)
@@ -598,7 +605,7 @@ public sealed partial class EditorView : IDisposable
         if (_tool == Tool.Follow)
             FollowUpdate();
         if (_tool == Tool.Parallel)
-            YardUpdate(Blocked);
+            ParallelUpdate(Blocked);
         if (_tool == Tool.Place && source.Lines is { } placing)
             PlaceUpdate(source, placing);
         if (_tool == Tool.Road)
@@ -1302,6 +1309,56 @@ public sealed partial class EditorView : IDisposable
             ActiveYard.Clear();
     }
 
+    /// Parallel: a first click on a track, away from its points, runs beside that track as far as the second click. Anything
+    /// else draws as Pen does, from a point, a track's end or open ground: the path is the first track and the rest go beside
+    /// it, F flips the side, and Enter lays them all.
+    private void ParallelUpdate(bool blocked)
+    {
+        if (_parallel.Anchor is not null)
+        {
+            YardUpdate(blocked);
+            return;
+        }
+
+        var tracks = _tracks!;
+        _parallelPreview = null;
+        if (!Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.F))
+            _parallel.Side = -_parallel.Side;
+        if (blocked || _rebuild is not null)
+        {
+            _parallel.Show(null, null);
+            return;
+        }
+
+        var mouse = Input.MousePosition;
+        var node = tracks.NodeAt(mouse, _camera.X, _camera.Z, ProjectGround);
+        if (_parallelPen.Count == 0 && node is null && Input.MouseDown(GlfwMouseButton.Left) && _hit is { } hit &&
+            tracks.SegmentAt(mouse, _camera.X, _camera.Z, ProjectGround) is not null)
+        {
+            _parallel.Start(tracks, hit.X, hit.Z);
+            return;
+        }
+
+        LayPoint? snap = node is { } on
+            ? new LayPoint(tracks.PositionOf(on).X, tracks.PositionOf(on).Z, Node: on)
+            : _hit is { } ground ? new LayPoint(ground.X, ground.Z) : null;
+        _parallelPen.Update(mouse, snap, _hit is { } h ? (h.X, h.Z) : null, ProjectGround,
+            Input.MouseDown(GlfwMouseButton.Left), Input.Mouse(GlfwMouseButton.Left));
+        if (!Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.Backspace))
+            _parallelPen.RemoveLast();
+        _parallelPreview = !_parallelPen.Busy && snap is { } next ? (next.X, next.Z) : null;
+
+        var drawn = _parallelPen.Points(_parallelPreview);
+        _parallel.Show(drawn.Count >= 2 ? _parallel.PenParallel(tracks, drawn, PanelLength) : null, _hit is { } p ? (p.X, p.Z) : null);
+        if (!Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.Enter) && _parallelPen.Count >= 2 &&
+            _parallel.PenParallel(tracks, _parallelPen.Points(), PanelLength) is { Problem: null } plan && tracks.LayWays(plan.Ways) is { } edit)
+        {
+            _parallelPen.Clear();
+            _parallel.Show(null, null);
+            Committed(edit);
+        }
+    }
+
     /// A click: the first picks the track to start from, the second lays what's shown if it can be.
     private void YardPress(NetworkLines lines, double x, double z)
     {
@@ -1639,6 +1696,28 @@ public sealed partial class EditorView : IDisposable
                 var before = source.Network.Ways.Count;
                 BoxSet(parts[0] == "boxclear");
                 Log.Info($"Box {parts[0]}: {before} ways before, {source.Network.Ways.Count} after");
+                break;
+            }
+
+            case "parallelpen":
+            {
+                // parallelpen,TRACKS,SPACING,SIDE,lat,lon,lat,lon...: a path drawn with Parallel through those places, each on a
+                // control point within 3 m if there is one, and Enter.
+                _tool = Tool.Parallel;
+                (_parallel.ParallelTracks, _parallel.Spacing, _parallel.Side) = ((int)Number(1), (float)Number(2), (int)Number(3));
+                var drawn = new List<LayPoint>();
+                for (var i = 4; i + 1 < parts.Length; i += 2)
+                {
+                    var (px, pz) = At(i);
+                    drawn.Add(_tracks!.NodesNear(px, pz, 3.0).FirstOrDefault() is var near && near != 0
+                        ? new LayPoint(_tracks.PositionOf(near).X, _tracks.PositionOf(near).Z, Node: near) : new LayPoint(px, pz));
+                }
+
+                var planned = _parallel.PenParallel(_tracks!, drawn, PanelLength);
+                var joined = planned.Ways.Count(w => w.Points[0].Node is not null || w.Points[^1].Node is not null);
+                Log.Info($"Parallel pen: {planned.Summary}, problem: {planned.Problem ?? "none"}, {planned.Ways.Count} ways, {joined} joined");
+                if (planned.Problem is null)
+                    Committed(_tracks!.LayWays(planned.Ways));
                 break;
             }
 
@@ -2566,7 +2645,10 @@ public sealed partial class EditorView : IDisposable
         if (_tool == Tool.Follow)
             _yard.Draw(draw, ProjectGround, S(1f));
         if (_tool == Tool.Parallel)
+        {
+            _parallelPen.Draw(draw, ProjectGround, _parallelPreview);
             _parallel.Draw(draw, ProjectGround, S(1f));
+        }
         if (_tool == Tool.Place && _terrain is { } shown)
             _place.Draw(draw, ProjectGround, shown.Source.Objects, PlacedAtWorld, S(1f));
         if (_tool == Tool.Road)
@@ -3142,7 +3224,9 @@ public sealed partial class EditorView : IDisposable
                 Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", _topDown ? "Zoom" : "Speed"), .. (_topDown ? ((string, string)[])[] : [("ALT+WHEEL", _camera.Zoom <= 1.01f ? "Zoom" : string.Create(CultureInfo.InvariantCulture, $"Zoom {_camera.Zoom:0.0}x"))]), ("G", "Grades"), ("T", "Throw switch")],
                 Tool.Road when _road.Mode == RoadMode.Remove => [("LMB", "Remove road"), ("CTRL+Z", "Undo")],
                 Tool.Road => [("LMB", "Next point"), ("SHIFT", "15 degree steps"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
-                Tool.Parallel => [("LMB", "Start, then end"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
+                Tool.Parallel => _parallel.Anchor is not null
+                    ? [("LMB", "End"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")]
+                    : [("LMB", "Point, or a track to run beside"), ("DRAG", "Curve"), ("ENTER", "Lay tracks"), ("F", _parallel.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")],
                 Tool.Switches => [("LMB", "Pick a switch"), ("DRAG", "Move points, curve end or crossover"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.RunFrom is not null => [("LMB", "Lay to here"), ("ESC", "End run"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.Mode == PlaceMode.Pole && _place.Fence && _place.Selected is null => [("LMB", "Start run"), ("CTRL+Z", "Undo")],

@@ -487,7 +487,8 @@ public sealed partial class EditorView
 
         if (_parallel.Plan is not { } plan)
         {
-            ImGui.TextDisabled(_parallel.Anchor is null ? "Click where they start" : "Click where they end");
+            ImGui.TextDisabled(_parallel.Anchor is not null ? "Click where they end" : _parallelPen.Count > 0 ? "Enter lays them"
+                : "Draw as with Pen, or click a track");
             return;
         }
 
