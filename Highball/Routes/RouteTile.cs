@@ -47,11 +47,14 @@ public sealed class RouteTile
             packed[i] = (ushort)Math.Clamp(MathF.Round((Heights[i] - Meta.MinHeight) * 10f), 0f, 65535f);
 
         using (var file = File.Create(Path.Combine(folder, "Heights.bin.gz")))
-        using (var gzip = new GZipStream(file, CompressionLevel.SmallestSize))
+        using (var gzip = new GZipStream(file, CompressionLevel.Optimal))
             gzip.Write(MemoryMarshal.AsBytes(packed.AsSpan()));
 
         Stb.WritePng(Path.Combine(folder, "Cover.png"), Meta.CoverCells, Meta.CoverCells, 1, Cover);
-        File.WriteAllText(Path.Combine(folder, "Tile.json"), JsonSerializer.Serialize(Meta, Options));
+        // Last and whole: it is what says the tile is there, and the map may be looking.
+        var meta = Path.Combine(folder, "Tile.json");
+        File.WriteAllText(meta + ".tmp", JsonSerializer.Serialize(Meta, Options));
+        File.Move(meta + ".tmp", meta, true);
     }
 
     /// Just Tile.json: what the tile is and how it was made.

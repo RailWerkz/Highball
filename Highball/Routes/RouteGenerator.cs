@@ -53,7 +53,139 @@ public sealed class RouteGenerator
     public float Progress { get; private set; }
 
     /// Bumped whenever a tile or the network is written, so the map redraws what's built.
-    public int Version { get; private set; }
+    public int Version => Volatile.Read(ref _version);
+    private int _version;
+
+    /// How many tiles are built at once. It says nothing about how hard the services are asked: that's up to their Limits, shared by all.
+    private static int Workers => Math.Clamp(Environment.ProcessorCount / 2, 2, 8);
+
+    /// What the services are asked for at most, however many tiles are building. The USGS's is a public service that's easily overloaded,
+    /// so it gets two requests at a time, spaced out. The others are files on S3, which take more.
+    private static readonly Limit UsgsLimit = new("USGS 3DEP", 2, TimeSpan.FromMilliseconds(500));
+    private static readonly Limit TerrariumLimit = new("AWS Terrain Tiles", 6, TimeSpan.Zero);
+    private static readonly Limit CoverLimit = new("ESA WorldCover", 4, TimeSpan.Zero);
+
+    /// One service's limit: so many requests at once, a gap between their starts, and when it's said no or failed, everyone holds off
+    /// together for as long as it asks, or longer each time.
+    private sealed class Limit(string name, int slots, TimeSpan gap)
+    {
+        private readonly SemaphoreSlim _slots = new(slots);
+        private readonly object _lock = new();
+        private DateTime _next = DateTime.MinValue;
+        private DateTime _heldUntil = DateTime.MinValue;
+        private double _backOff;
+        private long _waited;
+        private int _requests;
+        private int _refused;
+
+        public void Reset() => (_waited, _requests, _refused) = (0, 0, 0);
+
+        public string Report => $"{name}: {_requests} requests, {_refused} failed or refused, {_waited / (double)System.Diagnostics.Stopwatch.Frequency:0}s spent waiting for a turn";
+
+        /// Takes a turn, for as long as the request's running: dispose it to give it back.
+        public async Task<IDisposable> Turn(CancellationToken token)
+        {
+            var from = System.Diagnostics.Stopwatch.GetTimestamp();
+            await _slots.WaitAsync(token);
+            try
+            {
+                while (true)
+                {
+                    TimeSpan wait;
+                    lock (_lock)
+                    {
+                        var now = DateTime.UtcNow;
+                        var at = _next > _heldUntil ? _next : _heldUntil;
+                        wait = at - now;
+                        if (wait <= TimeSpan.Zero)
+                        {
+                            _next = now + gap;
+                            break;
+                        }
+                    }
+
+                    await Task.Delay(wait, token);
+                }
+            }
+            catch
+            {
+                _slots.Release();
+                throw;
+            }
+
+            Interlocked.Add(ref _waited, System.Diagnostics.Stopwatch.GetTimestamp() - from);
+            Interlocked.Increment(ref _requests);
+            return new Release(_slots);
+        }
+
+        public void Went() { lock (_lock) _backOff = 0.0; }
+
+        /// It failed or said no: everyone holds off. It can say how long.
+        public void HoldOff(TimeSpan? asked = null)
+        {
+            Interlocked.Increment(ref _refused);
+            lock (_lock)
+            {
+                _backOff = Math.Min(Math.Max(_backOff * 2.0, 5.0), 300.0);
+                var seconds = Math.Max(_backOff, asked?.TotalSeconds ?? 0.0);
+                var until = DateTime.UtcNow.AddSeconds(seconds);
+                if (until > _heldUntil)
+                    _heldUntil = until;
+                Log.Warn($"{name}: holding off for {seconds:0}s");
+            }
+        }
+
+        private sealed class Release(SemaphoreSlim slots) : IDisposable
+        {
+            private int _done;
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _done, 1) == 0)
+                    slots.Release();
+            }
+        }
+    }
+
+    /// Writes a file in the cache whole or not at all, since another tile may want the same one at the same moment.
+    private static async Task WriteCache(string path, byte[] bytes, CancellationToken token = default)
+    {
+        var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+        await File.WriteAllBytesAsync(temporary, bytes, token);
+        try
+        {
+            File.Move(temporary, path, true);
+        }
+        catch (IOException) when (File.Exists(path))
+        {
+            File.Delete(temporary);
+        }
+    }
+
+    /// Whether a failed answer's the service being busy, and how long it asked to be left for.
+    private static bool Busy(HttpResponseMessage response) =>
+        (int)response.StatusCode is 408 or 429 or 500 or 502 or 503 or 504;
+
+    private static TimeSpan? RetryAfter(HttpResponseMessage response) =>
+        response.Headers.RetryAfter?.Delta ?? (response.Headers.RetryAfter?.Date is { } date ? date - DateTimeOffset.UtcNow : null);
+
+    /// Time spent on each step of building a tile, added up across the tiles building at once.
+    private sealed class StepTimes
+    {
+        private static readonly string[] Names = ["lidar", "standard heights", "meeting neighbours", "land cover", "saving"];
+        private readonly long[] _ticks = new long[Names.Length];
+        public const int Lidar = 0, Standard = 1, Meet = 2, Cover = 3, Save = 4;
+
+        public void Add(int step, long from) => Interlocked.Add(ref _ticks[step], System.Diagnostics.Stopwatch.GetTimestamp() - from);
+
+        public void Log(int done, int total, TimeSpan elapsed)
+        {
+            var steps = string.Join(", ", Names.Select((n, i) => string.Create(CultureInfo.InvariantCulture, $"{n} {_ticks[i] / (double)System.Diagnostics.Stopwatch.Frequency / Math.Max(done, 1):0.00}s")));
+            RailWerkz.Core.Logging.Log.Info(string.Create(CultureInfo.InvariantCulture,
+                $"Route builder: {done} of {total} tiles in {elapsed.TotalSeconds:0}s on {Workers} workers, {elapsed.TotalSeconds / Math.Max(done, 1):0.00}s a tile. Each tile's steps: {steps}"));
+            RailWerkz.Core.Logging.Log.Info($"Route builder: {UsgsLimit.Report}; {TerrariumLimit.Report}; {CoverLimit.Report}");
+        }
+    }
 
     private static HttpClient CreateClient()
     {
@@ -132,7 +264,7 @@ public sealed class RouteGenerator
             token.ThrowIfCancellationRequested();
             r.Network.Merge(railWays, railNodes);
             r.Network.Save(route);
-            Version++;
+            Interlocked.Increment(ref _version);
             Say($"{railWays.Count} rail lines found", 1f);
             return;
         }
@@ -143,13 +275,25 @@ public sealed class RouteGenerator
         var share = 0.8f / tiles.Count;
         var pending = tiles.ToHashSet();
 
-        for (var n = 0; n < tiles.Count; n++)
-        {
-            token.ThrowIfCancellationRequested();
-            var tile = tiles[n];
-            var label = $"Tile {tile.I}, {tile.J} ({n + 1} of {tiles.Count})";
+        // The edges of the tiles built so far, for those beside them to meet; pending and these are under the one lock.
+        var meeting = new object();
+        var edges = new Dictionary<TileId, float[]>();
+        var times = new StepTimes();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var done = 0;
+        var lastTold = 0L;
+        UsgsLimit.Reset();
+        TerrariumLimit.Reset();
+        CoverLimit.Reset();
+        Say($"Building {tiles.Count} tile{(tiles.Count == 1 ? "" : "s")}, {Workers} at a time", 0f);
 
-            Say($"{label}: elevation", n * share);
+        // Tiles meet their neighbours in the order they're listed, as if they were built one by one, whichever's heights come first:
+        // the steps left at the corners depend on that order, and it's kept to the one that's known to leave the least.
+        var turns = tiles.Select(_ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).ToArray();
+
+        await Parallel.ForEachAsync(tiles.Select((tile, place) => (tile, place)), new ParallelOptions { MaxDegreeOfParallelism = Workers, CancellationToken = token }, async (job, ct) =>
+        {
+            var (tile, place) = job;
             var samples = grid.Samples;
             var geo = new GeoPoint[samples * samples];
             Parallel.For(0, samples, z =>
@@ -158,39 +302,55 @@ public sealed class RouteGenerator
                     geo[z * samples + x] = projection.Inverse(grid.Sample(tile, x, z));
             });
 
+            var step = System.Diagnostics.Stopwatch.GetTimestamp();
             float[]? exact = null;
             if (r.Lidar is null || r.Lidar.Contains(tile))
             {
                 try
                 {
-                    exact = await usgs.Heights(geo, grid.Spacing, token);
+                    exact = await usgs.Heights(geo, grid.Spacing, ct);
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
-                    unavailable++;
+                    Interlocked.Increment(ref unavailable);
                     Log.Warn($"USGS heights: tile {tile} fell back to the coarser source ({e.Message})");
                 }
             }
 
+            times.Add(StepTimes.Lidar, step);
+            step = System.Diagnostics.Stopwatch.GetTimestamp();
             var complete = exact is not null && !exact.Any(float.IsNaN);
             var heights = new float[geo.Length];
             if (!complete)
             {
-                await elevation.Fetch(Bounds(geo), token);
+                var near = await elevation.Fetch(Bounds(geo), ct);
                 Parallel.For(0, samples, z =>
                 {
                     for (var x = 0; x < samples; x++)
-                        heights[z * samples + x] = elevation.Elevation(geo[z * samples + x]);
+                        heights[z * samples + x] = Terrarium.Elevation(near, zoom: 15, geo[z * samples + x]);
                 });
             }
 
             var source = exact is null ? "AWS Terrain Tiles" : complete ? "USGS 3DEP" : "USGS 3DEP, AWS Terrain Tiles";
             if (exact is not null)
                 Usgs3dep.Blend(heights, exact, samples);
-            MeetNeighbours(route, tile, heights, samples, pending);
-            pending.Remove(tile);
+            times.Add(StepTimes.Standard, step);
 
-            Say($"{label}: land cover", (n + 0.6f) * share);
+            // A tile meets those before it, and those after it meet it. What matters is that its edges are there for them before
+            // it stops being pending, not that it's on the disk yet.
+            step = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (place > 0)
+                await turns[place - 1].Task.WaitAsync(ct);
+            lock (meeting)
+            {
+                MeetNeighbours(route, tile, heights, samples, pending, edges);
+                edges[tile] = EdgesOf(heights, samples);
+                pending.Remove(tile);
+            }
+
+            turns[place].SetResult();
+            times.Add(StepTimes.Meet, step);
+            step = System.Diagnostics.Stopwatch.GetTimestamp();
             var cells = grid.CoverCells;
             var cellSize = grid.TileSize / cells;
             var corner = grid.Corner(tile);
@@ -199,7 +359,9 @@ public sealed class RouteGenerator
                 for (var x = 0; x < cells; x++)
                     centres[z * cells + x] = projection.Inverse(new RoutePoint(corner.East + (x + 0.5) * cellSize, corner.North + grid.TileSize - (z + 0.5) * cellSize));
             var classes = await cover.Classes(centres, cellSize);
+            times.Add(StepTimes.Cover, step);
 
+            step = System.Diagnostics.Stopwatch.GetTimestamp();
             var built = new RouteTile(new RouteTile.Info
             {
                 I = tile.I,
@@ -215,9 +377,22 @@ public sealed class RouteGenerator
                 HeightSource = source,
             }, heights, classes);
             built.Save(route.TileFolder(tile));
-            Version++;
+            times.Add(StepTimes.Save, step);
+
+            // (The map reads what is built again each time it is told, which is not to be every tile of thousands.)
+            var now = watch.ElapsedMilliseconds;
+            var told = Interlocked.Read(ref lastTold);
+            if (now - told > 2000 && Interlocked.CompareExchange(ref lastTold, now, told) == told)
+                Interlocked.Increment(ref _version);
             elevation.Trim();
-        }
+            var finished = Interlocked.Increment(ref done);
+            Say($"Built {finished} of {tiles.Count} tiles, {Workers} at a time", finished * share);
+            if (finished % 200 == 0)
+                times.Log(finished, tiles.Count, watch.Elapsed);
+        });
+
+        Interlocked.Increment(ref _version);
+        times.Log(done, tiles.Count, watch.Elapsed);
 
         if (roads.Classes.Length + rails.Classes.Length > 0 || r.ReplaceNetwork)
         {
@@ -229,7 +404,7 @@ public sealed class RouteGenerator
                 r.Network.DropFetched();
             r.Network.Merge(ways, nodes);
             r.Network.Save(route);
-            Version++;
+            Interlocked.Increment(ref _version);
             Say($"{ways.Count(w => w.Rail)} rail lines, {ways.Count(w => !w.Rail)} roads, {nodes.Count} switches and crossings tagged", 0.98f);
         }
 
@@ -243,14 +418,20 @@ public sealed class RouteGenerator
 
     /// Eases a tile's heights to meet the edges of the tiles already built beside it (those still to be built this time meet
     /// this one in turn), so lidar beside standard heights leaves no step. Rows run north to south.
-    private static void MeetNeighbours(RouteInfo route, TileId tile, float[] heights, int samples, HashSet<TileId> pending)
+    private static void MeetNeighbours(RouteInfo route, TileId tile, float[] heights, int samples, HashSet<TileId> pending, Dictionary<TileId, float[]> edges)
     {
         var last = samples - 1;
         float[]? Beside(int di, int dj)
         {
             var near = new TileId(tile.I + di, tile.J + dj);
+            if (pending.Contains(near))
+                return null;
+            if (edges.TryGetValue(near, out var known))
+                return known;
             var folder = route.TileFolder(near);
-            return pending.Contains(near) || !File.Exists(Path.Combine(folder, "Tile.json")) ? null : RouteTile.Load(folder).Heights;
+            if (!File.Exists(Path.Combine(folder, "Tile.json")))
+                return null;
+            return edges[near] = EdgesOf(RouteTile.Load(folder).Heights, samples);
         }
 
         // One neighbour's edge: from(k) its sample, to(k) the one here that's the same place; in(k, n) the sample n in from there.
@@ -270,10 +451,26 @@ public sealed class RouteGenerator
         }
 
         // North and south first, then east and west from what that's made of the edges, so each corner ends up on both.
-        Meet(Beside(0, 1), k => last * samples + k, k => k, (k, n) => n * samples + k);
+        Meet(Beside(0, 1), k => samples + k, k => k, (k, n) => n * samples + k);
         Meet(Beside(0, -1), k => k, k => last * samples + k, (k, n) => (last - n) * samples + k);
-        Meet(Beside(-1, 0), k => k * samples + last, k => k * samples, (k, n) => k * samples + n);
-        Meet(Beside(1, 0), k => k * samples, k => k * samples + last, (k, n) => k * samples + last - n);
+        Meet(Beside(-1, 0), k => 3 * samples + k, k => k * samples, (k, n) => k * samples + n);
+        Meet(Beside(1, 0), k => 2 * samples + k, k => k * samples + last, (k, n) => k * samples + last - n);
+    }
+
+    /// A tile's four edges, one after another: its first row, last row, first column and last column.
+    private static float[] EdgesOf(float[] heights, int samples)
+    {
+        var last = samples - 1;
+        var edges = new float[samples * 4];
+        for (var k = 0; k < samples; k++)
+        {
+            edges[k] = heights[k];
+            edges[samples + k] = heights[last * samples + k];
+            edges[2 * samples + k] = heights[k * samples];
+            edges[3 * samples + k] = heights[k * samples + last];
+        }
+
+        return edges;
     }
 
     private static (double South, double West, double North, double East) Bounds(IReadOnlyCollection<GeoPoint> points) =>
@@ -385,19 +582,39 @@ public sealed class RouteGenerator
             // (The service answers 502 now and then under load, and an error can come back as a page.)
             for (var attempt = 1; ; attempt++)
             {
-                try
+                string? problem;
+                using (await UsgsLimit.Turn(token))
                 {
-                    var bytes = await Http.GetByteArrayAsync(url, token);
-                    if (bytes.Length > 8 && bytes[0] == 'I' && bytes[1] == 'I')
-                        return bytes;
-                    if (attempt >= Attempts)
-                        throw new InvalidDataException("the service didn't send an image");
-                }
-                catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !token.IsCancellationRequested && attempt < Attempts)
-                {
+                    try
+                    {
+                        using var response = await Http.GetAsync(url, token);
+                        if (response.IsSuccessStatusCode)
+                        {
+                            var bytes = await response.Content.ReadAsByteArrayAsync(token);
+                            if (bytes.Length > 8 && bytes[0] == 'I' && bytes[1] == 'I')
+                            {
+                                UsgsLimit.Went();
+                                return bytes;
+                            }
+
+                            problem = "the service didn't send an image";
+                            UsgsLimit.HoldOff();
+                        }
+                        else
+                        {
+                            problem = $"the service answered {(int)response.StatusCode}";
+                            UsgsLimit.HoldOff(Busy(response) ? RetryAfter(response) : null);
+                        }
+                    }
+                    catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !token.IsCancellationRequested)
+                    {
+                        problem = e.Message;
+                        UsgsLimit.HoldOff();
+                    }
                 }
 
-                await Task.Delay(TimeSpan.FromSeconds(5 * attempt), token);
+                if (attempt >= Attempts)
+                    throw new InvalidDataException(problem);
             }
         }
 
@@ -469,34 +686,73 @@ public sealed class RouteGenerator
 
     private sealed class Terrarium(int zoom)
     {
-        private readonly ConcurrentDictionary<(int X, int Y), float[]> _tiles = new();
+        private readonly ConcurrentDictionary<(int X, int Y), Lazy<Task<float[]>>> _tiles = new();
 
-        public async Task Fetch((double South, double West, double North, double East) bounds, CancellationToken token)
+        /// The tiles round the bounds, each fetched and decoded the once however many ask for it. What comes back stays good when Trim runs.
+        public async Task<Dictionary<(int X, int Y), float[]>> Fetch((double South, double West, double North, double East) bounds, CancellationToken token)
         {
             var (x0, y0) = Tile(bounds.North, bounds.West);
             var (x1, y1) = Tile(bounds.South, bounds.East);
             var jobs = new List<(int X, int Y)>();
             for (var y = y0 - 1; y <= y1 + 1; y++)
                 for (var x = x0 - 1; x <= x1 + 1; x++)
-                    if (!_tiles.ContainsKey((x, y)))
-                        jobs.Add((x, y));
+                    jobs.Add((x, y));
 
+            var found = new ConcurrentDictionary<(int X, int Y), float[]>();
             await Parallel.ForEachAsync(jobs, new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = token }, async (t, ct) =>
             {
-                var path = Path.Combine(CacheFolder("terrarium", zoom.ToString(), t.X.ToString()), $"{t.Y}.png");
-                if (!File.Exists(path))
+                var lazy = _tiles.GetOrAdd(t, key => new Lazy<Task<float[]>>(() => Load(key)));
+                try
                 {
-                    var bytes = await Http.GetByteArrayAsync($"https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{zoom}/{t.X}/{t.Y}.png", ct);
-                    await File.WriteAllBytesAsync(path, bytes, ct);
+                    found[t] = await lazy.Value;
                 }
-
-                using var image = Stb.Load(path, 4);
-                var pixels = image.AsSpan<byte4>();
-                var heights = new float[256 * 256];
-                for (var i = 0; i < heights.Length && i < pixels.Length; i++)
-                    heights[i] = pixels[i].X * 256f + pixels[i].Y + pixels[i].Z / 256f - 32768f;
-                _tiles[t] = heights;
+                catch
+                {
+                    // Not for good: the next tile to want it tries again.
+                    _tiles.TryRemove(new KeyValuePair<(int X, int Y), Lazy<Task<float[]>>>(t, lazy));
+                    throw;
+                }
             });
+            return new Dictionary<(int X, int Y), float[]>(found);
+        }
+
+        private async Task<float[]> Load((int X, int Y) t)
+        {
+            var path = Path.Combine(CacheFolder("terrarium", zoom.ToString(), t.X.ToString()), $"{t.Y}.png");
+            if (!File.Exists(path))
+            {
+                for (var attempt = 1; ; attempt++)
+                {
+                    using var turn = await TerrariumLimit.Turn(default);
+                    try
+                    {
+                        using var response = await Http.GetAsync($"https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{zoom}/{t.X}/{t.Y}.png");
+                        if (Busy(response))
+                            TerrariumLimit.HoldOff(RetryAfter(response));
+                        else
+                        {
+                            response.EnsureSuccessStatusCode();
+                            await WriteCache(path, await response.Content.ReadAsByteArrayAsync());
+                            TerrariumLimit.Went();
+                            break;
+                        }
+                    }
+                    catch (Exception e) when (e is HttpRequestException or TaskCanceledException && attempt < 4)
+                    {
+                        TerrariumLimit.HoldOff();
+                    }
+
+                    if (attempt >= 4)
+                        throw new InvalidDataException($"AWS Terrain Tiles wouldn't send {t.X}/{t.Y}");
+                }
+            }
+
+            using var image = Stb.Load(path, 4);
+            var pixels = image.AsSpan<byte4>();
+            var heights = new float[256 * 256];
+            for (var i = 0; i < heights.Length && i < pixels.Length; i++)
+                heights[i] = pixels[i].X * 256f + pixels[i].Y + pixels[i].Z / 256f - 32768f;
+            return heights;
         }
 
         /// Drops decoded tiles once there are many (a long route touches thousands).
@@ -506,7 +762,7 @@ public sealed class RouteGenerator
                 _tiles.Clear();
         }
 
-        private (double X, double Y) Pixel(double lat, double lon)
+        private static (double X, double Y) Pixel(int zoom, double lat, double lon)
         {
             var n = 256.0 * (1 << zoom);
             var x = (lon + 180.0) / 360.0 * n;
@@ -516,24 +772,24 @@ public sealed class RouteGenerator
 
         private (int X, int Y) Tile(double lat, double lon)
         {
-            var (x, y) = Pixel(lat, lon);
+            var (x, y) = Pixel(zoom, lat, lon);
             return ((int)(x / 256), (int)(y / 256));
         }
 
-        private float At(int gx, int gy) =>
-            _tiles.TryGetValue((gx >> 8, gy >> 8), out var tile) ? tile[(gy & 255) * 256 + (gx & 255)] : 0f;
+        private static float At(Dictionary<(int X, int Y), float[]> tiles, int gx, int gy) =>
+            tiles.TryGetValue((gx >> 8, gy >> 8), out var tile) ? tile[(gy & 255) * 256 + (gx & 255)] : 0f;
 
-        public float Elevation(GeoPoint p)
+        public static float Elevation(Dictionary<(int X, int Y), float[]> tiles, int zoom, GeoPoint p)
         {
-            var (px, py) = Pixel(p.Lat, p.Lon);
+            var (px, py) = Pixel(zoom, p.Lat, p.Lon);
             px -= 0.5;
             py -= 0.5;
             var ix = (int)Math.Floor(px);
             var iy = (int)Math.Floor(py);
             var tx = (float)(px - ix);
             var ty = (float)(py - iy);
-            var top = At(ix, iy) + (At(ix + 1, iy) - At(ix, iy)) * tx;
-            var bottom = At(ix, iy + 1) + (At(ix + 1, iy + 1) - At(ix, iy + 1)) * tx;
+            var top = At(tiles, ix, iy) + (At(tiles, ix + 1, iy) - At(tiles, ix, iy)) * tx;
+            var bottom = At(tiles, ix, iy + 1) + (At(tiles, ix + 1, iy + 1) - At(tiles, ix, iy + 1)) * tx;
             return top + (bottom - top) * ty;
         }
     }
@@ -559,7 +815,7 @@ public sealed class RouteGenerator
             public readonly ConcurrentDictionary<(int Level, int Tile), byte[]> Tiles = new();
         }
 
-        private readonly Dictionary<string, Cog> _files = [];
+        private readonly ConcurrentDictionary<string, Lazy<Task<Cog>>> _files = new();
 
         private static string FileName(int lat, int lon) =>
             $"ESA_WorldCover_10m_2021_v200_{(lat < 0 ? 'S' : 'N')}{Math.Abs(lat):00}{(lon < 0 ? 'W' : 'E')}{Math.Abs(lon):000}_Map.tif";
@@ -570,25 +826,43 @@ public sealed class RouteGenerator
             if (File.Exists(path))
                 return await File.ReadAllBytesAsync(path);
 
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Range = new RangeHeaderValue(offset, offset + length - 1);
-            using var response = await Http.SendAsync(request);
-            if (response.StatusCode is System.Net.HttpStatusCode.NotFound or System.Net.HttpStatusCode.Forbidden)
-                throw new FileNotFoundException(url);
-            response.EnsureSuccessStatusCode();
-            var bytes = await response.Content.ReadAsByteArrayAsync();
-            await File.WriteAllBytesAsync(path, bytes);
-            return bytes;
+            for (var attempt = 1; ; attempt++)
+            {
+                using var turn = await CoverLimit.Turn(default);
+                try
+                {
+                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                    request.Headers.Range = new RangeHeaderValue(offset, offset + length - 1);
+                    using var response = await Http.SendAsync(request);
+                    if (response.StatusCode is System.Net.HttpStatusCode.NotFound or System.Net.HttpStatusCode.Forbidden)
+                        throw new FileNotFoundException(url);
+                    if (Busy(response))
+                        CoverLimit.HoldOff(RetryAfter(response));
+                    else
+                    {
+                        response.EnsureSuccessStatusCode();
+                        var bytes = await response.Content.ReadAsByteArrayAsync();
+                        await WriteCache(path, bytes);
+                        CoverLimit.Went();
+                        return bytes;
+                    }
+                }
+                catch (Exception e) when (e is HttpRequestException or TaskCanceledException && attempt < 4)
+                {
+                    CoverLimit.HoldOff();
+                }
+
+                if (attempt >= 4)
+                    throw new InvalidDataException($"ESA WorldCover wouldn't send {cacheName}");
+            }
         }
 
-        private async Task<Cog> Open(int lat, int lon)
-        {
-            var name = FileName(lat, lon);
-            if (_files.TryGetValue(name, out var open))
-                return open;
+        /// A file's header, read the once however many tiles ask for it at the same moment.
+        private Task<Cog> Open(int lat, int lon) => _files.GetOrAdd(FileName(lat, lon), name => new Lazy<Task<Cog>>(() => Read(name))).Value;
 
+        private static async Task<Cog> Read(string name)
+        {
             var cog = new Cog { Url = $"https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/{name}" };
-            _files[name] = cog;
 
             try
             {
@@ -676,6 +950,7 @@ public sealed class RouteGenerator
         public async Task<byte[]> Classes(GeoPoint[] samples, double spacing)
         {
             var needed = new HashSet<(string File, int Level, int Tile)>();
+            var byUrl = new Dictionary<string, Cog>();
             var lookups = new (Cog? Cog, int Level, int Tile, int Index)[samples.Length];
 
             for (var i = 0; i < samples.Length; i++)
@@ -706,9 +981,9 @@ public sealed class RouteGenerator
                 var tile = py / L.TileHeight * across + px / L.TileWidth;
                 lookups[i] = (cog, level, tile, py % L.TileHeight * L.TileWidth + px % L.TileWidth);
                 needed.Add((cog.Url, level, tile));
+                byUrl[cog.Url] = cog;
             }
 
-            var byUrl = _files.Values.ToDictionary(c => c.Url);
             await Parallel.ForEachAsync(needed, new ParallelOptions { MaxDegreeOfParallelism = 6 }, async (job, _) =>
             {
                 var cog = byUrl[job.File];
