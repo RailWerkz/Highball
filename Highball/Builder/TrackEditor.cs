@@ -493,6 +493,71 @@ public sealed class TrackEditor
         return Commit([.. changes.Select(c => (c.Key, c.Value.Before, c.Value.After))]);
     }
 
+    /// Why Split last did nothing, if it did.
+    public string? SplitRefused { get; private set; }
+
+    /// How far back from a split each of its two new ends goes, in metres.
+    private const double SplitBack = 0.75;
+
+    /// Unjoins track at one control point: a track through it becomes two, or two tracks ending on it come apart. Each new end is drawn
+    /// back along its own track a little, so that they can be told apart and picked. Each keeps its tags, and Join puts them together again.
+    public NetworkEdit? Split(IReadOnlySet<long> selected)
+    {
+        Refresh();
+        SplitRefused = null;
+        if (selected.Count != 1)
+        {
+            SplitRefused = "Select one point to split at";
+            return null;
+        }
+
+        var node = selected.First();
+        var through = _rails.Where(w => w.Nodes.Contains(node)).ToList();
+
+        // Its end at node drawn back towards the point next to it, and the node there given this id.
+        (long[] Nodes, double[] Lat, double[] Lon) Pulled(long[] nodes, double[] lat, double[] lon, int end, long id)
+        {
+            var (n, la, lo) = ((long[])nodes.Clone(), (double[])lat.Clone(), (double[])lon.Clone());
+            var (x, z) = PositionOf(nodes[end]);
+            var (nx, nz) = PositionOf(nodes[end == 0 ? 1 : end - 1]);
+            var (dx, dz) = (nx - x, nz - z);
+            var length = Math.Max(Math.Sqrt(dx * dx + dz * dz), 1e-6);
+            var back = Math.Min(SplitBack, length * 0.4) / length;
+            var geo = Geo(x + dx * back, z + dz * back);
+            (n[end], la[end], lo[end]) = (id, geo.Lat, geo.Lon);
+            return (n, la, lo);
+        }
+
+        if (through.Count == 1)
+        {
+            var way = through[0];
+            var at = Array.IndexOf(way.Nodes, node);
+            if (at <= 0 || at >= way.Nodes.Length - 1 || way.Nodes[0] == way.Nodes[^1])
+            {
+                SplitRefused = "That's already the end of the track";
+                return null;
+            }
+
+            var first = Pulled(way.Nodes[..(at + 1)], way.Lat[..(at + 1)], way.Lon[..(at + 1)], at, node);
+            var second = Pulled(way.Nodes[at..], way.Lat[at..], way.Lon[at..], 0, _network.NewId());
+            var id = _network.NewId();
+            var after = Copy(way, second.Nodes, second.Lat, second.Lon);
+            var split = new NetworkWay { Id = id, Rail = after.Rail, Class = after.Class, Nodes = after.Nodes, Lat = after.Lat, Lon = after.Lon, Tags = after.Tags };
+            return Commit([(way.Id, way, Copy(way, first.Nodes, first.Lat, first.Lon)), (id, null, split)], takesNewBed: false);
+        }
+
+        if (through.Count == 2 && through.All(w => w.Nodes[0] == node || w.Nodes[^1] == node) && through.All(w => w.Nodes[0] != w.Nodes[^1]))
+        {
+            var (a, b) = (through[0], through[1]);
+            var keep = Pulled(a.Nodes, a.Lat, a.Lon, a.Nodes[0] == node ? 0 : a.Nodes.Length - 1, node);
+            var moved = Pulled(b.Nodes, b.Lat, b.Lon, b.Nodes[0] == node ? 0 : b.Nodes.Length - 1, _network.NewId());
+            return Commit([(a.Id, a, Copy(a, keep.Nodes, keep.Lat, keep.Lon)), (b.Id, b, Copy(b, moved.Nodes, moved.Lat, moved.Lon))], takesNewBed: false);
+        }
+
+        SplitRefused = "Can't split at a junction or a switch";
+        return null;
+    }
+
     /// Lays new main-line track through the points. Points on an existing track's segment put a new control point in
     /// that track, so the new one branches off there: a switch. lead: put in a turnout's lead where it leaves or joins a
     /// track (for points clicked one by one; a drawn curve already says how it leaves).
@@ -884,13 +949,13 @@ public sealed class TrackEditor
             way.Tags[RouteNetwork.BedHeightTag] = metres.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private NetworkEdit? Commit(List<(long Id, NetworkWay? Before, NetworkWay? After)> changes)
+    private NetworkEdit? Commit(List<(long Id, NetworkWay? Before, NetworkWay? After)> changes, bool takesNewBed = true)
     {
         if (changes.Count == 0)
             return null;
 
         // Track that's new takes the bed in hand.
-        if (NewBed is not null || NewBedHeight is not null)
+        if (takesNewBed && (NewBed is not null || NewBedHeight is not null))
             foreach (var (_, before, after) in changes)
                 if (before is null && after is { Rail: true })
                     WithBed(after, NewBed, NewBedHeight);

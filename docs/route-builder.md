@@ -121,6 +121,7 @@ Works on the track's control points, OpenStreetMap's or your own.
 | L | Straighten |
 | K | Smooth |
 | J | Join |
+| U | Split |
 | Delete | Delete the selection (or the point under the pointer) |
 | Esc | Clear the selection |
 
@@ -132,6 +133,7 @@ The side panel and the Edit menu have the same operations, plus Simplify:
 - **Simplify**: takes out points that add nothing to the shape (within 0.25 m of the line the rest make). Way ends and
   any point another track runs through are kept.
 - **Join**: makes the ways the selection touches into as few as it can.
+- **Split**: unjoins track at the one point selected: a track through it becomes two, or two tracks ending on it come apart, each new end drawn back 0.75 m. They keep their beds, and Join puts them back together. Not at a junction or a switch.
   - Two ways that end on the same point merge, as long as no other track runs through that point.
   - Loose ends (no other track there) that are both selected and within 50 m of each other are bridged, nearest pair
     first.

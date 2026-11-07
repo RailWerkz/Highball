@@ -1880,6 +1880,18 @@ public sealed partial class EditorView : IDisposable
                 _camera.Zoom = Math.Clamp((float)Number(1), 1f, MaxLensZoom);
                 break;
 
+            case "splitat":
+            {
+                // splitat,lat,lon: the control point nearest there selected, and U.
+                var (sx0, sz0) = At(1);
+                _selection.Clear();
+                foreach (var near in _tracks!.NodesNear(sx0, sz0, 3.0).Take(1))
+                    _selection.Add(near);
+                SplitTrack(_tracks);
+                Log.Info($"Split: refused {_switchRefused ?? "no"}, {source.Network.Ways.Count} ways");
+                break;
+            }
+
             case "bridgeclick":
             {
                 // bridgeclick,lat,lon: as a click with Place bridge in hand.
@@ -2220,6 +2232,19 @@ public sealed partial class EditorView : IDisposable
             Committed(tracks.Smooth(_selection));
         if (Input.KeyDown(GlfwKey.J))
             Committed(tracks.Join(_selection));
+        if (Input.KeyDown(GlfwKey.U))
+            SplitTrack(tracks);
+    }
+
+    /// Unjoins track at the one point selected, which isn't selected after: there are two ends there now.
+    private void SplitTrack(TrackEditor tracks)
+    {
+        var made = tracks.Split(_selection);
+        _switchRefused = tracks.SplitRefused;
+        if (made is null)
+            return;
+        Committed(made);
+        _selection.Clear();
     }
 
     /// The selection's tools, for the menu and the side panel: name, key, and what it does.
@@ -2229,6 +2254,7 @@ public sealed partial class EditorView : IDisposable
         ("Smooth", "K", (t, s) => t.Smooth(s)),
         ("Simplify", "", (t, s) => t.Simplify(s)),
         ("Join", "J", (t, s) => t.Join(s)),
+        ("Split", "U", (t, s) => t.Split(s)),
         ("Delete", "Del", (t, s) => t.DeleteMany(s)),
     ];
 
@@ -3128,7 +3154,7 @@ public sealed partial class EditorView : IDisposable
                 Tool.Flatten when _flattenSample is not null => [("LMB", "Flatten"), ("F", FlattenSampleText), ("ESC", "Clear sample"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
                 Tool.Flatten => [("LMB", "Flatten"), ("F", FlattenSampleText), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
                 Tool.Paint => [("LMB", "Paint"), ("P", "Cover"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
-                Tool.Track => [("LMB", "Select, drag"), ("SHIFT", "Add"), ("L", "Straighten"), ("K", "Smooth"), ("J", "Join"), ("DEL", "Delete")],
+                Tool.Track => [("LMB", "Select, drag"), ("SHIFT", "Add"), ("L", "Straighten"), ("K", "Smooth"), ("J", "Join"), ("U", "Split"), ("DEL", "Delete")],
                 Tool.Circuits => [("LMB", "Select circuit"), ("SHIFT+LMB", "Add joint"), ("DRAG", "Move joint"), ("DEL", "Remove joint"), ("CTRL+Z", "Undo")],
                 Tool.Pen => [("LMB", "Point"), ("DRAG", "Curve"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")],
                 _ => [("LMB", _tool.ToString()), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
