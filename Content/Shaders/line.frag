@@ -309,8 +309,11 @@ void main()
             float footprint = max(length(dFdx(base)), length(dFdy(base))) * float(textureSize(rockPacked, 0).x);
             float stones = textureLod(rockPacked, stone, log2(max(footprint, 1.0))).a;
             float drift = fbm(tex * 0.9, pixel * 0.9);
-            // Nothing at all at the outer edge however tall the stones, and all of it at the inner.
-            coverage = smoothstep(0.0, 0.35, rise * 1.85 - 0.75 + (stones - 0.5) * 0.7 + (drift - 0.5) * 0.8);
+            // The ground rises between the stones, filling the gaps first and leaving the tallest last. A stone's either there or
+            // not, never see-through, until it's too far off to make out one.
+            float ground = mix(1.05, 0.1, rise) + (0.5 - drift) * 0.5;
+            float soft = 0.03 + 0.04 * log2(max(footprint, 1.0));
+            coverage = smoothstep(ground - soft, ground + soft, stones) * smoothstep(0.0, 0.15, rise);
         }
 
         float patches = fbm(tex * 0.35, pixel * 0.35);
