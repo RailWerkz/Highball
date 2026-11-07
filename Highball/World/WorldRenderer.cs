@@ -63,6 +63,7 @@ public sealed unsafe class WorldRenderer : IDisposable
     private VkPipeline _terrain;
     private VkPipeline _terrainWire;
     private VkPipeline _line;
+    private VkPipeline _lineFade;
     private VkPipeline _lineWire;
     private VkPipeline _part;
     private VkPipeline _partWire;
@@ -124,7 +125,9 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         // Lines are open ribbons and parapets seen from either side, so nothing's culled.
         var stride = Marshal.SizeOf<LineVertex>();
-        _line = Pipelines.Create(new PipelineDesc { Vertex = lineVert, Fragment = lineFrag, Layout = _layout, Attributes = LineVertex.Layout, Stride = stride, Cull = VkCullModeFlags.None, AlphaToCoverage = true });
+        _line = Pipelines.Create(new PipelineDesc { Vertex = lineVert, Fragment = lineFrag, Layout = _layout, Attributes = LineVertex.Layout, Stride = stride, Cull = VkCullModeFlags.None });
+        // Over the terrain with no depth of its own, or the ambient occlusion would take every speck for a crack.
+        _lineFade = Pipelines.Create(new PipelineDesc { Vertex = lineVert, Fragment = lineFrag, Layout = _layout, Attributes = LineVertex.Layout, Stride = stride, Cull = VkCullModeFlags.None, AlphaToCoverage = true, DepthWrite = false });
         _lineWire = Pipelines.Create(new PipelineDesc
         {
             Vertex = lineVert, Fragment = lineFrag, Layout = _layout, Attributes = LineVertex.Layout, Stride = stride, Cull = VkCullModeFlags.None, Wireframe = true,
@@ -162,6 +165,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         Pipelines.Destroy(_terrain, default);
         Pipelines.Destroy(_terrainWire, default);
         Pipelines.Destroy(_line, default);
+        Pipelines.Destroy(_lineFade, default);
         Pipelines.Destroy(_lineWire, default);
         Pipelines.Destroy(_part, default);
         Pipelines.Destroy(_partWire, default);
@@ -272,11 +276,14 @@ public sealed unsafe class WorldRenderer : IDisposable
 
             using (Profiler.Sample("Roads and rails"))
             {
-                cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _lineWire : _line);
+                cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _lineWire : _lineFade);
                 Sky.Bind(cmd, _layout);
                 _shadows.Bind(cmd, _layout);
                 _clouds.Bind(cmd, _layout);
                 network.BindBallast(cmd, _layout);
+                // Before the rest, so whatever of the track stands in front of a fade covers it.
+                network.DrawFades(cmd, camera.X, camera.Y, camera.Z, Push);
+                cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _lineWire : _line);
                 network.DrawLines(cmd, camera.X, camera.Y, camera.Z, Push);
             }
 

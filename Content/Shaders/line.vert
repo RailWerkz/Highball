@@ -24,5 +24,10 @@ void main()
     vData = inData;
     // Drawn a fraction nearer the camera than it is: the same place on screen, but in front of the terrain that
     // coarser levels of detail lift a little above the line's formation.
-    gl_Position = pc.viewProjection * vec4(relative * 0.9985, 1.0);
+    float nearer = 0.0015;
+    // The fade into the ground (Gravel, Data.w below zero) further: lying on the ground, any of the terrain's unevenness or
+    // coarseness would otherwise cut it off with a hard line, somewhere else at each level of detail. It writes no depth to matter.
+    if ((int(inData.z + 0.5) & 7) == 3 && inData.w < 0.0)
+        nearer += min(0.3, 30.0 / max(length(relative), 1.0));
+    gl_Position = pc.viewProjection * vec4(relative * (1.0 - nearer), 1.0);
 }

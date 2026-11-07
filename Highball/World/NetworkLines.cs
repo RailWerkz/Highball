@@ -116,6 +116,9 @@ public sealed class NetworkLine
     }
     public const float BallastSlope = 1.5f;
     public const float BallastToe = 0.15f;
+    /// How much longer a bed's curved flank runs than a straight slope would, and how far out from its toe it then fades into the ground.
+    public const float BedRun = 2.6f;
+    public const float BedFade = 2.4f;
 
     public float TrackOffset(int track) => (track - (Tracks - 1) * 0.5f) * TrackSpacing;
 
@@ -782,7 +785,8 @@ public sealed partial class NetworkLines
                 Nodes = nodes.Where(n => n.Point >= from && n.Point < to).Select(n => (n.Node, n.Point - from)).ToList(),
                 Tracks = tracks, Gauge = gauge, Disused = railClass == RailClass.Disused, Embedded = embedded, Exact = chain.Tags.ContainsKey(RouteNetwork.ExactTag),
                 Bed = bed, BedHeight = embedded ? 0f : bedHeight,
-                Formation = embedded ? 2f : halfTop + (bedHeight + NetworkLine.BallastToe) * NetworkLine.BallastSlope + 1.0f,
+                // (The ground's flat out past the whole of the bed's fade, which lies on it.)
+                Formation = embedded ? 2f : halfTop + MathF.Max(0.35f, bedHeight * NetworkLine.BallastSlope * NetworkLine.BedRun) + NetworkLine.BedFade + 0.3f,
             };
         }
         else

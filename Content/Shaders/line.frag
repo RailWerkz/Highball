@@ -190,8 +190,7 @@ void main()
     float occlusion = 1.0;
     float puddle = 0.0;
     float hold = 1.0;
-    float coverage = 1.0; // how much of each pixel it covers, of the ground underneath (alpha to coverage)
-    vec3 shadowFrom = vRelative;
+    float coverage = 1.0; // how much of the ground underneath it covers, where it fades into it
     vec3 shadowNormal = n;
 
     if (material == Ballast)
@@ -297,21 +296,21 @@ void main()
     {
         // The ballast's rock run on: the edge of the bed, road shoulders, unpaved roads and the marks where track is to go.
         // Data.w below zero is how far in from where it gives out: it fades into the ground, the tallest stones last, in patches.
-        vec2 base = tex / 1.5;
-        vec2 stone = parallax(rockPacked, base, n, view, 0.06, 1.5, dist);
-        if (vData.w < 0.0)
+        // There the stones run on from the bed's, and lie flatter the further out, where a stone's relief would only smear what's kept.
+        bool fading = vData.w < 0.0;
+        // (Data.w starts from -0.3 at the outer edge, so multisampling reading it a little past the edge still finds it fading.)
+        float rise = fading ? clamp((-vData.w - 0.3) / 2.4, 0.0, 1.0) : 1.0;
+        vec2 base = (fading ? vec2(u, v) : tex) / 1.5;
+        vec2 stone = parallax(rockPacked, base, n, view, 0.06 * smoothstep(0.4, 1.0, rise), 1.5, dist);
+        if (fading)
         {
-            float rise = clamp(-vData.w / 1.8, 0.0, 1.0);
             // Where it's seen, so that what's left is stones and not the gaps between them.
-            float stones = textureGrad(rockPacked, stone, dFdx(base), dFdy(base)).a;
+            // Filtered the same every way: a low view draws a stretched footprint out into streaks.
+            float footprint = max(length(dFdx(base)), length(dFdy(base))) * float(textureSize(rockPacked, 0).x);
+            float stones = textureLod(rockPacked, stone, log2(max(footprint, 1.0))).a;
             float drift = fbm(tex * 0.9, pixel * 0.9);
-            coverage = smoothstep(0.0, 0.55, rise * 1.35 + (stones - 0.5) * 0.7 + (drift - 0.5) * 0.8 - 0.1);
-            if (coverage < 0.04)
-                discard;
-
-            // This lies at the ground's own height and goes under it: asked from there, the ground shades it wherever the sun's
-            // low. Asked from a little above, it's still shaded by anything that really stands in the way.
-            shadowFrom.y += 0.35 * (1.0 - smoothstep(0.6, 1.0, rise));
+            // Nothing at all at the outer edge however tall the stones, and all of it at the inner.
+            coverage = smoothstep(0.0, 0.35, rise * 1.85 - 0.75 + (stones - 0.5) * 0.7 + (drift - 0.5) * 0.8);
         }
 
         float patches = fbm(tex * 0.35, pixel * 0.35);
@@ -351,7 +350,7 @@ void main()
     s.specular = specular;
     weatherSurface(s, puddle, hold);
 
-    vec3 color = shadeLight(s, sun, SunColor * sunShadow(shadowFrom, material == Gravel ? shadowNormal : n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative);
+    vec3 color = shadeLight(s, sun, SunColor * sunShadow(material == Gravel && vData.w < 0.0 ? vRelative - vec3(0.0, 0.06, 0.0) : vRelative, material == Gravel ? shadowNormal : n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative);
     color = applyFog(color, view, dist, pc.camera.y, sun);
     outColor = vec4(color, coverage);
 }

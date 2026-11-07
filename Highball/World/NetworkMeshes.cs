@@ -84,6 +84,9 @@ public sealed partial class NetworkMeshes : IDisposable
     {
         public Mesh? Far;
         public Mesh? Near;
+        /// How many of the indices at the end of each are its fades into the ground, drawn on their own.
+        public int FarFades;
+        public int NearFades;
         /// Built, though possibly empty.
         public bool HasFar;
         public bool HasNear;
@@ -97,7 +100,7 @@ public sealed partial class NetworkMeshes : IDisposable
         public long Used;
     }
 
-    private sealed record Built(ChunkKey Key, bool Near, LineVertex[] Vertices, uint[] Indices, TieInstance[] Ties, TieInstance[] Plates,
+    private sealed record Built(ChunkKey Key, bool Near, LineVertex[] Vertices, uint[] Indices, int Fades, TieInstance[] Ties, TieInstance[] Plates,
         int[] TieCells, int[] PlateCells);
 
     private NetworkLines _lines;
@@ -350,6 +353,7 @@ public sealed partial class NetworkMeshes : IDisposable
             {
                 chunk.Near?.Dispose();
                 chunk.Near = mesh;
+                chunk.NearFades = built.Fades;
                 Release(chunk.Ties);
                 chunk.Ties = built.Ties.Length > 0
                     ? Buffers.UploadLater(MemoryMarshal.AsBytes(built.Ties.AsSpan()), VkBufferUsageFlags.VertexBufferBit, "network.ties")
@@ -368,6 +372,7 @@ public sealed partial class NetworkMeshes : IDisposable
             {
                 chunk.Far?.Dispose();
                 chunk.Far = mesh;
+                chunk.FarFades = built.Fades;
                 chunk.HasFar = true;
             }
         }
@@ -549,6 +554,28 @@ public sealed partial class NetworkMeshes : IDisposable
         {
             Indices.AddRange([a, b, c, b, d, c]);
         }
+
+        /// The indices with the triangles of any fade into the ground (Gravel, Data.w below zero) last, and how many those are.
+        public (uint[] Indices, int Fades) Sorted()
+        {
+            bool Fade(uint index)
+            {
+                var data = Vertices[(int)index].Data;
+                return data.W < 0f && ((int)(data.Z + 0.5f) & 7) == (int)LineMaterial.Gravel;
+            }
+
+            var solid = new List<uint>(Indices.Count);
+            var fades = new List<uint>();
+            for (var i = 0; i + 2 < Indices.Count; i += 3)
+            {
+                var into = Fade(Indices[i]) && Fade(Indices[i + 1]) && Fade(Indices[i + 2]) ? fades : solid;
+                into.Add(Indices[i]);
+                into.Add(Indices[i + 1]);
+                into.Add(Indices[i + 2]);
+            }
+
+            return ([.. solid, .. fades], fades.Count);
+        }
     }
 
     /// A centreline frame at a point: the point (relative to origin) and the horizontal right.
@@ -625,9 +652,9 @@ public sealed partial class NetworkMeshes : IDisposable
         return (start, end);
     }
 
-    /// How far out from its toe the ballast fades into the ground, and how far under the ground it ends up.
-    private const float Fading = 1.8f;
-    private const float GivesOut = -0.06f;
+    /// How far out from its toe the ballast fades into the ground, and how far above the ground it ends up, clear of its unevenness.
+    private const float Fading = NetworkLine.BedFade;
+    private const float GivesOut = 0.04f;
 
     /// Runs split where the structure changes, each with points first..last (inclusive).
     private static IEnumerable<(int First, int Last, Structure Structure)> Spans(NetworkLine line, Run run)
@@ -666,7 +693,8 @@ public sealed partial class NetworkMeshes : IDisposable
             }
         }
 
-        return new Built(key, false, [.. builder.Vertices], [.. builder.Indices], [], [], [], []);
+        var (indices, fades) = builder.Sorted();
+        return new Built(key, false, [.. builder.Vertices], indices, fades, [], [], [], []);
     }
 
     private static void FarRail(Builder builder, NetworkLine line, int first, int last, bool bridge)
@@ -693,8 +721,10 @@ public sealed partial class NetworkMeshes : IDisposable
             // The ballast, heaped as loose rock lies: rounded over from the top, down its slope, and easing out onto the ground, where
             // the last of it fades in among the ground's own. The lower the bed, the shorter its slope.
             const float walk = 0.02f;
-            const int curve = 5;
-            const int edges = curve * 2 + 3;
+            const int curve = 8;
+            const int edges = curve * 2 + 5;
+            // The solid rock goes on from its toe to just under the ground, so there's no step for the ambient occlusion to find.
+            const float tapers = 0.6f;
             var gravel = Code(LineMaterial.Gravel);
             float Edge(int e) => e == 0 || e == edges - 1 ? gravel : ballast;
 
@@ -708,10 +738,13 @@ public sealed partial class NetworkMeshes : IDisposable
             (float U, float Y)[] Section(float left, float right, float drop, float sink)
             {
                 var toeY = sink + walk;
-                var run = MathF.Max(0.35f, (h - drop - toeY) * NetworkLine.BallastSlope * 1.8f);
-                var points = new (float, float)[curve * 2 + 4];
+                var run = MathF.Max(0.35f, (h - drop - toeY) * NetworkLine.BallastSlope * NetworkLine.BedRun);
+                // Under what Conform leaves the ground at.
+                var underY = sink - MathF.Min(sink * 0.3f, 0.06f) - 0.03f;
+                var points = new (float, float)[curve * 2 + 6];
                 var n = 0;
                 points[n++] = (-w - left - run - fading, sink + GivesOut);
+                points[n++] = (-w - left - run - tapers, underY);
                 points[n++] = (-w - left - run, toeY);
                 for (var i = curve - 1; i >= 0; i--)
                 {
@@ -726,6 +759,7 @@ public sealed partial class NetworkMeshes : IDisposable
                 }
 
                 points[n++] = (w + right + run, toeY);
+                points[n++] = (w + right + run + tapers, underY);
                 points[n] = (w + right + run + fading, sink + GivesOut);
                 return points;
             }
@@ -780,8 +814,13 @@ public sealed partial class NetworkMeshes : IDisposable
                     var (n0, n1) = JoinNormals(profile, e, across);
                     var (u0, y0) = profile[e];
                     var (u1, y1) = profile[e + 1];
+                    // The fade runs on in under the taper, as far as the toe: it's drawn first, so the solid rock lies over it.
+                    if (e == 0)
+                        (u1, y1) = profile[2];
+                    else if (e == edges - 1)
+                        (u0, y0) = profile[e - 1];
                     // Data.w: the rail centres' offset for the shader's rock, or in the fade how far in from where it gives out.
-                    var (w0, w1) = e == 0 ? (-0.001f, -Fading - 0.001f) : e == edges - 1 ? (-Fading - 0.001f, -0.001f) : (railOffset, railOffset);
+                    var (w0, w1) = e == 0 ? (-0.3f, -Fading - 0.3f) : e == edges - 1 ? (-Fading - 0.3f, -0.3f) : (railOffset, railOffset);
                     builder.Add(center + across * u0 + new float3(0f, y0, 0f), n0, new float4(u0, s % Wrap, Edge(e), w0));
                     builder.Add(center + across * u1 + new float3(0f, y1, 0f), n1, new float4(u1, s % Wrap, Edge(e), w1));
                 }
@@ -1239,7 +1278,8 @@ public sealed partial class NetworkMeshes : IDisposable
 
         var (sortedTies, tieCells) = ByCell(ties);
         var (sortedPlates, plateCells) = ByCell(plates);
-        return new Built(key, true, [.. builder.Vertices], [.. builder.Indices], sortedTies, sortedPlates, tieCells, plateCells);
+        var (indices, fades) = builder.Sorted();
+        return new Built(key, true, [.. builder.Vertices], indices, fades, sortedTies, sortedPlates, tieCells, plateCells);
     }
 
     /// What's left of [from, to] once the cuts are taken out.
@@ -1723,6 +1763,23 @@ public sealed partial class NetworkMeshes : IDisposable
 
     /// Draws the far meshes and rails with the line pipeline bound; push writes each chunk's origin relative to the
     /// camera.
+    /// The beds' fades into the ground: to be drawn with their own pipeline, ahead of DrawLines.
+    public void DrawFades(CommandBuffer cmd, double cx, double cy, double cz, Action<float3> push)
+    {
+        foreach (var (key, near) in _drawList)
+        {
+            var chunk = _chunks[key];
+            var mesh = near ? chunk.Near : chunk.Far;
+            var fades = near ? chunk.NearFades : chunk.FarFades;
+            if (mesh is null || fades == 0)
+                continue;
+
+            var origin = OriginOf(key);
+            push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
+            mesh.DrawRange(cmd, mesh.IndexCount - fades, fades);
+        }
+    }
+
     public void DrawLines(CommandBuffer cmd, double cx, double cy, double cz, Action<float3> push)
     {
         foreach (var (key, near) in _drawList)
@@ -1734,7 +1791,7 @@ public sealed partial class NetworkMeshes : IDisposable
 
             var origin = OriginOf(key);
             push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
-            mesh.Draw(cmd);
+            mesh.DrawRange(cmd, 0, mesh.IndexCount - (near ? chunk.NearFades : chunk.FarFades));
         }
 
         foreach (var sw in _switches.Values)
