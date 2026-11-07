@@ -2,7 +2,7 @@
 
     blender -b --factory-startup --python Tools/Blender/track_parts.py -- <Content folder> [preview.png]
 
-Writes Models/Track/tie.glb, Models/Track/plate.glb and Textures/Track/ballast.png under the Content folder, and,
+Writes Models/Track/tie.glb and Models/Track/plate.glb under the Content folder, and,
 given a second path, renders a close-up of a tie, its plates and a stub of rail there to check the parts by eye.
 
 Blender is Z-up; the glTF exporter turns that into the game's Y-up. Each part is modelled with X across the track and
@@ -316,135 +316,6 @@ def make_plate():
 
 # --- Ballast: a seamless tile of crushed stone, 1.5 m across. ---
 
-def make_ballast(path):
-    bpy.ops.mesh.primitive_plane_add(size=2.0)
-    plane = bpy.context.active_object
-
-    def stones(nodes, links, color_input):
-        # Wrap the plane's UVs round a torus in 4D (x, y, z, w), so the tile repeats with no seam.
-        coords = nodes.new("ShaderNodeTexCoord")
-        split = nodes.new("ShaderNodeSeparateXYZ")
-        links.new(coords.outputs["UV"], split.inputs["Vector"])
-
-        def angle_trig(source, op):
-            mult = nodes.new("ShaderNodeMath")
-            mult.operation = "MULTIPLY"
-            mult.inputs[1].default_value = math.tau
-            links.new(source, mult.inputs[0])
-            trig = nodes.new("ShaderNodeMath")
-            trig.operation = op
-            links.new(mult.outputs["Value"], trig.inputs[0])
-            return trig.outputs["Value"]
-
-        cu = angle_trig(split.outputs["X"], "COSINE")
-        su = angle_trig(split.outputs["X"], "SINE")
-        cv = angle_trig(split.outputs["Y"], "COSINE")
-        sv = angle_trig(split.outputs["Y"], "SINE")
-        vector = nodes.new("ShaderNodeCombineXYZ")
-        links.new(cu, vector.inputs["X"])
-        links.new(su, vector.inputs["Y"])
-        links.new(cv, vector.inputs["Z"])
-
-        def voronoi(scale, feature, output):
-            node = nodes.new("ShaderNodeTexVoronoi")
-            node.voronoi_dimensions = "4D"
-            node.feature = feature
-            node.inputs["Scale"].default_value = scale
-            node.inputs["Randomness"].default_value = 0.9
-            links.new(vector.outputs["Vector"], node.inputs["Vector"])
-            links.new(sv, node.inputs["W"])
-            return node.outputs[output]
-
-        # Stones about 5 cm across (radius-1 torus: 2 pi x scale cells round the tile), each its own shade of granite
-        # or limestone, lit as if rounded (bright in the middle, falling off to dark gaps), speckled; a second,
-        # smaller layer shows in the bigger stones' gaps.
-        def noise4(scale):
-            node = nodes.new("ShaderNodeTexNoise")
-            node.noise_dimensions = "4D"
-            node.inputs["Scale"].default_value = scale
-            node.inputs["Detail"].default_value = 6.0
-            links.new(vector.outputs["Vector"], node.inputs["Vector"])
-            links.new(sv, node.inputs["W"])
-            return node.outputs["Fac"]
-
-        def math_node(op, a, b=None, value=None):
-            node = nodes.new("ShaderNodeMath")
-            node.operation = op
-            links.new(a, node.inputs[0])
-            if b is not None:
-                links.new(b, node.inputs[1])
-            elif value is not None:
-                node.inputs[1].default_value = value
-            return node.outputs["Value"]
-
-        def ramp(fac, stops):
-            node = nodes.new("ShaderNodeValToRGB")
-            node.color_ramp.elements[0].position = stops[0][0]
-            node.color_ramp.elements[0].color = stops[0][1]
-            node.color_ramp.elements[1].position = stops[-1][0]
-            node.color_ramp.elements[1].color = stops[-1][1]
-            for position, color in stops[1:-1]:
-                element = node.color_ramp.elements.new(position)
-                element.color = color
-            links.new(fac, node.inputs["Fac"])
-            return node.outputs["Color"]
-
-        def multiply(a, b):
-            mix = nodes.new("ShaderNodeMix")
-            mix.data_type = "RGBA"
-            mix.blend_type = "MULTIPLY"
-            mix.inputs["Factor"].default_value = 1.0
-            links.new(a, mix.inputs["A"])
-            links.new(b, mix.inputs["B"])
-            return mix.outputs["Result"]
-
-        def layer(scale, rounding):
-            colour = voronoi(scale, "F1", "Color")
-            edge = voronoi(scale, "DISTANCE_TO_EDGE", "Distance")
-            bw = nodes.new("ShaderNodeRGBToBW")
-            links.new(colour, bw.inputs["Color"])
-            tone = ramp(bw.outputs["Val"], [(0.0, (0.07, 0.068, 0.066, 1)), (0.55, (0.17, 0.16, 0.15, 1)),
-                                            (0.8, (0.22, 0.19, 0.16, 1)), (1.0, (0.30, 0.29, 0.27, 1))])
-            shape = ramp(edge, [(0.0, (0.05, 0.05, 0.05, 1)), (0.04, (0.45, 0.45, 0.45, 1)), (rounding, (1, 1, 1, 1))])
-            return multiply(tone, shape), edge
-
-        def voronoi(scale, feature, output):
-            node = nodes.new("ShaderNodeTexVoronoi")
-            node.voronoi_dimensions = "4D"
-            node.feature = feature
-            node.inputs["Scale"].default_value = scale
-            node.inputs["Randomness"].default_value = 1.0
-            links.new(vector.outputs["Vector"], node.inputs["Vector"])
-            links.new(sv, node.inputs["W"])
-            return node.outputs[output]
-
-        big, big_edge = layer(4.5, 0.30)
-        small, _ = layer(10.0, 0.25)
-        speckle = ramp(noise4(140.0), [(0.3, (0.75, 0.75, 0.75, 1)), (0.7, (1.2, 1.2, 1.2, 1))])
-        grime = ramp(noise4(2.0), [(0.35, (0.75, 0.72, 0.68, 1)), (0.65, (1.05, 1.05, 1.05, 1))])
-
-        mask = nodes.new("ShaderNodeMapRange")
-        mask.inputs["From Min"].default_value = 0.01
-        mask.inputs["From Max"].default_value = 0.05
-        mask.inputs["To Min"].default_value = 0.85
-        mask.inputs["To Max"].default_value = 0.0
-        links.new(big_edge, mask.inputs["Value"])
-        mix = nodes.new("ShaderNodeMix")
-        mix.data_type = "RGBA"
-        links.new(mask.outputs["Result"], mix.inputs["Factor"])
-        links.new(big, mix.inputs["A"])
-        links.new(small, mix.inputs["B"])
-        links.new(multiply(multiply(mix.outputs["Result"], speckle), grime), color_input)
-
-    image = bake(plane, "ballast", 1024, 1024, stones)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    image.filepath_raw = path
-    image.file_format = "PNG"
-    image.save()
-    print("wrote", path)
-    bpy.data.objects.remove(plane)
-
-
 # --- A look at them together. ---
 
 def preview(tie, plate, path):
@@ -528,7 +399,6 @@ def preview(tie, plate, path):
 
 
 reset()
-make_ballast(os.path.join(CONTENT, "Textures", "Track", "ballast.png"))
 tie = make_tie()
 export(tie, os.path.join(CONTENT, "Models", "Track", "tie.glb"))
 tie_far = decimated(tie, "TieFar", 0.12)

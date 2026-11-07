@@ -170,7 +170,7 @@ public sealed partial class NetworkMeshes : IDisposable
         _tie = Model.Load("Track/tie.glb");
         _tieFar = Model.Load("Track/tie_far.glb");
         _plate = Model.Load("Track/plate.glb");
-        _ballast = Texture2D.Load("Track/ballast.png", srgb: true);
+        _ballast = Texture2D.Solid(new byte4(128, 128, 128, 255));
         _tieTexture = new TextureBinding(_tie.Surfaces[0].Texture ?? (_fallback = Texture2D.Solid(new byte4(40, 32, 26, 255))));
         _plateTexture = new TextureBinding(_plate.Surfaces[0].Texture ?? (_fallback ??= Texture2D.Solid(new byte4(60, 36, 24, 255))));
         _ballastTexture = new TextureBinding(_ballast);

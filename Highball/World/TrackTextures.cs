@@ -8,7 +8,7 @@ using RailWerkz.Vulkan;
 
 namespace Highball.World;
 
-/// The track's PBR materials, read straight from the zips in Content/Textures/Track at the size the settings ask for: colour, normal,
+/// The track's PBR materials, read straight from the zips in Content/Textures at the size the settings ask for: colour, normal,
 /// and ambient occlusion, roughness, metalness and height packed into one, in that order. Metal021 is the clean top of a rail, Metal025
 /// its sides and the tie plates, Metal024 the weathering on painted parts, Rocks022 the ballast and the ground beside it, and Wood062 the ties
 /// and the poles. The poles' wood takes a 4K zip if there's one and the setting's at its largest; it's close to 300 MB once it's up, mipmaps and all.
@@ -41,6 +41,16 @@ public sealed class TrackTextures : IDisposable
         Load();
     }
 
+    /// Where under Content/Textures a material's zips are.
+    private static string Folder(string material) =>
+        material.StartsWith("Rocks", StringComparison.Ordinal) ? "Terrain/Rocks" : material.StartsWith("Metal", StringComparison.Ordinal) ? "Metal" : "Wood";
+
+    /// The rock's colour on its own, at the small size, for a scene that isn't drawing track.
+    public static Texture2D RockColor() =>
+        Decode("Rocks022", "1K") is { } d
+            ? Texture2D.FromPixels(d.Width, d.Height, d.Color, repeat: true, mipmaps: true, srgb: true, name: "Rocks022.color")
+            : Texture2D.Solid(new byte4(110, 105, 100, 255));
+
     private static int Wanted => Settings.Current.TrackTextureSize >= 2048 ? 2048 : 1024;
 
     private void Load()
@@ -50,7 +60,7 @@ public sealed class TrackTextures : IDisposable
         var clock = System.Diagnostics.Stopwatch.StartNew();
 
         // The JPEGs take far longer than the upload, and there are a lot of them.
-        var large = _size >= 2048 && File.Exists(ContentPath.Texture($"Track/{PoleWood}_4K-JPG.zip"));
+        var large = _size >= 2048 && File.Exists(ContentPath.Texture($"{Folder(PoleWood)}/{PoleWood}_4K-JPG.zip"));
         var decoded = new (byte[] Color, byte[] Normal, byte[] Packed, int Width, int Height)?[Materials.Length];
         (byte[] Color, byte[] Normal, byte[] Packed, int Width, int Height)? decodedWood = null;
         Parallel.For(0, Materials.Length + 1, i =>
@@ -90,7 +100,7 @@ public sealed class TrackTextures : IDisposable
     private static (byte[] Color, byte[] Normal, byte[] Packed, int Width, int Height)? Decode(string material, string label)
     {
         var name = $"{material}_{label}-JPG";
-        var path = ContentPath.Texture($"Track/{name}.zip");
+        var path = ContentPath.Texture($"{Folder(material)}/{name}.zip");
         try
         {
             using var zip = ZipFile.OpenRead(path);

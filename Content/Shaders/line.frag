@@ -19,7 +19,7 @@ layout(push_constant) uniform Push
     vec4 sun;
 } pc;
 
-// Crushed stone from Tools/Blender/track_parts.py: a seamless tile 1.5 m across.
+// Not read: the rock's in set 4 now. Only here because the layout's set 0 is.
 layout(set = 0, binding = 0) uniform sampler2D ballastMap;
 
 // TrackTextures: colour, normal, and green roughness and blue metalness, for the ballast, the top of a rail, the sides of one

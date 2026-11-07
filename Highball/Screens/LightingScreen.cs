@@ -92,7 +92,7 @@ public sealed class LightingScreen : Screen, IWorldScreen
     private void BuildScene()
     {
         var grass = Texture2D.LoadDds("Terrain/Grass/Grass_Albedo.dds", srgb: true);
-        var ballast = Texture2D.Load("Track/ballast.png", srgb: true);
+        var ballast = TrackTextures.RockColor();
         // The grass map is detail for a land cover's colour to tint (see GroundTextures), so it brings its own here.
         var ground = Own(new RenderModel(Plane(1500f, 4f), grass, new float4(0.14f, 0.17f, 0.08f, 1f), 0f, 0.95f, grass));
         var bed = Own(new RenderModel(Ballast(), ballast, new float4(1f), 0f, 0.9f, ballast));
