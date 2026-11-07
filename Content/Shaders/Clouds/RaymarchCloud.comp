@@ -1,7 +1,8 @@
 #version 450
 // Volumetric clouds, adapted from Kitten Space Agency's RaymarchCloud: a dithered march through each layer, as far as whatever the
-// world has drawn there, with a shorter march towards the sun at each step, at half the screen's size. Colour is what the clouds
-// add; alpha is how much of what's behind them still shows. TemporalCloud.comp then settles the noise this leaves.
+// world has drawn there, with a shorter march towards the sun at each step, at half the screen's size and for half of those pixels each
+// frame. Colour is what the clouds add; alpha is how much of what's behind them still shows. TemporalCloud.comp then settles the noise
+// this leaves.
 
 #include "Clouds/CloudData.glsl"
 #include "Clouds/CloudDensity.glsl"
@@ -196,6 +197,13 @@ void main()
 {
     ivec2 size = imageSize(result);
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+
+    // Half the pixels each frame, in a checkerboard that swaps: the others keep what they had, for TemporalCloud.comp to fill in. Clouds.cs
+    // dispatches half as wide, and this spreads that across the row, since skipping pixels instead would leave the GPU's threads idle
+    // beside the ones still working, for hardly any saving. All of them when there's no last frame to fill in from.
+    if (clouds.frame.z > 0.5)
+        pixel.x = pixel.x * 2 + ((pixel.y + int(clouds.frame.x)) & 1);
+
     if (pixel.x >= size.x || pixel.y >= size.y)
         return;
 

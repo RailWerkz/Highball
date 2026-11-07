@@ -1,7 +1,8 @@
 #version 450
 // Settles the march's noise by blending with last frame's picture. Each pixel looks up where its clouds were, allowing for the camera
 // having moved and the wind, and last frame's colour is only believed as far as it looks like what's round this pixel now, so
-// nothing trails behind when flying or when a hill passes in front.
+// nothing trails behind when flying or when a hill passes in front. The march fills a checkerboard each frame, so half of what's here
+// is a frame old, close enough to judge last frame's colour by.
 
 #include "Clouds/CloudData.glsl"
 
@@ -54,7 +55,9 @@ void main()
             if (all(greaterThanEqual(previous, vec2(0.0))) && all(lessThanEqual(previous, vec2(1.0))))
             {
                 vec4 past = clamp(textureLod(history, previous, 0.0), mean - spread * SPREAD, mean + spread * SPREAD);
-                color = mix(now, past, KEEP);
+                // The march only reached this pixel if it's on this frame's squares of the checkerboard; otherwise what's here is old.
+                bool marched = ((pixel.x + pixel.y + int(clouds.frame.x)) & 1) == 0;
+                color = marched ? mix(now, past, KEEP) : past;
             }
         }
     }

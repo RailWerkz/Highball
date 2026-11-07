@@ -14,6 +14,7 @@ namespace Highball.World;
 public sealed unsafe class SunShadows : IDisposable
 {
     public const int Cascades = 4;
+    private static readonly string[] CascadeNames = ["Cascade 0", "Cascade 1", "Cascade 2", "Cascade 3"];
 
     /// How far each cascade reaches along the view, in metres. Past the last there are no shadows.
     private static readonly float[] Reach = [15f, 60f, 250f, 1500f];
@@ -250,10 +251,13 @@ public sealed unsafe class SunShadows : IDisposable
             centre += right * Snap(centre, right, camera, texel) + up * Snap(centre, up, camera, texel);
             _matrices[c] = Matrix(centre, right, up, sun, radius);
 
-            _map.BeginLayer(cmd, c);
-            if (active)
-                DrawCasters(cmd, camera, c, centre, right, up, sun, radius, terrain, models, vegetation, network, yards);
-            _map.EndLayer(cmd);
+            using (Profiler.Sample(CascadeNames[c], cmd))
+            {
+                _map.BeginLayer(cmd, c);
+                if (active)
+                    DrawCasters(cmd, camera, c, centre, right, up, sun, radius, terrain, models, vegetation, network, yards);
+                _map.EndLayer(cmd);
+            }
         }
 
         _map.EndFrame(cmd);

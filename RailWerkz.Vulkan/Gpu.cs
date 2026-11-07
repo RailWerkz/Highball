@@ -104,6 +104,7 @@ public static unsafe class Gpu
         }
 
         CreateSwapchain(size);
+        GpuTimers.Init();
     }
 
     private static void CreateInstance(IEnumerable<string> instanceExtensions, bool validation)
@@ -445,6 +446,7 @@ public static unsafe class Gpu
         Device.ResetFences([frame.Fence]);
         frame.Cmd.Reset(VkCommandBufferResetFlags.None);
         frame.Cmd.Begin(VkCommandBufferUsageFlags.OneTimeSubmitBit);
+        GpuTimers.BeginFrame(frame.Cmd, _frame);
         Buffers.FlushUploads(frame.Cmd);
         return true;
     }
@@ -661,6 +663,7 @@ public static unsafe class Gpu
             Device.DestroyCommandPool(frame.Pool, Device.VkAllocator);
         }
 
+        GpuTimers.Shutdown();
         TextureBinding.Shutdown();
         DestroySwapchainViews();
         Device.DestroySwapchainKHR(_swapchain, Device.VkAllocator);

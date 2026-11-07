@@ -216,13 +216,14 @@ public sealed unsafe class WorldRenderer : IDisposable
             AddSignals(network);
         foreach (var light in SceneLights)
             _lights.Add(in light);
-        _lights.Upload(cmd, camera, size, aspect);
+        using (Profiler.Sample("Local lights", cmd))
+            _lights.Upload(cmd, camera, size, aspect);
 
-        using (Profiler.Sample("Sun shadows"))
+        using (Profiler.Sample("Sun shadows", cmd))
             _shadows.Render(cmd, camera, aspect, Sun, terrain, models, terrain is null ? null : _vegetation, network, _yards);
         if (terrain is not null)
             _clouds.GroundLevel = terrain.Source.HeightAt(0.0, 0.0);
-        using (Profiler.Sample("Cloud shade"))
+        using (Profiler.Sample("Cloud shade", cmd))
             _clouds.Prepare(cmd, _target, camera, aspect, Sky);
 
         _target.Begin(cmd, new float4(0f, 0f, 0f, 1f));
@@ -236,7 +237,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             Sun = sun,
             Camera = camPos,
         };
-        var skyScope = Profiler.Sample("Sky");
+        var skyScope = Profiler.Sample("Sky", cmd);
         cmd.BindPipeline(VkPipelineBindPoint.Graphics, _sky);
         Sky.Bind(cmd, _layout);
         cmd.PushConstants(_layout, Stages, ByteSize.Zero, sky);
@@ -246,7 +247,7 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         if (terrain is not null)
         {
-            using var _ = Profiler.Sample("Terrain");
+            using var _ = Profiler.Sample("Terrain", cmd);
             var push = new TerrainPush { ViewProjection = camera.JitteredViewProjection(aspect), Camera = camPos, Sun = sun };
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _terrainWire : _terrain);
             Sky.Bind(cmd, _terrainLayout);
@@ -274,7 +275,7 @@ public sealed unsafe class WorldRenderer : IDisposable
                 cmd.PushConstants(_layout, Stages, ByteSize.Zero, push);
             }
 
-            using (Profiler.Sample("Roads and rails"))
+            using (Profiler.Sample("Roads and rails", cmd))
             {
                 cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _lineWire : _lineFade);
                 Sky.Bind(cmd, _layout);
@@ -287,7 +288,7 @@ public sealed unsafe class WorldRenderer : IDisposable
                 network.DrawLines(cmd, camera.X, camera.Y, camera.Z, Push);
             }
 
-            using (Profiler.Sample("Ties and plates"))
+            using (Profiler.Sample("Ties and plates", cmd))
             {
                 cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _partWire : _part);
                 network.DrawParts(cmd, _layout, camera.X, camera.Y, camera.Z, Push);
@@ -297,7 +298,7 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         if (terrain is not null && _vegetation.Enabled)
         {
-            using var _ = Profiler.Sample("Plants and rocks");
+            using var _ = Profiler.Sample("Plants and rocks", cmd);
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, _plant);
             Sky.Bind(cmd, _modelLayout);
             _shadows.Bind(cmd, _modelLayout);
@@ -307,17 +308,18 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         if (models is not null)
         {
-            using var _ = Profiler.Sample("Models");
+            using var _ = Profiler.Sample("Models", cmd);
             DrawModels(cmd, camera, aspect, models);
         }
 
-        DrawGlows(cmd, camera, aspect);
+        using (Profiler.Sample("Glows", cmd))
+            DrawGlows(cmd, camera, aspect);
 
         _target.End(cmd);
 
         if (RailWerkz.Core.Settings.Settings.Current.AmbientOcclusion)
         {
-            using var _ = Profiler.Sample("Ambient occlusion");
+            using var _ = Profiler.Sample("Ambient occlusion", cmd);
             _occlusion.Draw(cmd, _target, camera, aspect, _post.NoiseFrame, layout =>
             {
                 Sky.Bind(cmd, layout);
@@ -327,10 +329,10 @@ public sealed unsafe class WorldRenderer : IDisposable
         }
 
         // Over everything: they march only as far as the depth just drawn, so they're right from under, in or above the layers.
-        using (Profiler.Sample("Clouds"))
+        using (Profiler.Sample("Clouds", cmd))
             _clouds.Draw(cmd, _target);
 
-        using (Profiler.Sample("After the world"))
+        using (Profiler.Sample("After the world", cmd))
             _post.Draw(cmd, _target, camera, aspect, Sky, !Precipitation.Falling(_weather) ? null : over => _precipitation.Draw(over, _target, camera, aspect, _weather, Sky));
     }
 

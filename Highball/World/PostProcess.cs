@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using Brutal;
 using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
+using Highball.App;
 using RailWerkz.Core.Settings;
 using RailWerkz.Core.Time;
 using RailWerkz.Core.Utils;
@@ -320,7 +321,8 @@ public sealed unsafe class PostProcess : IDisposable
 
         _current = 1 - _current;
         var (w, h) = (_size.X, _size.Y);
-        Run(cmd, _temporal, _temporalSets[_current], w, h);
+        using (Profiler.Sample("Temporal AA", cmd))
+            Run(cmd, _temporal, _temporalSets[_current], w, h);
 
         // What temporal anti-aliasing would only smear goes on after it. It's in next frame's history too, but that doesn't match
         // what's round it there, so it's clamped away.
@@ -344,19 +346,28 @@ public sealed unsafe class PostProcess : IDisposable
             cmd.PipelineBarrier(VkPipelineStageFlags.ColorAttachmentOutputBit, VkPipelineStageFlags.ComputeShaderBit | VkPipelineStageFlags.FragmentShaderBit, VkDependencyFlags.None, [outOf], [], []);
         }
 
-        Run(cmd, _down, _firstDownSets[_current], w >> 1, h >> 1);
-        for (var i = 1; i < BloomLevels; i++)
-            Run(cmd, _down, _downSets[i], w >> (i + 1), h >> (i + 1));
-        for (var i = BloomLevels - 2; i >= 0; i--)
-            Run(cmd, _up, _upSets[i], w >> (i + 1), h >> (i + 1));
+        using (Profiler.Sample("Bloom", cmd))
+        {
+            Run(cmd, _down, _firstDownSets[_current], w >> 1, h >> 1);
+            for (var i = 1; i < BloomLevels; i++)
+                Run(cmd, _down, _downSets[i], w >> (i + 1), h >> (i + 1));
+            for (var i = BloomLevels - 2; i >= 0; i--)
+                Run(cmd, _up, _upSets[i], w >> (i + 1), h >> (i + 1));
+        }
 
-        cmd.BindPipeline(VkPipelineBindPoint.Compute, _measure);
-        cmd.BindDescriptorSets(VkPipelineBindPoint.Compute, _computeLayout, 0, [_measureSets[_current]], []);
-        cmd.Dispatch(1, 1, 1);
-        Between(cmd);
+        using (Profiler.Sample("Exposure", cmd))
+        {
+            cmd.BindPipeline(VkPipelineBindPoint.Compute, _measure);
+            cmd.BindDescriptorSets(VkPipelineBindPoint.Compute, _computeLayout, 0, [_measureSets[_current]], []);
+            cmd.Dispatch(1, 1, 1);
+            Between(cmd);
+        }
 
-        Run(cmd, _rays, _raysSets[_current], w / 4, h / 4);
-        Between(cmd, VkPipelineStageFlags.FragmentShaderBit);
+        using (Profiler.Sample("God rays", cmd))
+        {
+            Run(cmd, _rays, _raysSets[_current], w / 4, h / 4);
+            Between(cmd, VkPipelineStageFlags.FragmentShaderBit);
+        }
 
         _previousViewProjection = viewProjection;
         _previousCamera = (camera.X, camera.Y, camera.Z);

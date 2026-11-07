@@ -59,7 +59,7 @@ public static class DebugWindows
         {
             var times = Profiler.FrameTimes;
             var average = times.Average();
-            ImGui.Text($"{1000f / MathF.Max(0.01f, average):0} fps   {average:0.00} ms   worst {times.Max():0.0} ms");
+            ImGui.Text($"{1000f / MathF.Max(0.01f, average):0} fps   {average:0.00} ms   worst {times.Max():0.0} ms   GPU {Profiler.GpuFrameTimes.Average():0.00} ms");
             ImGui.PlotLines("##frames"u8, times, Profiler.FrameCursor, default, 0f, 40f, new float2(300f, 50f));
             ImGui.Text($"{Profiler.DrawCalls} draw calls   {Profiler.Triangles / 1000f:0.0}k triangles");
             ImGui.Text($"GPU {HighballApp.Instance.GpuName}");
@@ -74,13 +74,15 @@ public static class DebugWindows
         ImGui.SetNextWindowPos(new float2(x, y), ImGuiCond.FirstUseEver);
         if (ImGui.Begin("Profiler"u8, ref _profiler, ImGuiWindowFlags.AlwaysAutoResize))
         {
-            ImGui.Text("CPU time per frame, over the last two seconds"u8);
-            if (ImGui.BeginTable("sections"u8, 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders))
+            ImGui.Text("Time per frame, over the last two seconds"u8);
+            if (ImGui.BeginTable("sections"u8, 7, ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders))
             {
                 ImGui.TableSetupColumn("Section"u8);
-                ImGui.TableSetupColumn("Last ms"u8);
-                ImGui.TableSetupColumn("Avg ms"u8);
-                ImGui.TableSetupColumn("Worst ms"u8);
+                ImGui.TableSetupColumn("CPU last"u8);
+                ImGui.TableSetupColumn("CPU avg"u8);
+                ImGui.TableSetupColumn("CPU worst"u8);
+                ImGui.TableSetupColumn("GPU avg"u8);
+                ImGui.TableSetupColumn("GPU worst"u8);
                 ImGui.TableSetupColumn("Draws"u8);
                 ImGui.TableHeadersRow();
 
@@ -96,13 +98,19 @@ public static class DebugWindows
                     ImGui.TableNextColumn();
                     ImGui.Text($"{section.Worst:0.00}");
                     ImGui.TableNextColumn();
+                    if (section.HasGpu)
+                        ImGui.Text($"{section.GpuAverage:0.00}");
+                    ImGui.TableNextColumn();
+                    if (section.HasGpu)
+                        ImGui.Text($"{section.GpuWorst:0.00}");
+                    ImGui.TableNextColumn();
                     ImGui.Text($"{section.DrawCalls}");
                 }
 
                 ImGui.EndTable();
             }
 
-            ImGui.Text("Wait for GPU and Present include waiting for the display."u8);
+            ImGui.Text("In milliseconds. Wait for GPU and Present include waiting for the display. GPU times count waits for other programs using it."u8);
         }
 
         ImGui.End();

@@ -48,6 +48,13 @@ const float DesertTile = 12.0;
 const float BeachTile = 7.0;
 const float Second = 5.37;
 
+// A material weighing less than this isn't read at all: most of the ground is one or two of them, and these reads are most of its cost.
+// The GPU works out each read's blur from the pixels beside it, which may have skipped it, but only where it weighs next to nothing.
+// (Giving it the blur with textureGrad instead is safe, but costs all of what skipping saves.)
+const float Unused = 0.001;
+
+const mat2 Turn = mat2(0.8, 0.6, -0.6, 0.8);
+
 // A detail map's colour over its average (its last, 1 x 1 mip): around 1, to multiply the land cover's colour by.
 vec3 detail(sampler2D map, vec2 uv)
 {
@@ -58,8 +65,7 @@ vec3 detail(sampler2D map, vec2 uv)
 // Two scales of a detail map, the larger one turned so its repeats run a different way.
 vec3 detail2(sampler2D map, vec2 p, float tile)
 {
-    vec2 turned = mat2(0.8, 0.6, -0.6, 0.8) * p;
-    return detail(map, p / tile) * mix(vec3(1.0), detail(map, turned / (tile * Second)), 0.5);
+    return detail(map, p / tile) * mix(vec3(1.0), detail(map, Turn * p / (tile * Second)), 0.5);
 }
 
 // A tangent-space normal map's xy (BC5: the blue is rebuilt from them).
@@ -70,8 +76,7 @@ vec2 relief(sampler2D map, vec2 uv)
 
 vec2 relief2(sampler2D map, vec2 p, float tile)
 {
-    vec2 turned = mat2(0.8, 0.6, -0.6, 0.8) * p;
-    vec2 large = relief(map, turned / (tile * Second));
+    vec2 large = relief(map, Turn * p / (tile * Second));
     large = mat2(0.8, -0.6, 0.6, 0.8) * large; // back into the unturned frame
     return (relief(map, p / tile) + large * 0.35) * 0.75;
 }
@@ -99,7 +104,7 @@ void main()
 
     // Where grass meets earth, whichever stands taller at this spot wins, so the edge follows clumps and stones, not a smooth fade.
     float land = m.x + m.y;
-    if (m.x > 0.001 && m.y > 0.001)
+    if (m.x > Unused && m.y > Unused)
     {
         float taller = texture(grassHeight, tex / GrassTile).r - texture(earthHeight, tex / EarthTile).r;
         float grassShare = smoothstep(-0.12, 0.12, (m.x / land - 0.5) * 2.0 + taller * 0.8);
@@ -115,17 +120,36 @@ void main()
 
     // The land cover's colour, varied broadly, times the textures' detail.
     vec3 albedo = vCover.rgb * (0.7 + 0.6 * fbm(tex * 0.004, pixel * 0.004));
-    vec3 earthGrain = mix(detail2(earthAlbedo, tex, EarthTile), detail2(desertAlbedo, tex, DesertTile), desert);
-    vec3 grain = detail2(grassAlbedo, tex, GrassTile) * m.x + earthGrain * m.y + vec3(m.z + m.w);
+
+    // grain: their detail. bump: their relief, laid onto the ground's own normal (projected straight down; flat ground mostly faces up).
+    // finish: how much sky reaches it, and how rough it is. All in the same proportions, adding up only the materials that are here.
+    vec3 grain = vec3(m.z + m.w);
+    vec2 bump = vec2(0.0);
+    vec2 finish = WaterSurface * (m.z + m.w);
+    if (m.x > Unused)
+    {
+        grain += detail2(grassAlbedo, tex, GrassTile) * m.x;
+        bump += relief2(grassNormal, tex, GrassTile) * m.x;
+        finish += texture(grassSurface, tex / GrassTile).rg * m.x;
+    }
+
+    float earth = m.y * (1.0 - desert);
+    if (earth > Unused)
+    {
+        grain += detail2(earthAlbedo, tex, EarthTile) * earth;
+        bump += relief2(earthNormal, tex, EarthTile) * earth;
+        finish += texture(earthSurface, tex / EarthTile).rg * earth;
+    }
+
+    float rocky = m.y * desert;
+    if (rocky > Unused)
+    {
+        grain += detail2(desertAlbedo, tex, DesertTile) * rocky;
+        bump += relief2(desertNormal, tex, DesertTile) * rocky;
+        finish += texture(desertSurface, tex / DesertTile).rg * rocky;
+    }
+
     albedo *= grain;
-
-    // Their relief, laid onto the ground's own normal (projected straight down; flat ground mostly faces up).
-    vec2 earthBump = mix(relief2(earthNormal, tex, EarthTile), relief2(desertNormal, tex, DesertTile), desert);
-    vec2 bump = relief2(grassNormal, tex, GrassTile) * m.x + earthBump * m.y;
-
-    // How much sky reaches it, and how rough it is, in the same proportions.
-    vec2 earthFinish = mix(texture(earthSurface, tex / EarthTile).rg, texture(desertSurface, tex / DesertTile).rg, desert);
-    vec2 finish = texture(grassSurface, tex / GrassTile).rg * m.x + earthFinish * m.y + WaterSurface * (m.z + m.w);
 
     if (shore > 0.0)
     {

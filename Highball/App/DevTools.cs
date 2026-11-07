@@ -39,6 +39,8 @@ namespace Highball.App;
 ///   --quit SECONDS                                  close after that long
 ///   --novsync                                       run uncapped, to time frames (not saved)
 ///   --noshadows                                     no sun shadows, to see what they cost
+///   --sculpthold TOOL RADIUS FROM UNTIL             with --view, hold a brush stroke at the middle of the screen between those seconds
+///   --gputimes                                      with --quit, log what each part of the frame cost the GPU on the way out
 ///   --skipsplash                                    skip the BRUTAL logo and the splash animation
 ///   --validation                                    Vulkan validation layers (needs the Vulkan SDK; on in Debug builds)
 public static class DevTools
@@ -73,6 +75,9 @@ public static class DevTools
 
     /// The settings tab asked for on the command line, read once by the settings screen.
     public static string? Tab { get; set; }
+
+    /// Log the GPU's time on each part of the frame when --quit closes the game (--gputimes).
+    public static bool GpuTimes { get; private set; }
 
     /// Tiles to pick and build on opening the route editor (--select), read once by it.
     public static (double Lat, double Lon, int Size)? Select { get; set; }
@@ -299,6 +304,9 @@ public static class DevTools
                 case "--novsync":
                     NoVSync = true;
                     break;
+                case "--gputimes":
+                    GpuTimes = true;
+                    break;
                 case "--skipsplash":
                     SkipSplash = true;
                     break;
@@ -381,6 +389,10 @@ public static class DevTools
         }
 
         if (now > _quitAt)
+        {
+            if (GpuTimes)
+                Log.Info(Profiler.GpuReport());
             app.Quit();
+        }
     }
 }

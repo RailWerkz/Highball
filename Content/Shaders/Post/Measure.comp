@@ -11,6 +11,7 @@ layout(set = 0, binding = 3) uniform sampler2D sceneDepth;
 #include "PostData.glsl"
 
 const int Bins = 64;
+const int Sampled = 1500;
 const float LowestLog = -10.0;
 const float HighestLog = 6.0;
 
@@ -42,11 +43,14 @@ void main()
     for (int i = 0; i < Bins; i++)
         bins[i] = 0u;
 
+    // This runs on one thread of the GPU, so it can't afford every pixel. Spaced out so about the same number are read at any window size,
+    // which is plenty for a histogram that only has to settle slowly.
     ivec2 size = textureSize(reduced, 0);
+    int spacing = max(1, int(sqrt(float(size.x * size.y) / float(Sampled))));
     uint total = 0u;
-    for (int y = 0; y < size.y; y++)
+    for (int y = spacing / 2; y < size.y; y += spacing)
     {
-        for (int x = 0; x < size.x; x++)
+        for (int x = spacing / 2; x < size.x; x += spacing)
         {
             vec2 d = (vec2(x, y) + 0.5) / vec2(size) * 2.0 - 1.0;
             uint weight = uint(1.0 + 3.0 * clamp(1.0 - dot(d, d), 0.0, 1.0));

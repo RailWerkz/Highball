@@ -341,15 +341,17 @@ public sealed class HighballApp : IDisposable
                 began = Gpu.BeginFrame(size);
             if (began)
             {
-                using (Profiler.Sample("Render"))
+                using (Profiler.Sample("Render", Gpu.Cmd))
                 {
                     // The world behind: whatever the top screen is looking at, or black.
                     var world = top?.View == WorldView.World ? top as IWorldScreen : null;
                     world?.RenderWorld(Gpu.Cmd, size.X, size.Y);
 
                     Gpu.BeginPresentPass(new float4(0f, 0f, 0f, 1f));
-                    world?.CompositeWorld(Gpu.Cmd);
-                    _vulkanBackend.RenderDrawData(ImGui.GetDrawData(), Gpu.Cmd);
+                    using (Profiler.Sample("Tonemap", Gpu.Cmd))
+                        world?.CompositeWorld(Gpu.Cmd);
+                    using (Profiler.Sample("Interface", Gpu.Cmd))
+                        _vulkanBackend.RenderDrawData(ImGui.GetDrawData(), Gpu.Cmd);
                     Gpu.EndPresentPass();
                 }
 

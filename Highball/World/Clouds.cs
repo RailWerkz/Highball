@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using Brutal;
 using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
+using Highball.App;
 using RailWerkz.Core.Time;
 using RailWerkz.Core.Utils;
 using RailWerkz.Vulkan;
@@ -10,7 +11,7 @@ namespace Highball.World;
 
 /// Volumetric clouds over the procedural sky, adapted from Kitten Space Agency's cloud shaders. What they look like comes from a
 /// CloudType. Before the world is drawn, a compute pass maps their shade on the ground (clouds.glsl, set 3). After it, compute passes
-/// march them at half the screen's size as far as its depth, settle the noise against last frame, and they're laid over the world,
+/// march a checkerboard of them at half the screen's size as far as its depth, settle the noise against last frame, and they're laid over the world,
 /// so they hold from under, inside or above them, and in front of a mountain. A skybox brings its own clouds.
 public sealed unsafe class Clouds : IDisposable
 {
@@ -428,25 +429,35 @@ public sealed unsafe class Clouds : IDisposable
 
         _current = 1 - _current;
 
-        cmd.BindPipeline(VkPipelineBindPoint.Compute, _march);
-        cmd.BindDescriptorSets(VkPipelineBindPoint.Compute, _marchLayout, 0, [_marchSet], []);
-        cmd.Dispatch((_size.X + 7) / 8, (_size.Y + 7) / 8, 1);
+        using (Profiler.Sample("March", cmd))
+        {
+            cmd.BindPipeline(VkPipelineBindPoint.Compute, _march);
+            cmd.BindDescriptorSets(VkPipelineBindPoint.Compute, _marchLayout, 0, [_marchSet], []);
+            var across = _historyValid ? (_size.X + 1) / 2 : _size.X; // A checkerboard once there's a last frame to fill in from.
+            cmd.Dispatch((across + 7) / 8, (_size.Y + 7) / 8, 1);
+        }
 
         var marched = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.ShaderWriteBit, DstAccessMask = VkAccessFlags.ShaderReadBit };
         cmd.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit, VkPipelineStageFlags.ComputeShaderBit, VkDependencyFlags.None, [marched], [], []);
 
-        cmd.BindPipeline(VkPipelineBindPoint.Compute, _temporal);
-        cmd.BindDescriptorSets(VkPipelineBindPoint.Compute, _temporalLayout, 0, [_temporalSets[_current]], []);
-        cmd.Dispatch((_size.X + 7) / 8, (_size.Y + 7) / 8, 1);
+        using (Profiler.Sample("Settle", cmd))
+        {
+            cmd.BindPipeline(VkPipelineBindPoint.Compute, _temporal);
+            cmd.BindDescriptorSets(VkPipelineBindPoint.Compute, _temporalLayout, 0, [_temporalSets[_current]], []);
+            cmd.Dispatch((_size.X + 7) / 8, (_size.Y + 7) / 8, 1);
+        }
 
         var settled = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.ShaderWriteBit, DstAccessMask = VkAccessFlags.ShaderReadBit };
         cmd.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit, VkPipelineStageFlags.FragmentShaderBit | VkPipelineStageFlags.ComputeShaderBit, VkDependencyFlags.None, [settled], [], []);
 
-        target.BeginOverlay(cmd);
-        cmd.BindPipeline(VkPipelineBindPoint.Graphics, _composite);
-        cmd.BindDescriptorSets(VkPipelineBindPoint.Graphics, _compositeLayout, 0, [_compositeSets[_current]], []);
-        cmd.Draw(3, 1, 0, 0);
-        target.EndOverlay(cmd);
+        using (Profiler.Sample("Lay over", cmd))
+        {
+            target.BeginOverlay(cmd);
+            cmd.BindPipeline(VkPipelineBindPoint.Graphics, _composite);
+            cmd.BindDescriptorSets(VkPipelineBindPoint.Graphics, _compositeLayout, 0, [_compositeSets[_current]], []);
+            cmd.Draw(3, 1, 0, 0);
+            target.EndOverlay(cmd);
+        }
 
         _historyValid = true;
         _frame++;
