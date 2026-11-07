@@ -874,15 +874,36 @@ public sealed partial class EditorView : IDisposable
         return Math.Max(3.0, Math.Sqrt(dx * dx + dy * dy + dz * dz) * 2.0 * Math.Tan(_camera.FieldOfView * 0.5) / Math.Max(_screen.Y, 1f) * S(14f));
     }
 
-    /// The shortest bridge worth building, in metres.
+    /// The shortest bridge worth building and the longest it can go, in metres. How far past a line's end the cursor has to be to
+    /// carry the bridge on past it, and how near an end a bridge starting there begins at the end itself.
     private const double ShortestBridge = 4.0;
+    private const double LongestBridge = 800.0;
+    private const double BridgeOutFrom = 2.0;
+    private const double BridgeStartEnd = 8.0;
 
     /// Where a bridge would start under the cursor, on the line nearest, road or track. Generous, since it's hard to miss on purpose.
     private RoadEditor.Hit? BridgeStartAt(double x, double z) =>
-        Roads.Nearest(x, z, Math.Max(PickReach(x, z) * 2.0, 8.0), w => !w.Tags.ContainsKey(RouteNetwork.RemovedTag));
+        Roads.Nearest(x, z, Math.Max(PickReach(x, z) * 2.0, 8.0), w => !w.Tags.ContainsKey(RouteNetwork.RemovedTag) && !RouteNetwork.IsGuide(w)) is { } hit
+            ? Roads.ToLooseEnd(hit, BridgeStartEnd)
+            : null;
 
     /// Where a bridge begun already would end: the place on its own line nearest the cursor, however far off the cursor is.
     private RoadEditor.Hit? BridgeEndAt(double x, double z) => Roads.Nearest(x, z, 1e7, w => _bridgeLine.Contains(w.Id));
+
+    /// Where a bridge begun already would land if the cursor's out past a loose end of its line, over whatever gap's there.
+    private LayPoint? BridgeLandingAt(RoadEditor.Hit end, double x, double z)
+    {
+        if (Roads.LooseEndAt(end) is null || Math.Sqrt((x - end.X) * (x - end.X) + (z - end.Z) * (z - end.Z)) < BridgeOutFrom)
+            return null;
+        return Roads.LandingAt(end, x, z, Math.Max(PickReach(x, z), 6.0));
+    }
+
+    /// How long a bridge would be, along its line and on past the end if it's going there.
+    private double BridgeLength(RoadEditor.Hit from, RoadEditor.Hit end, LayPoint? landing)
+    {
+        var along = Roads.Span(from, end)?.Length ?? 0.0;
+        return landing is { } l ? along + Math.Sqrt((l.X - end.X) * (l.X - end.X) + (l.Z - end.Z) * (l.Z - end.Z)) : along;
+    }
 
     /// A bridge's first click holds its place, and the second, or letting go of a drag, builds it. Once begun it stays on its line:
     /// the cursor can't pick the one beside it.
@@ -893,7 +914,9 @@ public sealed partial class EditorView : IDisposable
         {
             if (BridgeStartAt(x, z) is not { } hit)
             {
-                _switchRefused = "Click on a road or a track";
+                _switchRefused = Roads.Nearest(x, z, Math.Max(PickReach(x, z), 8.0), w => !w.Tags.ContainsKey(RouteNetwork.RemovedTag)) is null
+                    ? "Click on a road or a track"
+                    : "That's a guide: lay track on it first";
                 return;
             }
 
@@ -911,14 +934,17 @@ public sealed partial class EditorView : IDisposable
         if (_bridgeFrom is not { } from || BridgeEndAt(x, z) is not { } end)
             return;
 
-        if (Roads.Span(from, end) is { } span && span.Length < ShortestBridge)
+        var landing = BridgeLandingAt(end, x, z);
+        var length = BridgeLength(from, end, landing);
+        if (length < ShortestBridge || length > LongestBridge)
         {
-            _switchRefused = "Too short for a bridge: keep going along the line";
+            _switchRefused = length < ShortestBridge ? "Too short for a bridge: keep going" : "Too long for one bridge";
             return;
         }
 
         _bridgeFrom = null;
-        if (Roads.AddBridge(from, end, out var refused) is { } edit)
+        var made = landing is { } out2 ? Roads.AddBridgeOut(from, end, out2, out var refused) : Roads.AddBridge(from, end, out refused);
+        if (made is { } edit)
             Committed(edit);
         else
             _switchRefused = refused;
@@ -2460,6 +2486,8 @@ public sealed partial class EditorView : IDisposable
             _shape.Draw(draw, shaping, Project, S(1f));
         if (_tool is Tool.Follow or Tool.Pen or Tool.Shape or Tool.Parallel)
             _guides?.Draw(draw, ProjectGround, _camera.X, _camera.Z, ViewReach);
+        if (_tool is Tool.Follow or Tool.Pen or Tool.Parallel || (_tool == Tool.Place && _place.Mode is PlaceMode.Track or PlaceMode.Bridge))
+            _tracks?.DrawAttach(draw, _camera.X, _camera.Z, ProjectGround, Input.MousePosition);
         if (_tool == Tool.Follow)
             _follow.Draw(draw, ProjectGround, Input.MousePosition);
         if (_tool == Tool.Follow)
@@ -2509,17 +2537,22 @@ public sealed partial class EditorView : IDisposable
         if (BridgeEndAt(x, z) is not { } end || Roads.Span(from, end) is not { } span)
             return;
 
-        var color = span.Length < ShortestBridge ? Style.Stop : Style.Accent;
+        var landing = BridgeLandingAt(end, x, z);
+        var total = BridgeLength(from, end, landing);
+        var color = total < ShortestBridge || total > LongestBridge ? Style.Stop : Style.Accent;
         for (var i = 0; i + 1 < span.Points.Count; i++)
             if (ProjectGround(span.Points[i].X, span.Points[i].Z) is { } a && ProjectGround(span.Points[i + 1].X, span.Points[i + 1].Z) is { } b)
                 draw.AddLine(a, b, color, S(5f));
         if (ProjectGround(from.X, from.Z) is { } first)
             draw.AddCircleFilled(first, S(6f), color);
-        if (ProjectGround(end.X, end.Z) is { } last)
+        var (lastX, lastZ) = landing is { } l ? (l.X, l.Z) : (end.X, end.Z);
+        if (landing is not null && ProjectGround(end.X, end.Z) is { } edge && ProjectGround(lastX, lastZ) is { } over)
+            draw.AddLine(edge, over, color, S(5f));
+        if (ProjectGround(lastX, lastZ) is { } last)
         {
             draw.AddCircleFilled(last, S(6f), color);
             var imperial = Settings.Current.Units == UnitSystem.Imperial;
-            var length = imperial ? $"{span.Length * FeetPerMeter:#,0} ft" : $"{span.Length:#,0} m";
+            var length = imperial ? $"{total * FeetPerMeter:#,0} ft" : $"{total:#,0} m";
             PenTool.Label(draw, last, $"Bridge {length}", color);
         }
     }

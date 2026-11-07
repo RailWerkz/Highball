@@ -182,7 +182,7 @@ public sealed class RoadEditor
         var line = new HashSet<long>();
         if (!_network.Ways.TryGetValue(id, out var start))
             return line;
-        var ends = _network.Ways.Values.Where(w => w.Nodes.Length >= 2 && w.Rail == start.Rail && !w.Tags.ContainsKey(RouteNetwork.RemovedTag))
+        var ends = _network.Ways.Values.Where(w => w.Nodes.Length >= 2 && w.Rail == start.Rail && !w.Tags.ContainsKey(RouteNetwork.RemovedTag) && !RouteNetwork.IsGuide(w))
             .SelectMany(w => ((long[])[w.Nodes[0], w.Nodes[^1]]).Select(end => (End: end, Way: w))).ToLookup(e => e.End, e => e.Way);
         line.Add(id);
         var frontier = new List<NetworkWay> { start };
@@ -256,7 +256,103 @@ public sealed class RoadEditor
     }
 
     /// Makes the line between two places on it a bridge: both on one way, or on ways joined end to end.
-    public NetworkEdit? AddBridge(Hit a, Hit b, out string? refused)
+    public NetworkEdit? AddBridge(Hit a, Hit b, out string? refused) =>
+        BridgeChanges(a, b, out refused) is { } changes ? Commit(changes) : null;
+
+    /// The node at this place if it's the very end of a line, with nothing built joined to it.
+    public long? LooseEndAt(Hit hit)
+    {
+        if (!_network.Ways.TryGetValue(hit.Way, out var way))
+            return null;
+        long? node = hit.Segment == 0 && hit.T <= 0.001 ? way.Nodes[0] : hit.Segment == way.Nodes.Length - 2 && hit.T >= 0.999 ? way.Nodes[^1] : null;
+        if (node is not { } end)
+            return null;
+        return _network.Ways.Values.Any(w => w.Id != way.Id && w.Rail == way.Rail && !w.Tags.ContainsKey(RouteNetwork.RemovedTag) && !RouteNetwork.IsGuide(w) && w.Nodes.Contains(end)) ? null : end;
+    }
+
+    /// A place on a line moved to the line's end, if that's within this many metres and the end's loose.
+    public Hit ToLooseEnd(Hit hit, double within)
+    {
+        Refresh();
+        if (!_network.Ways.TryGetValue(hit.Way, out var way) || Shape(hit.Way) is not { } shape)
+            return hit;
+        foreach (var (segment, t, i) in (ReadOnlySpan<(int, double, int)>)[(0, 0.0, 0), (way.Nodes.Length - 2, 1.0, way.Nodes.Length - 1)])
+        {
+            var end = new Hit(hit.Way, segment, t, shape.X[i], shape.Z[i]);
+            if (Math.Sqrt((end.X - hit.X) * (end.X - hit.X) + (end.Z - hit.Z) * (end.Z - hit.Z)) < within && LooseEndAt(end) is not null)
+                return end;
+        }
+
+        return hit;
+    }
+
+    /// What a bridge carried on past a line's end would land on: another line's end or point if one's there, otherwise the ground.
+    public LayPoint LandingAt(Hit from, double x, double z, double within)
+    {
+        var rail = _network.Ways[from.Way].Rail;
+        var own = LooseEndAt(from);
+        LayPoint point = new(x, z);
+        if (rail)
+        {
+            if (_tracks.LooseEndNear(x, z, within) is { } end && end != own)
+            {
+                var (nx, nz) = _tracks.PositionOf(end);
+                point = new LayPoint(nx, nz, Node: end);
+            }
+            else if (_tracks.SegmentNear(x, z, within) is { } on && on.Way != from.Way)
+                point = new LayPoint(on.X, on.Z, Split: (on.Way, on.Segment));
+        }
+        else
+        {
+            var snapped = Snap(x, z, within);
+            if (snapped.Node != own && snapped.Split?.Way != from.Way)
+                point = snapped;
+        }
+
+        return point;
+    }
+
+    /// A bridge from a place on a line along it to its loose end, and on past that in a straight line to where it lands.
+    public NetworkEdit? AddBridgeOut(Hit a, Hit end, LayPoint landing, out string? refused)
+    {
+        refused = null;
+        if (LooseEndAt(end) is not { } node || !_network.Ways.TryGetValue(end.Way, out var way))
+            return null;
+
+        var along = Math.Abs(a.X - end.X) + Math.Abs(a.Z - end.Z) < 0.01 && a.Way == end.Way ? [] : BridgeChanges(a, end, out refused);
+        if (along is null)
+            return null;
+        if (landing.Split is { } split && along.Any(c => c.Item1 == split.Way))
+        {
+            refused = "Land it on one of that line's points";
+            return null;
+        }
+
+        var (dx, dz) = (landing.X - end.X, landing.Z - end.Z);
+        var count = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(dx * dx + dz * dz) / 5.0));
+        var (nodes, lat, lon) = (new long[count + 1], new double[count + 1], new double[count + 1]);
+        for (var i = 0; i <= count; i++)
+        {
+            var geo = Geo(end.X + dx * i / count, end.Z + dz * i / count);
+            (nodes[i], lat[i], lon[i]) = (i == 0 ? node : i == count && landing.Node is { } onto ? onto : _network.NewId(), geo.Lat, geo.Lon);
+        }
+
+        if (landing.Split is { } into && _network.Ways.TryGetValue(into.Way, out var landed))
+        {
+            var at = NearestSegment(landed, new GeoPoint(lat[count], lon[count]));
+            var (n, la, lo) = (landed.Nodes.ToList(), landed.Lat.ToList(), landed.Lon.ToList());
+            n.Insert(at + 1, nodes[count]);
+            la.Insert(at + 1, lat[count]);
+            lo.Insert(at + 1, lon[count]);
+            along.Add((landed.Id, landed, Edited(landed, landed.Id, [.. n], [.. la], [.. lo])));
+        }
+
+        var id = _network.NewId();
+        along.Add((id, null, Edited(way, id, nodes, lat, lon, WithBridge(way.Tags, true))));
+        return Commit(along);
+    }
+
+    private List<(long, NetworkWay?, NetworkWay?)>? BridgeChanges(Hit a, Hit b, out string? refused)
     {
         refused = null;
         if (!_network.Ways.ContainsKey(a.Way) || !_network.Ways.ContainsKey(b.Way))
@@ -268,7 +364,7 @@ public sealed class RoadEditor
             var way = _network.Ways[a.Way];
             var changes = new List<(long, NetworkWay?, NetworkWay?)>();
             AddPieces(way, changes, Range(way, 0, from.Segment, from), Middle(way, from, to), Range(way, to, way.Nodes.Length - 1));
-            return Commit(changes);
+            return changes;
         }
 
         if (Chain(a.Way, b.Way) is not { } chain)
@@ -292,7 +388,7 @@ public sealed class RoadEditor
             AddPieces(last, edits, Range(last, 0, b.Segment, b), Range(last, b, last.Nodes.Length - 1), null);
         foreach (var id in chain.Skip(1).SkipLast(1))
             edits.Add((id, _network.Ways[id], Edited(_network.Ways[id], id, _network.Ways[id].Nodes, _network.Ways[id].Lat, _network.Ways[id].Lon, WithBridge(_network.Ways[id].Tags, true))));
-        return Commit(edits);
+        return edits;
     }
 
     private int SharedEnd(NetworkWay way, NetworkWay next) =>
@@ -406,7 +502,9 @@ public sealed class RoadEditor
     {
         var rail = _network.Ways[from].Rail;
         var byEnd = new Dictionary<long, List<NetworkWay>>();
-        foreach (var way in _network.Ways.Values.Where(w => w.Nodes.Length >= 2 && w.Rail == rail))
+        // (Not through a guide, which is only a mark of where track could go, unless that's where this began.)
+        var guided = RouteNetwork.IsGuide(_network.Ways[from]);
+        foreach (var way in _network.Ways.Values.Where(w => w.Nodes.Length >= 2 && w.Rail == rail && (guided || !RouteNetwork.IsGuide(w))))
         {
             foreach (var end in (long[])[way.Nodes[0], way.Nodes[^1]])
             {

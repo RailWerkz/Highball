@@ -1412,6 +1412,33 @@ public sealed class TrackEditor
 
     /// The rail ways near the camera and their control points, over the view: the hovered one larger, the selected
     /// ones white, shown moved by offset while they're dragged.
+    /// What new track can attach to, for the tools that lay it: a dot on each point, and a ring on each loose end. The one under the
+    /// pointer is picked out.
+    public void DrawAttach(ImDrawListPtr draw, double cx, double cz, Func<double, double, float2?> project, float2 mouse)
+    {
+        Refresh();
+        var hover = NodeAt(mouse, cx, cz, project);
+        var uses = RailUses();
+        foreach (var (node, (x, z)) in _nodes)
+        {
+            if (Math.Abs(x - cx) > Reach || Math.Abs(z - cz) > Reach || project(x, z) is not { } p)
+                continue;
+            if (uses.GetValueOrDefault(node) == 1 && IsLooseEnd(node))
+            {
+                draw.AddCircleFilled(p, Style.S(5f), Style.Clear);
+                draw.AddCircle(p, Style.S(8f), Rgba.White, 0, Style.S(1.5f));
+            }
+            else
+            {
+                var half = Style.S(2.5f);
+                draw.AddRectFilled(p - new float2(half), p + new float2(half), Style.Clear);
+            }
+
+            if (node == hover)
+                draw.AddCircle(p, Style.S(11f), Rgba.White, 0, Style.S(2.5f));
+        }
+    }
+
     public void Draw(ImDrawListPtr draw, double cx, double cz, Func<double, double, float2?> project, long? hover, IReadOnlySet<long> selected,
         (double X, double Z)? offset)
     {
