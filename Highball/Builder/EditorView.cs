@@ -472,12 +472,7 @@ public sealed partial class EditorView : IDisposable
         }
 
         if (Input.Scroll != 0f && !Blocked && !WheelTurns)
-        {
-            if (Input.Key(GlfwKey.LeftShift))
-                _speed = Math.Clamp(_speed * MathF.Pow(1.25f, Input.Scroll), MinSpeed, MaxSpeed);
-            else
-                Zoom(Input.Scroll);
-        }
+            _speed = Math.Clamp(_speed * MathF.Pow(1.25f, Input.Scroll), MinSpeed, MaxSpeed);
 
         var forward = _camera.Forward;
         var right = _camera.Right;
@@ -504,32 +499,6 @@ public sealed partial class EditorView : IDisposable
         var ground = _terrain!.Source.HeightAt(_camera.X, _camera.Z);
         _camera.Y = Math.Max(_camera.Y, ground + 1.8);
     }
-
-    /// Moves towards what's under the pointer, or away from it, by a share of how far off it is, as the 2D Editor's zoom does. With
-    /// only sky there, straight ahead by a share of the height above the ground.
-    private void Zoom(float ticks)
-    {
-        var source = _terrain!.Source;
-        double to, up, along;
-        if (_pointerAt is { } at)
-            (to, up, along) = (at.X - _camera.X, source.HeightAt(at.X, at.Z) - _camera.Y, at.Z - _camera.Z);
-        else
-        {
-            var reach = Math.Max(_camera.Y - source.HeightAt(_camera.X, _camera.Z), 10.0) * 2.0;
-            var ahead = _camera.Forward;
-            (to, up, along) = (ahead.X * reach, ahead.Y * reach, ahead.Z * reach);
-        }
-
-        // (Not too far in one go when what's under the pointer is on the horizon.)
-        var distance = Math.Sqrt(to * to + up * up + along * along);
-        var limit = distance > MaxZoomStep ? MaxZoomStep / distance : 1.0;
-        var share = (1.0 - Math.Pow(0.8, ticks)) * limit;
-        _camera.X += to * share;
-        _camera.Y += up * share;
-        _camera.Z += along * share;
-    }
-
-    private const double MaxZoomStep = 2000.0;
 
     private double _flyLogAt;
     private float _flyWorst;
@@ -1897,15 +1866,6 @@ public sealed partial class EditorView : IDisposable
                 break;
             }
 
-            case "zoom":
-            {
-                // zoom,TICKS: as the wheel in the 3D Editor.
-                var (zx, zy, zz) = (_camera.X, _camera.Y, _camera.Z);
-                Zoom((float)Number(1));
-                Log.Info(string.Create(CultureInfo.InvariantCulture, $"Zoom {parts[1]}: moved {_camera.X - zx:0.0} {_camera.Y - zy:0.0} {_camera.Z - zz:0.0}, under the pointer {(_pointerAt is null ? "nothing" : "ground")}"));
-                break;
-            }
-
             case "bridgeclick":
             {
                 // bridgeclick,lat,lon: as a click with Place bridge in hand.
@@ -3139,7 +3099,7 @@ public sealed partial class EditorView : IDisposable
         {
             (string, string)[] tool = _tool switch
             {
-                Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", "Zoom"), .. (_topDown ? ((string, string)[])[] : [("SHIFT+WHEEL", "Speed")]), ("G", "Grades"), ("T", "Throw switch")],
+                Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", _topDown ? "Zoom" : "Speed"), ("G", "Grades"), ("T", "Throw switch")],
                 Tool.Road when _road.Mode == RoadMode.Remove => [("LMB", "Remove road"), ("CTRL+Z", "Undo")],
                 Tool.Road => [("LMB", "Next point"), ("SHIFT", "15 degree steps"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Parallel => [("LMB", "Start, then end"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
