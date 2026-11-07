@@ -48,6 +48,7 @@ const int Asphalt = 2;
 const int Gravel = 3;
 const int Concrete = 4;
 const int Painted = 5;
+const int BridgeSteel = 6; // a bridge's steel. Style 1: galvanised railing, otherwise painted girders
 
 // NetworkMeshes.Paints: what a placed model's parts are painted.
 const vec3 Paints[7] = vec3[](vec3(0.018), vec3(0.62, 0.62, 0.60), vec3(0.26, 0.27, 0.28), vec3(0.60, 0.42, 0.05),
@@ -326,10 +327,28 @@ void main()
     }
     else if (material == Concrete)
     {
-        float stain = fbm(tex * 0.5 + world.y * 0.7, pixel * 0.7);
-        albedo = vec3(0.22, 0.215, 0.20) * (0.75 + 0.4 * stain);
+        // Cast in panels, with the joints showing, and streaked by the rain running down it.
+        vec2 face = boxUv(world, n);
+        bool upright = abs(n.y) < 0.5;
+        float streaks = fbm(upright ? vec2(face.x * 1.6, world.y * 0.1) : face * 0.5, pixel * 1.6);
+        float stain = fbm(face * 0.5 + world.y * 0.3, pixel * 0.7);
+        float joints = upright ? max(stripe(fract(face.x / 3.0) * 3.0, 0.0, 0.012, pixel), stripe(fract(world.y / 2.4) * 2.4, 0.0, 0.01, pixel)) : 0.0;
+        albedo = vec3(0.36, 0.34, 0.30) * (0.72 + 0.28 * stain) * (0.72 + 0.42 * streaks) * (1.0 - 0.55 * joints);
         roughness = 0.85;
         specular = 0.25;
+    }
+    else if (material == BridgeSteel)
+    {
+        // Pale paint weathered by Metal024; on the girders it's peeled off in patches to the rust beneath.
+        vec2 worn = boxUv(world, n) / 1.2;
+        vec2 packed = texture(paintedPacked, worn).gb;
+        vec3 grime = texture(paintedColor, worn).rgb;
+        vec3 painted = (style == 1 ? vec3(0.34, 0.35, 0.35) : vec3(0.50, 0.51, 0.48)) * mix(vec3(1.0), grime * 2.0, 0.35);
+        float peeled = style == 1 ? 0.0 : 0.85 * smoothstep(0.66, 0.70, fbm(boxUv(world, n) * 1.8, pixel * 1.8));
+        albedo = mix(painted, vec3(0.30, 0.20, 0.12) * (0.6 + grime), peeled);
+        roughness = mix(0.55, 0.9, peeled);
+        specular = 0.5;
+        n = bumped(n, texture(paintedNormal, worn).xyz * 2.0 - 1.0, worn);
     }
     else if (material == Painted && style == WoodPaint)
     {

@@ -34,7 +34,7 @@ public struct TieInstance(float4 positionRandom, float4 forward)
 }
 
 /// The materials line.frag knows.
-public enum LineMaterial { Ballast, Rail, Asphalt, Gravel, Concrete, Painted }
+public enum LineMaterial { Ballast, Rail, Asphalt, Gravel, Concrete, Painted, Steel }
 
 /// The roads and rails in 3D, built from NetworkLines in square chunks on worker threads and streamed by distance.
 /// Each chunk has a far mesh (ballast beds, roads, bridges: drawn out to FarRadius) and a near one (rails, and the
@@ -43,7 +43,7 @@ public enum LineMaterial { Ballast, Rail, Asphalt, Gravel, Concrete, Painted }
 ///
 /// Every shape is a cross-section swept along the line's centreline at its formation height: the ballast a
 /// trapezoid with 1:1.5 shoulders, the rail a 136 lb profile, roads a crowned-flat deck with gravel shoulders,
-/// bridges a concrete deck with parapets and piers down to the ground.
+/// bridges a deck on steel girders with railings, on piers and abutments down to the ground (NetworkMeshes.Bridges.cs).
 public sealed partial class NetworkMeshes : IDisposable
 {
     public const float ChunkSize = 500f;
@@ -699,7 +699,10 @@ public sealed partial class NetworkMeshes : IDisposable
                     Road(builder, lines, line, first, last, structure == Structure.Bridge);
 
                 if (structure == Structure.Bridge)
+                {
+                    BridgeSteel(builder, line, first, last);
                     Piers(builder, line, first, last);
+                }
             }
         }
 
@@ -851,15 +854,13 @@ public sealed partial class NetworkMeshes : IDisposable
             return;
         }
 
-        // A ballasted concrete deck with low parapets.
-        const float deck = 1.8f;
-        var wall = h + 0.5f;
+        // A ballasted concrete deck, held in by a curb each side. Its steel's in BridgeSteel.
         var concrete = Code(LineMaterial.Concrete);
-        const float slab = 0.5f;
+        var (edge, _, top) = DeckOf(line);
         (float, float)[] section =
         [
-            (-w - 0.9f, -slab), (-w - 0.9f, wall), (-w - 0.6f, wall), (-w - 0.6f, 0f), (-w, h), (w, h), (w + 0.6f, 0f),
-            (w + 0.6f, wall), (w + 0.9f, wall), (w + 0.9f, -slab), (w - 0.1f, -slab - 0.1f), (w - 0.1f, -deck), (-w + 0.1f, -deck), (-w + 0.1f, -slab - 0.1f), (-w - 0.9f, -slab),
+            (-edge, -0.25f), (-edge, top), (-w - 0.55f, top), (-w - 0.55f, 0.05f), (-w, h), (w, h), (w + 0.55f, 0.05f),
+            (w + 0.55f, top), (edge, top), (edge, -0.25f), (-edge, -0.25f),
         ];
         Sweep(builder, line, first, last, section, e => e is 3 or 4 or 5 ? ballast : concrete, (_, _, _) => railOffset);
     }
@@ -928,15 +929,13 @@ public sealed partial class NetworkMeshes : IDisposable
         }
         else
         {
-            const float deck = 1.4f;
-            const float wall = 0.9f;
             var concrete = Code(LineMaterial.Concrete);
-            // A slab with a parapet each side, over girders set in from its edge so they throw a line of shade.
-            const float slab = 0.4f;
+            // A slab with a low curb each side. Its steel's in BridgeSteel.
+            var (_, _, curb) = DeckOf(line);
             RoadSweep(builder, lines, line, rings, taper, h =>
             [
-                (-h - 0.5f, -slab), (-h - 0.5f, wall), (-h, wall), (-h, RoadRise), (h, RoadRise), (h, wall),
-                (h + 0.5f, wall), (h + 0.5f, -slab), (h - 0.9f, -slab - 0.1f), (h - 0.9f, -deck), (-h + 0.9f, -deck), (-h + 0.9f, -slab - 0.1f), (-h - 0.5f, -slab),
+                (-h - 0.55f, -0.25f), (-h - 0.55f, curb), (-h, curb), (-h, RoadRise), (h, RoadRise), (h, curb),
+                (h + 0.55f, curb), (h + 0.55f, -0.25f), (-h - 0.55f, -0.25f),
             ], e => e == 3 ? surface : concrete);
         }
 
@@ -1168,21 +1167,34 @@ public sealed partial class NetworkMeshes : IDisposable
         var span = 25f;
         var next = MathF.Ceiling(line.S[first] / span) * span;
 
-        // An abutment under each end of the deck, holding the bank back.
+        // An abutment under each end of the deck: a seat for the girders, a wall behind them up to the deck, and a wing wall each side
+        // going back and out into the bank, its top falling to the ground.
         void Abutment(int p, int inward)
         {
             var (ax, az) = (line.X[p], line.Z[p]);
-            var ground = _source.HeightAt(ax, az);
-            var top = line.Y[p] - deckDepth;
-            if (top - ground < 0.3f)
-                return;
             var fx = (float)(line.X[inward] - ax);
             var fz = (float)(line.Z[inward] - az);
             var length = MathF.Max(MathF.Sqrt(fx * fx + fz * fz), 1e-5f);
             var forward = new float3(fx / length, 0f, fz / length);
+            var ground = MathF.Min(_source.HeightAt(ax, az), _source.HeightAt(ax + forward.X * 4.0, az + forward.Z * 4.0));
+            var top = line.Y[p] - deckDepth;
+            if (top - ground < 0.3f)
+                return;
             var right = new float3(-forward.Z, 0f, forward.X);
             var center = new float3((float)(ax - builder.Origin.X), 0f, (float)(az - builder.Origin.Z));
-            Box(builder, center + forward * 0.2f, right * (deckWidth * 0.56f), forward * 1.2f, ground - 1.5f, top + deckDepth * 0.5f, concrete);
+            var half = deckWidth * 0.5f + 0.1f;
+            Solid(builder, center + forward * 0.6f, right * half, forward * 0.9f, ground - 1.5f, top, concrete);
+            Solid(builder, center - forward * 0.35f, right * half, forward * 0.35f, ground - 1.5f, line.Y[p] - 0.05f, concrete);
+
+            var reach = Math.Clamp((line.Y[p] - ground) * 1.6f, 3f, 16f);
+            foreach (var side in (float[])[-1f, 1f])
+            {
+                var a = center - forward * 0.7f + right * (side * (half - 0.15f));
+                var way = MathEx.Normalize(forward * -0.94f + right * (side * 0.34f));
+                var b = a + way * reach;
+                var end = _source.HeightAt(b.X + builder.Origin.X, b.Z + builder.Origin.Z);
+                Wing(builder, a, b, 0.4f, ground - 1.5f, line.Y[p] + 0.25f, MathF.Min(end + 0.15f, line.Y[p] + 0.25f), concrete);
+            }
         }
 
         if (first == 0 || line.Structures[first - 1] != Structure.Bridge)
@@ -1209,8 +1221,9 @@ public sealed partial class NetworkMeshes : IDisposable
                 var forward = new float3(fx / length, 0f, fz / length);
                 var right = new float3(-forward.Z, 0f, forward.X);
                 var center = new float3((float)(x - builder.Origin.X), 0f, (float)(z - builder.Origin.Z));
-                Box(builder, center, right * (deckWidth * 0.26f), forward * 0.6f, ground - 1f, top - 0.8f, concrete);
-                Box(builder, center, right * (deckWidth * 0.46f), forward * 0.8f, top - 0.8f, top, concrete);
+                // A wall of a pier under a railway, a column under a road, and a cap across for the girders to sit on.
+                Solid(builder, center, right * (deckWidth * (line.Rail ? 0.42f : 0.2f)), forward * 0.65f, ground - 1f, top - 0.8f, concrete);
+                Solid(builder, center, right * (deckWidth * 0.48f), forward * 0.8f, top - 0.8f, top, concrete);
             }
         }
     }
