@@ -198,6 +198,8 @@ void main()
     float hold = 1.0;
     float coverage = 1.0; // how much of the ground underneath it covers, where it fades into it
     vec3 shadowNormal = n;
+    // The fade asks for its shadow from the ground it lies on, a little more the further out, so that where it meets the bed there's no step.
+    float fadeShadowDrop = 0.0;
 
     if (material == Ballast)
     {
@@ -306,6 +308,7 @@ void main()
         bool fading = vData.w < 0.0;
         // (Data.w starts from -0.3 at the outer edge, so multisampling reading it a little past the edge still finds it fading.)
         float rise = fading ? clamp((-vData.w - 0.3) / 2.4, 0.0, 1.0) : 1.0;
+        fadeShadowDrop = 0.06 * (1.0 - rise);
         vec2 base = (fading ? vec2(u, v) : tex) / 1.5;
         vec2 stone = parallax(rockPacked, base, n, view, 0.06 * smoothstep(0.4, 1.0, rise), 1.5, dist);
         if (fading)
@@ -388,7 +391,7 @@ void main()
     s.specular = specular;
     weatherSurface(s, puddle, hold);
 
-    vec3 color = shadeLight(s, sun, SunColor * sunShadow(material == Gravel && vData.w < 0.0 ? vRelative - vec3(0.0, 0.06, 0.0) : vRelative, material == Gravel ? shadowNormal : n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative);
+    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative - vec3(0.0, fadeShadowDrop, 0.0), material == Gravel ? shadowNormal : n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative);
     color = applyFog(color, view, dist, pc.camera.y, sun);
     outColor = vec4(color, coverage);
 }
