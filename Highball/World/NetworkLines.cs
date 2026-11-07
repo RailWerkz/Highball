@@ -972,6 +972,8 @@ public sealed partial class NetworkLines
             }
         });
 
+        SpreadForks();
+
         var surfaceWatch = System.Diagnostics.Stopwatch.StartNew();
         // Each pass draws tracks close in height closer still; a few make tracks side by side agree to millimetres.
         var wide = new RailPoints(_lines, SurfaceReach);
@@ -1002,6 +1004,7 @@ public sealed partial class NetworkLines
         Junctions();
         FindJunctions();
         LetDownBeds();
+        LevelRoadsAtRails();
 
         Parallel.ForEach(_lines, line => line.Junction = JunctionDistances(line));
         Layer();
@@ -1439,12 +1442,99 @@ public sealed partial class NetworkLines
 
     private static float Ease(float t) => t * t * (3f - 2f * t);
 
+    /// Nodes where a road splits in two: its markings run right up to them.
+    private readonly HashSet<long> _forks = [];
+
+    /// Where a wide road splits into two narrower ones, as a dual carriageway begins, they're mapped from one point down its middle. Each
+    /// is moved over to its own side of the wide road instead, so their outer edges carry on from its edges, leaving it running straight
+    /// on from the wide road and easing onto its mapped way.
+    private void SpreadForks()
+    {
+        _forks.Clear();
+        var touching = new Dictionary<long, int>();
+        var ends = new Dictionary<long, List<(NetworkLine Line, int Point)>>();
+        foreach (var line in _lines)
+            foreach (var (node, point) in line.Nodes)
+            {
+                touching[node] = touching.GetValueOrDefault(node) + 1;
+                if (line.Rail || line.Mark || (point != 0 && point != line.Count - 1) || line.Structures[Math.Min(point, line.Structures.Length - 1)] != Structure.Ground)
+                    continue;
+                if (!ends.TryGetValue(node, out var list))
+                    ends[node] = list = [];
+                list.Add((line, point));
+            }
+
+        foreach (var (node, list) in ends)
+        {
+            if (list.Count != 3 || touching[node] != 3)
+                continue;
+            var ordered = list.OrderByDescending(e => e.Line.Width).ToList();
+            var (main, a, b) = (ordered[0], ordered[1], ordered[2]);
+            var width = main.Line.Width;
+            if (width < a.Line.Width * 1.2f || width < (a.Line.Width + b.Line.Width) * 0.75f)
+                continue;
+
+            var (ox, oz) = Outward(main.Line, main.Point);
+            bool Onward((NetworkLine Line, int Point) e)
+            {
+                var (x, z) = Outward(e.Line, e.Point);
+                return x * ox + z * oz < -0.7;
+            }
+
+            if (!Onward(a) || !Onward(b))
+                continue;
+
+            // Which side each goes to: by where it's got to a little way on.
+            var (sx, sz) = (-oz, ox);
+            double Side((NetworkLine Line, int Point) e)
+            {
+                var from = e.Line.S[e.Point];
+                var far = Enumerable.Range(0, e.Line.Count).FirstOrDefault(p => MathF.Abs(e.Line.S[p] - from) > 40f, e.Point == 0 ? e.Line.Count - 1 : 0);
+                return (e.Line.X[far] - e.Line.X[e.Point]) * sx + (e.Line.Z[far] - e.Line.Z[e.Point]) * sz;
+            }
+
+            var (sideA, sideB) = (Side(a), Side(b));
+            if (Math.Abs(sideA - sideB) < 0.5)
+                continue;
+
+            MoveOver(a, (ox, oz), (sx, sz), (sideA > sideB ? 1f : -1f) * (width - a.Line.Width) * 0.5f);
+            MoveOver(b, (ox, oz), (sx, sz), (sideB > sideA ? 1f : -1f) * (width - b.Line.Width) * 0.5f);
+            _forks.Add(node);
+        }
+    }
+
+    private static void MoveOver((NetworkLine Line, int Point) end, (double X, double Z) onward, (double X, double Z) side, float by)
+    {
+        var (line, point) = end;
+        var (nx, nz) = (line.X[point], line.Z[point]);
+        var reach = MathF.Min(MathF.Max(40f, MathF.Abs(by) * 14f), line.S[line.Count - 1] * 0.8f);
+        var from = line.S[point];
+        for (var p = 0; p < line.Count; p++)
+        {
+            var d = MathF.Abs(line.S[p] - from);
+            if (d >= reach)
+                continue;
+            var t = d / reach;
+            var ease = t * t * (3f - 2f * t);
+            var (x, z) = (nx + side.X * by + onward.X * d, nz + side.Z * by + onward.Z * d);
+            line.X[p] = x + (line.X[p] - x) * ease;
+            line.Z[p] = z + (line.Z[p] - z) * ease;
+        }
+
+        for (var p = 1; p < line.Count; p++)
+            line.S[p] = line.S[p - 1] + (float)Math.Sqrt((line.X[p] - line.X[p - 1]) * (line.X[p] - line.X[p - 1]) + (line.Z[p] - line.Z[p - 1]) * (line.Z[p] - line.Z[p - 1]));
+        line.MinX = line.X.Min();
+        line.MaxX = line.X.Max();
+        line.MinZ = line.Z.Min();
+        line.MaxZ = line.Z.Max();
+    }
+
     private float[] JunctionDistances(NetworkLine line)
     {
         var distances = new float[line.Count];
         Array.Fill(distances, float.MaxValue);
         foreach (var (node, point) in line.Nodes)
-            if (_junctionNodes.Contains(node) && !_continuing.ContainsKey((line.Index, point)))
+            if (_junctionNodes.Contains(node) && !_continuing.ContainsKey((line.Index, point)) && !_forks.Contains(node))
                 distances[point] = 0f;
 
         for (var p = 1; p < line.Count; p++)
@@ -1452,6 +1542,68 @@ public sealed partial class NetworkLines
         for (var p = line.Count - 2; p >= 0; p--)
             distances[p] = Math.Min(distances[p], distances[p + 1] + line.S[p + 1] - line.S[p]);
         return distances;
+    }
+
+    /// How far a rail's top stands above the line's height, and how far a road's surface above its own. How gently a road eases to it.
+    private const float RailTopAbove = NetworkLine.BallastHeight + 0.18f;
+    private const float RoadSurfaceAbove = 0.06f;
+    private const float RoadToRailGrade = 0.02f;
+
+    /// Where a road crosses a track on the level, it comes to the rails' height there, so the two can be one surface. Its grade eases to
+    /// that gently, and stays at its own height at its ends, which other roads meet.
+    private void LevelRoadsAtRails()
+    {
+        var rails = _lines.Where(l => l.Rail && !l.Disused).ToList();
+        Parallel.ForEach(_lines.Where(l => !l.Rail && !l.Mark), road =>
+        {
+            var hits = new List<(float S, float Y)>();
+            for (var i = 0; i + 1 < road.Count; i++)
+            {
+                if (road.Structures[i] != Structure.Ground)
+                    continue;
+                var (ax, az, bx, bz) = (road.X[i], road.Z[i], road.X[i + 1], road.Z[i + 1]);
+                foreach (var rail in rails)
+                {
+                    if (Math.Max(ax, bx) < rail.MinX || Math.Min(ax, bx) > rail.MaxX || Math.Max(az, bz) < rail.MinZ || Math.Min(az, bz) > rail.MaxZ)
+                        continue;
+                    for (var r = 0; r + 1 < rail.Count; r++)
+                    {
+                        if (rail.Structures[r] != Structure.Ground)
+                            continue;
+                        var (ux, uz, vx, vz) = (bx - ax, bz - az, rail.X[r + 1] - rail.X[r], rail.Z[r + 1] - rail.Z[r]);
+                        var cross = ux * vz - uz * vx;
+                        if (Math.Abs(cross) < 1e-6)
+                            continue;
+                        var (wx, wz) = (rail.X[r] - ax, rail.Z[r] - az);
+                        var (t, q) = ((wx * vz - wz * vx) / cross, (wx * uz - wz * ux) / cross);
+                        if (t < 0.0 || t >= 1.0 || q < 0.0 || q >= 1.0)
+                            continue;
+                        var y = rail.Y[r] + (rail.Y[r + 1] - rail.Y[r]) * (float)q;
+                        hits.Add((road.S[i] + (road.S[i + 1] - road.S[i]) * (float)t, y + RailTopAbove - RoadSurfaceAbove));
+                    }
+                }
+            }
+
+            var length = road.S[road.Count - 1];
+            foreach (var (at, target) in hits.OrderBy(h => h.S))
+            {
+                var here = 0f;
+                for (var p = 0; p + 1 < road.Count; p++)
+                    if (road.S[p + 1] >= at)
+                    {
+                        here = road.Y[p] + (road.Y[p + 1] - road.Y[p]) * Math.Clamp((at - road.S[p]) / MathF.Max(road.S[p + 1] - road.S[p], 1e-4f), 0f, 1f);
+                        break;
+                    }
+
+                var change = target - here;
+                var reach = MathF.Min(MathF.Max(25f, MathF.Abs(change) / RoadToRailGrade), MathF.Max(MathF.Min(at, length - at), 1f));
+                for (var p = 0; p < road.Count; p++)
+                {
+                    var away = Math.Clamp(1f - MathF.Abs(road.S[p] - at) / reach, 0f, 1f);
+                    road.Y[p] += change * away * away * (3f - 2f * away);
+                }
+            }
+        });
     }
 
     /// How steeply a track eases between one bed's height and another's.

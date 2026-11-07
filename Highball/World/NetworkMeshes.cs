@@ -147,6 +147,9 @@ public sealed partial class NetworkMeshes : IDisposable
     private readonly Dictionary<PlacedKind, Dictionary<string, Model.Part>> _objectModels = [];
 
     /// A placed object where it is: its height's found on the main thread, where the ground's safe to read.
+    /// The stretches of each road (by line) that crossings' decks take the place of, along it.
+    private Dictionary<int, List<(float From, float To)>> _crossingGaps = [];
+
     private sealed record PlacedAt(PlacedObject Object, double X, double Z, float Y, CrossingDeck? Deck);
 
     /// The paints line.frag knows, by the name a placed model's parts use.
@@ -297,6 +300,7 @@ public sealed partial class NetworkMeshes : IDisposable
     /// Takes the route's placed objects in, and builds again the chunks of those in changed (world metres).
     public void SetObjects(IReadOnlyList<PlacedObject> objects, IEnumerable<(double X, double Z)> changed, RouteProjection projection)
     {
+        var gaps = new Dictionary<int, List<(float From, float To)>>();
         (_objects, _objectProjection) = (objects, projection);
         _objectsByChunk.Clear();
         _handThrows.Clear();
@@ -313,9 +317,18 @@ public sealed partial class NetworkMeshes : IDisposable
             var key = KeyAt(x, z);
             if (!_objectsByChunk.TryGetValue(key, out var list))
                 _objectsByChunk[key] = list = [];
-            list.Add(new PlacedAt(o, x, z, _source.HeightAt(x, z), o.Kind == PlacedKind.GradeCrossing ? Deck(o, x, z) : null));
+            var deck = o.Kind == PlacedKind.GradeCrossing ? Deck(o, x, z) : null;
+            list.Add(new PlacedAt(o, x, z, _source.HeightAt(x, z), deck));
+            if (deck?.Gap is { } gap)
+            {
+                if (!gaps.TryGetValue(gap.Line, out var ofLine))
+                    gaps[gap.Line] = ofLine = [];
+                ofLine.Add((gap.From, gap.To));
+                ofLine.Sort();
+            }
         }
 
+        _crossingGaps = gaps;
         foreach (var sw in _switches.Values)
             sw.BuiltAt = -1f;
         foreach (var (x, z) in changed)
@@ -683,6 +696,9 @@ public sealed partial class NetworkMeshes : IDisposable
     private Built BuildFar(ChunkKey key, List<Run> runs, NetworkLines lines)
     {
         var builder = new Builder { Origin = OriginOf(key) };
+        if (_objectsByChunk.TryGetValue(key, out var placed))
+            foreach (var crossing in placed.Where(p => p.Object.Kind == PlacedKind.GradeCrossing))
+                CrossingSurface(builder, crossing);
         foreach (var run in runs)
         {
             var line = lines.Lines[run.Line];
@@ -720,7 +736,7 @@ public sealed partial class NetworkMeshes : IDisposable
         {
             // Street track laid by hand has a pavement of its own; a mapped tramway's already in its road.
             if (line.Bed == TrackBed.Street)
-                Sweep(builder, line, first, last, [(-1.9f, RoadRise), (1.9f, RoadRise)], _ => Code(LineMaterial.Asphalt, 2 + (int)MathF.Round(1.9f * 8f) * 64), (_, _, _) => 1000f);
+                Sweep(builder, line, first, last, [(-1.9f, RoadRise + 0.012f), (1.9f, RoadRise + 0.012f)], _ => Code(LineMaterial.Asphalt, 2 + (int)MathF.Round(1.9f * 8f) * 64), (_, _, _) => 1000f);
             return;
         }
 
@@ -980,7 +996,35 @@ public sealed partial class NetworkMeshes : IDisposable
             EndPatch(builder, lines, line, last, gravel);
     }
 
-    private static void Road(Builder builder, NetworkLines lines, NetworkLine line, int first, int last, bool bridge)
+    /// What a road's top is drawn in: its pavement with its markings, or gravel.
+    private static float RoadSurface(NetworkLine line, int marks) => line.Unpaved
+        ? Code(LineMaterial.Gravel)
+        : Code(LineMaterial.Asphalt, line.Lanes + (line.Oneway ? 8 : 0) + marks * 16 + (int)MathF.Round(line.Width * 4f) * 64);
+
+    /// A road, but for the stretches a crossing's deck takes the place of.
+    private void Road(Builder builder, NetworkLines lines, NetworkLine line, int first, int last, bool bridge)
+    {
+        var start = first;
+        if (!bridge && _crossingGaps.TryGetValue(line.Index, out var gaps))
+            foreach (var (from, to) in gaps)
+            {
+                // From the first point on the deck's ramp to the last, so the road's end lies just under the ramp's.
+                var (inFrom, inTo) = (-1, -1);
+                for (var p = start; p <= last; p++)
+                    if (line.S[p] >= from && line.S[p] <= to)
+                        (inFrom, inTo) = (inFrom < 0 ? p : inFrom, p);
+                if (inFrom < 0)
+                    continue;
+                if (inFrom > start)
+                    RoadStretch(builder, lines, line, start, inFrom, false);
+                start = inTo;
+            }
+
+        if (start < last)
+            RoadStretch(builder, lines, line, start, last, bridge);
+    }
+
+    private static void RoadStretch(Builder builder, NetworkLines lines, NetworkLine line, int first, int last, bool bridge)
     {
         var half = line.Width * 0.5f;
         var taper = RoadTaper(lines, line);
@@ -991,9 +1035,7 @@ public sealed partial class NetworkMeshes : IDisposable
             RoadClass.Minor => 1,
             _ => 0,
         };
-        var surface = line.Unpaved
-            ? Code(LineMaterial.Gravel)
-            : Code(LineMaterial.Asphalt, line.Lanes + (line.Oneway ? 8 : 0) + marks * 16 + (int)MathF.Round(line.Width * 4f) * 64);
+        var surface = RoadSurface(line, marks);
         float Junction(int p) => line.Junction.Length > p ? MathF.Min(line.Junction[p], 1000f) : 1000f;
 
         // Data.w is per point, so the sweep's value callback can't see it; patch it in after.
@@ -1670,18 +1712,39 @@ public sealed partial class NetworkMeshes : IDisposable
             return;
         }
 
-        // A grade crossing: its deck, and its masts.
+        // A grade crossing's masts. (Its deck's in the far mesh, as the road it takes the place of is.)
         if (placed.Deck is not { } deck)
             return;
-        var from = new float3((float)(placed.X - builder.Origin.X), 0f, (float)(placed.Z - builder.Origin.Z));
-        var surface = Code(LineMaterial.Asphalt);
-        foreach (var q in deck.Quads)
-            Face(builder, [from + q.A, from + q.B, from + q.C, from + q.D], from + q.Inside, surface, 0f);
         foreach (var (mx, mz, y, toward) in deck.Masts)
         {
             var mast = new float3((float)(mx - builder.Origin.X), y, (float)(mz - builder.Origin.Z));
             foreach (var (name, part) in parts)
                 Upright(builder, part, mast, toward, PaintOf(name), 0f);
+        }
+    }
+
+    private static void CrossingSurface(Builder builder, PlacedAt placed)
+    {
+        if (placed.Deck is not { } deck)
+            return;
+        var from = new float3((float)(placed.X - builder.Origin.X), 0f, (float)(placed.Z - builder.Origin.Z));
+        var surface = Code(LineMaterial.Asphalt);
+        foreach (var q in deck.Quads)
+        {
+            if (deck.Road is not { } road)
+                Face(builder, [from + q.A, from + q.B, from + q.C, from + q.D], from + q.Inside, surface, 0f);
+            else if (q.Shoulder)
+                Face(builder, [from + q.A, from + q.B, from + q.C, from + q.D], from + q.Inside, Code(LineMaterial.Gravel), 0f);
+            else
+            {
+                // The road's own surface carries on over it, markings and all.
+                var normal = Cross(q.B - q.A, q.D - q.A);
+                normal *= (normal.Y < 0f ? -1f : 1f) / MathF.Max(MathF.Sqrt(Dot(normal, normal)), 1e-6f);
+                var start = (uint)builder.Vertices.Count;
+                foreach (var corner in (float3[])[q.A, q.B, q.C, q.D])
+                    builder.Add(from + corner, normal, new float4(Dot(corner, road.Across) - road.AcrossAt, (Dot(corner, road.Along) + road.AlongAt) % Wrap, road.Code, 1000f));
+                builder.Indices.AddRange([start, start + 1, start + 2, start, start + 2, start + 3]);
+            }
         }
     }
 

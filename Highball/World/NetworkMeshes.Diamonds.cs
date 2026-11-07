@@ -306,10 +306,40 @@ public sealed partial class NetworkMeshes
     private const float CrossingRowStep = 1.5f;
 
     /// One quad of a deck, relative to the crossing's place, and whether it's a side (else it faces up).
-    private readonly record struct DeckQuad(float3 A, float3 B, float3 C, float3 D, float3 Inside);
+    private readonly record struct DeckQuad(float3 A, float3 B, float3 C, float3 D, float3 Inside, bool Shoulder = false);
+
+    /// The road a deck's a part of: what its surface is, and how a place on the deck maps to the road's own coordinates across and along.
+    private readonly record struct DeckRoad(float Code, float3 Across, float AcrossAt, float3 Along, float AlongAt);
 
     /// What a grade crossing's made of: its deck, and its masts in world metres.
-    private sealed record CrossingDeck(List<DeckQuad> Quads, (double X, double Z, float Y, float3 Face)[] Masts);
+    private sealed record CrossingDeck(List<DeckQuad> Quads, (double X, double Z, float Y, float3 Face)[] Masts, DeckRoad? Road = null, (int Line, float From, float To)? Gap = null);
+
+    /// The road running along a crossing here, if there is one: the nearest place on it to (x, z), and the way it runs there.
+    private (NetworkLine Line, int Segment, float T, double X, double Z, double Dx, double Dz)? RoadAlong(double x, double z, double dx, double dz)
+    {
+        (NetworkLine, int, float, double, double, double, double)? found = null;
+        var best = 12.0 * 12.0;
+        foreach (var road in _lines.Lines)
+        {
+            if (road.Rail || road.Mark || x < road.MinX - 12.0 || x > road.MaxX + 12.0 || z < road.MinZ - 12.0 || z > road.MaxZ + 12.0)
+                continue;
+            for (var i = 0; i + 1 < road.Count; i++)
+            {
+                var (sx, sz) = (road.X[i + 1] - road.X[i], road.Z[i + 1] - road.Z[i]);
+                var length = Math.Max(Math.Sqrt(sx * sx + sz * sz), 1e-6);
+                var (ux, uz) = (sx / length, sz / length);
+                if (Math.Abs(ux * dx + uz * dz) < 0.9)
+                    continue;
+                var t = Math.Clamp((x - road.X[i]) * ux + (z - road.Z[i]) * uz, 0.0, length);
+                var (px, pz) = (road.X[i] + ux * t, road.Z[i] + uz * t);
+                var away = (px - x) * (px - x) + (pz - z) * (pz - z);
+                if (away < best)
+                    (best, found) = (away, (road, i, (float)(t / length), px, pz, ux, uz));
+            }
+        }
+
+        return found;
+    }
 
     /// The rail lines the road's axis crosses near the place, as far as they run on side by side.
     private List<(NetworkLine Line, float S, float T)> TracksAcross(double x, double z, double dx, double dz)
@@ -374,14 +404,27 @@ public sealed partial class NetworkMeshes
     {
         var angle = o.Heading * Math.PI / 180.0;
         var (dx, dz) = (Math.Cos(angle), Math.Sin(angle));
+        // On a road it's a part of the road: as wide as it, on its middle, and going its way.
+        var (baseX, baseZ) = (cx, cz);
+        var onRoad = RoadAlong(cx, cz, dx, dz);
+        if (onRoad is { } along)
+        {
+            var sign = along.Dx * dx + along.Dz * dz < 0.0 ? -1.0 : 1.0;
+            (dx, dz) = (along.Dx * sign, along.Dz * sign);
+            var aside = (along.X - cx) * -dz + (along.Z - cz) * dx;
+            (cx, cz) = (cx + -dz * aside, cz + dx * aside);
+        }
+
         var (nx, nz) = (-dz, dx);
+        var (shiftX, shiftZ) = ((float)(cx - baseX), (float)(cz - baseZ));
         var across = TracksAcross(cx, cz, dx, dz);
         var quads = new List<DeckQuad>();
         if (across.Count == 0)
             return new CrossingDeck(quads, []);
 
-        var half = o.Width * 0.5f;
-        var rows = Math.Max(2, (int)MathF.Ceiling(o.Width / CrossingRowStep));
+        var width = onRoad?.Line.Width ?? o.Width;
+        var half = width * 0.5f;
+        var rows = Math.Max(2, (int)MathF.Ceiling(width / CrossingRowStep));
         var g = Turnout.RailOffset;
         var flange = RailHeadHalf + 0.055f;
         var railTop = NetworkLine.BallastHeight + KitRailBase + RailTop - 0.004f;
@@ -390,7 +433,7 @@ public sealed partial class NetworkMeshes
         var edges = new List<(float T, float Y)[]>();
         foreach (var k in Enumerable.Range(0, rows + 1))
         {
-            var w = -half + o.Width * k / rows;
+            var w = -half + width * k / rows;
             var (ox, oz) = (cx + nx * w, cz + nz * w);
             var rails = new List<(float T, float Y, float Sine)>();
             foreach (var (line, hit, _) in across)
@@ -433,9 +476,9 @@ public sealed partial class NetworkMeshes
 
         float3 Point(int k, int e, float drop = 0f)
         {
-            var w = -half + o.Width * k / rows;
+            var w = -half + width * k / rows;
             var (t, y) = edges[k][e];
-            return new float3((float)(nx * w + dx * t), y - drop, (float)(nz * w + dz * t));
+            return new float3((float)(nx * w + dx * t) + shiftX, y - drop, (float)(nz * w + dz * t) + shiftZ);
         }
 
         // Every second gap between edges is a panel: ramp, level, then between each pair of gaps.
@@ -452,14 +495,20 @@ public sealed partial class NetworkMeshes
                 quads.Add(new DeckQuad(a, b, c, d, middle - new float3(0f, 1f, 0f)));
             }
 
-        // The sides, down to the ballast.
+        // The sides: on a road, a gravel shoulder sloping away like its own; otherwise straight down to the ballast.
         foreach (var (k, toward) in new[] { (0, 1f), (rows, -1f) })
             for (var e = 0; e + 1 < count; e++)
             {
                 var (a, b) = (Point(k, e), Point(k, e + 1));
                 var (c, d) = (Point(k, e + 1, 0.7f), Point(k, e, 0.7f));
+                if (onRoad is not null)
+                {
+                    var outward = new float3((float)(nx * toward), 0f, (float)(nz * toward)) * -1.2f;
+                    (c, d) = (c + outward, d + outward);
+                }
+
                 var middle = (a + b + c + d) * 0.25f + new float3((float)(nx * toward), 0f, (float)(nz * toward));
-                quads.Add(new DeckQuad(a, b, c, d, middle));
+                quads.Add(new DeckQuad(a, b, c, d, middle, onRoad is not null));
             }
 
         // A mast each end, back from the deck on the right of the road's traffic coming to it.
@@ -469,10 +518,29 @@ public sealed partial class NetworkMeshes
         {
             var toward = new float3((float)dx * sign, 0f, (float)dz * sign);
             var right = new float3(toward.Z, 0f, -toward.X);
-            var (mx, mz) = (cx + dx * t - right.X * (half + 1.0), cz + dz * t - right.Z * (half + 1.0));
+            var (mx, mz) = (cx + dx * t + right.X * (half + 1.5), cz + dz * t + right.Z * (half + 1.5));
             masts.Add((mx, mz, _source.HeightAt(mx, mz), toward));
         }
 
-        return new CrossingDeck(quads, [.. masts]);
+        DeckRoad? road = null;
+        (int, float, float)? stretch = null;
+        if (onRoad is { } on)
+        {
+            // The stretch of the road the deck takes the place of, from one ramp's end to the other's.
+            var footS = on.Line.S[on.Segment] + (on.Line.S[on.Segment + 1] - on.Line.S[on.Segment]) * on.T;
+            var footT = (float)((on.X - cx) * dx + (on.Z - cz) * dz);
+            var runsSign = on.Dx * dx + on.Dz * dz < 0.0 ? -1f : 1f;
+            var (s0, s1) = (footS + runsSign * (centre[0].T - footT), footS + runsSign * (centre[^1].T - footT));
+            stretch = (on.Line.Index, MathF.Min(s0, s1), MathF.Max(s0, s1));
+            var (line, segment) = (on.Line, on.Segment);
+            var marks = line.Unpaved ? 0 : (RoadClass)line.Class switch { RoadClass.Highway => 3, RoadClass.Major => 2, RoadClass.Minor => 1, _ => 0 };
+            // The road's across is to its right as it runs.
+            var (ax, az) = (-on.Dz, on.Dx);
+            var (runs, sideways) = (new float3((float)on.Dx, 0f, (float)on.Dz), new float3((float)ax, 0f, (float)az));
+            var foot = new float3((float)(on.X - baseX), 0f, (float)(on.Z - baseZ));
+            road = new DeckRoad(RoadSurface(line, marks), sideways, Dot(foot, sideways), runs, line.S[segment] + (line.S[segment + 1] - line.S[segment]) * on.T - Dot(foot, runs));
+        }
+
+        return new CrossingDeck(quads, [.. masts], road, stretch);
     }
 }

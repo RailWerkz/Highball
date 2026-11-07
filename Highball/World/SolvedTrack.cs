@@ -40,7 +40,7 @@ internal struct StableHash
 public sealed partial class NetworkLines
 {
     /// Bumped when the file's layout changes; an older file is solved again.
-    private const int SolvedVersion = 21;
+    private const int SolvedVersion = 23;
 
     private static string SolvedPath(RouteInfo route) => Path.Combine(route.Folder, "Track.bin.gz");
 
