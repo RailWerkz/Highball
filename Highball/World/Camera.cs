@@ -14,8 +14,11 @@ public sealed class Camera
     public float Yaw;
     public float Pitch;
 
-    /// Radians, from the setting.
-    public float FieldOfView => RailWerkz.Core.Settings.Settings.Current.FieldOfView * MathF.PI / 180f;
+    /// How far the lens is zoomed in: 1 is the setting's field of view, 2 shows things twice the size.
+    public float Zoom = 1f;
+
+    /// Radians, from the setting and the zoom.
+    public float FieldOfView => 2f * MathF.Atan(MathF.Tan(RailWerkz.Core.Settings.Settings.Current.FieldOfView * MathF.PI / 360f) / Zoom);
     public float Near = 0.5f;
 
     /// How far off, in clip space, the world is drawn this frame for temporal anti-aliasing.

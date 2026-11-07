@@ -224,6 +224,7 @@ public sealed partial class EditorView : IDisposable
         if (on == _topDown)
             return;
         _topDown = on;
+        _camera.Zoom = 1f;
         _looking = false;
         _panFrom = null;
         if (_terrain is null)
@@ -466,13 +467,19 @@ public sealed partial class EditorView : IDisposable
         _looking = Input.Mouse(GlfwMouseButton.Right) && (_looking || !Blocked);
         if (_looking)
         {
-            const float sensitivity = 0.0025f;
+            // (Slower zoomed in, so that things move across the screen at the same rate.)
+            var sensitivity = 0.0025f / _camera.Zoom;
             _camera.Yaw += Input.MouseDelta.X * sensitivity;
             _camera.Pitch = Math.Clamp(_camera.Pitch - Input.MouseDelta.Y * sensitivity, -1.55f, 1.55f);
         }
 
         if (Input.Scroll != 0f && !Blocked && !WheelTurns)
-            _speed = Math.Clamp(_speed * MathF.Pow(1.25f, Input.Scroll), MinSpeed, MaxSpeed);
+        {
+            if (Input.Key(GlfwKey.LeftShift))
+                _speed = Math.Clamp(_speed * MathF.Pow(1.25f, Input.Scroll), MinSpeed, MaxSpeed);
+            else
+                _camera.Zoom = Math.Clamp(_camera.Zoom * MathF.Pow(1.25f, Input.Scroll), 1f, MaxLensZoom);
+        }
 
         var forward = _camera.Forward;
         var right = _camera.Right;
@@ -499,6 +506,8 @@ public sealed partial class EditorView : IDisposable
         var ground = _terrain!.Source.HeightAt(_camera.X, _camera.Z);
         _camera.Y = Math.Max(_camera.Y, ground + 1.8);
     }
+
+    private const float MaxLensZoom = 10f;
 
     private double _flyLogAt;
     private float _flyWorst;
@@ -1866,6 +1875,11 @@ public sealed partial class EditorView : IDisposable
                 break;
             }
 
+            case "lens":
+                // lens,ZOOM: as rolling the wheel to that zoom in the 3D Editor.
+                _camera.Zoom = Math.Clamp((float)Number(1), 1f, MaxLensZoom);
+                break;
+
             case "bridgeclick":
             {
                 // bridgeclick,lat,lon: as a click with Place bridge in hand.
@@ -3099,7 +3113,7 @@ public sealed partial class EditorView : IDisposable
         {
             (string, string)[] tool = _tool switch
             {
-                Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", _topDown ? "Zoom" : "Speed"), ("G", "Grades"), ("T", "Throw switch")],
+                Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", _topDown || _camera.Zoom <= 1.01f ? "Zoom" : string.Create(CultureInfo.InvariantCulture, $"Zoom {_camera.Zoom:0.0}x")), .. (_topDown ? ((string, string)[])[] : [("SHIFT+WHEEL", "Speed")]), ("G", "Grades"), ("T", "Throw switch")],
                 Tool.Road when _road.Mode == RoadMode.Remove => [("LMB", "Remove road"), ("CTRL+Z", "Undo")],
                 Tool.Road => [("LMB", "Next point"), ("SHIFT", "15 degree steps"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Parallel => [("LMB", "Start, then end"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],

@@ -62,7 +62,8 @@ goes on top.
 | Middle drag | Pan | |
 | WASD | Pan | Move |
 | Q / E | | Down / up |
-| Wheel | Zoom about the pointer | Flying speed |
+| Wheel | Zoom about the pointer | Zoom the lens in or out, up to 10x |
+| Left Shift+wheel | | Flying speed |
 | Shift | Faster | Faster |
 
 ## Tools
