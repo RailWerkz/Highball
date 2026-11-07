@@ -1,0 +1,36 @@
+#version 450
+// Averages the occlusion over the frames a pixel's stayed the same, so that with the camera still its noise, which turns each frame,
+// settles to nothing instead of crawling. Anything moved in front of a pixel, like a plant in the wind or a train, starts it over.
+// Red: the occlusion. Green: how far along the view it was. Blue: how many frames are in it.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D result;
+layout(set = 0, binding = 1) uniform sampler2D current;
+layout(set = 0, binding = 2) uniform sampler2D history;
+layout(set = 0, binding = 3) uniform sampler2D sceneDepth;
+
+#define OCCLUSION_SET 0
+#define OCCLUSION_BINDING 4
+#include "OcclusionData.glsl"
+
+// More than a whole turn of the noise.
+const float MostFrames = 128.0;
+
+void main()
+{
+    ivec2 size = imageSize(result);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    ivec2 screen = textureSize(sceneDepth, 0);
+    float along = alongView(texelFetch(sceneDepth, min(pixel * 2, screen - 1), 0).r);
+    float now = texelFetch(current, pixel, 0).r;
+    vec4 past = texelFetch(history, pixel, 0);
+
+    // up.w: 1 when the camera's where it was last frame. (The depth shakes a little with temporal anti-aliasing's jitter.)
+    bool same = occlusion.up.w > 0.5 && abs(past.g - along) < along * 0.02 + 0.1;
+    float frames = same ? min(past.b + 1.0, MostFrames) : 1.0;
+    imageStore(result, pixel, vec4(same ? mix(past.r, now, 1.0 / frames) : now, along, frames, 1.0));
+}
