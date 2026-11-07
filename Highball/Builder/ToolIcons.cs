@@ -4,7 +4,7 @@ using RailWerkz.UI;
 
 namespace Highball.Builder;
 
-public enum ToolIcon { Look, Edit, Pen, Shape, Lay, Parallel, Switches, Place, Circuits, Terrain, Signal, HandThrow, Crossing, Diamond, Undo, Redo, Road, Bridge, RemoveBridge }
+public enum ToolIcon { Look, Edit, Pen, Shape, Lay, Parallel, Switches, Place, Circuits, Terrain, Signal, HandThrow, Crossing, Diamond, Undo, Redo, Road, Bridge, RemoveBridge, UtilityPole, LightPole }
 
 /// The editor's icons, drawn as lines so they stay sharp at any interface scale. Each is lines (x, y, x, y...) and dots
 /// (x, y, radius) in a square from -1 to 1, y down.
@@ -26,6 +26,8 @@ public static class ToolIcons
         [ToolIcon.HandThrow] = ([[-0.7f, 0.7f, 0.7f, 0.7f], [0f, 0.7f, 0.45f, -0.6f]], [[0.45f, -0.7f, 0.2f], [0f, 0.7f, 0.15f]]),
         [ToolIcon.Crossing] = ([[-0.85f, -0.35f, 0.85f, -0.35f], [-0.85f, 0.35f, 0.85f, 0.35f], [-0.4f, -0.9f, -0.4f, 0.9f], [0.4f, -0.9f, 0.4f, 0.9f]], []),
         [ToolIcon.Road] = ([[-0.55f, 0.9f, -0.2f, -0.9f], [0.55f, 0.9f, 0.2f, -0.9f], [0f, 0.8f, 0f, 0.4f], [0f, 0.1f, 0f, -0.25f], [0f, -0.55f, 0f, -0.85f]], []),
+        [ToolIcon.UtilityPole] = ([[0f, -0.9f, 0f, 0.9f], [-0.7f, -0.55f, 0.7f, -0.55f], [-0.5f, -0.2f, 0.5f, -0.2f], [-0.35f, -0.55f, 0f, -0.25f, 0.35f, -0.55f]], [[-0.7f, -0.72f, 0.1f], [0.7f, -0.72f, 0.1f]]),
+        [ToolIcon.LightPole] = ([[-0.25f, 0.9f, -0.25f, -0.4f, -0.05f, -0.75f, 0.55f, -0.8f], [-0.55f, 0.9f, 0.05f, 0.9f]], [[0.6f, -0.65f, 0.17f]]),
         [ToolIcon.Bridge] = ([[-0.95f, -0.2f, 0.95f, -0.2f], [-0.95f, 0.05f, 0.95f, 0.05f], [-0.45f, 0.05f, -0.45f, 0.8f], [0.45f, 0.05f, 0.45f, 0.8f], [-0.95f, -0.2f, -0.95f, -0.55f], [0.95f, -0.2f, 0.95f, -0.55f]], []),
         [ToolIcon.RemoveBridge] = ([[-0.95f, 0.1f, 0.95f, 0.1f], [-0.45f, 0.1f, -0.45f, 0.8f], [0.45f, 0.1f, 0.45f, 0.8f], [-0.5f, -0.85f, 0.5f, -0.2f], [0.5f, -0.85f, -0.5f, -0.2f]], []),
         [ToolIcon.Diamond] = ([[0f, -0.85f, 0.85f, 0f, 0f, 0.85f, -0.85f, 0f, 0f, -0.85f]], []),

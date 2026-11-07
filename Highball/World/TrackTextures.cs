@@ -10,18 +10,20 @@ namespace Highball.World;
 
 /// The track's PBR materials, read straight from the zips in Content/Textures/Track at the size the settings ask for: colour, normal,
 /// and ambient occlusion, roughness, metalness and height packed into one, in that order. Metal021 is the clean top of a rail, Metal025
-/// its sides and the tie plates, Metal024 the weathering on painted parts, Rocks022 the ballast and the ground beside it, and Wood062 the ties.
+/// its sides and the tie plates, Metal024 the weathering on painted parts, Rocks022 the ballast and the ground beside it, and Wood062 the ties
+/// and the poles. The poles' wood takes a 4K zip if there's one and the setting's at its largest; it's close to 300 MB once it's up, mipmaps and all.
 /// Bound as the world's set 4 while track is drawn.
 public sealed class TrackTextures : IDisposable
 {
-    /// Rocks, rail top, rail side and painted parts, three maps each, in the set the line shader reads. A tie's or plate's first three maps are in
+    /// Rocks, rail top, rail side, painted parts and pole wood, three maps each, in the set the line shader reads. A tie's or plate's first three maps are in
     /// the same places, with the rest repeated so that every binding fits the one layout.
-    public const int SetSize = 12;
+    public const int SetSize = 15;
     public const int SetIndex = 4;
 
     public static VkDescriptorSetLayout SetLayout => TextureBinding.SetLayoutFor(SetSize);
 
     private static readonly string[] Materials = ["Rocks022", "Metal021", "Metal025", "Wood062", "Metal024"];
+    private const string PoleWood = "Wood062";
 
     private Texture2D _neutral;
     private TextureBinding _none;
@@ -48,34 +50,41 @@ public sealed class TrackTextures : IDisposable
         var clock = System.Diagnostics.Stopwatch.StartNew();
 
         // The JPEGs take far longer than the upload, and there are a lot of them.
+        var large = _size >= 2048 && File.Exists(ContentPath.Texture($"Track/{PoleWood}_4K-JPG.zip"));
         var decoded = new (byte[] Color, byte[] Normal, byte[] Packed, int Width, int Height)?[Materials.Length];
-        Parallel.For(0, Materials.Length, i => decoded[i] = Decode(Materials[i], label));
+        (byte[] Color, byte[] Normal, byte[] Packed, int Width, int Height)? decodedWood = null;
+        Parallel.For(0, Materials.Length + 1, i =>
+        {
+            if (i < Materials.Length)
+                decoded[i] = Decode(Materials[i], label);
+            else if (large)
+                decodedWood = Decode(PoleWood, "4K");
+        });
+
+        Texture2D[] Upload(string material, (byte[] Color, byte[] Normal, byte[] Packed, int Width, int Height) d)
+        {
+            Texture2D[] set =
+            [
+                Texture2D.FromPixels(d.Width, d.Height, d.Color, repeat: true, mipmaps: true, srgb: true, name: material + ".color"),
+                Texture2D.FromPixels(d.Width, d.Height, d.Normal, repeat: true, mipmaps: true, name: material + ".normal"),
+                Texture2D.FromPixels(d.Width, d.Height, d.Packed, repeat: true, mipmaps: true, name: material + ".packed"),
+            ];
+            _textures.AddRange(set);
+            return set;
+        }
 
         var sets = new Texture2D[Materials.Length][];
         for (var i = 0; i < Materials.Length; i++)
-        {
-            if (decoded[i] is { } d)
-            {
-                sets[i] =
-                [
-                    Texture2D.FromPixels(d.Width, d.Height, d.Color, repeat: true, mipmaps: true, srgb: true, name: Materials[i] + ".color"),
-                    Texture2D.FromPixels(d.Width, d.Height, d.Normal, repeat: true, mipmaps: true, name: Materials[i] + ".normal"),
-                    Texture2D.FromPixels(d.Width, d.Height, d.Packed, repeat: true, mipmaps: true, name: Materials[i] + ".packed"),
-                ];
-                _textures.AddRange(sets[i]);
-            }
-            else
-            {
-                sets[i] = [_neutral, _neutral, _neutral];
-            }
-        }
+            sets[i] = decoded[i] is { } d ? Upload(Materials[i], d) : [_neutral, _neutral, _neutral];
+        // Without a larger one, the poles share the ties' maps.
+        var wood = decodedWood is { } w ? Upload(PoleWood + ".4K", w) : sets[Array.IndexOf(Materials, PoleWood)];
 
         Texture2D[] Of(int i) => sets[i];
-        Texture2D[] Alone(int i) => [.. Of(i), .. Of(i), .. Of(i), .. Of(i)];
-        _lines = new TextureBinding([.. Of(0), .. Of(1), .. Of(2), .. Of(4)]);
+        Texture2D[] Alone(int i) => [.. Of(i), .. Of(i), .. Of(i), .. Of(i), .. Of(i)];
+        _lines = new TextureBinding([.. Of(0), .. Of(1), .. Of(2), .. Of(4), .. wood]);
         _plates = new TextureBinding(Alone(2));
         _ties = new TextureBinding(Alone(3));
-        Log.Info($"Track textures: {label} in {clock.ElapsedMilliseconds} ms");
+        Log.Info($"Track textures: {label}{(decodedWood is null ? "" : ", 4K pole wood")} in {clock.ElapsedMilliseconds} ms");
     }
 
     private static (byte[] Color, byte[] Normal, byte[] Packed, int Width, int Height)? Decode(string material, string label)

@@ -6,12 +6,13 @@ using RailWerkz.UI;
 
 namespace Highball.Builder;
 
-public enum PlaceMode { Signal, HandThrow, GradeCrossing, Diamond, Track, Bridge, RemoveBridge }
+public enum PlaceMode { Signal, HandThrow, GradeCrossing, Diamond, Track, Bridge, RemoveBridge, Pole }
 
 /// Placing what stands on or beside the track. A signal snaps beside the nearest track, on the side clicked, facing trains
 /// running on that side. A hand throw goes on the nearest switch in place of its power machine. A grade crossing snaps onto the
 /// nearest track and takes its road's line and width, if one crosses there. A diamond joins two tracks where they cross.
-/// A track piece is laid as real track from the palette (TrackStamps), its switches sized as it says.
+/// A track piece is laid as real track from the palette (TrackStamps), its switches sized as it says. A utility or light pole goes
+/// anywhere, or set off a road or track as chosen, and as a run of them at a gap if Fence is on (see PoleRuns).
 public sealed class PlaceTool
 {
     /// How far off a track a click may be and still go on it, and how far off the track's centre a signal stands.
@@ -37,6 +38,34 @@ public sealed class PlaceTool
     public double Heading;
     public bool Mirror;
 
+    /// The pole in hand; what it snaps to; how far off that it stands (a track's centre, a road's edge), by what it snaps to; whether
+    /// clicks lay a run; and the gap in a run, by kind of pole, starting from what's usual for each.
+    public PlacedKind PoleKind = PlacedKind.PoleTelegraph;
+    public PoleSnap Snap = PoleSnap.Anywhere;
+    public float TrackOffset = 8f;
+    public float RoadOffset = 1.5f;
+    public bool Fence;
+    private readonly Dictionary<PlacedKind, float> _gaps = new()
+    {
+        [PlacedKind.PoleTelegraph] = 45f, [PlacedKind.PoleDistribution] = 45f, [PlacedKind.PoleTelecom] = 40f,
+        [PlacedKind.LightCobra] = 50f, [PlacedKind.LightYardMast] = 120f, [PlacedKind.LightPlatform] = 15f,
+    };
+
+    public float Gap
+    {
+        get => _gaps[PoleKind];
+        set => _gaps[PoleKind] = value;
+    }
+
+    public float PoleOffset => Snap == PoleSnap.Road ? RoadOffset : TrackOffset;
+
+    /// A run being laid: where it's got to, and its first pole while nothing's come after it to say which way it ought to face.
+    public (double X, double Z)? RunFrom;
+    public long? RunFirst;
+
+    /// The poles the next click would add to the run.
+    public PoleRuns.Plan? Run { get; private set; }
+
     /// What the piece in hand would lay at the pointer, for the marker and the click.
     public StampPlan? Plan { get; private set; }
 
@@ -60,13 +89,17 @@ public sealed class PlaceTool
     public (double X, double Z)? Snapped { get; private set; }
     public string? Note { get; private set; }
 
-    public static (NetworkLine Line, float S, double Away)? NearestRail(NetworkLines lines, double x, double z, double within)
+    public static (NetworkLine Line, float S, double Away)? NearestRail(NetworkLines lines, double x, double z, double within) =>
+        NearestLine(lines, x, z, within, true);
+
+    /// The nearest place on a track (rail) or a road.
+    public static (NetworkLine Line, float S, double Away)? NearestLine(NetworkLines lines, double x, double z, double within, bool rail)
     {
         (NetworkLine, float, double)? found = null;
         var best = within * within;
         foreach (var line in lines.Lines)
         {
-            if (!line.Rail || line.Disused || x < line.MinX - within || x > line.MaxX + within || z < line.MinZ - within || z > line.MaxZ + within)
+            if (line.Rail != rail || line.Disused || x < line.MinX - within || x > line.MaxX + within || z < line.MinZ - within || z > line.MaxZ + within)
                 continue;
             for (var i = 0; i + 1 < line.Count; i++)
             {
@@ -162,9 +195,27 @@ public sealed class PlaceTool
     /// Works out what a click at the pointer would do, for the panel and the marker.
     public void Update(NetworkLines lines, TrackEditor tracks, (double X, double Z)? ground, Func<double, string> length)
     {
-        (Snapped, Note, Plan) = (null, null, null);
+        (Snapped, Note, Plan, Run) = (null, null, null, null);
+        if (Mode != PlaceMode.Pole)
+            (RunFrom, RunFirst) = (null, null);
         if (ground is not { } at)
             return;
+        if (Mode == PlaceMode.Pole)
+        {
+            if (RunFrom is { } from)
+            {
+                Run = PoleRuns.Lay(lines, Snap, PoleKind, PoleOffset, Gap, from, at);
+                Snapped = at;
+                Note = Run.Problem ?? $"{Run.Poles.Count} more, {length(Run.Length)}";
+            }
+            else if (PoleRuns.At(lines, Snap, PoleKind, PoleOffset, at.X, at.Z) is { } pole)
+            {
+                Snapped = (pole.X, pole.Z);
+            }
+
+            return;
+        }
+
         if (Mode == PlaceMode.Track)
         {
             if (Stamp is { } stamp)
@@ -204,6 +255,21 @@ public sealed class PlaceTool
             var r = (o.Id == Selected ? 7f : 5f) * scale;
             draw.AddCircleFilled(at, r, o.Id == Selected ? Rgba.White : Style.Accent, 12);
             draw.AddCircle(at, r, new Rgba(0f, 0f, 0f, 0.8f), 12, 1.5f * scale);
+        }
+
+        if (Run is { } run && RunFrom is { } start && project(start.X, start.Z) is { } last)
+        {
+            var seen = run.Problem is null ? Style.Caution : Style.Stop;
+            foreach (var step in run.Path)
+                if (project(step.X, step.Z) is { } here)
+                {
+                    draw.AddLine(last, here, seen, 1.5f * scale);
+                    last = here;
+                }
+
+            foreach (var pole in run.Poles)
+                if (project(pole.X, pole.Z) is { } here)
+                    draw.AddCircleFilled(here, 4f * scale, seen, 10);
         }
 
         var color = Plan?.Problem is null ? Style.Caution : Style.Stop;

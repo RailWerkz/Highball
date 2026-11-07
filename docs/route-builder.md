@@ -397,6 +397,13 @@ The rest:
   with a crossbuck, flashers and a raised gate. Clicking another of its tracks picks it rather than making a second.
 - Diamond: joins two built tracks where they cross, within 15 m, with a control point in both. Refused under 8 degrees. Edit Track
   moves that point, and the assembly is rebuilt to whatever the tracks then make.
+- Utility Poles and Light Poles: three of each (telegraph, power and telephone poles; street light, yard mast and platform lamp). Anywhere
+  puts one where it's clicked. Road and Track set it off the nearest one within 65 m, on the side clicked, by the distance set: from a
+  road's edge, or a track's centre. Dragging one goes by the same setting. A utility pole lines up with the road or track; a light faces it.
+- Fence, on a pole: the first click stands the first pole and each one after adds poles at the Gap, up to that click and no further, and
+  goes on from the last. On Anywhere that's a straight line to each click, so it can turn corners; on Road or Track it follows the line,
+  from one way to the next where they join. Each click is one undo, a click lays at most 500 poles, and Esc ends the run. The line's
+  shown as you go, with where each pole would be and how many.
 
 Click an object's marker to pick it, then drag to move it (it snaps again), R and Shift+R to turn it 15 degrees, R and the wheel to turn it 1 degree a notch (one undo for the whole turn), V to turn it round
 (a hand throw: to the switch's other side), Delete to remove it. They're kept in Objects.json in the route's folder, saved as
@@ -404,6 +411,8 @@ they change, and Ctrl+Z undoes them. Signals don't show aspects or tie into circ
 
 A crossing's deck is built again whenever the track changes, so it follows the track. Signals and masts stay where they were
 placed, and a hand throw whose switch has gone does nothing. Signals, stands and masts are from `Tools/Blender/lineside.py`.
+Poles are from `Tools/Blender/poles.py`; like signals, they aren't drawn past the track's near radius (1 km). Their wood is Wood062, at 4K if
+`Content/Textures/Track/Wood062_4K-JPG.zip` is there, and otherwise the size the ties use. They have no wires yet, and the lights don't light.
 
 ## Shaping track by hand
 

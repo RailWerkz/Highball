@@ -24,7 +24,7 @@ layout(set = 0, binding = 0) uniform sampler2D ballastMap;
 
 // TrackTextures: colour, normal, and green roughness and blue metalness, for the ballast, the top of a rail, the sides of one
 // (Metal025, as the tie plates), the weathering on painted parts (Metal024). The packed map also has ambient
-// occlusion in red and height in alpha.
+// occlusion in red and height in alpha. Then the wood of the poles (Wood062, at the largest size there is).
 layout(set = 4, binding = 0) uniform sampler2D rockColor;
 layout(set = 4, binding = 1) uniform sampler2D rockNormal;
 layout(set = 4, binding = 2) uniform sampler2D rockPacked;
@@ -37,6 +37,9 @@ layout(set = 4, binding = 8) uniform sampler2D railSidePacked;
 layout(set = 4, binding = 9) uniform sampler2D paintedColor;
 layout(set = 4, binding = 10) uniform sampler2D paintedNormal;
 layout(set = 4, binding = 11) uniform sampler2D paintedPacked;
+layout(set = 4, binding = 12) uniform sampler2D woodColor;
+layout(set = 4, binding = 13) uniform sampler2D woodNormal;
+layout(set = 4, binding = 14) uniform sampler2D woodPacked;
 
 // LineMaterial, and what each packs into vData (see LineVertex).
 const int Ballast = 0;
@@ -49,6 +52,8 @@ const int Painted = 5;
 // NetworkMeshes.Paints: what a placed model's parts are painted.
 const vec3 Paints[7] = vec3[](vec3(0.018), vec3(0.62, 0.62, 0.60), vec3(0.26, 0.27, 0.28), vec3(0.60, 0.42, 0.05),
     vec3(0.50, 0.02, 0.015), vec3(0.02, 0.32, 0.12), vec3(0.30, 0.29, 0.26));
+// The last of them isn't a paint, but its map on the coordinates the model brought: v along the grain.
+const int WoodPaint = 7;
 
 const vec3 Steel = vec3(0.40, 0.40, 0.40);
 const vec3 BareSteel = vec3(0.56, 0.57, 0.58);
@@ -325,6 +330,17 @@ void main()
         albedo = vec3(0.22, 0.215, 0.20) * (0.75 + 0.4 * stain);
         roughness = 0.85;
         specular = 0.25;
+    }
+    else if (material == Painted && style == WoodPaint)
+    {
+        // The map's grain runs across it, and it repeats every 1.5 m.
+        vec2 grain = vec2(v, u) / 1.5;
+        vec2 packed = texture(woodPacked, grain).rg;
+        albedo = texture(woodColor, grain).rgb;
+        occlusion = packed.x;
+        roughness = packed.y;
+        specular = 0.4;
+        n = bumped(n, texture(woodNormal, grain).xyz * 2.0 - 1.0, grain);
     }
     else if (material == Painted)
     {

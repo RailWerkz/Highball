@@ -49,6 +49,13 @@ public sealed partial class EditorView
         ("Grade Crossings", PlaceMode.GradeCrossing, ToolIcon.Crossing, "Grade crossing", PlacedKind.GradeCrossing),
     ];
 
+    /// The Objects palette's pole menus.
+    private static readonly (string Menu, ToolIcon Icon, PlacedKind[] Kinds)[] PoleMenus =
+    [
+        ("Utility Poles", ToolIcon.UtilityPole, [PlacedKind.PoleTelegraph, PlacedKind.PoleDistribution, PlacedKind.PoleTelecom]),
+        ("Light Poles", ToolIcon.LightPole, [PlacedKind.LightCobra, PlacedKind.LightYardMast, PlacedKind.LightPlatform]),
+    ];
+
     /// The terrain brush last used, which the strip's Terrain button goes back to.
     private Tool _brush = Tool.Raise;
 
@@ -195,9 +202,13 @@ public sealed partial class EditorView
         var imperial = Settings.Current.Units == UnitSystem.Imperial;
         _place.Rebuild(imperial);
 
-        var spacing = imperial ? _place.Spacing * FeetPerMeter : _place.Spacing;
-        ImGui.SliderFloat(imperial ? "Spacing (ft)"u8 : "Spacing (m)"u8, ref spacing, imperial ? YardTool.MinSpacing * FeetPerMeter : YardTool.MinSpacing, imperial ? YardTool.MaxSpacing * FeetPerMeter : YardTool.MaxSpacing, "%.1f"u8, ImGuiSliderFlags.None);
-        _place.Spacing = Math.Clamp(imperial ? spacing / FeetPerMeter : spacing, YardTool.MinSpacing, YardTool.MaxSpacing);
+        // (Track pieces': not to be taken for a pole run's gap.)
+        if (_place.Mode != PlaceMode.Pole)
+        {
+            var spacing = imperial ? _place.Spacing * FeetPerMeter : _place.Spacing;
+            ImGui.SliderFloat(imperial ? "Spacing (ft)"u8 : "Spacing (m)"u8, ref spacing, imperial ? YardTool.MinSpacing * FeetPerMeter : YardTool.MinSpacing, imperial ? YardTool.MaxSpacing * FeetPerMeter : YardTool.MaxSpacing, "%.1f"u8, ImGuiSliderFlags.None);
+            _place.Spacing = Math.Clamp(imperial ? spacing / FeetPerMeter : spacing, YardTool.MinSpacing, YardTool.MaxSpacing);
+        }
 
         foreach (var (group, name, columns) in StampGroups)
         {
@@ -225,6 +236,15 @@ public sealed partial class EditorView
                 (_place.Mode, _switchRefused) = (mode, null);
         }
 
+        foreach (var (menu, icon, kinds) in PoleMenus)
+        {
+            if (!ImGui.CollapsingHeader($"{menu} ({source.Objects.Count(o => kinds.Contains(o.Kind))})###{menu}", ImGuiTreeNodeFlags.None))
+                continue;
+            foreach (var kind in kinds)
+                if (PaletteRow(icon, kind.Name(), _place.Mode == PlaceMode.Pole && _place.PoleKind == kind))
+                    (_place.Mode, _place.PoleKind, _place.RunFrom, _place.RunFirst, _switchRefused) = (PlaceMode.Pole, kind, null, null, null);
+        }
+
         if (ImGui.CollapsingHeader("Bridges"u8, ImGuiTreeNodeFlags.None))
         {
             if (PaletteRow(ToolIcon.Bridge, "Place bridge", _place.Mode == PlaceMode.Bridge))
@@ -234,6 +254,49 @@ public sealed partial class EditorView
             if (_place.Mode == PlaceMode.Bridge)
                 ImGui.TextWrapped(_bridgeFrom is null ? "Click where the bridge starts, on a road or a track."u8 : "Now click where it ends, along the same line."u8);
         }
+    }
+
+    /// How the pole in hand goes down: what it snaps to, how far off that, and whether it's a run and at what gap.
+    private void PolePanel()
+    {
+        var imperial = Settings.Current.Units == UnitSystem.Imperial;
+        var factor = imperial ? FeetPerMeter : 1f;
+        ImGui.SeparatorText(_place.PoleKind.Name());
+        foreach (var (snap, name) in ((PoleSnap, string)[])[(PoleSnap.Anywhere, "Anywhere"), (PoleSnap.Road, "Road"), (PoleSnap.Track, "Track")])
+        {
+            if (ImGui.RadioButton(name, _place.Snap == snap))
+                (_place.Snap, _place.RunFrom, _place.RunFirst) = (snap, null, null);
+            if (snap != PoleSnap.Track)
+                ImGui.SameLine(0f, -1f);
+        }
+
+        if (_place.Snap != PoleSnap.Anywhere)
+        {
+            var offset = _place.PoleOffset * factor;
+            var label = _place.Snap == PoleSnap.Road ? (imperial ? "Off road edge (ft)"u8 : "Off road edge (m)"u8) : (imperial ? "Off track (ft)"u8 : "Off track (m)"u8);
+            if (ImGui.SliderFloat(label, ref offset, 0f, PoleRuns.MaxOffset * factor, "%.1f"u8, ImGuiSliderFlags.None))
+            {
+                var metres = Math.Clamp(offset / factor, 0f, PoleRuns.MaxOffset);
+                if (_place.Snap == PoleSnap.Road)
+                    _place.RoadOffset = metres;
+                else
+                    _place.TrackOffset = metres;
+            }
+        }
+
+        var fence = _place.Fence;
+        if (ImGui.Checkbox("Fence: repeat along a run"u8, ref fence))
+            (_place.Fence, _place.RunFrom, _place.RunFirst) = (fence, null, null);
+        if (!_place.Fence)
+            return;
+        var gap = _place.Gap * factor;
+        if (ImGui.SliderFloat(imperial ? "Gap (ft)"u8 : "Gap (m)"u8, ref gap, PoleRuns.MinGap * factor, PoleRuns.MaxGap * factor, "%.1f"u8, ImGuiSliderFlags.Logarithmic))
+            _place.Gap = Math.Clamp(gap / factor, PoleRuns.MinGap, PoleRuns.MaxGap);
+        ImGui.TextWrapped(_place.RunFrom is null
+            ? "Click where the run starts."u8
+            : _place.Snap == PoleSnap.Anywhere
+                ? "Click where it goes to: it goes on from there, round any corner. Esc ends it."u8
+                : "Click how far along it goes: it follows the line, and goes on from there. Esc ends it."u8);
     }
 
     private static readonly (string? Id, string Name)[] Beds =

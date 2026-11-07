@@ -150,7 +150,7 @@ public sealed partial class NetworkMeshes : IDisposable
     private sealed record PlacedAt(PlacedObject Object, double X, double Z, float Y, CrossingDeck? Deck);
 
     /// The paints line.frag knows, by the name a placed model's parts use.
-    private static readonly string[] Paints = ["Black", "White", "Galv", "Yellow", "Red", "Green", "Concrete"];
+    private static readonly string[] Paints = ["Black", "White", "Galv", "Yellow", "Red", "Green", "Concrete", "Wood"];
     private readonly Dictionary<long, float> _position = [];
     private readonly Dictionary<long, float> _target = [];
     private readonly HashSet<ChunkKey> _nearKeys = [];
@@ -185,6 +185,16 @@ public sealed partial class NetworkMeshes : IDisposable
         catch (Exception e)
         {
             RailWerkz.Core.Logging.Log.Warn($"Switch kit: {e.Message}; switches are built without castings or machines");
+        }
+
+        try
+        {
+            foreach (var kind in Enum.GetValues<PlacedKind>().Where(k => k.IsPole()))
+                _objectModels[kind] = Model.LoadParts($"Poles/{kind.PoleModel()}.glb");
+        }
+        catch (Exception e)
+        {
+            RailWerkz.Core.Logging.Log.Warn($"Poles: {e.Message}; poles without a model aren't drawn");
         }
     }
 
@@ -1544,7 +1554,7 @@ public sealed partial class NetworkMeshes : IDisposable
             var (p, n) = (vertex.Position, vertex.Normal);
             var (px, pz) = (p.X * cos - p.Z * sin, p.X * sin + p.Z * cos);
             var (nx, nz) = (n.X * cos - n.Z * sin, n.X * sin + n.Z * cos);
-            builder.Add(at + right * px + face * pz + new float3(0f, p.Y, 0f), right * nx + face * nz + new float3(0f, n.Y, 0f), new float4(p.X, p.Y, code, 0f));
+            builder.Add(at + right * px + face * pz + new float3(0f, p.Y, 0f), right * nx + face * nz + new float3(0f, n.Y, 0f), new float4(vertex.Uv.X, vertex.Uv.Y, code, 0f));
         }
 
         foreach (var index in part.Indices)
@@ -1559,7 +1569,7 @@ public sealed partial class NetworkMeshes : IDisposable
         var at = new float3((float)(placed.X - builder.Origin.X), placed.Y, (float)(placed.Z - builder.Origin.Z));
         if (!_objectModels.TryGetValue(o.Kind, out var parts))
             return;
-        if (o.Kind == PlacedKind.Signal)
+        if (o.Kind != PlacedKind.GradeCrossing)
         {
             foreach (var (name, part) in parts)
                 Upright(builder, part, at, face, PaintOf(name), 0f);

@@ -195,6 +195,8 @@ public sealed partial class EditorView : IDisposable
             _road.Clear();
         else if (_tool == Tool.Place && _bridgeFrom is not null)
             _bridgeFrom = null;
+        else if (_tool == Tool.Place && _place.RunFrom is not null)
+            (_place.RunFrom, _place.RunFirst) = (null, null);
         else if (_selection.Count > 0)
             _selection.Clear();
         else if (_tool == Tool.Parallel && _parallel.Anchor is not null)
@@ -657,7 +659,12 @@ public sealed partial class EditorView : IDisposable
                 RebuildNetwork();
                 break;
             case PlacedEdit placed:
+                (_place.RunFrom, _place.RunFirst) = (null, null);
                 ApplyPlaced(undo ? placed.After : placed.Before, undo ? placed.Before : placed.After);
+                break;
+            case PlacedRunEdit run:
+                (_place.RunFrom, _place.RunFirst) = (null, null);
+                ApplyPlaced(undo ? run.Edits.Select(e => new PlacedEdit(e.After, e.Before)).ToList() : run.Edits);
                 break;
         }
     }
@@ -726,19 +733,29 @@ public sealed partial class EditorView : IDisposable
     }
 
     /// One object swapped for another in the route's list (null: none), saved, and shown.
-    private void ApplyPlaced(PlacedObject? gone, PlacedObject? added)
+    private void ApplyPlaced(PlacedObject? gone, PlacedObject? added) => ApplyPlaced([new PlacedEdit(gone, added)]);
+
+    /// Many such swaps, saved and shown once. (Each one's "before" goes and its "after" comes.)
+    private void ApplyPlaced(IReadOnlyList<PlacedEdit> edits)
     {
         var source = _terrain!.Source;
-        if (gone is not null)
-            source.Objects.RemoveAll(o => o.Id == gone.Id);
-        if (added is not null)
-            source.Objects.Add(added);
-        RouteObjects.Save(_route, source.Objects);
         var changed = new List<(double X, double Z)>();
-        if (gone is not null)
-            changed.Add(PlacedAtWorld(gone));
-        if (added is not null)
-            changed.Add(PlacedAtWorld(added));
+        foreach (var (gone, added) in edits)
+        {
+            if (gone is not null)
+            {
+                source.Objects.RemoveAll(o => o.Id == gone.Id);
+                changed.Add(PlacedAtWorld(gone));
+            }
+
+            if (added is not null)
+            {
+                source.Objects.Add(added);
+                changed.Add(PlacedAtWorld(added));
+            }
+        }
+
+        RouteObjects.Save(_route, source.Objects);
         _network!.SetObjects(source.Objects, changed, _route.Projection!);
     }
 
@@ -748,6 +765,51 @@ public sealed partial class EditorView : IDisposable
         _undo.Push(new PlacedEdit(before, after));
         _redo.Clear();
         _place.Selected = after?.Id;
+    }
+
+    /// A click with a pole in hand: one pole; or, with Fence on, a run's first pole and then each stretch of it, one undo a stretch.
+    private void PolePress(NetworkLines lines, double x, double z)
+    {
+        if (_place.RunFrom is not { } from)
+        {
+            if (PoleRuns.At(lines, _place.Snap, _place.PoleKind, _place.PoleOffset, x, z) is not { } start)
+            {
+                _switchRefused = _place.Snap == PoleSnap.Road ? "No road here" : "No track here";
+                return;
+            }
+
+            var made = Placed(_place.PoleKind, start.X, start.Z, start.Heading);
+            PlacedChange(null, made);
+            if (_place.Fence)
+                (_place.RunFrom, _place.RunFirst, _place.Selected) = ((start.X, start.Z), made.Id, null);
+            return;
+        }
+
+        var run = PoleRuns.Lay(lines, _place.Snap, _place.PoleKind, _place.PoleOffset, _place.Gap, from, (x, z));
+        if (run.Problem is { } problem)
+        {
+            _switchRefused = problem;
+            return;
+        }
+
+        if (run.Poles.Count == 0)
+        {
+            _switchRefused = "That's less than the gap from the last pole";
+            return;
+        }
+
+        var edits = new List<PlacedEdit>();
+        // The first pole didn't know which way the run went until now.
+        if (_terrain!.Source.Objects.FirstOrDefault(o => o.Id == _place.RunFirst) is { } first)
+            edits.Add(new PlacedEdit(first, first with { Heading = run.Poles[0].Heading }));
+        var id = DateTime.UtcNow.Ticks;
+        foreach (var pole in run.Poles)
+            edits.Add(new PlacedEdit(null, Placed(_place.PoleKind, pole.X, pole.Z, pole.Heading, id: id++)));
+        ApplyPlaced(edits);
+        _undo.Push(new PlacedRunEdit(edits));
+        _redo.Clear();
+        var last = run.Poles[^1];
+        (_place.RunFrom, _place.RunFirst, _place.Selected) = ((last.X, last.Z), null, null);
     }
 
     /// A click: on an object, picks it; elsewhere, places one if there's somewhere to.
@@ -771,6 +833,9 @@ public sealed partial class EditorView : IDisposable
                 break;
             case PlaceMode.GradeCrossing when PlaceTool.CrossingAt(lines, x, z) is { } crossing:
                 PlacedChange(null, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, crossing.Width));
+                break;
+            case PlaceMode.Pole:
+                PolePress(lines, x, z);
                 break;
             case PlaceMode.Track:
                 LayStamp(lines, x, z);
@@ -891,6 +956,13 @@ public sealed partial class EditorView : IDisposable
     {
         switch (o.Kind)
         {
+            case var kind when kind.IsPole():
+                // As the tool's set: dropped where it's let go, keeping its turn; or set off the road or track again.
+                if (_place.Snap == PoleSnap.Anywhere)
+                    PlacedChange(o, Placed(o.Kind, x, z, o.Heading, id: o.Id));
+                else if (PoleRuns.At(lines, _place.Snap, o.Kind, _place.PoleOffset, x, z) is { } pole)
+                    PlacedChange(o, Placed(o.Kind, pole.X, pole.Z, pole.Heading, id: o.Id));
+                break;
             case PlacedKind.Signal when PlaceTool.SignalAt(lines, x, z) is { } signal:
                 PlacedChange(o, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, id: o.Id));
                 break;
@@ -917,7 +989,8 @@ public sealed partial class EditorView : IDisposable
         var picked = source.Objects.FirstOrDefault(o => o.Id == _place.Selected);
         if (Input.MouseDown(GlfwMouseButton.Left))
         {
-            var under = PlaceTool.At(source.Objects, o => ProjectGround(PlacedAtWorld(o).X, PlacedAtWorld(o).Z), mouse, S(1f));
+            // (A run being laid isn't stopped by a pole in its way.)
+            var under = _place.RunFrom is not null ? null : PlaceTool.At(source.Objects, o => ProjectGround(PlacedAtWorld(o).X, PlacedAtWorld(o).Z), mouse, S(1f));
             if (under is not null)
             {
                 _place.Selected = under.Id;
@@ -1003,13 +1076,15 @@ public sealed partial class EditorView : IDisposable
 
         if (source.Objects.FirstOrDefault(o => o.Id == _place.Selected) is { } picked)
             PlacePicked(picked);
+        if (_place.Mode == PlaceMode.Pole)
+            PolePanel();
         PlacePalette(source);
     }
 
     /// What can be done to the object picked.
     private void PlacePicked(PlacedObject picked)
     {
-        ImGui.SeparatorText(picked.Kind switch { PlacedKind.Signal => "Signal", PlacedKind.HandThrow => "Hand throw", _ => "Grade crossing" });
+        ImGui.SeparatorText(picked.Kind.Name());
         if (picked.Kind == PlacedKind.GradeCrossing)
         {
             var imperial = Settings.Current.Units == UnitSystem.Imperial;
@@ -1521,6 +1596,42 @@ public sealed partial class EditorView : IDisposable
                 PlacePress(source, lines, px, pz);
                 var made = source.Objects.FirstOrDefault(o => o.Id == _place.Selected);
                 Log.Info($"Place {parts[1]}: snapped {_place.Snapped is not null}, {note}, refused: {_switchRefused ?? "no"}, placed {made?.Kind}, {source.Objects.Count} objects");
+                break;
+            }
+
+            case "pole":
+            {
+                // Through the tool: pole,kind,snap,offset,gap (0: no fence), then a lat,lon for each click.
+                _tool = Tool.Place;
+                _place.Mode = PlaceMode.Pole;
+                _place.PoleKind = Enum.Parse<PlacedKind>(parts[1]);
+                _place.Snap = Enum.Parse<PoleSnap>(parts[2]);
+                if (_place.Snap == PoleSnap.Road)
+                    _place.RoadOffset = (float)Number(3);
+                else
+                    _place.TrackOffset = (float)Number(3);
+                _place.Fence = Number(4) > 0.0;
+                if (_place.Fence)
+                    _place.Gap = (float)Number(4);
+                (_place.RunFrom, _place.RunFirst) = (null, null);
+                for (var i = 5; i + 1 < parts.Length; i += 2)
+                {
+                    var (px, pz) = At(i);
+                    _switchRefused = null;
+                    _place.Update(lines, _tracks!, (px, pz), PanelLength);
+                    var note = _place.Note;
+                    var before = source.Objects.Count;
+                    PolePress(lines, px, pz);
+                    Log.Info($"Pole {parts[1]} {parts[2]}: {note}, refused: {_switchRefused ?? "no"}, {source.Objects.Count - before} made, {source.Objects.Count} objects");
+                }
+
+                foreach (var made in source.Objects.Where(o => o.Kind.IsPole()).TakeLast(4))
+                {
+                    var (poleX, poleZ) = PlacedAtWorld(made);
+                    Log.Info(string.Create(CultureInfo.InvariantCulture, $"Pole {made.Kind} at {poleX:0.0} {poleZ:0.0} heading {made.Heading:0.0}"));
+                }
+
+                (_place.RunFrom, _place.RunFirst) = (null, null);
                 break;
             }
 
@@ -2853,6 +2964,8 @@ public sealed partial class EditorView : IDisposable
                 Tool.Road => [("LMB", "Next point"), ("SHIFT", "15 degree steps"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Parallel => [("LMB", "Start, then end"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
                 Tool.Switches => [("LMB", "Pick a switch"), ("DRAG", "Move points, curve end or crossover"), ("CTRL+Z", "Undo")],
+                Tool.Place when _place.RunFrom is not null => [("LMB", "Lay to here"), ("ESC", "End run"), ("CTRL+Z", "Undo")],
+                Tool.Place when _place.Mode == PlaceMode.Pole && _place.Fence && _place.Selected is null => [("LMB", "Start run"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.Mode == PlaceMode.Track && _place.Selected is null => [("LMB", "Lay piece"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Mirror"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Place => [("LMB", "Place, pick, drag"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Turn round or other side"), ("DEL", "Delete"), ("CTRL+Z", "Undo")],
                 Tool.Follow when _yard.Mode != YardMode.Follow => [("LMB", "Pick a track, then lay"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
