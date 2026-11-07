@@ -70,6 +70,8 @@ public sealed partial class EditorView : IDisposable
     private Task<(int X0, int Z0, int X1, int Z1)?>? _dab;
     private float _dabTime;
     private float _flattenTo;
+    /// The height F sampled, which Flatten then works to until Esc; without one, a stroke goes by where it starts.
+    private float? _flattenSample;
     private double3? _hit;
     /// The ground under the pointer whatever the tool, for the status line.
     private double3? _pointerAt;
@@ -198,6 +200,8 @@ public sealed partial class EditorView : IDisposable
             _road.Clear();
         else if (_tool == Tool.Place && _bridgeFrom is not null)
             _bridgeFrom = null;
+        else if (_tool == Tool.Flatten && _flattenSample is not null)
+            _flattenSample = null;
         else if (_tool == Tool.Place && _place.RunFrom is not null)
             (_place.RunFrom, _place.RunFirst) = (null, null);
         else if (_selection.Count > 0)
@@ -573,6 +577,8 @@ public sealed partial class EditorView : IDisposable
 
         _pointerAt = Blocked ? null : Pick(Input.MousePosition);
         _hit = _tool == Tool.Look ? null : _pointerAt;
+        if (_tool == Tool.Flatten && !Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.F) && _hit is { } sampled)
+            SampleFlatten(source, sampled.X, sampled.Z);
         if (_tool == Tool.Switches && source.Lines is { } picked)
             SwitchesUpdate(picked);
 
@@ -1851,6 +1857,15 @@ public sealed partial class EditorView : IDisposable
                 break;
             }
 
+            case "flattensample":
+            {
+                // flattensample,lat,lon: as F over that place with Flatten in hand.
+                var (fx0, fz0) = At(1);
+                SampleFlatten(source, fx0, fz0);
+                Log.Info($"Flatten sample: {FlattenSampleText}");
+                break;
+            }
+
             case "bridgeclick":
             {
                 // bridgeclick,lat,lon: as a click with Place bridge in hand.
@@ -2294,7 +2309,25 @@ public sealed partial class EditorView : IDisposable
     private void Begin(TerrainSource source)
     {
         _stroke = new TerrainStroke();
-        _flattenTo = source.HeightAt(_hit!.Value.X, _hit.Value.Z);
+        _flattenTo = _flattenSample ?? source.HeightAt(_hit!.Value.X, _hit.Value.Z);
+    }
+
+    private void SampleFlatten(TerrainSource source, double x, double z)
+    {
+        _flattenSample = source.HeightAt(x, z);
+        _flattenTo = _flattenSample.Value; // A stroke under way goes to it too.
+    }
+
+    private string FlattenSampleText
+    {
+        get
+        {
+            if (_flattenSample is not { } height)
+                return "Sample height";
+            return Settings.Current.Units == UnitSystem.Imperial
+                ? string.Create(CultureInfo.InvariantCulture, $"Sampled {height * FeetPerMeter:#,0} ft")
+                : string.Create(CultureInfo.InvariantCulture, $"Sampled {height:#,0} m");
+        }
     }
 
     /// The brush works on another thread, one dab at a time: a big one takes longer than a frame. The time since the last dab goes
@@ -3078,6 +3111,8 @@ public sealed partial class EditorView : IDisposable
                 Tool.Follow when _yard.Mode != YardMode.Follow => [("LMB", "Pick a track, then lay"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
                 Tool.Follow => [("LMB", "Click a guide or track"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove click"), ("CTRL+Z", "Undo")],
                 Tool.Shape => [("LMB", "Select, drag handle"), ("SHIFT+LMB", "Mark handles"), ("L", "Straighten"), ("DEL", "Remove handle"), ("ALT", "No snap"), ("CTRL+Z", "Undo")],
+                Tool.Flatten when _flattenSample is not null => [("LMB", "Flatten"), ("F", FlattenSampleText), ("ESC", "Clear sample"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
+                Tool.Flatten => [("LMB", "Flatten"), ("F", FlattenSampleText), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
                 Tool.Paint => [("LMB", "Paint"), ("P", "Cover"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
                 Tool.Track => [("LMB", "Select, drag"), ("SHIFT", "Add"), ("L", "Straighten"), ("K", "Smooth"), ("J", "Join"), ("DEL", "Delete")],
                 Tool.Circuits => [("LMB", "Select circuit"), ("SHIFT+LMB", "Add joint"), ("DRAG", "Move joint"), ("DEL", "Remove joint"), ("CTRL+Z", "Undo")],
