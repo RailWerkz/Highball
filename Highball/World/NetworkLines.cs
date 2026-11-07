@@ -428,6 +428,27 @@ public sealed partial class NetworkLines
     private const double RailCell = 25.0;
     private Dictionary<(int X, int Z), List<(NetworkLine Line, int Segment)>>? _railCells;
 
+    /// Whether another track carries on from this place, so that a line ending here isn't the end of the track.
+    public bool TrackContinues(NetworkLine line, double x, double z)
+    {
+        UnderTrack(x, z, 3.0);
+        if (!_railCells!.TryGetValue(((int)Math.Floor(x / RailCell), (int)Math.Floor(z / RailCell)), out var near))
+            return false;
+        foreach (var (other, s) in near)
+        {
+            if (ReferenceEquals(other, line))
+                continue;
+            var (dx, dz) = (other.X[s + 1] - other.X[s], other.Z[s + 1] - other.Z[s]);
+            var length = Math.Max(Math.Sqrt(dx * dx + dz * dz), 1e-6);
+            var along = ((x - other.X[s]) * dx + (z - other.Z[s]) * dz) / length;
+            var aside = Math.Abs((x - other.X[s]) * dz - (z - other.Z[s]) * dx) / length;
+            if (aside < 1.0 && along > -1.0 && along < length + 1.0)
+                return true;
+        }
+
+        return false;
+    }
+
     /// Whether built track runs through this place, within so many metres to either side, for a mapped track's mark to give way to it.
     /// Past the track's end it's clear again: it doesn't reach round the end. Safe from the workers building chunks.
     public bool UnderTrack(double x, double z, double within)
@@ -1771,7 +1792,7 @@ public sealed partial class NetworkLines
     private const float BridgeClearReach = 8f;
     private const float BridgeEndEase = 6f;
     /// How far under each end of a deck the bank stays as it is: past the abutment, whose seat's there, before the ground's cut away.
-    private const float BridgeBank = 1.6f;
+    private const float BridgeBank = 2.2f;
 
     /// How far under a road's formation height the ground beneath it lies.
     private const float RoadClearance = 0.02f;
