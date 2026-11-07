@@ -1186,14 +1186,18 @@ public sealed partial class NetworkMeshes : IDisposable
             Solid(builder, center + forward * 0.6f, right * half, forward * 0.9f, ground - 1.5f, top, concrete);
             Solid(builder, center - forward * 0.35f, right * half, forward * 0.35f, ground - 1.5f, line.Y[p] - 0.05f, concrete);
 
+            // Only where there's a bank to hold. Their tops are level with the ground the track's on, so that they show only where
+            // it falls away, and lie under the ballast everywhere else.
+            if (line.Y[p] - ground < 1.5f)
+                return;
             var reach = Math.Clamp((line.Y[p] - ground) * 1.6f, 3f, 16f);
             foreach (var side in (float[])[-1f, 1f])
             {
                 var a = center - forward * 0.7f + right * (side * (half - 0.15f));
-                var way = MathEx.Normalize(forward * -0.94f + right * (side * 0.34f));
+                var way = MathEx.Normalize(forward * -0.7f + right * (side * 0.7f));
                 var b = a + way * reach;
                 var end = _source.HeightAt(b.X + builder.Origin.X, b.Z + builder.Origin.Z);
-                Wing(builder, a, b, 0.4f, ground - 1.5f, line.Y[p] + 0.25f, MathF.Min(end + 0.15f, line.Y[p] + 0.25f), concrete);
+                Wing(builder, a, b, 0.4f, ground - 1.5f, line.Y[p], MathF.Min(end + 0.05f, line.Y[p]), concrete);
             }
         }
 

@@ -92,6 +92,9 @@ public sealed partial class EditorView : IDisposable
     private readonly RoadTool _road = new();
     private RoadEditor? _roads;
     private RoadEditor.Hit? _bridgeFrom;
+    /// What the bridge begun at _bridgeFrom can end on, and where on the screen it was begun, to tell a drag from a click.
+    private HashSet<long> _bridgeLine = [];
+    private float2 _bridgePressed;
     private long? _roadHover;
     private LayPoint? _roadNext;
     private LayPoint? _layNext;
@@ -585,6 +588,7 @@ public sealed partial class EditorView : IDisposable
             PlaceUpdate(source, placing);
         if (_tool == Tool.Road)
             RoadUpdate();
+        BridgeUpdate();
         if (DevTools.ShapeOps is { Count: > 0 } && _rebuild is null)
             ShapeOp(source, DevTools.ShapeOps.Dequeue());
 
@@ -870,26 +874,64 @@ public sealed partial class EditorView : IDisposable
         return Math.Max(3.0, Math.Sqrt(dx * dx + dy * dy + dz * dz) * 2.0 * Math.Tan(_camera.FieldOfView * 0.5) / Math.Max(_screen.Y, 1f) * S(14f));
     }
 
-    /// A bridge's first click holds its place, and the second builds it. It goes on the line nearest, road or track.
+    /// The shortest bridge worth building, in metres.
+    private const double ShortestBridge = 4.0;
+
+    /// Where a bridge would start under the cursor, on the line nearest, road or track. Generous, since it's hard to miss on purpose.
+    private RoadEditor.Hit? BridgeStartAt(double x, double z) =>
+        Roads.Nearest(x, z, Math.Max(PickReach(x, z) * 2.0, 8.0), w => !w.Tags.ContainsKey(RouteNetwork.RemovedTag));
+
+    /// Where a bridge begun already would end: the place on its own line nearest the cursor, however far off the cursor is.
+    private RoadEditor.Hit? BridgeEndAt(double x, double z) => Roads.Nearest(x, z, 1e7, w => _bridgeLine.Contains(w.Id));
+
+    /// A bridge's first click holds its place, and the second, or letting go of a drag, builds it. Once begun it stays on its line:
+    /// the cursor can't pick the one beside it.
     private void BridgeClick(double x, double z)
     {
-        if (Roads.Nearest(x, z, PickReach(x, z), w => !w.Tags.ContainsKey(RouteNetwork.RemovedTag)) is not { } hit)
+        _switchRefused = null;
+        if (_bridgeFrom is null)
         {
-            _switchRefused = "Click on a road or a track";
+            if (BridgeStartAt(x, z) is not { } hit)
+            {
+                _switchRefused = "Click on a road or a track";
+                return;
+            }
+
+            _bridgeFrom = hit;
+            _bridgeLine = Roads.LineOf(hit.Way);
+            _bridgePressed = Input.MousePosition;
             return;
         }
 
-        if (_bridgeFrom is not { } from)
+        BridgeFinish(x, z);
+    }
+
+    private void BridgeFinish(double x, double z)
+    {
+        if (_bridgeFrom is not { } from || BridgeEndAt(x, z) is not { } end)
+            return;
+
+        if (Roads.Span(from, end) is { } span && span.Length < ShortestBridge)
         {
-            _bridgeFrom = hit;
+            _switchRefused = "Too short for a bridge: keep going along the line";
             return;
         }
 
         _bridgeFrom = null;
-        if (Roads.AddBridge(from, hit, out var refused) is { } edit)
+        if (Roads.AddBridge(from, end, out var refused) is { } edit)
             Committed(edit);
         else
             _switchRefused = refused;
+    }
+
+    /// Letting go of a drag ends the bridge there; letting go where it was pressed leaves it waiting for the second click.
+    private void BridgeUpdate()
+    {
+        if (_tool != Tool.Place || _place.Mode != PlaceMode.Bridge || _bridgeFrom is null || Blocked || _hit is not { } hit || !ImGui.IsMouseReleased(ImGuiMouseButton.Left))
+            return;
+        var moved = Input.MousePosition - _bridgePressed;
+        if (moved.X * moved.X + moved.Y * moved.Y > S(16f) * S(16f))
+            BridgeFinish(hit.X, hit.Z);
     }
 
     private void RoadUpdate()
@@ -1783,6 +1825,15 @@ public sealed partial class EditorView : IDisposable
                 break;
             }
 
+            case "bridgeclick":
+            {
+                // bridgeclick,lat,lon: as a click with Place bridge in hand.
+                var (cx, cz) = At(1);
+                BridgeClick(cx, cz);
+                Log.Info($"Bridge click: {(_bridgeFrom is null ? "finished" : "begun")} {_switchRefused}");
+                break;
+            }
+
             case "unbridge":
             {
                 var (ax, az) = At(1);
@@ -2424,21 +2475,11 @@ public sealed partial class EditorView : IDisposable
                 DrawPicked(draw, shape.X, shape.Z, Style.Stop);
         }
 
-        if (_tool == Tool.Place && _place.Mode is PlaceMode.Bridge or PlaceMode.RemoveBridge && !Blocked && _hit is { } at2)
-        {
-            Func<Highball.Routes.NetworkWay, bool> wanted = _place.Mode == PlaceMode.Bridge ? w => !w.Tags.ContainsKey(RouteNetwork.RemovedTag) : RoadEditor.IsBridge;
-            if (Roads.Nearest(at2.X, at2.Z, PickReach(at2.X, at2.Z), wanted) is { } near)
-            {
-                if (_roads?.Shape(near.Way) is { } line)
-                    DrawPicked(draw, line.X, line.Z, _place.Mode == PlaceMode.Bridge ? Style.Accent : Style.Stop);
-                if (_bridgeFrom is { } from && ProjectGround(from.X, from.Z) is { } a && ProjectGround(near.X, near.Z) is { } b)
-                {
-                    draw.AddLine(a, b, Style.Accent, S(3f));
-                    draw.AddCircleFilled(a, S(5f), Style.Accent);
-                    draw.AddCircleFilled(b, S(5f), Style.Accent);
-                }
-            }
-        }
+        if (_tool == Tool.Place && _place.Mode == PlaceMode.RemoveBridge && !Blocked && _hit is { } at2
+            && Roads.Nearest(at2.X, at2.Z, PickReach(at2.X, at2.Z), RoadEditor.IsBridge) is { } gone && _roads?.Shape(gone.Way) is { } goneLine)
+            DrawPicked(draw, goneLine.X, goneLine.Z, Style.Stop);
+        if (_tool == Tool.Place && _place.Mode == PlaceMode.Bridge && !Blocked && _hit is { } at3)
+            DrawBridgePreview(draw, at3.X, at3.Z);
 
         if (_tool == Tool.Follow)
             _area?.Draw(draw, ProjectGround, Style.Caution);
@@ -2447,6 +2488,39 @@ public sealed partial class EditorView : IDisposable
             var imperial = Settings.Current.Units == UnitSystem.Imperial;
             var height = imperial ? $"{at.Height * FeetPerMeter:#,0} ft" : $"{at.Height:#,0} m";
             PenTool.Label(draw, at.Screen, string.Create(CultureInfo.InvariantCulture, $"Grade {at.Grade * 100:0.00}%   {height}"), GradeColor(at.Grade));
+        }
+    }
+
+    /// Before the first click, the line a bridge would go on and the place on it. After, the stretch it would cover, along the line,
+    /// and how long that is.
+    private void DrawBridgePreview(ImDrawListPtr draw, double x, double z)
+    {
+        if (_bridgeFrom is not { } from)
+        {
+            if (BridgeStartAt(x, z) is not { } start)
+                return;
+            if (_roads?.Shape(start.Way) is { } line)
+                DrawPicked(draw, line.X, line.Z, Style.TextDim);
+            if (ProjectGround(start.X, start.Z) is { } place)
+                draw.AddCircleFilled(place, S(6f), Style.Accent);
+            return;
+        }
+
+        if (BridgeEndAt(x, z) is not { } end || Roads.Span(from, end) is not { } span)
+            return;
+
+        var color = span.Length < ShortestBridge ? Style.Stop : Style.Accent;
+        for (var i = 0; i + 1 < span.Points.Count; i++)
+            if (ProjectGround(span.Points[i].X, span.Points[i].Z) is { } a && ProjectGround(span.Points[i + 1].X, span.Points[i + 1].Z) is { } b)
+                draw.AddLine(a, b, color, S(5f));
+        if (ProjectGround(from.X, from.Z) is { } first)
+            draw.AddCircleFilled(first, S(6f), color);
+        if (ProjectGround(end.X, end.Z) is { } last)
+        {
+            draw.AddCircleFilled(last, S(6f), color);
+            var imperial = Settings.Current.Units == UnitSystem.Imperial;
+            var length = imperial ? $"{span.Length * FeetPerMeter:#,0} ft" : $"{span.Length:#,0} m";
+            PenTool.Label(draw, last, $"Bridge {length}", color);
         }
     }
 

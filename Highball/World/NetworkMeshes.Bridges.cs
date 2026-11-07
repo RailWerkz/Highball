@@ -77,11 +77,36 @@ public sealed partial class NetworkMeshes
             }
         });
 
-        Along(RailPostGap, (center, right, forward) =>
+        void Post(float3 center, float3 right, float3 forward)
         {
             foreach (var side in (float[])[-1f, 1f])
                 Solid(builder, center + right * (side * (half - 0.08f)), right * 0.05f, forward * 0.05f, center.Y + edge, center.Y + edge + RailingHeight + 0.05f, bright);
-        });
+        }
+
+        Along(RailPostGap, Post);
+
+        // Where the bridge ends, a post closes the rails, and a plate the deck, whatever's beyond it.
+        var inner = line.Rail ? line.BallastHalfTop + 0.55f : half - 0.55f;
+        var surface = line.Rail ? NetworkLine.BallastHeight - 0.01f : RoadRise - 0.01f;
+        var concrete = new float4(0f, 0f, Code(LineMaterial.Concrete), 0f);
+        void End(float s)
+        {
+            var (center, right) = FrameAt(line, s, builder.Origin);
+            var forward = new float3(right.Z, 0f, -right.X);
+            Post(center, right, forward);
+            void Plate(float u0, float u1, float y0, float y1) =>
+                Solid(builder, center + right * ((u0 + u1) * 0.5f), right * ((u1 - u0) * 0.5f), forward * 0.04f, center.Y + y0, center.Y + y1, concrete);
+            Plate(-half, -inner, deckBottom, edge);
+            Plate(inner, half, deckBottom, edge);
+            Plate(-inner, inner, deckBottom, line.Rail ? 0.05f : surface);
+            if (line.Rail)
+                Plate(-line.BallastHalfTop, line.BallastHalfTop, 0.05f, surface);
+        }
+
+        if (first == 0 || line.Structures[first - 1] != Structure.Bridge)
+            End(line.S[first]);
+        if (last == line.Count - 1 || line.Structures[last] != Structure.Bridge)
+            End(line.S[last]);
     }
 
     /// An I section centred on u, listed round clockwise so the solid's on the right.
@@ -130,6 +155,7 @@ public sealed partial class NetworkMeshes
             builder.Quad(v0, v1, v2, v3);
         }
 
+        Face(a - side, a + side, topA, topA, along * -1f);
         Face(a + side, b + side, topA, topB, MathEx.Normalize(side));
         Face(a - side, b - side, topA, topB, MathEx.Normalize(side * -1f));
         Face(b - side, b + side, topB, topB, along);

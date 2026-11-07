@@ -252,7 +252,7 @@ public sealed partial class EditorView
             if (PaletteRow(ToolIcon.RemoveBridge, "Remove bridge", _place.Mode == PlaceMode.RemoveBridge))
                 (_place.Mode, _bridgeFrom, _switchRefused) = (PlaceMode.RemoveBridge, null, null);
             if (_place.Mode == PlaceMode.Bridge)
-                ImGui.TextWrapped(_bridgeFrom is null ? "Click where the bridge starts, on a road or a track."u8 : "Now click where it ends, along the same line."u8);
+                ImGui.TextWrapped(_bridgeFrom is null ? "Click where the bridge starts on a road or track, or press there and drag along it."u8 : "It follows the line wherever the cursor goes. Click where it ends, or Esc to cancel."u8);
         }
     }
 

@@ -176,6 +176,85 @@ public sealed class RoadEditor
     public NetworkEdit? Remove(long way) =>
         _network.Ways.TryGetValue(way, out var before) ? Commit([(way, before, null)]) : null;
 
+    /// Every way a bridge from this one could reach: joined to it end to end, within as many as a bridge can run across.
+    public HashSet<long> LineOf(long id)
+    {
+        var line = new HashSet<long>();
+        if (!_network.Ways.TryGetValue(id, out var start))
+            return line;
+        var ends = _network.Ways.Values.Where(w => w.Nodes.Length >= 2 && w.Rail == start.Rail && !w.Tags.ContainsKey(RouteNetwork.RemovedTag))
+            .SelectMany(w => ((long[])[w.Nodes[0], w.Nodes[^1]]).Select(end => (End: end, Way: w))).ToLookup(e => e.End, e => e.Way);
+        line.Add(id);
+        var frontier = new List<NetworkWay> { start };
+        for (var depth = 0; depth < LongestBridgeChain && frontier.Count > 0; depth++)
+        {
+            var next = new List<NetworkWay>();
+            foreach (var way in frontier)
+                foreach (var end in (long[])[way.Nodes[0], way.Nodes[^1]])
+                    foreach (var joined in ends[end])
+                        if (line.Add(joined.Id))
+                            next.Add(joined);
+            frontier = next;
+        }
+
+        return line;
+    }
+
+    /// The way along the line from one place on it to another, as AddBridge would take it, with its length in metres.
+    public (List<(double X, double Z)> Points, double Length)? Span(Hit a, Hit b)
+    {
+        Refresh();
+        (double[] X, double[] Z)? Of(long id) => Shape(id);
+        var points = new List<(double X, double Z)> { (a.X, a.Z) };
+        if (a.Way == b.Way)
+        {
+            if (Of(a.Way) is not { } shape)
+                return null;
+            if (a.Segment + a.T <= b.Segment + b.T)
+                for (var i = a.Segment + 1; i <= b.Segment; i++)
+                    points.Add((shape.X[i], shape.Z[i]));
+            else
+                for (var i = a.Segment; i > b.Segment; i--)
+                    points.Add((shape.X[i], shape.Z[i]));
+        }
+        else
+        {
+            if (Chain(a.Way, b.Way) is not { } chain)
+                return null;
+            for (var c = 0; c < chain.Count; c++)
+            {
+                var way = _network.Ways[chain[c]];
+                if (Of(way.Id) is not { } shape)
+                    return null;
+                var last = way.Nodes.Length - 1;
+                int enter, leave;
+                if (c == 0)
+                {
+                    leave = SharedEnd(way, _network.Ways[chain[1]]);
+                    enter = leave == 0 ? a.Segment : a.Segment + 1;
+                }
+                else
+                {
+                    enter = SharedEnd(way, _network.Ways[chain[c - 1]]);
+                    leave = c == chain.Count - 1 ? (enter == 0 ? b.Segment : b.Segment + 1) : (enter == 0 ? last : 0);
+                }
+
+                for (var i = enter; ; i += leave >= enter ? 1 : -1)
+                {
+                    points.Add((shape.X[i], shape.Z[i]));
+                    if (i == leave)
+                        break;
+                }
+            }
+        }
+
+        points.Add((b.X, b.Z));
+        var length = 0.0;
+        for (var i = 0; i + 1 < points.Count; i++)
+            length += Math.Sqrt((points[i + 1].X - points[i].X) * (points[i + 1].X - points[i].X) + (points[i + 1].Z - points[i].Z) * (points[i + 1].Z - points[i].Z));
+        return (points, length);
+    }
+
     /// Makes the line between two places on it a bridge: both on one way, or on ways joined end to end.
     public NetworkEdit? AddBridge(Hit a, Hit b, out string? refused)
     {
