@@ -475,7 +475,7 @@ public sealed partial class EditorView : IDisposable
 
         if (Input.Scroll != 0f && !Blocked && !WheelTurns)
         {
-            if (Input.Key(GlfwKey.LeftShift))
+            if (Input.Key(GlfwKey.LeftAlt))
                 _camera.Zoom = Math.Clamp(_camera.Zoom * MathF.Pow(1.25f, Input.Scroll), 1f, MaxLensZoom);
             else
                 _speed = Math.Clamp(_speed * MathF.Pow(1.25f, Input.Scroll), MinSpeed, MaxSpeed);
@@ -3139,7 +3139,7 @@ public sealed partial class EditorView : IDisposable
         {
             (string, string)[] tool = _tool switch
             {
-                Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", _topDown ? "Zoom" : "Speed"), .. (_topDown ? ((string, string)[])[] : [("SHIFT+WHEEL", _camera.Zoom <= 1.01f ? "Zoom" : string.Create(CultureInfo.InvariantCulture, $"Zoom {_camera.Zoom:0.0}x"))]), ("G", "Grades"), ("T", "Throw switch")],
+                Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", _topDown ? "Zoom" : "Speed"), .. (_topDown ? ((string, string)[])[] : [("ALT+WHEEL", _camera.Zoom <= 1.01f ? "Zoom" : string.Create(CultureInfo.InvariantCulture, $"Zoom {_camera.Zoom:0.0}x"))]), ("G", "Grades"), ("T", "Throw switch")],
                 Tool.Road when _road.Mode == RoadMode.Remove => [("LMB", "Remove road"), ("CTRL+Z", "Undo")],
                 Tool.Road => [("LMB", "Next point"), ("SHIFT", "15 degree steps"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Parallel => [("LMB", "Start, then end"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],

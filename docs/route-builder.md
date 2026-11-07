@@ -63,7 +63,7 @@ goes on top.
 | WASD | Pan | Move |
 | Q / E | | Down / up |
 | Wheel | Zoom about the pointer | Flying speed |
-| Left Shift+wheel | | Zoom the lens in or out, up to 10x |
+| Left Alt+wheel | | Zoom the lens in or out, up to 10x |
 | Shift | Faster | Faster |
 
 ## Tools
