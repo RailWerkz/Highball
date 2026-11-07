@@ -1790,9 +1790,9 @@ public sealed partial class NetworkLines
 
     private const float BridgeClearance = 0.3f;
     private const float BridgeClearReach = 8f;
-    private const float BridgeEndEase = 6f;
+    private const float BridgeEndEase = 3f;
     /// How far under each end of a deck the bank stays as it is: past the abutment, whose seat's there, before the ground's cut away.
-    private const float BridgeBank = 2.2f;
+    private const float BridgeBank = 0.5f;
 
     /// How far under a road's formation height the ground beneath it lies.
     private const float RoadClearance = 0.02f;

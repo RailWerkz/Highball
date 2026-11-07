@@ -855,31 +855,18 @@ public sealed partial class NetworkMeshes : IDisposable
                 }
             }
 
-            // Where the bed stops, its own section's turned round the end, so the cap's the same shape, shade and fade as the bed: about the
-            // track's centre where there's no more track, and about the deck's corners at a bridge, whose abutment takes up the middle.
-            void BedEnd(float at, float way, float pivot)
+            // Where the track stops, the bed's own section's turned round its end, so the cap's the same shape, shade and fade as the bed.
+            // (At a bridge it stops against the abutment's retaining walls instead: see Piers.)
+            void BedEnd(float at, float way)
             {
                 const int steps = 8;
                 var (centre, side) = FrameAt(line, at, builder.Origin);
                 var ahead = new float3(side.Z, 0f, -side.X) * way;
                 var profile = Section(0f, 0f, 0f, line.SinkAt(at));
                 var outside = profile.Skip(curve + 3).ToArray();
-                var half = new List<(float U, float Y)>();
-                if (pivot <= 0f)
-                    half.Add((0f, outside[0].Y));
-                else if (outside[^1].U <= pivot + 0.2f)
-                    return;
-                else
-                {
-                    var y = outside[0].Y;
-                    for (var i = 0; i + 1 < outside.Length; i++)
-                        if (outside[i].U <= pivot && outside[i + 1].U > pivot)
-                            y = outside[i].Y + (outside[i + 1].Y - outside[i].Y) * (pivot - outside[i].U) / (outside[i + 1].U - outside[i].U);
-                    half.Add((pivot, y));
-                }
-
-                half.AddRange(outside.Where(o => o.U > pivot));
-                var section = half.ToArray();
+                var section = new (float U, float Y)[outside.Length + 1];
+                section[0] = (0f, outside[0].Y);
+                outside.CopyTo(section, 1);
                 var count = section.Length - 1;
                 var toe = outside[^3];
                 // (No tracks to paint on it from afar, unlike the bed.)
@@ -891,22 +878,20 @@ public sealed partial class NetworkMeshes : IDisposable
                     {
                         var (sin, cos) = MathF.SinCos(MathF.PI * 0.5f * i / steps);
                         var radial = side * (hand * cos) + ahead * sin;
-                        var pole = centre + side * (hand * pivot);
                         for (var e = 0; e < count; e++)
                         {
                             var (n0, n1) = JoinNormals(section, e, radial);
                             var (p0, p1) = (section[e], section[e + 1]);
                             var fade = e == count - 1;
                             // The fade runs on in under the taper, as the bed's does.
-                            if (fade && toe.U > pivot)
+                            if (fade)
                                 p0 = toe;
                             var (w0, w1) = fade ? (-Fading - 0.3f, -0.3f) : (railOffset, railOffset);
                             var code = fade ? gravel : rock;
                             foreach (var (point, normal, value) in (ReadOnlySpan<((float U, float Y), float3, float)>)[(p0, n0, w0), (p1, n1, w1)])
                             {
-                                var out2 = point.U - pivot;
-                                builder.Add(pole + radial * out2 + new float3(0f, point.Y, 0f), normal,
-                                    new float4(hand * (pivot + out2 * cos), (at + way * out2 * sin) % Wrap, code, value));
+                                builder.Add(centre + radial * point.U + new float3(0f, point.Y, 0f), normal,
+                                    new float4(hand * point.U * cos, (at + way * point.U * sin) % Wrap, code, value));
                             }
                         }
                     }
@@ -921,18 +906,10 @@ public sealed partial class NetworkMeshes : IDisposable
                 }
             }
 
-            void EndAt(int point, float way, bool toBridge)
-            {
-                if (toBridge)
-                    BedEnd(line.S[point], way, DeckOf(line).Half);
-                else if (!lines.TrackContinues(line, line.X[point], line.Z[point]))
-                    BedEnd(line.S[point], way, 0f);
-            }
-
-            if (first == 0 || line.Structures[first - 1] == Structure.Bridge)
-                EndAt(first, -1f, first > 0);
-            if (last == line.Count - 1 || line.Structures[last] == Structure.Bridge)
-                EndAt(last, 1f, last < line.Count - 1);
+            if (first == 0 && !lines.TrackContinues(line, line.X[first], line.Z[first]))
+                BedEnd(line.S[first], -1f);
+            if (last == line.Count - 1 && !lines.TrackContinues(line, line.X[last], line.Z[last]))
+                BedEnd(line.S[last], 1f);
 
             return;
         }
@@ -1276,36 +1253,28 @@ public sealed partial class NetworkMeshes : IDisposable
             var length = MathF.Max(MathF.Sqrt(fx * fx + fz * fz), 1e-5f);
             var forward = new float3(fx / length, 0f, fz / length);
             var ground = MathF.Min(_source.HeightAt(ax, az), _source.HeightAt(ax + forward.X * 4.0, az + forward.Z * 4.0));
+            // (Always, however little there seems to be under the deck: the bed needs something to stop against.)
             var top = line.Y[p] - deckDepth;
-            if (top - ground < 0.3f)
-                return;
+            ground = MathF.Min(ground, top - 0.5f);
             var right = new float3(-forward.Z, 0f, forward.X);
             var center = new float3((float)(ax - builder.Origin.X), 0f, (float)(az - builder.Origin.Z));
             var half = deckWidth * 0.5f + 0.1f;
             Solid(builder, center + forward * 0.6f, right * half, forward * 0.9f, ground - 1.5f, top, concrete);
             Solid(builder, center - forward * 0.35f, right * half, forward * 0.35f, ground - 1.5f, line.Y[p] - 0.05f, concrete);
 
-            // Only where there's a bank to hold. Their tops are level with the ground the track's on, so that they show only where
-            // it falls away, and lie under the ballast everywhere else.
-            if (line.Y[p] - ground < 1.5f)
-                return;
-            var reach = Math.Clamp((line.Y[p] - ground) * 1.6f, 3f, 16f);
+            // A retaining wall out from each side, holding the bank and the bed's rock back from the gap: its top falls from the deck's edge
+            // to the ground. On a railway it goes as far as the bed's rock does.
+            var (_, _, edge) = DeckOf(line);
+            var reach = line.Rail
+                ? MathF.Max(line.BallastHalfTop + MathF.Max(0.35f, line.BedHeight * NetworkLine.BallastSlope * NetworkLine.BedRun) + NetworkLine.BedFade - half, 1f)
+                : Math.Clamp((line.Y[p] - ground) * 1.2f, 1.5f, 6f);
+            var settled = line.Y[p] + (line.Rail ? line.SinkOf(p) : RoadRise) + 0.1f;
             foreach (var side in (float[])[-1f, 1f])
             {
-                var a = center - forward * 0.7f + right * (side * (half - 0.15f));
-                var way = MathEx.Normalize(forward * -0.7f + right * (side * 0.7f));
-                var b = a + way * reach;
-                float GroundAt(float t)
-                {
-                    var at = a + (b - a) * t;
-                    return _source.HeightAt(at.X + builder.Origin.X, at.Z + builder.Origin.Z);
-                }
-
-                // Well under where the ground's over it, or it'd shade the ground through it. Not at all if the bank buries the lot.
-                var deckTop = line.Y[p] - 0.3f;
-                if (((float[])[0f, 0.25f, 0.5f, 0.75f, 1f]).All(t => GroundAt(t) > deckTop - 0.2f))
-                    continue;
-                Wing(builder, a, b, 0.4f, ground - 1.5f, deckTop, MathF.Min(GroundAt(1f) - 0.5f, deckTop), concrete);
+                var a = center - forward * 0.1f + right * (side * half);
+                var b = a + right * (side * reach);
+                var low = MathF.Min(ground, _source.HeightAt(b.X + builder.Origin.X, b.Z + builder.Origin.Z)) - 1.5f;
+                Wing(builder, a, b, 0.4f, low, line.Y[p] + edge, settled, concrete);
             }
         }
 
