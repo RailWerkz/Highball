@@ -1,0 +1,10 @@
+General Electric ES44AC Black by OUTPISTON
+https://sketchfab.com/3d-models/general-electric-es44ac-black-ab967059a9504a209c4993816ccb2c9b
+Licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0: http://creativecommons.org/licenses/by-nc-sa/4.0/
+Not for commercial use; the models made from it are under the same licence.
+
+The source file is in Source/, unchanged.
+The other models in these folders are made from it by Tools/Blender/es44ac.py. Changes: split into body, truck and wheelset;
+turned to run along Y and moved so the rail is at zero; one material per texture; the headlights, ditch lights,
+horn and bell cut out as parts of their own. Its couplers are the shared one in
+Models/Couplers, from the SD40 (see the CREDITS.txt there).

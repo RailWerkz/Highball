@@ -1,0 +1,38 @@
+{
+  // One vehicle for the consist editor and the simulation. SI units, named in each key.
+  "id": "es44ac",
+  "name": "GE ES44AC",
+  "kind": "Locomotive",
+  "builder": "GE",
+  "built": "2003-present",
+  "type": "C-C AC diesel-electric, GEVO-12",
+  "lengthM": 21.756,
+  "truckCentresM": 13.398,
+  // Front knuckle nose to front truck centre: shorter at the cab end than the 4.417 m at the rear (assembly.json's
+  // couplers plus the coupler's reach). Like lengthM, measured to the noses; the game takes off the knuckles' overlap.
+  "frontOverhangM": 3.940,
+  "axles": 6,
+  "wheelDiameterM": 1.084,
+  "massEmptyKg": 195045,
+  "massLoadedKg": 195045,
+  "powerKw": 3281,
+  "startingTractiveEffortKn": 801,
+  "continuousTractiveEffortKn": 738,
+  "dynamicBrakeEffortKn": 520,
+  "maxSpeedKmh": 121,
+  "liveries": [
+    { "id": "black", "name": "Black", "model": "Locomotives/ES44AC/Assembled/es44ac_black.glb" }
+  ],
+  // GEVO-12 prime mover: idle and notch 8 loops, crossfaded and pitched as the revs follow the throttle; under Content/Audio.
+  "engineSound": {
+    "idle": "Engines/GEVO/es44_idle02.wav",
+    "run": "Engines/GEVO/es44_run8_02.wav",
+    "chug": "Engines/GEVO/run8_es44_chug.wav",
+    "startup": "Engines/GEVO/gevo12_start.wav",
+    "startupSeconds": 13,
+    "compressorStart": "Engines/GEVO/run8_es44_compressorStart.wav",
+    "compressorLoop": "Engines/GEVO/run8_es44_aircomploop.wav",
+    "compressorStop": "Engines/GEVO/run8_es44_compressorValveBlast.wav",
+    "dynamicFan": "Engines/GEVO/GE_DynBrakeFan01.wav"
+  }
+}

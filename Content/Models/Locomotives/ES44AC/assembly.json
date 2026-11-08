@@ -1,0 +1,258 @@
+{
+  "source": "General Electric ES44AC Black by OUTPISTON, CC BY-NC-SA 4.0",
+  "lengthOverCouplers": 21.756,
+  "lods": [
+    "LOD0"
+  ],
+  "trianglesWholeEngine": {
+    "LOD0": 23038
+  },
+  "models": "Each model below is <lod>/<model>.glb, except the couplers: Models/Couplers/coupler.glb, the same on every engine and car",
+  "bodies": [
+    "body_black"
+  ],
+  "truckByBody": {},
+  "trucks": [
+    {
+      "model": "truck",
+      "position": [
+        0,
+        -6.699,
+        0
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "truck",
+      "position": [
+        0,
+        6.699,
+        0
+      ],
+      "yaw": 0
+    }
+  ],
+  "wheelsets": {
+    "model": "wheelset",
+    "onTruck": [
+      [
+        0,
+        -1.9695,
+        0.542
+      ],
+      [
+        0,
+        0.0,
+        0.542
+      ],
+      [
+        0,
+        1.9732,
+        0.542
+      ]
+    ],
+    "radius": 0.542
+  },
+  "couplers": [
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        -10.1212,
+        0.8134
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        10.5982,
+        0.8134
+      ],
+      "yaw": 180
+    }
+  ],
+  "fixtures": {
+    "Headlight_Front_Upper": {
+      "kind": "lamp",
+      "position": [
+        0.0007,
+        -9.7624,
+        3.4807
+      ],
+      "facing": [
+        0,
+        -1,
+        0
+      ],
+      "triangles": 84
+    },
+    "Headlight_Front_Lower": {
+      "kind": "lamp",
+      "position": [
+        0.0007,
+        -9.7621,
+        3.2688
+      ],
+      "facing": [
+        0,
+        -1,
+        0
+      ],
+      "triangles": 88
+    },
+    "DitchLight_Front_Left": {
+      "kind": "lamp",
+      "position": [
+        0.8807,
+        -10.442,
+        1.9454
+      ],
+      "facing": [
+        0,
+        -1,
+        0
+      ],
+      "triangles": 108
+    },
+    "DitchLight_Front_Right": {
+      "kind": "lamp",
+      "position": [
+        -0.8535,
+        -10.4416,
+        1.9454
+      ],
+      "facing": [
+        0,
+        -1,
+        0
+      ],
+      "triangles": 108
+    },
+    "Headlight_Rear_Upper": {
+      "kind": "lamp",
+      "position": [
+        -0.0129,
+        10.0414,
+        2.9219
+      ],
+      "facing": [
+        0,
+        1,
+        0
+      ],
+      "triangles": 84
+    },
+    "Headlight_Rear_Lower": {
+      "kind": "lamp",
+      "position": [
+        -0.0133,
+        10.0425,
+        2.7028
+      ],
+      "facing": [
+        0,
+        1,
+        0
+      ],
+      "triangles": 88
+    },
+    "DitchLight_Rear_Left": {
+      "kind": "lamp",
+      "position": [
+        -0.8664,
+        10.8438,
+        2.0085
+      ],
+      "facing": [
+        0,
+        1,
+        0
+      ],
+      "triangles": 106
+    },
+    "DitchLight_Rear_Right": {
+      "kind": "lamp",
+      "position": [
+        0.8677,
+        10.8435,
+        2.0085
+      ],
+      "facing": [
+        0,
+        1,
+        0
+      ],
+      "triangles": 106
+    },
+    "Horn": {
+      "kind": "horn",
+      "position": [
+        -0.0243,
+        1.2335,
+        4.8817
+      ],
+      "facing": [
+        0,
+        -1,
+        0
+      ],
+      "triangles": 304,
+      "trumpets": [
+        {
+          "mouth": [
+            -0.1874,
+            0.9801,
+            4.8701
+          ],
+          "facing": [
+            0,
+            -1,
+            0
+          ]
+        },
+        {
+          "mouth": [
+            -0.0391,
+            0.8367,
+            4.87
+          ],
+          "facing": [
+            0,
+            -1,
+            0
+          ]
+        },
+        {
+          "mouth": [
+            0.1312,
+            1.6303,
+            4.8689
+          ],
+          "facing": [
+            0,
+            1,
+            0
+          ]
+        }
+      ]
+    },
+    "Bell": {
+      "kind": "bell",
+      "position": [
+        1.1056,
+        -3.3999,
+        1.1533
+      ],
+      "facing": [
+        0,
+        0,
+        -1
+      ],
+      "triangles": 86
+    }
+  },
+  "fixturesNote": "Parts of the body model by these node names. position: the part's origin; facing: the way its light, horn or bell points, the node's local -Y in Blender and +Z in the glTF",
+  "axes": "Blender Z-up metres, front towards -Y; in the files, glTF Y-up: (x, y, z) here is (x, z, -y) there"
+}
