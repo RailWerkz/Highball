@@ -429,8 +429,8 @@ public sealed partial class NetworkMeshes
         var flange = RailHeadHalf + 0.055f;
         var railTop = NetworkLine.BallastHeight + KitRailBase + RailTop - 0.004f;
 
-        // Along each row: every edge's distance along the road, and its height.
-        var edges = new List<(float T, float Y)[]>();
+        // Along each row: where each rail crosses it, by distance along the road, with its height and how square it crosses.
+        var railRows = new List<List<(float T, float Y, float Sine)>>();
         foreach (var k in Enumerable.Range(0, rows + 1))
         {
             var w = -half + width * k / rows;
@@ -453,12 +453,27 @@ public sealed partial class NetworkMeshes
             }
 
             rails.Sort((a, b) => a.T.CompareTo(b.T));
+            railRows.Add(rails);
+        }
+
+        float LevelLow(List<(float T, float Y, float Sine)> rails) => rails[0].T - (g + CrossingOuter) / rails[0].Sine;
+        float LevelHigh(List<(float T, float Y, float Sine)> rails) => rails[^1].T + (g + CrossingOuter) / rails[^1].Sine;
+
+        // Every row's ramps start and end at the same distance along the road, so the deck's ends lie square across it, as the
+        // stretch of road it takes the place of is cut. (On a skewed crossing a row's ramp is the longer the further its level begins.)
+        var rampLow = railRows.Min(LevelLow) - CrossingRamp;
+        var rampHigh = railRows.Max(LevelHigh) + CrossingRamp;
+
+        // Along each row: every edge's distance along the road, and its height.
+        var edges = new List<(float T, float Y)[]>();
+        foreach (var k in Enumerable.Range(0, rows + 1))
+        {
+            var w = -half + width * k / rows;
+            var (ox, oz) = (cx + nx * w, cz + nz * w);
+            var rails = railRows[k];
             var row = new List<(float T, float Y)>();
             var (first, last) = (rails[0], rails[^1]);
-            var levelLow = first.T - (g + CrossingOuter) / first.Sine;
-            var levelHigh = last.T + (g + CrossingOuter) / last.Sine;
-            var rampLow = levelLow - CrossingRamp;
-            var rampHigh = levelHigh + CrossingRamp;
+            var (levelLow, levelHigh) = (LevelLow(rails), LevelHigh(rails));
             row.Add((rampLow, RampEnd(ox + dx * rampLow, oz + dz * rampLow)));
             row.Add((levelLow, first.Y));
             foreach (var (t, y, sine) in rails)

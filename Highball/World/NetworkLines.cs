@@ -1892,6 +1892,60 @@ public sealed partial class NetworkLines
             }
         }
 
+        // At a level crossing the road rises to the rails, but the track keeps its own flat ground beside it lower down, so the road
+        // and its deck would stand on a slab. Lift that ground to the road and run fill slopes out from it; but never over the
+        // ballast's own surface (so the gravel still shows), dipping to the bed's toe and rising from there at the fill slope.
+        foreach (var index in list)
+        {
+            var line = _lines[index];
+            if (line.Rail || line.Mark)
+                continue;
+            var r = (line.Formation + CrossingFillReach) / _spacing;
+            for (var p = 0; p + 1 < line.Count; p++)
+            {
+                if (line.Structures[p] != Structure.Ground)
+                    continue;
+                var (ax, az, bx, bz) = (line.X[p] / _spacing - gx0, line.Z[p] / _spacing - gz0, line.X[p + 1] / _spacing - gx0, line.Z[p + 1] / _spacing - gz0);
+                var (x0, x1) = (Math.Max(0, (int)Math.Floor(Math.Min(ax, bx) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(ax, bx) + r)));
+                var (z0, z1) = (Math.Max(0, (int)Math.Floor(Math.Min(az, bz) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(az, bz) + r)));
+                var (dx, dz) = (bx - ax, bz - az);
+                var length2 = dx * dx + dz * dz;
+                if (length2 <= 0)
+                    continue;
+                var length = Math.Sqrt(length2);
+                for (var z = z0; z <= z1; z++)
+                    for (var x = x0; x <= x1; x++)
+                    {
+                        var sample = z * samples + x;
+                        var n = near[sample];
+                        if (n.Line < 0)
+                            continue;
+                        var rail = _lines[n.Line];
+                        if (n.D > rail.Formation + CrossingFillReach)
+                            continue;
+                        // Only a road heading across the track: one alongside it keeps to its own shaping.
+                        var toward = MathF.Sqrt(n.Ex * n.Ex + n.Ez * n.Ez);
+                        if (toward > 1e-3f && Math.Abs((dx * n.Ex + dz * n.Ez) / (length * toward)) < 0.5)
+                            continue;
+
+                        var t = Math.Clamp(((x - ax) * dx + (z - az) * dz) / length2, 0.0, 1.0);
+                        var (ex, ez) = (ax + dx * t - x, az + dz * t - z);
+                        var d = (float)Math.Sqrt(ex * ex + ez * ez) * _spacing;
+                        if (d > line.Formation + CrossingFillReach)
+                            continue;
+                        var lift = line.Y[p] + (line.Y[p + 1] - line.Y[p]) * (float)t - RoadClearance - MathF.Max(0f, d - line.Formation) * FillSlope;
+
+                        var flank = MathF.Max(0.35f, rail.BedHeight * NetworkLine.BallastSlope * NetworkLine.BedRun);
+                        var toe = rail.BallastHalfTop + flank;
+                        var bed = rail.BedHeight * Math.Clamp(1f - (n.D - rail.BallastHalfTop) / flank, 0f, 1f);
+                        var cap = n.Y - CrossingUnderBallast + MathF.Max(bed, (n.D - toe) * FillSlope);
+                        var target = MathF.Min(lift, cap);
+                        if (target > heights[sample])
+                            heights[sample] = target;
+                    }
+            }
+        }
+
         foreach (var index in list)
             if (Array.IndexOf(_lines[index].Structures, Structure.Bridge) >= 0)
                 ClearBridges(index, heights, samples, gx0, gz0);
@@ -1948,6 +2002,11 @@ public sealed partial class NetworkLines
 
     /// How far under a road's formation height the ground beneath it lies.
     private const float RoadClearance = 0.02f;
+
+    /// How far past a road's formation, and a track's, the ground's lifted to meet a road raised to a level crossing; and how far
+    /// under the ballast's surface that ground stays.
+    private const float CrossingFillReach = 6f;
+    private const float CrossingUnderBallast = 0.04f;
 
     /// How far apart two rail lines can be for the ground between them to be graded as one.
     private const float YardGap = 45f;
