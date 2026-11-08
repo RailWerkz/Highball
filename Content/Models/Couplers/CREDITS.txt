@@ -1,0 +1,5 @@
+The coupler is from "EMD-SD40 Diesel Electric Locomotive" by Heataker
+https://sketchfab.com/3d-models/emd-sd40-diesel-electric-locomotive-7271826d3a584a22849c949a7755f79d
+Licensed under Creative Commons Attribution 4.0: http://creativecommons.org/licenses/by/4.0/
+
+Taken out of the model and moved to its own origin by Tools/Blender/sd40.py; every engine and car in the game uses it.

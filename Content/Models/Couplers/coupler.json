@@ -1,0 +1,7 @@
+{
+  "model": "coupler.glb",
+  "height": 0.8134,
+  "reach": 0.5183,
+  "knuckleNose": 0.098,
+  "axes": "origin at the draft pivot, swinging about Z, pulling face towards -Y; height is the pivot above the railhead, reach the pivot to the knuckle's nose (the coupler's furthest point, where each model's length over couplers ends), knuckleNose how far that nose stands past the pulling face: the rear face of the knuckle's hook, which bears on the mating knuckle's when coupled, so two coupled heads overlap by twice this (measured from the mesh in plan). Blender Z-up metres; in the file, glTF Y-up"
+}

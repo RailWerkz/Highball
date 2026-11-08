@@ -9,8 +9,11 @@ folder per level of detail, of which only LOD0 is built for now (see LATER_LODS)
     LOD0/body_<livery>.glb   origin on the railhead, midway between the trucks
     LOD0/truck.glb           origin on the railhead at the truck's pivot, turning about Z; the front truck at yaw 0
     LOD0/wheelset.glb        origin at the axle's centre, rolling about X
-    LOD0/coupler.glb         origin at the draft pivot, swinging about Z, pulling face towards -Y
     Assembled/sd40_<livery>.glb and .blend, the whole engine for looking at; the game loads the separate parts.
+
+Its coupler is the one every engine and car in the game uses, so it goes to Models/Couplers instead, with coupler.json
+(its height above the railhead and its reach to the pulling face) and CREDITS.txt:
+    Couplers/coupler.glb     origin at the draft pivot, swinging about Z, pulling face towards -Y
 
 Blender is Z-up, metres; the glTF exporter turns that into the game's Y-up. The short hood faces -Y.
 
@@ -36,6 +39,7 @@ from mathutils import Matrix
 args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 CONTENT = os.path.abspath(args[0] if args else "Content")
 OUT = os.path.join(CONTENT, "Models", "Locomotives", "SD40")
+COUPLERS = os.path.join(CONTENT, "Models", "Couplers")
 SOURCE = os.path.join(OUT, "Source", "emd-sd40_diesel_electric_locomotive_4k.glb")
 
 # Measured off the source's meshes.
@@ -46,6 +50,7 @@ TRUCK_Y = 6.4117
 AXLES = (-1.9641, 0.0, 2.0565)  # on the front truck, from its pivot
 COUPLER_Y = 9.7005
 COUPLER_Z = 1.1522
+KNUCKLE_NOSE = 0.098
 FLANGE_X = 0.745  # where the source's flange faces are; they should touch the rails' gauge faces
 GAUGE_X = 0.7175  # half of 4' 8.5"
 
@@ -726,8 +731,29 @@ def build(lod, base, painted_pages, budget, finish, bumps, gear_finish):
             f"SD40_{key}", halve(pages.astype(np.float32) / 255, lod["page"]), halve(finish, lod["page"] // 2), halve(bumps, lod["page"] // 2)))
     gear_map = halve(gear_finish, lod["gear_tex"] // 4)
     gear = make_material("SD40_gear", gear_pixels, gear_map)
-    for key in ("truck", "wheelset", "coupler"):
+    for key in ("truck", "wheelset"):
         budget[f"{key}{folder}"] = write(os.path.join(OUT, folder, f"{key}.glb"), groups[key], gear)
+    budget[f"coupler{folder}"] = sum(sum(len(p.vertices) - 2 for p in o.data.polygons) for o in groups["coupler"])
+    if folder == "LOD0":
+        # The shared coupler, at full detail on everything.
+        write(os.path.join(COUPLERS, "coupler.glb"), groups["coupler"], gear)
+        reach = -min(v.co.y for o in groups["coupler"] for v in o.data.vertices)
+        with open(os.path.join(COUPLERS, "coupler.json"), "w") as f:
+            # knuckleNose: measured from this mesh in plan (the hook's rear face, which bears on the mating knuckle's, is 9.8 cm
+            # behind its nose), so two coupled heads overlap by twice it. The game spaces vehicles by it (Trains/Vehicles.cs).
+            json.dump({"model": "coupler.glb", "height": round(COUPLER_Z - RAIL, 4), "reach": round(reach, 4), "knuckleNose": KNUCKLE_NOSE,
+                       "axes": "origin at the draft pivot, swinging about Z, pulling face towards -Y; height is the pivot above the railhead, "
+                               "reach the pivot to the knuckle's nose (the coupler's furthest point, where each model's length over couplers "
+                               "ends), knuckleNose how far that nose stands past the pulling face: the rear face of the knuckle's hook, which "
+                               "bears on the mating knuckle's when coupled, so two coupled heads overlap by twice this (measured from the mesh "
+                               "in plan). Blender Z-up metres; in the file, glTF Y-up"}, f, indent=2)
+        with open(os.path.join(COUPLERS, "CREDITS.txt"), "w") as f:
+            f.write("""The coupler is from "EMD-SD40 Diesel Electric Locomotive" by Heataker
+https://sketchfab.com/3d-models/emd-sd40-diesel-electric-locomotive-7271826d3a584a22849c949a7755f79d
+Licensed under Creative Commons Attribution 4.0: http://creativecommons.org/licenses/by/4.0/
+
+Taken out of the model and moved to its own origin by Tools/Blender/sd40.py; every engine and car in the game uses it.
+""")
     # Liveries with coloured trucks: the same dark casting, in their colour.
     for key, livery in BUILT.items():
         if "gear" in livery:
@@ -765,7 +791,7 @@ def combined(key):
         for k, a in enumerate(AXLES, 1):
             load("LOD0/wheelset.glb", holder(f"Wheelset_{label}_{k}", (0, a, TREAD_R), 0.0, truck_at), f"Wheelset_{label}_{k}")
     for label, y, yaw in (("Front", -COUPLER_Y, 0.0), ("Rear", COUPLER_Y, math.pi)):
-        load("LOD0/coupler.glb", holder(f"Coupler_{label}", (0, y, COUPLER_Z - RAIL), yaw, root), f"Coupler_{label}")
+        load(os.path.join("..", "..", "Couplers", "coupler.glb"), holder(f"Coupler_{label}", (0, y, COUPLER_Z - RAIL), yaw, root), f"Coupler_{label}")
     bpy.context.view_layer.update()
     folder = os.path.join(OUT, "Assembled")
     os.makedirs(folder, exist_ok=True)
@@ -848,13 +874,13 @@ assembly = {
     "lengthOverCouplers": round(2 * (10.2187), 3),
     "lods": [level["folder"] for level in LODS],
     "trianglesWholeEngine": over,
-    "models": "Each model below is <lod>/<model>.glb",
+    "models": "Each model below is <lod>/<model>.glb, except the couplers: Models/Couplers/coupler.glb, the same on every engine and car",
     "bodies": [f"body_{key}" for key in BUILT],
     "truckByBody": {f"body_{key}": f"truck_{key}" for key, livery in BUILT.items() if "gear" in livery},
     "trucks": [{"model": "truck", "position": [0, -TRUCK_Y, 0], "yaw": 0}, {"model": "truck", "position": [0, TRUCK_Y, 0], "yaw": 180}],
     "wheelsets": {"model": "wheelset", "onTruck": [[0, a, TREAD_R] for a in AXLES], "radius": TREAD_R},
-    "couplers": [{"model": "coupler", "position": [0, -COUPLER_Y, round(COUPLER_Z - RAIL, 4)], "yaw": 0},
-                 {"model": "coupler", "position": [0, COUPLER_Y, round(COUPLER_Z - RAIL, 4)], "yaw": 180}],
+    "couplers": [{"model": "Couplers/coupler.glb", "position": [0, -COUPLER_Y, round(COUPLER_Z - RAIL, 4)], "yaw": 0},
+                 {"model": "Couplers/coupler.glb", "position": [0, COUPLER_Y, round(COUPLER_Z - RAIL, 4)], "yaw": 180}],
     "axes": "Blender Z-up metres, front towards -Y; in the files, glTF Y-up: (x, y, z) here is (x, z, -y) there",
 }
 with open(os.path.join(OUT, "assembly.json"), "w") as f:
@@ -866,7 +892,7 @@ https://sketchfab.com/3d-models/emd-sd40-diesel-electric-locomotive-7271826d3a58
 Licensed under Creative Commons Attribution 4.0: http://creativecommons.org/licenses/by/4.0/
 
 The source files are in Source/, unchanged.
-The other models in these folders are made from it by Tools/Blender/sd40.py. Changes: split into body, truck, wheelset and coupler;
+The other models in these folders are made from it by Tools/Blender/sd40.py. Changes: split into body, truck, wheelset and coupler (the coupler now in Models/Couplers);
 moved so the rail is at zero; wheelsets narrowed to standard gauge; textures re-laid so the two sides have their own space;
 the original paint scheme replaced by a new livery; metalness set by part; a normal map raised from the base colour's seams.
 

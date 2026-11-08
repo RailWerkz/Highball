@@ -7,7 +7,7 @@
   "trianglesWholeEngine": {
     "LOD0": 444839
   },
-  "models": "Each model below is <lod>/<model>.glb",
+  "models": "Each model below is <lod>/<model>.glb, except the couplers: Models/Couplers/coupler.glb, the same on every engine and car",
   "bodies": [
     "body_csx"
   ],
@@ -55,7 +55,7 @@
   },
   "couplers": [
     {
-      "model": "coupler",
+      "model": "Couplers/coupler.glb",
       "position": [
         0,
         -9.7005,
@@ -64,7 +64,7 @@
       "yaw": 0
     },
     {
-      "model": "coupler",
+      "model": "Couplers/coupler.glb",
       "position": [
         0,
         9.7005,
