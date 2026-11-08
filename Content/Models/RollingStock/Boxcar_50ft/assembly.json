@@ -1,0 +1,104 @@
+{
+  "name": "50ft Boxcar",
+  "lengthOverCouplers": 16.88,
+  "trucks": [
+    {
+      "model": "truck.glb",
+      "position": [
+        0,
+        -6.17,
+        0
+      ],
+      "yaw": 180
+    },
+    {
+      "model": "truck.glb",
+      "position": [
+        0,
+        6.17,
+        0
+      ],
+      "yaw": 0
+    }
+  ],
+  "wheelsets": {
+    "model": "wheelset.glb",
+    "onTruck": [
+      [
+        0,
+        -0.889,
+        0.4572
+      ],
+      [
+        0,
+        0.889,
+        0.4572
+      ]
+    ],
+    "radius": 0.4572
+  },
+  "couplers": [
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        -7.9216999999999995,
+        0.8134
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        7.9216999999999995,
+        0.8134
+      ],
+      "yaw": 180
+    }
+  ],
+  "parts": {
+    "door": {
+      "models": [
+        "door_rwkz.glb",
+        "door_csx.glb",
+        "door_up.glb"
+      ],
+      "places": [
+        {
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "yaw": 0,
+          "travel": [
+            0,
+            -3.2099999999999995,
+            0
+          ]
+        },
+        {
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "yaw": 180,
+          "travel": [
+            0,
+            -3.2099999999999995,
+            0
+          ]
+        }
+      ]
+    }
+  },
+  "bodies": [
+    "body_rwkz.glb",
+    "body_csx.glb",
+    "body_up.glb"
+  ],
+  "models": "Each model is in this folder, except the couplers (Models/Couplers/coupler.glb, the same on every engine and car) and the loads' models, which are under Models and shared",
+  "axes": "Blender Z-up metres, A end towards -Y; in the files, glTF Y-up: (x, y, z) here is (x, z, -y) there"
+}

@@ -1,0 +1,25 @@
+{
+  // One vehicle for the consist editor and the simulation. SI units, named in each key.
+  "id": "well_53",
+  "name": "53 ft well car",
+  "kind": "Intermodal",
+  "type": "Stand-alone double-stack well car, 125-ton trucks",
+  "lengthM": 23.6,
+  "truckCentresM": 19.2,
+  "axles": 4,
+  "wheelDiameterM": 0.9652,
+  // 86,600 lb empty; 286,000 lb on the rail fully loaded.
+  "massEmptyKg": 39281,
+  "massLoadedKg": 129727,
+  "maxSpeedKmh": 113,
+  // The game picks a model by livery and has no loads of its own yet, so each paint comes three ways: empty, a 53 ft box in
+  // the well, and a 40 ft high cube stacked on that (Tools/Blender/rollingstock/wellcar.py; assembly.json lists the loads).
+  "liveries": [
+    { "id": "rwkz_empty", "name": "RailWerkz, empty", "model": "RollingStock/WellCar_53ft/Assembled/well_53_rwkz_empty.glb" },
+    { "id": "rwkz_single", "name": "RailWerkz, single stack", "model": "RollingStock/WellCar_53ft/Assembled/well_53_rwkz_single.glb" },
+    { "id": "rwkz_double", "name": "RailWerkz, double stack", "model": "RollingStock/WellCar_53ft/Assembled/well_53_rwkz_double.glb" },
+    { "id": "hblx_empty", "name": "HBLX, empty", "model": "RollingStock/WellCar_53ft/Assembled/well_53_hblx_empty.glb" },
+    { "id": "hblx_single", "name": "HBLX, single stack", "model": "RollingStock/WellCar_53ft/Assembled/well_53_hblx_single.glb" },
+    { "id": "hblx_double", "name": "HBLX, double stack", "model": "RollingStock/WellCar_53ft/Assembled/well_53_hblx_double.glb" }
+  ]
+}

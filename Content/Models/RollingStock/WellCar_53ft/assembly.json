@@ -1,0 +1,101 @@
+{
+  "name": "53ft Well Car",
+  "lengthOverCouplers": 23.6,
+  "trucks": [
+    {
+      "model": "truck.glb",
+      "position": [
+        0,
+        -9.6,
+        0
+      ],
+      "yaw": 180
+    },
+    {
+      "model": "truck.glb",
+      "position": [
+        0,
+        9.6,
+        0
+      ],
+      "yaw": 0
+    }
+  ],
+  "wheelsets": {
+    "model": "wheelset.glb",
+    "onTruck": [
+      [
+        0,
+        -0.914,
+        0.4826
+      ],
+      [
+        0,
+        0.914,
+        0.4826
+      ]
+    ],
+    "radius": 0.4826
+  },
+  "couplers": [
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        -11.2817,
+        0.8134
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        11.2817,
+        0.8134
+      ],
+      "yaw": 180
+    }
+  ],
+  "parts": {},
+  "bodies": [
+    "body_rwkz.glb",
+    "body_hblx.glb"
+  ],
+  "loads": {
+    "empty": [],
+    "single": [
+      {
+        "model": "RollingStock/Containers/container_53_highball.glb",
+        "position": [
+          0,
+          0,
+          0.27
+        ],
+        "yaw": 0
+      }
+    ],
+    "double": [
+      {
+        "model": "RollingStock/Containers/container_53_highball.glb",
+        "position": [
+          0,
+          0,
+          0.27
+        ],
+        "yaw": 0
+      },
+      {
+        "model": "RollingStock/Containers/container_40hc_rwkz.glb",
+        "position": [
+          0,
+          0,
+          3.178
+        ],
+        "yaw": 0
+      }
+    ]
+  },
+  "models": "Each model is in this folder, except the couplers (Models/Couplers/coupler.glb, the same on every engine and car) and the loads' models, which are under Models and shared",
+  "axes": "Blender Z-up metres, A end towards -Y; in the files, glTF Y-up: (x, y, z) here is (x, z, -y) there"
+}

@@ -1,0 +1,20 @@
+{
+  // One vehicle for the consist editor and the simulation. SI units, named in each key.
+  "id": "boxcar_50",
+  "name": "50 ft boxcar",
+  "kind": "Boxcar",
+  "type": "Plate C, 286,000 lb, sliding doors",
+  "lengthM": 16.88,
+  "truckCentresM": 12.34,
+  "axles": 4,
+  "wheelDiameterM": 0.9144,
+  // 70,000 lb empty; 286,000 lb on the rail fully loaded.
+  "massEmptyKg": 31751,
+  "massLoadedKg": 129727,
+  "maxSpeedKmh": 113,
+  "liveries": [
+    { "id": "rwkz", "name": "RailWerkz", "model": "RollingStock/Boxcar_50ft/Assembled/boxcar_50_rwkz.glb" },
+    { "id": "csx", "name": "CSX", "model": "RollingStock/Boxcar_50ft/Assembled/boxcar_50_csx.glb" },
+    { "id": "up", "name": "Union Pacific", "model": "RollingStock/Boxcar_50ft/Assembled/boxcar_50_up.glb" }
+  ]
+}
