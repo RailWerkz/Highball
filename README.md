@@ -67,7 +67,7 @@ Settings are saved to `%APPDATA%/Highball/Settings.json`, and the log is written
 Highball --skipsplash --menu lighting
 ```
 
-The SD40 on a short length of track beside rows of test spheres (metal over non-metal, rough to polished), with
+The SD40-2 on a short length of track beside rows of test spheres (metal over non-metal, rough to polished), with
 the Lighting window (sky, date and time, exposure). Drag to orbit, wheel to zoom. To compare the same view after a
 shader change, fix it with `--skytime YYYY-MM-DD HOUR`, `--lighting dawn|noon|golden|dusk|night [csx|source]` and
 `--orbit YAW PITCH DISTANCE`, then use `--shot`. The Route Builder has the same window under its Lighting menu, with the

@@ -1,0 +1,9 @@
+Norfolk Southern General Electric Dash 9-44CW by OUTPISTON
+https://sketchfab.com/3d-models/norfolk-southern-general-electric-dash-9-44cw-eba372f8dd6f418c95f8699e653c0e07
+Licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0: http://creativecommons.org/licenses/by-nc-sa/4.0/
+Not for commercial use; the models made from it are under the same licence.
+
+The source file is in Source/, unchanged. Livery: Norfolk Southern, as the source has it.
+The other models in these folders are made from it by Tools/Blender/outpiston.py. Changes: split into body, truck and wheelset;
+turned to run along Y and moved so the rail is at zero; one material per texture; its own couplers taken off. Its couplers
+are the shared one in Models/Couplers, from the SD40 (see the CREDITS.txt there).

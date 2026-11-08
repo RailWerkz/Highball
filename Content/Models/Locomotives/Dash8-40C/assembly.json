@@ -1,0 +1,77 @@
+{
+  "source": "CSX General Electric Dash 8-40C by OUTPISTON, CC BY-NC-SA 4.0",
+  "lengthOverCouplers": 21.54,
+  "lods": [
+    "LOD0"
+  ],
+  "trianglesWholeEngine": {
+    "LOD0": 79264
+  },
+  "models": "Each model below is <lod>/<model>.glb, except the couplers: Models/Couplers/coupler.glb, the same on every engine and car",
+  "bodies": [
+    "body_csx"
+  ],
+  "truckByBody": {},
+  "trucks": [
+    {
+      "model": "truck",
+      "position": [
+        0,
+        -6.48,
+        0
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "truck",
+      "position": [
+        0,
+        6.48,
+        0
+      ],
+      "yaw": 180
+    }
+  ],
+  "wheelsets": {
+    "model": "wheelset",
+    "onTruck": [
+      [
+        0,
+        -2.0,
+        0.5451
+      ],
+      [
+        0,
+        0.0,
+        0.5451
+      ],
+      [
+        0,
+        2.0,
+        0.5451
+      ]
+    ],
+    "radius": 0.5451
+  },
+  "couplers": [
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        -10.3417,
+        0.8134
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        10.1617,
+        0.8134
+      ],
+      "yaw": 180
+    }
+  ],
+  "axes": "Blender Z-up metres, front towards -Y; in the files, glTF Y-up: (x, y, z) here is (x, z, -y) there"
+}

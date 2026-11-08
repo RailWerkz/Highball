@@ -1,0 +1,230 @@
+{
+  "source": "EMD SD40-2 by OUTPISTON, CC BY-NC-SA 4.0",
+  "lengthOverCouplers": 21.068,
+  "lods": [
+    "LOD0"
+  ],
+  "trianglesWholeEngine": {
+    "LOD0": 52993
+  },
+  "models": "Each model below is <lod>/<model>.glb, except the couplers: Models/Couplers/coupler.glb, the same on every engine and car",
+  "bodies": [
+    "body_black"
+  ],
+  "truckByBody": {},
+  "trucks": [
+    {
+      "model": "truck",
+      "position": [
+        0,
+        -6.3064,
+        0
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "truck",
+      "position": [
+        0,
+        6.3064,
+        0
+      ],
+      "yaw": 0
+    }
+  ],
+  "wheelsets": {
+    "model": "wheelset",
+    "onTruck": [
+      [
+        0,
+        -2.0542,
+        0.5541
+      ],
+      [
+        0,
+        0.0,
+        0.5541
+      ],
+      [
+        0,
+        2.1314,
+        0.5541
+      ]
+    ],
+    "radius": 0.5541
+  },
+  "couplers": [
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        -10.3172,
+        0.8134
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        9.7143,
+        0.8134
+      ],
+      "yaw": 180
+    }
+  ],
+  "axes": "Blender Z-up metres, front towards -Y; in the files, glTF Y-up: (x, y, z) here is (x, z, -y) there",
+  "fixtures": {
+    "Headlight_Front_Upper": {
+      "kind": "lamp",
+      "position": [
+        -0.0043,
+        -7.448,
+        4.4834
+      ],
+      "facing": [
+        0,
+        -1,
+        0
+      ],
+      "triangles": 114
+    },
+    "Headlight_Front_Lower": {
+      "kind": "lamp",
+      "position": [
+        -0.0035,
+        -7.4477,
+        4.2499
+      ],
+      "facing": [
+        0,
+        -1,
+        0
+      ],
+      "triangles": 114
+    },
+    "DitchLight_Front_Left": {
+      "kind": "lamp",
+      "position": [
+        0.903,
+        -10.314,
+        1.548
+      ],
+      "facing": [
+        0,
+        -1,
+        0
+      ],
+      "triangles": 152
+    },
+    "DitchLight_Front_Right": {
+      "kind": "lamp",
+      "position": [
+        -0.9104,
+        -10.3137,
+        1.5475
+      ],
+      "facing": [
+        0,
+        -1,
+        0
+      ],
+      "triangles": 152
+    },
+    "Headlight_Rear_Left": {
+      "kind": "lamp",
+      "position": [
+        -0.0981,
+        7.9253,
+        4.0512
+      ],
+      "facing": [
+        0,
+        1,
+        0
+      ],
+      "triangles": 112
+    },
+    "Headlight_Rear_Right": {
+      "kind": "lamp",
+      "position": [
+        0.1304,
+        7.9253,
+        4.0513
+      ],
+      "facing": [
+        0,
+        1,
+        0
+      ],
+      "triangles": 112
+    },
+    "Horn": {
+      "kind": "horn",
+      "position": [
+        0.0008,
+        -7.2871,
+        4.7174
+      ],
+      "facing": [
+        0,
+        -1,
+        0
+      ],
+      "triangles": 569,
+      "trumpets": [
+        {
+          "mouth": [
+            -0.1578,
+            -7.4808,
+            4.7691
+          ],
+          "facing": [
+            0,
+            -1,
+            0
+          ]
+        },
+        {
+          "mouth": [
+            -0.0049,
+            -6.9691,
+            4.7696
+          ],
+          "facing": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "mouth": [
+            0.143,
+            -7.6051,
+            4.769
+          ],
+          "facing": [
+            0,
+            -1,
+            0
+          ]
+        }
+      ]
+    },
+    "Bell": {
+      "kind": "bell",
+      "position": [
+        1.3875,
+        -3.6124,
+        1.4484
+      ],
+      "facing": [
+        0,
+        0,
+        -1
+      ],
+      "triangles": 176
+    }
+  },
+  "fixturesNote": "Parts of the body model by these node names. position: the part's origin; facing: the way its light, horn or bell points, the node's local -Y in Blender and +Z in the glTF"
+}

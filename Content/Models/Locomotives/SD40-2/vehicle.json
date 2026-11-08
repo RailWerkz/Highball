@@ -1,0 +1,40 @@
+{
+  // One vehicle for the consist editor and the simulation. SI units, named in each key.
+  "id": "sd40-2",
+  "name": "EMD SD40-2",
+  // It takes the SD40's place: consists saved with the SD40 in them get this.
+  "replaces": [ "sd40" ],
+  "kind": "Locomotive",
+  "builder": "EMD",
+  "built": "1972-1989",
+  "type": "C-C diesel-electric, 16-645E3",
+  // Over the knuckle noses, as the model's drawn (assembly.json's couplers plus the coupler's reach). Truck centres and the
+  // front overhang (front knuckle nose to front truck centre, longer at the cab end) off the same model.
+  "lengthM": 21.068,
+  "truckCentresM": 12.6128,
+  "frontOverhangM": 4.529,
+  "axles": 6,
+  "wheelDiameterM": 1.108,
+  "massEmptyKg": 166920,
+  "massLoadedKg": 166920,
+  "powerKw": 2237,
+  "startingTractiveEffortKn": 409,
+  "continuousTractiveEffortKn": 365,
+  "dynamicBrakeEffortKn": 267,
+  "maxSpeedKmh": 105,
+  "liveries": [
+    { "id": "black", "name": "Black", "model": "Locomotives/SD40-2/Assembled/sd40_2_black.glb" }
+  ],
+  // EMD 16-645E3: idle and run 8 loops, crossfaded and pitched as the revs follow the throttle; under Content/Audio.
+  "engineSound": {
+    "idle": "Engines/EMD645/run8_emd645_258rpm.wav",
+    "run": "Engines/EMD645/run8_emd645_908rpm.wav",
+    "chug": "Engines/GEVO/run8_es44_chug.wav",
+    "startup": "Engines/EMD645/Run8_SD40-2_Startup.wav",
+    "startupSeconds": 13,
+    "compressorStart": "Engines/EMD645/run8_es44_compressorStart.wav",
+    "compressorLoop": "Engines/EMD645/run8_es44_aircomploop.wav",
+    "compressorStop": "Engines/EMD645/run8_es44_compressorValveBlast.wav",
+    "dynamicFan": "Engines/EMD645/emd_Fan02.wav"
+  }
+}

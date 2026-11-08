@@ -1,0 +1,72 @@
+{
+  "source": "Amtrak General Electric Genesis P42DC by OUTPISTON, CC BY-NC-SA 4.0",
+  "lengthOverCouplers": 21.215,
+  "lods": [
+    "LOD0"
+  ],
+  "trianglesWholeEngine": {
+    "LOD0": 36806
+  },
+  "models": "Each model below is <lod>/<model>.glb, except the couplers: Models/Couplers/coupler.glb, the same on every engine and car",
+  "bodies": [
+    "body_amtrak"
+  ],
+  "truckByBody": {},
+  "trucks": [
+    {
+      "model": "truck",
+      "position": [
+        0,
+        -6.73,
+        0
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "truck",
+      "position": [
+        0,
+        6.73,
+        0
+      ],
+      "yaw": 0
+    }
+  ],
+  "wheelsets": {
+    "model": "wheelset",
+    "onTruck": [
+      [
+        0,
+        -1.3378,
+        0.5451
+      ],
+      [
+        0,
+        1.3378,
+        0.5451
+      ]
+    ],
+    "radius": 0.5451
+  },
+  "couplers": [
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        -10.5111,
+        0.8134
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        9.667,
+        0.8134
+      ],
+      "yaw": 180
+    }
+  ],
+  "axes": "Blender Z-up metres, front towards -Y; in the files, glTF Y-up: (x, y, z) here is (x, z, -y) there"
+}

@@ -17,7 +17,8 @@ public sealed class CreditsScreen : Screen
         ("DEVELOPED AND PUBLISHED BY", ["RailWerkz"]),
         ("BUILT ON", ["BRUTAL: GLFW, Vulkan, Dear ImGui, OpenAL, RakNet, stb, glTF", "NLayer (MIT)", "FastNoiseLite (MIT)"]),
         ("TYPE", ["JetBrains Mono (SIL Open Font License)"]),
-        ("MODELS", ["EMD SD40 by Heataker (CC BY 4.0), modified", "Low poly vegetation for games by denoises (CC BY 4.0)"]),
+        ("MODELS", ["EMD SD40-2 by OUTPISTON (CC BY-NC-SA 4.0), modified", "General Electric ES44AC Black by OUTPISTON (CC BY-NC-SA 4.0), modified",
+            "EMD SD40 by Heataker (CC BY 4.0), modified: the couplers", "Low poly vegetation for games by denoises (CC BY 4.0)"]),
     ];
 
     public override void Enter()

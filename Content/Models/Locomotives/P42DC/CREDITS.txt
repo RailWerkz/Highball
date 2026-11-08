@@ -1,0 +1,9 @@
+Amtrak General Electric Genesis P42DC by OUTPISTON
+https://sketchfab.com/3d-models/amtrak-general-electric-genesis-p42dc-1428d705eb3142cc8f6e029fbbf3bbef
+Licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0: http://creativecommons.org/licenses/by-nc-sa/4.0/
+Not for commercial use; the models made from it are under the same licence.
+
+The source file is in Source/, unchanged. Livery: Amtrak, as the source has it.
+The other models in these folders are made from it by Tools/Blender/outpiston.py. Changes: split into body, truck and wheelset;
+turned to run along Y and moved so the rail is at zero; one material per texture; its own couplers taken off. Its couplers
+are the shared one in Models/Couplers, from the SD40 (see the CREDITS.txt there).
