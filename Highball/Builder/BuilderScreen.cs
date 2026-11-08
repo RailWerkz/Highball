@@ -244,6 +244,9 @@ public sealed class BuilderScreen : Screen, IWorldScreen
             ImGui.EndMainMenuBar();
         }
 
+        // Floating windows stay between the menu bar and the footer.
+        WindowBounds.Top = _headerBottom;
+        WindowBounds.Bottom = _footerTop;
         if (_showPanel && (_mode == Mode.Planner || _editor?.HasPanel == true))
             Panel();
         if (_mode != Mode.Planner)
@@ -252,6 +255,7 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         var left = (_mode == Mode.Planner ? 0f : EditorView.StripWidth) + (_showPanel ? PanelWidth : 0f) + 12f;
         Action lines = _mode == Mode.Planner || _editor is null ? _planner.DebugStats : _editor.DebugStats;
         DebugWindows.Draw(left, _headerBottom + 12f, lines, _planner.BuildJob);
+        WindowBounds.Reset();
     }
 
     private static readonly (Mode Mode, string Name, string Key)[] ViewTabs =

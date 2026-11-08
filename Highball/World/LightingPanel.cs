@@ -1,3 +1,4 @@
+using RailWerkz.UI;
 using Brutal.ImGuiApi;
 using Highball.App;
 using RailWerkz.Core.Settings;
@@ -164,7 +165,7 @@ public sealed class LightingPanel
 
         ImGui.SetNextWindowPos(new float2(90f, 44f), ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowSize(new float2(380f, 0f), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("Lighting"u8, ref Open))
+        if (WindowBounds.Begin("Lighting"u8, ref Open))
         {
             if (_renderer.Sky.Name == Sky.Procedural)
                 DrawClock(Settings.Current);

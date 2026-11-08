@@ -1,3 +1,4 @@
+using RailWerkz.UI;
 using System.Diagnostics;
 using Brutal.ImGuiApi;
 using Brutal.Numerics;
@@ -55,7 +56,7 @@ public static class DebugWindows
     {
         ImGui.SetNextWindowPos(new float2(x, y), ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowSize(new float2(560f, 280f), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("Frame Statistics"u8, ref _stats, ImGuiWindowFlags.NoFocusOnAppearing))
+        if (WindowBounds.Begin("Frame Statistics"u8, ref _stats, ImGuiWindowFlags.NoFocusOnAppearing))
         {
             var times = Profiler.FrameTimes;
             var average = times.Average();
@@ -72,10 +73,10 @@ public static class DebugWindows
     private static void ProfilerWindow(float x, float y)
     {
         ImGui.SetNextWindowPos(new float2(x, y), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("Profiler"u8, ref _profiler, ImGuiWindowFlags.AlwaysAutoResize))
+        if (WindowBounds.Begin("Profiler"u8, ref _profiler, ImGuiWindowFlags.AlwaysAutoResize))
         {
             ImGui.Text("Time per frame, over the last two seconds"u8);
-            if (ImGui.BeginTable("sections"u8, 7, ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders))
+            if (ImGui.BeginTable("sections"u8, 8, ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders))
             {
                 ImGui.TableSetupColumn("Section"u8);
                 ImGui.TableSetupColumn("CPU last"u8);
@@ -84,6 +85,7 @@ public static class DebugWindows
                 ImGui.TableSetupColumn("GPU avg"u8);
                 ImGui.TableSetupColumn("GPU worst"u8);
                 ImGui.TableSetupColumn("Draws"u8);
+                ImGui.TableSetupColumn("Triangles"u8);
                 ImGui.TableHeadersRow();
 
                 foreach (var (section, depth) in Profiler.Tree())
@@ -105,6 +107,9 @@ public static class DebugWindows
                         ImGui.Text($"{section.GpuWorst:0.00}");
                     ImGui.TableNextColumn();
                     ImGui.Text($"{section.DrawCalls}");
+                    ImGui.TableNextColumn();
+                    if (section.Triangles > 0)
+                        ImGui.Text($"{section.Triangles / 1000f:0.0}k");
                 }
 
                 ImGui.EndTable();
@@ -146,7 +151,7 @@ public static class DebugWindows
     private static void ThreadingWindow(float x, float y, (string Status, float Progress)? job)
     {
         ImGui.SetNextWindowPos(new float2(x, y), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("Threading"u8, ref _threading, ImGuiWindowFlags.AlwaysAutoResize))
+        if (WindowBounds.Begin("Threading"u8, ref _threading, ImGuiWindowFlags.AlwaysAutoResize))
         {
             var logical = Environment.ProcessorCount;
             ImGui.Text($"Whole game {_cpu:0}% of {logical} threads, {_cpu * logical / 100f:0.0} in use");
