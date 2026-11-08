@@ -74,6 +74,7 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly Clouds _clouds = new();
     private readonly AmbientOcclusion _occlusion = new();
     private readonly PostProcess _post = new();
+    private readonly MotionVectors _motion = new();
     private readonly TerrainHorizon _horizon = new();
     private readonly Vegetation _vegetation = new();
     private VkPipeline _sky;
@@ -336,6 +337,10 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         _target.End(cmd);
 
+        // How what moves moved, for the temporal pass to follow it.
+        using (Profiler.Sample("Motion", cmd))
+            _motion.Record(cmd, _target, camera, aspect, models);
+
         if (RailWerkz.Core.Settings.Settings.Current.AmbientOcclusion)
         {
             using var _ = Profiler.Sample("Ambient occlusion", cmd);
@@ -352,7 +357,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             _clouds.Draw(cmd, _target);
 
         using (Profiler.Sample("After the world", cmd))
-            _post.Draw(cmd, _target, camera, aspect, Sky, !Precipitation.Falling(_weather) ? null : over => _precipitation.Draw(over, _target, camera, aspect, _weather, Sky));
+            _post.Draw(cmd, _target, _motion.Image!, camera, aspect, Sky, !Precipitation.Falling(_weather) ? null : over => _precipitation.Draw(over, _target, camera, aspect, _weather, Sky));
     }
 
     /// The land cover's colour round the camera, for what's reflected in metal and lights things from beneath. It changes slowly,
@@ -449,14 +454,13 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         foreach (var draw in models)
         {
-            var (sin, cos) = MathF.SinCos(draw.Yaw * 0.5f);
-            var relative = new float3((float)(draw.Position.X - camera.X), (float)(draw.Position.Y - camera.Y), (float)(draw.Position.Z - camera.Z));
+            var relative = draw.RelativeTo(camera.X, camera.Y, camera.Z);
             foreach (var part in draw.Model.Parts)
             {
                 var push = new ModelPush
                 {
                     ViewProjection = viewProjection,
-                    Rotation = new float4(0f, sin, 0f, cos),
+                    Rotation = draw.Orientation,
                     PlaceAndScale = new float4(relative, draw.Scale),
                     BaseColor = draw.BaseColor ?? part.BaseColor,
                     Material = new float4(draw.Metallic ?? part.Metallic, draw.Roughness ?? part.Roughness, (float)camera.Y, part.AlphaCutoff),
@@ -485,6 +489,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         _precipitation.Dispose();
         _lights.Dispose();
         _post.Dispose();
+        _motion.Dispose();
         _horizon.Dispose();
         _vegetation.Dispose();
         Pipelines.Destroy(default, _layout);

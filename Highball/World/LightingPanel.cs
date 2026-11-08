@@ -39,6 +39,12 @@ public sealed class LightingPanel
             Settings.Current.Weather = weather;
         }
 
+        if (DevTools.TemporalAA)
+        {
+            DevTools.TemporalAA = false;
+            Settings.Current.TemporalAA = true;
+        }
+
         if (DevTools.NoTemporalAA)
         {
             DevTools.NoTemporalAA = false;

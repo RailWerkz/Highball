@@ -41,6 +41,8 @@ namespace Highball.App;
 ///   --noshadows                                     no sun shadows, to see what they cost
 ///   --sculpthold TOOL RADIUS FROM UNTIL             with --view, hold a brush stroke at the middle of the screen between those seconds
 ///   --gputimes                                      with --quit, log what each part of the frame cost the GPU on the way out
+///   --zoom N                                        with --camera, the lens zoomed in N times (as Alt+wheel does)
+///   --taa                                           temporal anti-aliasing on, whatever the settings say (not saved)
 ///   --skipsplash                                    skip the BRUTAL logo and the splash animation
 ///   --validation                                    Vulkan validation layers (needs the Vulkan SDK; on in Debug builds)
 public static class DevTools
@@ -59,6 +61,7 @@ public static class DevTools
     public static bool NoVegetation { get; set; }
     public static bool NoOcclusion { get; set; }
     public static bool NoTemporalAA { get; set; }
+    public static bool TemporalAA { get; set; }
     public static string? Weather { get; set; }
     public static bool NoBloom { get; set; }
     public static bool NoGodRays { get; set; }
@@ -138,6 +141,8 @@ public static class DevTools
 
     /// Where the 3D view starts (--camera), read once by it.
     public static (double Lat, double Lon, float Height, float Yaw, float Pitch)? Camera { get; set; }
+    /// --zoom N: with --camera, the lens zoomed in N times.
+    public static float? Zoom { get; set; }
 
     /// --fly: metres a second straight ahead, for testing streaming.
     public static float? FlySpeed { get; private set; }
@@ -172,6 +177,12 @@ public static class DevTools
                     break;
                 case "--weather" when i + 1 < args.Length:
                     Weather = args[++i];
+                    break;
+                case "--zoom" when i + 1 < args.Length:
+                    Zoom = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
+                    break;
+                case "--taa":
+                    TemporalAA = true;
                     break;
                 case "--notaa":
                     NoTemporalAA = true;

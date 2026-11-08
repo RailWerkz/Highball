@@ -66,6 +66,7 @@ public sealed unsafe class PostProcess : IDisposable
     private bool _historyValid;
     private int _frame;
     private float4x4 _previousViewProjection;
+    private StorageImage? _motion;
     private (double X, double Y, double Z) _previousCamera;
 
     /// The exposure set by hand, or by the Lighting window.
@@ -79,12 +80,14 @@ public sealed unsafe class PostProcess : IDisposable
 
     public PostProcess()
     {
-        var bindings = stackalloc VkDescriptorSetLayoutBinding[5];
+        var bindings = stackalloc VkDescriptorSetLayoutBinding[6];
         bindings[0] = new VkDescriptorSetLayoutBinding { Binding = 0, DescriptorType = VkDescriptorType.StorageImage, DescriptorCount = 1, StageFlags = VkShaderStageFlags.ComputeBit };
         for (var i = 1; i < 4; i++)
             bindings[i] = new VkDescriptorSetLayoutBinding { Binding = i, DescriptorType = VkDescriptorType.CombinedImageSampler, DescriptorCount = 1, StageFlags = VkShaderStageFlags.ComputeBit };
         bindings[4] = new VkDescriptorSetLayoutBinding { Binding = 4, DescriptorType = VkDescriptorType.UniformBuffer, DescriptorCount = 1, StageFlags = VkShaderStageFlags.ComputeBit };
-        var compute = new VkDescriptorSetLayoutCreateInfo { BindingCount = 5, Bindings = bindings };
+        // The temporal pass's motion image (MotionVectors). Left unwritten in every other pass's set: they don't read it.
+        bindings[5] = new VkDescriptorSetLayoutBinding { Binding = 5, DescriptorType = VkDescriptorType.CombinedImageSampler, DescriptorCount = 1, StageFlags = VkShaderStageFlags.ComputeBit };
+        var compute = new VkDescriptorSetLayoutCreateInfo { BindingCount = 6, Bindings = bindings };
         _computeSetLayout = Gpu.Device.CreateDescriptorSetLayout(in compute, Gpu.Device.VkAllocator);
 
         for (var i = 0; i < 4; i++)
@@ -150,12 +153,13 @@ public sealed unsafe class PostProcess : IDisposable
         new() { Sampler = image.Sampler, ImageView = image.View, ImageLayout = VkImageLayout.General };
 
     /// A set for a compute pass: the image it writes, and up to three it reads.
-    private VkDescriptorSet ComputeSet(StorageImage output, VkDescriptorImageInfo? one, VkDescriptorImageInfo? two = null, VkDescriptorImageInfo? three = null)
+    private VkDescriptorSet ComputeSet(StorageImage output, VkDescriptorImageInfo? one, VkDescriptorImageInfo? two = null, VkDescriptorImageInfo? three = null,
+        VkDescriptorImageInfo? motion = null)
     {
         var set = Allocate(_computeSetLayout);
         var written = new VkDescriptorImageInfo { ImageView = output.View, ImageLayout = VkImageLayout.General };
         var buffer = new VkDescriptorBufferInfo { Buffer = _uniforms.VkBuffer, Offset = ByteSize.Zero, Range = ByteSize.Of(sizeof(Uniforms)) };
-        var reads = stackalloc VkDescriptorImageInfo[3];
+        var reads = stackalloc VkDescriptorImageInfo[4];
         var writes = new List<VkWriteDescriptorSet>
         {
             new() { DstSet = set, DstBinding = 0, DescriptorCount = 1, DescriptorType = VkDescriptorType.StorageImage, ImageInfo = &written },
@@ -173,6 +177,7 @@ public sealed unsafe class PostProcess : IDisposable
         Add(1, one, &reads[0]);
         Add(2, two, &reads[1]);
         Add(3, three, &reads[2]);
+        Add(5, motion, &reads[3]);
         Gpu.Device.UpdateDescriptorSets(CollectionsMarshal.AsSpan(writes), []);
         return set;
     }
@@ -195,10 +200,11 @@ public sealed unsafe class PostProcess : IDisposable
     }
 
     /// New images and sets when the window or the world's target changes. Rare enough to afford to wait for the GPU.
-    private void Resize(RenderTarget target)
+    private void Resize(RenderTarget target, StorageImage motion)
     {
-        if (target.Size == _size && _targetVersion == target.Version && _history[0] is not null)
+        if (target.Size == _size && _targetVersion == target.Version && _history[0] is not null && ReferenceEquals(motion, _motion))
             return;
+        _motion = motion;
 
         Gpu.WaitIdle();
         DisposeImages();
@@ -220,7 +226,7 @@ public sealed unsafe class PostProcess : IDisposable
         const int sets = 8 + BloomLevels * 2 + 4;
         var sizes = stackalloc VkDescriptorPoolSize[3];
         sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageImage, DescriptorCount = sets };
-        sizes[1] = new VkDescriptorPoolSize { Type = VkDescriptorType.CombinedImageSampler, DescriptorCount = sets * 4 };
+        sizes[1] = new VkDescriptorPoolSize { Type = VkDescriptorType.CombinedImageSampler, DescriptorCount = sets * 5 };
         sizes[2] = new VkDescriptorPoolSize { Type = VkDescriptorType.UniformBuffer, DescriptorCount = sets };
         var pool = new VkDescriptorPoolCreateInfo { MaxSets = sets, PoolSizeCount = 3, PoolSizes = sizes };
         _pool = Gpu.Device.CreateDescriptorPool(in pool, Gpu.Device.VkAllocator);
@@ -230,7 +236,7 @@ public sealed unsafe class PostProcess : IDisposable
         for (var i = 0; i < 2; i++)
         {
             var (picture, past) = (_history[i]!, _history[1 - i]!);
-            _temporalSets[i] = ComputeSet(picture, color, Read(past), depth);
+            _temporalSets[i] = ComputeSet(picture, color, Read(past), depth, Read(motion));
             _firstDownSets[i] = ComputeSet(_downs[0]!, Read(picture));
             _measureSets[i] = ComputeSet(_measured, Read(_downs[MeasuredLevel]!), Read(picture), depth);
             _raysSets[i] = ComputeSet(_shafts, Read(picture), null, depth);
@@ -278,10 +284,10 @@ public sealed unsafe class PostProcess : IDisposable
         Between(cmd);
     }
 
-    /// Outside any render pass, with the world and everything over it finished.
-    public void Draw(CommandBuffer cmd, RenderTarget target, Camera camera, float aspect, Sky sky, Action<CommandBuffer>? overPicture = null)
+    /// Outside any render pass, with the world and everything over it finished. motion: how what moves moved (MotionVectors).
+    public void Draw(CommandBuffer cmd, RenderTarget target, StorageImage motion, Camera camera, float aspect, Sky sky, Action<CommandBuffer>? overPicture = null)
     {
-        Resize(target);
+        Resize(target, motion);
 
         var s = Settings.Current;
         var grade = ColorGrade.Find(s.ColorGrade);

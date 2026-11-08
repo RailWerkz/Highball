@@ -1,8 +1,8 @@
 #version 450
 // Temporal anti-aliasing. The world is drawn a fraction of a pixel off each frame, and each pixel keeps most of what was at its place
 // last frame, as long as that's still like what's round it now. MSAA has the edges of solid things; this has what MSAA can't reach:
-// thin rails in the distance, highlights, grass, and the noise in the occlusion. Nothing here knows how things move except the camera,
-// so anything else that moves leans on the clamp.
+// thin rails in the distance, highlights, grass, and the noise in the occlusion. The camera's move reprojects the still world; what
+// moves on its own (trains) says how in the motion image (MotionVectors), and is followed by it. Anything else leans on the clamp.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -10,6 +10,8 @@ layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D result;
 layout(set = 0, binding = 1) uniform sampler2D current;
 layout(set = 0, binding = 2) uniform sampler2D history;
 layout(set = 0, binding = 3) uniform sampler2D sceneDepth;
+// xyz: from this pixel's point to where that point was last frame, in metres; w: 1 where something moving is seen.
+layout(set = 0, binding = 5) uniform sampler2D motion;
 #include "PostData.glsl"
 
 const float Keep = 0.9;
@@ -94,7 +96,9 @@ void main()
     vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     float depth = texelFetch(sceneDepth, pixel, 0).r;
     vec3 here = (post.forward.xyz + ndc.x * post.right.xyz + ndc.y * post.up.xyz) * (post.forward.w / max(depth, 1e-8));
-    vec4 clip = post.previousViewProjection * vec4(here + post.moved.xyz, 1.0);
+    vec4 moving = texelFetch(motion, pixel, 0);
+    vec3 own = moving.w > 0.5 ? moving.xyz : vec3(0.0);
+    vec4 clip = post.previousViewProjection * vec4(here + post.moved.xyz + own, 1.0);
 
     vec3 color = now;
     if (clip.w > 0.0)

@@ -347,14 +347,13 @@ public sealed unsafe class SunShadows : IDisposable
                 if (!draw.CastsShadow)
                     continue;
 
-                var relative = new float3((float)(draw.Position.X - camera.X), (float)(draw.Position.Y - camera.Y), (float)(draw.Position.Z - camera.Z));
+                var relative = draw.RelativeTo(camera.X, camera.Y, camera.Z);
                 var mesh = draw.Model.Mesh;
                 var size = MathF.Max(MathEx.Length(mesh.BoundsMin), MathEx.Length(mesh.BoundsMax)) * draw.Scale;
                 if (size > 0f && !Reaches(relative, size))
                     continue;
 
-                var (sin, cos) = MathF.SinCos(draw.Yaw * 0.5f);
-                var push = new ModelPush { Light = light, Rotation = new float4(0f, sin, 0f, cos), PlaceAndScale = new float4(relative, draw.Scale) };
+                    var push = new ModelPush { Light = light, Rotation = draw.Orientation, PlaceAndScale = new float4(relative, draw.Scale) };
                 cmd.PushConstants(_layout, Stages, ByteSize.Zero, push);
                 foreach (var part in draw.Model.Parts)
                     mesh.DrawRange(cmd, part.FirstIndex, part.IndexCount);
