@@ -24,6 +24,8 @@ public sealed class PlannerView : IDisposable
 
     private const double MinSelectZoom = 9.0;
     private const int MaxSelectSide = 40;
+    /// An area dragged to pick track from can be far bigger, since only the tiles near track get selected.
+    private const int MaxTrackSide = 200;
 
     private static readonly HttpClient Http = CreateClient();
 
@@ -53,6 +55,19 @@ public sealed class PlannerView : IDisposable
     private DragMode _dragMode;
     private TileId _dragFrom;
     private TileId _dragTo;
+    /// Shift held at the press: the drag marks the rectangle between its ends; otherwise it marks the tiles it passes over.
+    private bool _dragRect;
+    private readonly HashSet<TileId> _painted = [];
+
+    /// Along Track mode: a drag marks an area, and once OpenStreetMap says where the rail runs in it, selects the tiles the
+    /// track passes through and those within the padding of them, each kind with its own heights.
+    private bool _trackMode;
+    private int _trackPadding = 1;
+    private bool _trackLidar = true;
+    private bool _paddingLidar;
+    private HashSet<TileId>? _trackArea;
+    private (int I0, int J0, int I1, int J1)? _trackAreaBounds;
+    private bool _dragTrack;
 
     private readonly ImInputString _search = new(128, ""u8);
     private volatile string? _searchResult;
@@ -160,6 +175,15 @@ public sealed class PlannerView : IDisposable
     /// Marks the tiles selected: lidar where track runs through them, standard elsewhere.
     private void MarkByTrack()
     {
+        var track = TrackTiles();
+        _lidar.Clear();
+        _lidar.UnionWith(_selected.Where(track.Contains));
+        _notify($"Track through {_lidar.Count} of {_selected.Count} tiles");
+    }
+
+    /// Every tile a line in use runs through.
+    private HashSet<TileId> TrackTiles()
+    {
         var track = new HashSet<TileId>();
         foreach (var way in _network.Ways.Values.Where(w => w.Rail && w.Class != (int)RailClass.Disused))
             for (var i = 0; i + 1 < way.Lat.Length; i++)
@@ -169,14 +193,40 @@ public sealed class PlannerView : IDisposable
                 for (var k = 0; k <= steps; k++)
                     track.Add(_route.Grid!.TileAt(new RoutePoint(a.East + (b.East - a.East) * k / steps, a.North + (b.North - a.North) * k / steps)));
             }
+        return track;
+    }
 
-        _lidar.Clear();
-        _lidar.UnionWith(_selected.Where(track.Contains));
-        _notify($"Track through {_lidar.Count} of {_selected.Count} tiles");
+    /// Selects, within the area dragged in Along Track mode, the tiles track runs through and those within the padding of
+    /// them (counting diagonals), each marked with the heights picked for it.
+    private void SelectAlongTrack(HashSet<TileId> area)
+    {
+        var track = TrackTiles();
+        track.IntersectWith(area);
+        var padding = new HashSet<TileId>();
+        foreach (var t in track)
+            for (var dj = -_trackPadding; dj <= _trackPadding; dj++)
+                for (var di = -_trackPadding; di <= _trackPadding; di++)
+                    if (new TileId(t.I + di, t.J + dj) is var p && area.Contains(p) && !track.Contains(p))
+                        padding.Add(p);
+
+        Mark(track, _trackLidar);
+        Mark(padding, _paddingLidar);
+        _notify(track.Count == 0 ? "No track in that area" : $"Track through {track.Count} tiles, {padding.Count} padding");
+
+        void Mark(HashSet<TileId> tiles, bool lidar)
+        {
+            _selected.UnionWith(tiles);
+            if (lidar)
+                _lidar.UnionWith(tiles);
+            else
+                _lidar.ExceptWith(tiles);
+        }
     }
 
     /// Fetches where the rail runs under the selection, then marks it. False if a build is running.
-    private bool FindTrack()
+    private bool FindTrack() => FindTrack([.. _selected]);
+
+    private bool FindTrack(List<TileId> tiles)
     {
         if (_route.Grid is null || _generator.Running)
             return false;
@@ -185,7 +235,7 @@ public sealed class PlannerView : IDisposable
         {
             Route = _route,
             Network = _network,
-            Tiles = [.. _selected],
+            Tiles = tiles,
             RoadLevel = _roadLevel,
             RailLevel = Math.Max(_railLevel, 1),
             FindTrackOnly = true,
@@ -333,9 +383,14 @@ public sealed class PlannerView : IDisposable
             {
                 _findingTrack = false;
                 _linesVersion = -1;
+                var area = _trackArea;
+                _trackArea = null;
                 if (!_generator.Status.StartsWith("Failed") && _generator.Status != "Cancelled")
                 {
-                    MarkByTrack();
+                    if (area is not null)
+                        SelectAlongTrack(area);
+                    else
+                        MarkByTrack();
                     if (_buildAfterFinding)
                         Build();
                 }
@@ -353,7 +408,7 @@ public sealed class PlannerView : IDisposable
     }
 
     public (string Key, string Action)[] Hints =>
-        [("LMB", "Add tiles"), ("CTRL+LMB", "Remove tiles"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("TAB", "2D Editor"), ("ESC", "Exit")];
+        [_trackMode ? ("LMB", "Pick track in area") : ("LMB", "Add tiles"), ("SHIFT+LMB", "Add area"), ("CTRL+LMB", "Remove tiles"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("TAB", "2D Editor"), ("ESC", "Exit")];
 
     public string Attribution => MapTiles.Attribution;
 
@@ -377,6 +432,21 @@ public sealed class PlannerView : IDisposable
         ImGui.SeparatorText("Detail"u8);
         Level("Roads"u8, ref _roadLevel, Detail.RoadLevels.Select(l => l.Name).ToArray());
         Level("Rails"u8, ref _railLevel, Detail.RailLevels.Select(l => l.Name).ToArray());
+
+        ImGui.SeparatorText("Select"u8);
+        if (ImGui.RadioButton("Tiles"u8, !_trackMode))
+            _trackMode = false;
+        ImGui.SameLine(0f, -1f);
+        if (ImGui.RadioButton("Along Track"u8, _trackMode))
+            _trackMode = true;
+        if (_trackMode)
+        {
+            ImGui.TextDisabled("Drag an area: the tiles with track in it are picked"u8);
+            ImGui.SetNextItemWidth(-80f);
+            ImGui.SliderInt("Padding"u8, ref _trackPadding, 0, 10, "%d tiles"u8, ImGuiSliderFlags.AlwaysClamp);
+            HeightsFor("Track"u8, ref _trackLidar);
+            HeightsFor("Padding##heights"u8, ref _paddingLidar);
+        }
 
         ImGui.SeparatorText("Heights"u8);
         HeightRow("Lidar"u8, LidarColor, true, _lidar.Count, _builtLidar.Count);
@@ -427,6 +497,14 @@ public sealed class PlannerView : IDisposable
         ImGui.ColorButton($"##{lidar}", new float4(color.R, color.G, color.B, 1f), ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoBorder, new float2(14f, 14f));
         ImGui.SameLine(0f, -1f);
         ImGui.TextDisabled($"{selected} selected, {built} built");
+    }
+
+    /// Lidar or standard heights for one kind of tile Along Track picks.
+    private static void HeightsFor(ImString label, ref bool lidar)
+    {
+        var level = lidar ? 0 : 1;
+        Level(label, ref level, ["Lidar", "Standard"]);
+        lidar = level == 0;
     }
 
     private static void Level(ImString label, ref int level, string[] names)
@@ -594,7 +672,7 @@ public sealed class PlannerView : IDisposable
             Quad(draw, t, color.WithAlpha(0.1f), color.WithAlpha(0.35f));
         }
 
-        var preview = _dragging ? DragRect() : [];
+        var preview = _dragging && !_dragTrack ? DragTiles() : [];
         var removing = _dragging && _dragMode == DragMode.Remove;
 
         foreach (var t in _selected)
@@ -608,23 +686,73 @@ public sealed class PlannerView : IDisposable
         var marking = removing ? Stop : _paintLidar ? LidarColor : StandardColor;
         foreach (var t in preview)
             Quad(draw, t, marking.WithAlpha(0.32f), marking.WithAlpha(0.95f));
+
+        // An Along Track area, being dragged or waiting on OpenStreetMap: one box, not every tile in it.
+        if (_dragging && _dragTrack)
+            Area(draw, DragBounds(), Rgba.White);
+        else if (_trackAreaBounds is { } waiting && _trackArea is not null)
+            Area(draw, waiting, Rgba.White.WithAlpha(0.6f));
+    }
+
+    private void Area(ImDrawListPtr draw, (int I0, int J0, int I1, int J1) b, Rgba color)
+    {
+        var a = Corner(b.I0, b.J1 + 1);
+        var c = Corner(b.I1 + 1, b.J1 + 1);
+        var d = Corner(b.I1 + 1, b.J0);
+        var e = Corner(b.I0, b.J0);
+        draw.AddQuadFilled(a, c, d, e, color.WithAlpha(color.A * 0.08f));
+        draw.AddQuad(a, c, d, e, color, 2f);
+    }
+
+    private HashSet<TileId> DragTiles() => _dragRect ? DragRect() : _painted;
+
+    /// Marks every tile on the straight run from one tile to the next, so a fast stroke leaves no gaps.
+    private void PaintLine(TileId from, TileId to)
+    {
+        int di = Math.Abs(to.I - from.I), dj = Math.Abs(to.J - from.J);
+        int si = Math.Sign(to.I - from.I), sj = Math.Sign(to.J - from.J);
+        int i = from.I, j = from.J;
+        _painted.Add(from);
+        // One axis at a time, toward whichever tile edge the line crosses next, so the run stays edge-connected.
+        for (int ni = 0, nj = 0; ni < di || nj < dj;)
+        {
+            if ((1 + 2 * ni) * dj < (1 + 2 * nj) * di)
+            {
+                ni++;
+                i += si;
+            }
+            else
+            {
+                nj++;
+                j += sj;
+            }
+            _painted.Add(new TileId(i, j));
+        }
+    }
+
+    /// The rectangle between the drag's ends, no longer a side than a drag of its kind may be.
+    private (int I0, int J0, int I1, int J1) DragBounds()
+    {
+        var side = _dragTrack ? MaxTrackSide : MaxSelectSide;
+        var i0 = Math.Min(_dragFrom.I, _dragTo.I);
+        var j0 = Math.Min(_dragFrom.J, _dragTo.J);
+        var i1 = Math.Min(Math.Max(_dragFrom.I, _dragTo.I), i0 + side - 1);
+        var j1 = Math.Min(Math.Max(_dragFrom.J, _dragTo.J), j0 + side - 1);
+        return (i0, j0, i1, j1);
     }
 
     private HashSet<TileId> DragRect()
     {
         var tiles = new HashSet<TileId>();
-        var i0 = Math.Min(_dragFrom.I, _dragTo.I);
-        var j0 = Math.Min(_dragFrom.J, _dragTo.J);
-        var i1 = Math.Min(Math.Max(_dragFrom.I, _dragTo.I), i0 + MaxSelectSide - 1);
-        var j1 = Math.Min(Math.Max(_dragFrom.J, _dragTo.J), j0 + MaxSelectSide - 1);
+        var (i0, j0, i1, j1) = DragBounds();
         for (var j = j0; j <= j1; j++)
             for (var i = i0; i <= i1; i++)
                 tiles.Add(new TileId(i, j));
         return tiles;
     }
 
-    /// Left-drag marks a rectangle of tiles, added to the selection as the kind of heights picked in the panel; with Ctrl it
-    /// removes them, shown in red.
+    /// Left-drag marks the tiles the pointer passes over, or with Shift the rectangle between the drag's ends; they're added
+    /// to the selection as the kind of heights picked in the panel, or with Ctrl removed, shown in red.
     /// The very first press on a route without an origin fixes the origin there.
     private void Select(bool hovered, float2 mouse)
     {
@@ -643,19 +771,36 @@ public sealed class PlannerView : IDisposable
             }
 
             _dragMode = ImGui.GetIO().KeyCtrl ? DragMode.Remove : DragMode.Add;
+            _dragTrack = _trackMode && _dragMode == DragMode.Add;
+            _dragRect = ImGui.GetIO().KeyShift || _dragTrack;
             _dragFrom = _dragTo = TileUnder(mouse);
+            _painted.Clear();
+            _painted.Add(_dragFrom);
             _dragging = true;
         }
 
         if (!_dragging)
             return;
 
-        _dragTo = TileUnder(mouse);
+        var under = TileUnder(mouse);
+        if (!_dragRect && under != _dragTo)
+            PaintLine(_dragTo, under);
+        _dragTo = under;
         if (ImGui.IsMouseDown(ImGuiMouseButton.Left))
             return;
 
-        var rect = DragRect();
-        if (_dragMode == DragMode.Remove)
+        var rect = DragTiles();
+        if (_dragTrack)
+        {
+            if (_generator.Running)
+                _notify("Wait for the build to finish");
+            else if (FindTrack([.. rect]))
+            {
+                _trackArea = rect;
+                _trackAreaBounds = DragBounds();
+            }
+        }
+        else if (_dragMode == DragMode.Remove)
         {
             _selected.ExceptWith(rect);
             _lidar.ExceptWith(rect);
@@ -719,12 +864,13 @@ public sealed class PlannerView : IDisposable
     private static (Rgba Color, float Width) LineStyle(bool rail, int cls) => rail
         ? (RailClass)cls switch
         {
-            RailClass.Main => (Accent, 2.6f),
-            RailClass.Branch => (Accent.WithAlpha(0.85f), 2f),
-            RailClass.Industrial => (Caution.WithAlpha(0.85f), 1.6f),
-            RailClass.Yard => (Accent.WithAlpha(0.55f), 1.2f),
-            RailClass.Transit => (Rgba.Hex(0x7FB2FF), 1.6f),
-            RailClass.NarrowGauge => (Clear, 1.6f),
+            // Each class its own hue, clear of the lidar blue and standard amber the tiles are marked in.
+            RailClass.Main => (Rgba.Hex(0xFF4D6D), 2.6f),
+            RailClass.Branch => (Rgba.Hex(0xC77DFF), 2f),
+            RailClass.Industrial => (Rgba.Hex(0x2EE6A8), 1.6f),
+            RailClass.Yard => (Rgba.Hex(0x9AA3AD), 1.2f),
+            RailClass.Transit => (Rgba.Hex(0x4DD7FF), 1.6f),
+            RailClass.NarrowGauge => (Rgba.Hex(0xD4E157), 1.6f),
             _ => (TextFaint, 1.2f),
         }
         : (RoadClass)cls switch

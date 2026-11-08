@@ -22,8 +22,9 @@ Planner. In the Planner it leaves the builder. Switching back to the Planner or 
 
 | Input | Does |
 |---|---|
-| Left drag | Add a rectangle of tiles, marked as the kind of heights picked in the panel; dragging over them again re-marks them |
-| Ctrl + left drag | Remove tiles, shown in red as you drag |
+| Left drag | Add the tiles the pointer passes over, marked as the kind of heights picked in the panel; dragging over them again re-marks them |
+| Shift + left drag | Add a rectangle of tiles between the drag's ends |
+| Ctrl + left drag | Remove tiles, shown in red as you drag (with Shift, a rectangle) |
 | Right or middle drag | Pan |
 | Wheel | Zoom |
 
@@ -31,6 +32,11 @@ Each tile gets one kind of heights, blue for Lidar (USGS 3DEP, the best it has t
 Both get the same roads and rail from OpenStreetMap. Built tiles show theirs faintly. Lidar Along Track asks OpenStreetMap where the
 rail runs and marks the selection lidar where it does, standard elsewhere. A tile eases over its outer 300 m to meet any tile already
 built beside it, so different kinds join without a step. Regenerate keeps each tile's kind.
+
+Select: Along Track in the panel changes what a left drag does: it marks an area (as big as 200 by 200 tiles, drawn as one
+white box), asks OpenStreetMap where the rail runs in it, and adds the tiles track passes through plus those within the
+Padding of them (0 to 10 tiles, counting diagonals, 1 to start). Track tiles get Lidar and padding Standard unless the two
+pickers under Padding say otherwise. Ctrl still removes tiles as in Tiles mode.
 
 The side panel has Go To (a place name, or `lat, lon`), road and rail detail, the kinds of heights, Build / Cancel / Clear Selection, build
 progress, and how much of each road and rail class is on the map. The first area picked fixes the route's origin and
