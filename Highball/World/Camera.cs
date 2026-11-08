@@ -61,4 +61,34 @@ public sealed class Camera
 
         return new float4x4(values);
     }
+
+    /// What the camera sees this frame, for leaving out what's wholly outside it before it's drawn.
+    public ViewCone View(float aspect) => new(this, aspect);
+}
+
+/// The four sides of a camera's view and the plane through it (nothing is left out for being far: whatever chooses what to
+/// draw has its own reach). Points are relative to the camera.
+public readonly struct ViewCone
+{
+    private readonly float3 _forward, _right, _up;
+    private readonly float _tanX, _tanY, _slackX, _slackY;
+
+    public ViewCone(Camera camera, float aspect)
+    {
+        (_forward, _right, _up) = (camera.Forward, camera.Right, camera.Up);
+        _tanY = MathF.Tan(camera.FieldOfView * 0.5f);
+        _tanX = _tanY * aspect;
+        // How much further out a side reaches, measured across the view, for a sphere's radius to clear it.
+        _slackX = MathF.Sqrt(1f + _tanX * _tanX);
+        _slackY = MathF.Sqrt(1f + _tanY * _tanY);
+    }
+
+    /// Whether any of the sphere round centre (relative to the camera) might be in view.
+    public bool Sees(float3 centre, float radius)
+    {
+        var along = MathEx.Dot(centre, _forward);
+        return along >= -radius
+            && MathF.Abs(MathEx.Dot(centre, _right)) <= along * _tanX + radius * _slackX
+            && MathF.Abs(MathEx.Dot(centre, _up)) <= along * _tanY + radius * _slackY;
+    }
 }

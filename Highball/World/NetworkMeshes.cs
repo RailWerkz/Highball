@@ -1931,33 +1931,39 @@ public sealed partial class NetworkMeshes : IDisposable
     /// Draws the far meshes and rails with the line pipeline bound; push writes each chunk's origin relative to the
     /// camera.
     /// The beds' fades into the ground: to be drawn with their own pipeline, ahead of DrawLines.
-    public void DrawFades(CommandBuffer cmd, double cx, double cy, double cz, Action<float3> push)
+    /// A chunk mesh's offset from the camera, if any of it is in view.
+    private static bool InView(Mesh mesh, ChunkKey key, double cx, double cy, double cz, ViewCone view, out float3 offset)
+    {
+        var origin = OriginOf(key);
+        offset = new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz));
+        return view.Sees(offset + (mesh.BoundsMin + mesh.BoundsMax) * 0.5f, MathEx.Length(mesh.BoundsMax - mesh.BoundsMin) * 0.5f);
+    }
+
+    public void DrawFades(CommandBuffer cmd, double cx, double cy, double cz, ViewCone view, Action<float3> push)
     {
         foreach (var (key, near) in _drawList)
         {
             var chunk = _chunks[key];
             var mesh = near ? chunk.Near : chunk.Far;
             var fades = near ? chunk.NearFades : chunk.FarFades;
-            if (mesh is null || fades == 0)
+            if (mesh is null || fades == 0 || !InView(mesh, key, cx, cy, cz, view, out var offset))
                 continue;
 
-            var origin = OriginOf(key);
-            push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
+            push(offset);
             mesh.DrawRange(cmd, mesh.IndexCount - fades, fades);
         }
     }
 
-    public void DrawLines(CommandBuffer cmd, double cx, double cy, double cz, Action<float3> push)
+    public void DrawLines(CommandBuffer cmd, double cx, double cy, double cz, ViewCone view, Action<float3> push)
     {
         foreach (var (key, near) in _drawList)
         {
             var chunk = _chunks[key];
             var mesh = near ? chunk.Near : chunk.Far;
-            if (mesh is null)
+            if (mesh is null || !InView(mesh, key, cx, cy, cz, view, out var offset))
                 continue;
 
-            var origin = OriginOf(key);
-            push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
+            push(offset);
             mesh.DrawRange(cmd, 0, mesh.IndexCount - (near ? chunk.NearFades : chunk.FarFades));
         }
 
@@ -2102,18 +2108,18 @@ public sealed partial class NetworkMeshes : IDisposable
 
     /// Draws the ties and tie plates with the part pipeline bound: the full models out to DetailRadius, decimated ties
     /// past it, cell by cell.
-    public void DrawParts(CommandBuffer cmd, VkPipelineLayout layout, double cx, double cy, double cz, Action<float3> push)
+    public void DrawParts(CommandBuffer cmd, VkPipelineLayout layout, double cx, double cy, double cz, ViewCone view, Action<float3> push)
     {
         _tieTexture.Bind(cmd, layout);
         _trackTextures.BindTies(cmd, layout);
-        DrawInstances(cmd, cx, cy, cz, push, c => (c.Ties, c.TieCells), detail => detail ? _tie.Mesh : _tieFar.Mesh);
+        DrawInstances(cmd, cx, cy, cz, view, push, c => (c.Ties, c.TieCells), detail => detail ? _tie.Mesh : _tieFar.Mesh);
         _plateTexture.Bind(cmd, layout);
         _trackTextures.BindPlates(cmd, layout);
-        DrawInstances(cmd, cx, cy, cz, push, c => (c.Plates, c.PlateCells), detail => detail ? _plate.Mesh : null);
+        DrawInstances(cmd, cx, cy, cz, view, push, c => (c.Plates, c.PlateCells), detail => detail ? _plate.Mesh : null);
         _trackTextures.BindNone(cmd, layout);
     }
 
-    private void DrawInstances(CommandBuffer cmd, double cx, double cy, double cz, Action<float3> push, Func<Chunk, (BufferEx, int[])> instances,
+    private void DrawInstances(CommandBuffer cmd, double cx, double cy, double cz, ViewCone view, Action<float3> push, Func<Chunk, (BufferEx, int[])> instances,
         Func<bool, Mesh?> meshFor)
     {
         foreach (var (key, near) in _drawList)
@@ -2121,12 +2127,16 @@ public sealed partial class NetworkMeshes : IDisposable
             if (!near)
                 continue;
 
-            var (buffer, cells) = instances(_chunks[key]);
-            if (cells.Length == 0 || cells[^1] == 0)
+            var chunk = _chunks[key];
+            var (buffer, cells) = instances(chunk);
+            if (cells.Length == 0 || cells[^1] == 0 || chunk.Near is not { } lines)
                 continue;
 
             var origin = OriginOf(key);
-            push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
+            // Each cell's sphere, as the shadow casters take it: the cell's square, as high as the chunk's track reaches.
+            var height = (lines.BoundsMin.Y + lines.BoundsMax.Y) * 0.5f - (float)cy;
+            var radius = CellSize * 0.75f + (lines.BoundsMax.Y - lines.BoundsMin.Y) * 0.5f + 3f;
+            var pushed = false;
 
             // Runs of cells wanting the same mesh go in one draw.
             Mesh? runMesh = null;
@@ -2141,14 +2151,23 @@ public sealed partial class NetworkMeshes : IDisposable
                     var dx = Math.Max(0.0, Math.Max(x0 - cx, cx - (x0 + CellSize)));
                     var dz = Math.Max(0.0, Math.Max(z0 - cz, cz - (z0 + CellSize)));
                     var distance = Math.Sqrt(dx * dx + dz * dz);
-                    mesh = distance < NearRadius ? meshFor(distance < DetailRadius) : null;
+                    var centre = new float3((float)(x0 + CellSize * 0.5f - cx), height, (float)(z0 + CellSize * 0.5f - cz));
+                    mesh = distance < NearRadius && view.Sees(centre, radius) ? meshFor(distance < DetailRadius) : null;
                 }
 
                 if (mesh == runMesh)
                     continue;
 
                 if (runMesh is not null && cells[c] > cells[runStart])
+                {
+                    if (!pushed)
+                    {
+                        push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
+                        pushed = true;
+                    }
+
                     runMesh.DrawInstanced(cmd, buffer, cells[c] - cells[runStart], cells[runStart]);
+                }
                 runMesh = mesh;
                 runStart = c;
             }

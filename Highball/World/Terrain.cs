@@ -566,12 +566,21 @@ public sealed class Terrain : IDisposable
 
     // --- Drawing. ---
 
-    /// Draws the chosen patches. The pipeline is bound; push writes each patch's origin relative to the camera.
-    public void Draw(CommandBuffer cmd, double cx, double cy, double cz, Action<float3> push)
+    /// How many of the chosen patches the last Draw drew, the rest being out of view.
+    public int PatchesInView { get; private set; }
+
+    /// Draws the chosen patches in view. The pipeline is bound; push writes each patch's origin relative to the camera.
+    public void Draw(CommandBuffer cmd, double cx, double cy, double cz, ViewCone view, Action<float3> push)
     {
+        PatchesInView = 0;
         foreach (var (patch, indices, count) in _drawList)
         {
-            push(new float3((float)(patch.Origin.X - cx), (float)-cy, (float)(patch.Origin.Z - cz)));
+            var offset = new float3((float)(patch.Origin.X - cx), (float)-cy, (float)(patch.Origin.Z - cz));
+            if (!view.Sees(offset + patch.Centre, patch.Radius + 2f))
+                continue;
+
+            PatchesInView++;
+            push(offset);
             patch.Mesh.DrawWith(cmd, indices, count);
         }
     }

@@ -25,6 +25,8 @@ public static class Profiler
         public float Average => Samples.Average();
         public float Worst => Samples.Max();
         public int DrawCalls { get; internal set; }
+        /// Triangles it drew last frame (every instance counted, before the GPU clips any).
+        public long Triangles { get; internal set; }
         public float[] GpuSamples { get; } = new float[History];
         public float GpuAverage => GpuSamples.Average();
         public float GpuWorst => GpuSamples.Max();
@@ -32,6 +34,7 @@ public static class Profiler
         public bool HasGpu { get; internal set; }
         internal double Accumulated;
         internal int AccumulatedCalls;
+        internal long AccumulatedTriangles;
         internal float GpuAccumulated;
     }
 
@@ -71,6 +74,7 @@ public static class Profiler
         private readonly Section _section;
         private readonly long _start;
         private readonly int _calls;
+        private readonly long _triangles;
         private readonly CommandBuffer _cmd;
         private readonly int _gpuSpan;
 
@@ -79,6 +83,7 @@ public static class Profiler
             _section = section;
             _start = Stopwatch.GetTimestamp();
             _calls = Mesh.DrawCalls;
+            _triangles = Mesh.Triangles;
             _gpuSpan = -1;
             Open.Push(section);
         }
@@ -96,6 +101,7 @@ public static class Profiler
                 Open.Pop();
             _section.Accumulated += Stopwatch.GetElapsedTime(_start).TotalMilliseconds;
             _section.AccumulatedCalls += Mesh.DrawCalls - _calls;
+            _section.AccumulatedTriangles += Mesh.Triangles - _triangles;
         }
     }
 
@@ -134,6 +140,8 @@ public static class Profiler
             section.Accumulated = 0;
             section.DrawCalls = section.AccumulatedCalls;
             section.AccumulatedCalls = 0;
+            section.Triangles = section.AccumulatedTriangles;
+            section.AccumulatedTriangles = 0;
             section.GpuSamples[_cursor] = section.GpuAccumulated;
             section.GpuAccumulated = 0f;
         }
@@ -156,7 +164,7 @@ public static class Profiler
         times.Append(CultureInfo.InvariantCulture, $"Frame {FrameTimes.Average():0.00} ms ({1000f / MathF.Max(0.01f, FrameTimes.Average()):0} fps), GPU {GpuFrameTimes.Average():0.00} ms, {DrawCalls} draw calls, {Triangles / 1000f:0.0}k triangles");
         foreach (var (section, depth) in Tree())
             if (section.HasGpu)
-                times.Append(CultureInfo.InvariantCulture, $"\n  {new string(' ', depth * 2)}{section.Name}: {section.GpuAverage:0.00} ms, worst {section.GpuWorst:0.00}");
+                times.Append(CultureInfo.InvariantCulture, $"\n  {new string(' ', depth * 2)}{section.Name}: {section.GpuAverage:0.00} ms, worst {section.GpuWorst:0.00}, {section.DrawCalls} draws, {section.Triangles / 1000f:0.0}k triangles");
         return times.ToString();
     }
 }

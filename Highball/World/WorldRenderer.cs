@@ -245,6 +245,7 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         skyScope.Dispose();
 
+        var view = camera.View(aspect);
         if (terrain is not null)
         {
             using var _ = Profiler.Sample("Terrain", cmd);
@@ -254,7 +255,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             _shadows.Bind(cmd, _terrainLayout);
             _clouds.Bind(cmd, _terrainLayout);
             _ground.Binding.Bind(cmd, _terrainLayout);
-            terrain.Draw(cmd, camera.X, camera.Y, camera.Z, offset =>
+            terrain.Draw(cmd, camera.X, camera.Y, camera.Z, view, offset =>
             {
                 push.Offset = new float4(offset, 0f);
                 cmd.PushConstants(_terrainLayout, Stages, ByteSize.Zero, push);
@@ -283,15 +284,15 @@ public sealed unsafe class WorldRenderer : IDisposable
                 _clouds.Bind(cmd, _layout);
                 network.BindBallast(cmd, _layout);
                 // Before the rest, so whatever of the track stands in front of a fade covers it.
-                network.DrawFades(cmd, camera.X, camera.Y, camera.Z, Push);
+                network.DrawFades(cmd, camera.X, camera.Y, camera.Z, view, Push);
                 cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _lineWire : _line);
-                network.DrawLines(cmd, camera.X, camera.Y, camera.Z, Push);
+                network.DrawLines(cmd, camera.X, camera.Y, camera.Z, view, Push);
             }
 
             using (Profiler.Sample("Ties and plates", cmd))
             {
                 cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _partWire : _part);
-                network.DrawParts(cmd, _layout, camera.X, camera.Y, camera.Z, Push);
+                network.DrawParts(cmd, _layout, camera.X, camera.Y, camera.Z, view, Push);
                 _yards.Draw(cmd, _layout, camera, Push);
             }
         }

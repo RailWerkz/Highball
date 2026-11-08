@@ -3206,7 +3206,7 @@ public sealed partial class EditorView : IDisposable
             var source = terrain.Source;
             ImGui.Separator();
             ImGui.Text($"Tiles {source.Tiles.Count}   lines {source.Lines?.Lines.Count ?? 0}   ways {source.Network.Ways.Count}");
-            ImGui.Text($"Terrain patches {terrain.DrawnPatches} drawn / {terrain.PatchCount} held   {terrain.Building} building   {terrain.Waiting} waiting");
+            ImGui.Text($"Terrain patches {terrain.PatchesInView} in view / {terrain.DrawnPatches} chosen / {terrain.PatchCount} held   {terrain.Building} building   {terrain.Waiting} waiting");
             ImGui.Text($"Line chunks {network.DrawnChunks} drawn   {network.Building} building   {network.Turnouts} switches");
             ImGui.Text($"Edits {_undo.Count} to undo   {(source.Unsaved || source.Network.Unsaved ? "unsaved" : "saved")}");
         }
