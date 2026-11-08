@@ -53,6 +53,11 @@ public sealed unsafe class Vegetation : IDisposable
         public float Cutout;
         public int LastCascade;
         public float3 Shift;
+        /// Drawn instead of Mesh into the last shadow cascade (past 250 m, where a texel's most of a metre): a solid shape the
+        /// size of the thing. Null draws Mesh there.
+        public Mesh? FarCaster;
+        /// Left out of the last cascade, its partner's FarCaster standing for it (a tree's bark, inside its canopy's).
+        public bool NoFarCaster;
     }
 
     private const int Grass = 0;
@@ -135,12 +140,17 @@ public sealed unsafe class Vegetation : IDisposable
         {
             Mesh = Own(GrassMesh()), Textures = Own(new TextureBinding(grassAlbedo, grassOpacity, grassOpacity)), Wind = 0.07f, SoftNormal = 0.8f, Fade = NearReach * 0.92f, Cutout = 1f, LastCascade = 0,
         };
-        _kinds[Pebble] = new Kind { Mesh = Own(RockMesh(11)), Textures = Own(new TextureBinding(rock, rock, rock)), Fade = NearReach * 0.9f, Cutout = 2f, LastCascade = 0 };
+        // Pebbles are a few centimetres across, so once split is plenty.
+        _kinds[Pebble] = new Kind { Mesh = Own(RockMesh(11, splits: 1)), Textures = Own(new TextureBinding(rock, rock, rock)), Fade = NearReach * 0.9f, Cutout = 2f, LastCascade = 0 };
         _kinds[Shrub] = new Kind
         {
             Mesh = Own(ShrubMesh()), Textures = Own(new TextureBinding(twigs, twigs, twigs)), Wind = 0.02f, SoftNormal = 0.55f, Fade = FarReach * 0.9f, LastCascade = 3,
         };
-        _kinds[Boulder] = new Kind { Mesh = Own(RockMesh(29)), Textures = Own(new TextureBinding(rock, rock, rock)), Fade = FarReach * 0.7f, Cutout = 2f, LastCascade = 3 };
+        _kinds[Boulder] = new Kind
+        {
+            Mesh = Own(RockMesh(29)), FarCaster = Own(RockMesh(29, splits: 0)), Textures = Own(new TextureBinding(rock, rock, rock)), Fade = FarReach * 0.7f,
+            Cutout = 2f, LastCascade = 3,
+        };
         for (var i = FirstTree; i < KindCount; i++)
             _kinds[i] = new Kind { Fade = FarReach * 0.95f, LastCascade = 3 };
     }
@@ -587,6 +597,8 @@ public sealed unsafe class Vegetation : IDisposable
             var (b, l) = (_kinds[FirstTree + i * 2], _kinds[FirstTree + i * 2 + 1]);
             (b.Mesh, b.Textures, b.Shift) = (bark.Mesh, bark.Parts[0].Textures, shift);
             (l.Mesh, l.Textures, l.Shift) = (leaves.Mesh, leaves.Parts[0].Textures, shift);
+            l.FarCaster = Own(CanopyMesh(leaves.Mesh.BoundsMin, leaves.Mesh.BoundsMax));
+            b.NoFarCaster = true;
 
             // A hundredth of its height at the top in the strongest gust, trunk and leaves together.
             b.Wind = l.Wind = 0.01f / MathF.Max(max.Y - min.Y, 1f);
@@ -611,11 +623,7 @@ public sealed unsafe class Vegetation : IDisposable
         if (!Enabled)
             return;
 
-        var tanY = MathF.Tan(camera.FieldOfView * 0.5f);
-        var tanX = tanY * aspect;
-        var (forward, right, up) = (camera.Forward, camera.Right, camera.Up);
-        var slackX = MathF.Sqrt(1f + tanX * tanX);
-        var slackY = MathF.Sqrt(1f + tanY * tanY);
+        var view = camera.View(aspect);
         var push = new Push { Matrix = camera.JitteredViewProjection(aspect) };
         var phases = WindPhases();
 
@@ -637,9 +645,7 @@ public sealed unsafe class Vegetation : IDisposable
                 var centre = new float3((float)ox + size * 0.5f, (cell.Low + cell.High) * 0.5f - (float)camera.Y, (float)oz + size * 0.5f);
                 var radius = MathF.Sqrt(size * size * 0.5f + (cell.High - cell.Low) * (cell.High - cell.Low) * 0.25f) + 12f;
 
-                // In front, and inside the sides of the view.
-                var along = MathEx.Dot(centre, forward);
-                if (along < -radius || MathF.Abs(MathEx.Dot(centre, right)) > along * tanX + radius * slackX || MathF.Abs(MathEx.Dot(centre, up)) > along * tanY + radius * slackY)
+                if (!view.Sees(centre, radius))
                     continue;
 
                 var nearest = MathF.Max(MathEx.Length(centre) - radius, 0f);
@@ -672,11 +678,15 @@ public sealed unsafe class Vegetation : IDisposable
 
         var push = new Push { Matrix = light };
         var phases = WindPhases();
+        var last = cascade == SunShadows.Cascades - 1;
         for (var k = 0; k < KindCount; k++)
         {
             var kind = _kinds[k];
-            if (kind.Mesh is null || cascade > kind.LastCascade)
+            if (kind.Mesh is null || cascade > kind.LastCascade || (last && kind.NoFarCaster))
                 continue;
+
+            var standIn = last && kind.FarCaster is not null;
+            var mesh = standIn ? kind.FarCaster! : kind.Mesh;
 
             var bound = false;
             foreach (var cell in _cells.Values)
@@ -703,11 +713,11 @@ public sealed unsafe class Vegetation : IDisposable
                 }
 
                 push.Offset = new float4((float)ox, -(float)camera.Y, (float)oz, phases.Z);
-                push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, kind.Cutout);
+                push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, standIn ? 2f : kind.Cutout);
                 push.Shift = new float4(kind.Shift, (float)camera.Y);
                 push.Wind = new float4(WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size), phases.X, phases.Y);
                 cmd.PushConstants(layout, Stages, ByteSize.Zero, push);
-                kind.Mesh.DrawInstanced(cmd, cell.Buffer, showing, cell.Starts[k]);
+                mesh.DrawInstanced(cmd, cell.Buffer, showing, cell.Starts[k]);
             }
         }
     }
@@ -762,8 +772,69 @@ public sealed unsafe class Vegetation : IDisposable
         return Mesh.Create(CollectionsMarshal.AsSpan(vertices), CollectionsMarshal.AsSpan(indices));
     }
 
-    /// A lumpy stone, flat underneath: a twice-split icosahedron pushed about by noise.
-    private static Mesh RockMesh(int seed)
+    /// A lumpy stone, flat underneath: an icosahedron split splits times (80 triangles once, 320 twice) and pushed about by noise.
+    private static Mesh RockMesh(int seed, int splits = 2)
+    {
+        var (points, faces) = Icosphere(splits);
+        var positions = new float3[points.Count];
+        for (var i = 0; i < points.Count; i++)
+        {
+            var d = MathEx.Normalize(points[i]);
+            var s = (float)seed;
+            var bump = 0.72f + 0.4f * (MathF.Sin(d.X * 3.1f + s) * MathF.Cos(d.Y * 2.7f + s * 0.7f) * 0.5f + 0.5f) + 0.14f * MathF.Sin(d.Z * 7.3f + d.X * 5.1f + s);
+            var p = d * bump;
+            positions[i] = new float3(p.X * 1.1f, MathF.Max(p.Y * 0.75f, -0.15f) + 0.15f, p.Z * 0.9f);
+        }
+
+        return SmoothMesh(positions, faces);
+    }
+
+    /// How much smaller than its leaves' box a canopy's stand-in is: the leaves are cut out and let light through, the stand-in's
+    /// solid, so one the full size would cast too big and too dark a shadow.
+    private const float CanopyFill = 0.8f;
+
+    /// A tree's canopy as one solid lump filling its leaves' box (model space), for the far shadow cascade.
+    private static Mesh CanopyMesh(float3 min, float3 max)
+    {
+        var (points, faces) = Icosphere(1);
+        var centre = (min + max) * 0.5f;
+        var half = (max - min) * (0.5f * CanopyFill);
+        var positions = new float3[points.Count];
+        for (var i = 0; i < points.Count; i++)
+        {
+            var d = MathEx.Normalize(points[i]);
+            positions[i] = centre + new float3(d.X * half.X, d.Y * half.Y, d.Z * half.Z);
+        }
+
+        return SmoothMesh(positions, faces);
+    }
+
+    private static Mesh SmoothMesh(float3[] positions, List<(int A, int B, int C)> faces)
+    {
+        var normals = new float3[positions.Length];
+        foreach (var (a, b, c) in faces)
+        {
+            var n = MathEx.Cross(positions[b] - positions[a], positions[c] - positions[a]);
+            normals[a] += n;
+            normals[b] += n;
+            normals[c] += n;
+        }
+
+        var vertices = new Vertex[positions.Length];
+        for (var i = 0; i < positions.Length; i++)
+        {
+            var p = positions[i];
+            vertices[i] = new Vertex(p, MathEx.Normalize(normals[i]), new float2(p.X + p.Y * 0.6f, p.Z - p.Y * 0.6f));
+        }
+
+        var indices = new uint[faces.Count * 3];
+        for (var i = 0; i < faces.Count; i++)
+            (indices[i * 3], indices[i * 3 + 1], indices[i * 3 + 2]) = ((uint)faces[i].A, (uint)faces[i].B, (uint)faces[i].C);
+        return Mesh.Create(vertices.AsSpan(), indices.AsSpan());
+    }
+
+    /// An icosahedron's corners and faces, each face split into four splits times (20, 80, 320 triangles).
+    private static (List<float3> Points, List<(int A, int B, int C)> Faces) Icosphere(int splits)
     {
         var t = (1f + MathF.Sqrt(5f)) * 0.5f;
         var points = new List<float3>
@@ -777,7 +848,7 @@ public sealed unsafe class Vegetation : IDisposable
             (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9), (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1),
         };
 
-        for (var level = 0; level < 2; level++)
+        for (var level = 0; level < splits; level++)
         {
             var middles = new Dictionary<(int, int), int>();
             int Middle(int a, int b)
@@ -799,36 +870,7 @@ public sealed unsafe class Vegetation : IDisposable
             faces = next;
         }
 
-        var positions = new float3[points.Count];
-        for (var i = 0; i < points.Count; i++)
-        {
-            var d = MathEx.Normalize(points[i]);
-            var s = (float)seed;
-            var bump = 0.72f + 0.4f * (MathF.Sin(d.X * 3.1f + s) * MathF.Cos(d.Y * 2.7f + s * 0.7f) * 0.5f + 0.5f) + 0.14f * MathF.Sin(d.Z * 7.3f + d.X * 5.1f + s);
-            var p = d * bump;
-            positions[i] = new float3(p.X * 1.1f, MathF.Max(p.Y * 0.75f, -0.15f) + 0.15f, p.Z * 0.9f);
-        }
-
-        var normals = new float3[points.Count];
-        foreach (var (a, b, c) in faces)
-        {
-            var n = MathEx.Cross(positions[b] - positions[a], positions[c] - positions[a]);
-            normals[a] += n;
-            normals[b] += n;
-            normals[c] += n;
-        }
-
-        var vertices = new Vertex[points.Count];
-        for (var i = 0; i < points.Count; i++)
-        {
-            var p = positions[i];
-            vertices[i] = new Vertex(p, MathEx.Normalize(normals[i]), new float2(p.X + p.Y * 0.6f, p.Z - p.Y * 0.6f));
-        }
-
-        var indices = new uint[faces.Count * 3];
-        for (var i = 0; i < faces.Count; i++)
-            (indices[i * 3], indices[i * 3 + 1], indices[i * 3 + 2]) = ((uint)faces[i].A, (uint)faces[i].B, (uint)faces[i].C);
-        return Mesh.Create(vertices.AsSpan(), indices.AsSpan());
+        return (points, faces);
     }
 
     /// A card of twiggy desert shrub, drawn here: branching dark stems from the bottom middle, flecked with small pale leaves. Greys
