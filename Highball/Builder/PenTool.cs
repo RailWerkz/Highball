@@ -40,6 +40,9 @@ public sealed class PenTool
         _dragging = null;
     }
 
+    /// A point put down without the pointer: for scripted steps.
+    public void Add(LayPoint point, double outX = 0.0, double outZ = 0.0) => _anchors.Add(new Anchor { Point = point, OutX = outX, OutZ = outZ });
+
     public void RemoveLast()
     {
         if (_anchors.Count > 0)
@@ -129,7 +132,7 @@ public sealed class PenTool
 
     /// The path sampled about every Step metres, the placed points kept as they are (so their joins and branches stay).
     /// With preview, a last stretch out to it as if it were the next corner.
-    public List<LayPoint> Points((double X, double Z)? preview = null)
+    public List<LayPoint> Points((double X, double Z)? preview = null, double step = Step)
     {
         var anchors = _anchors.ToList();
         if (preview is { } p && anchors.Count > 0)
@@ -152,7 +155,7 @@ public sealed class PenTool
                 last = q;
             }
 
-            var n = Math.Max(1, (int)Math.Ceiling(length / Step));
+            var n = Math.Max(1, (int)Math.Ceiling(length / step));
             for (var k = 1; k < n; k++)
             {
                 var (x, z) = Bezier(a, b, (double)k / n);

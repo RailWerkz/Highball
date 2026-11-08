@@ -153,7 +153,7 @@ public sealed partial class NetworkMeshes : IDisposable
     private sealed record PlacedAt(PlacedObject Object, double X, double Z, float Y, CrossingDeck? Deck);
 
     /// The paints line.frag knows, by the name a placed model's parts use.
-    private static readonly string[] Paints = ["Black", "White", "Galv", "Yellow", "Red", "Green", "Concrete", "Wood"];
+    private static readonly string[] Paints = ["Black", "White", "Galv", "Yellow", "Red", "Green", "Concrete", "Wood", "Ballast"];
     private readonly Dictionary<long, float> _position = [];
     private readonly Dictionary<long, float> _target = [];
     private readonly HashSet<ChunkKey> _nearKeys = [];

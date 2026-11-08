@@ -412,7 +412,13 @@ The rest:
 - Utility Poles and Light Poles: three of each (telegraph, power and telephone poles; street light, yard mast and platform lamp). Anywhere
   puts one where it's clicked. Road and Track set it off the nearest one within 65 m, on the side clicked, by the distance set: from a
   road's edge, or a track's centre. Dragging one goes by the same setting. A utility pole lines up with the road or track; a light faces it.
-- Fence, on a pole: the first click stands the first pole and each one after adds poles at the Gap, up to that click and no further, and
+- Ties: loose ties with no rails, for dead ends and lifted track. Single tie is one bare tie (0.495 m apart by default, so it follows any
+  curve); Tie section is 4.95 m of plated ties with no ballast, and on ballast the same on a bed of its own. Put down on Anywhere within
+  8 m of a track's open end, a tie or a pen point goes on the end, and lines up with the way the track was going. Lay these with Pen as a rule.
+- Pen, on a pole or ties: as the Pen tool, click for a corner, drag for a curve, and Enter lays the whole path at the Gap, as one undo.
+  Backspace takes the last point back and Esc drops it. It doesn't snap to roads or tracks, and it has the pointer to itself, so to pick
+  something go back to One or Fence. Picking anything laid in a run offers Delete Its Run. A single click lays up to 2000 ties.
+- Fence, on a pole or ties: the first click stands the first pole and each one after adds poles at the Gap, up to that click and no further, and
   goes on from the last. On Anywhere that's a straight line to each click, so it can turn corners; on Road or Track it follows the line,
   from one way to the next where they join. Each click is one undo, a click lays at most 500 poles, and Esc ends the run. The line's
   shown as you go, with where each pole would be and how many.

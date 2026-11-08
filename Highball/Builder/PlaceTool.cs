@@ -12,7 +12,7 @@ public enum PlaceMode { Signal, HandThrow, GradeCrossing, Diamond, Track, Bridge
 /// running on that side. A hand throw goes on the nearest switch in place of its power machine. A grade crossing snaps onto the
 /// nearest track and takes its road's line and width, if one crosses there. A diamond joins two tracks where they cross.
 /// A track piece is laid as real track from the palette (TrackStamps), its switches sized as it says. A utility or light pole goes
-/// anywhere, or set off a road or track as chosen, and as a run of them at a gap if Fence is on (see PoleRuns).
+/// anywhere, or set off a road or track as chosen, and so do loose ties; either can be laid as a run at a gap, by fence or pen (see PoleRuns).
 public sealed class PlaceTool
 {
     /// How far off a track a click may be and still go on it, and how far off the track's centre a signal stands.
@@ -44,11 +44,13 @@ public sealed class PlaceTool
     public PoleSnap Snap = PoleSnap.Anywhere;
     public float TrackOffset = 8f;
     public float RoadOffset = 1.5f;
-    public bool Fence;
+    public PoleDraw Drawn = PoleDraw.One;
+    public readonly PenTool Pen = new();
     private readonly Dictionary<PlacedKind, float> _gaps = new()
     {
         [PlacedKind.PoleTelegraph] = 45f, [PlacedKind.PoleDistribution] = 45f, [PlacedKind.PoleTelecom] = 40f,
         [PlacedKind.LightCobra] = 50f, [PlacedKind.LightYardMast] = 120f, [PlacedKind.LightPlatform] = 15f,
+        [PlacedKind.TieSingle] = 0.495f, [PlacedKind.TieSection] = 4.95f, [PlacedKind.TieSectionBallast] = 4.95f,
     };
 
     public float Gap
@@ -62,6 +64,7 @@ public sealed class PlaceTool
     /// A run being laid: where it's got to, and its first pole while nothing's come after it to say which way it ought to face.
     public (double X, double Z)? RunFrom;
     public long? RunFirst;
+    public long RunId;
 
     /// The poles the next click would add to the run.
     public PoleRuns.Plan? Run { get; private set; }
@@ -192,12 +195,40 @@ public sealed class PlaceTool
         return found;
     }
 
+    /// Where the pen's next point would go: on the ground, or for ties, on a track's open end if it's near one.
+    public LayPoint? PenSnap(NetworkLines lines, (double X, double Z)? ground)
+    {
+        if (ground is not { } at)
+            return null;
+        return PoleKind.IsTie() && PoleRuns.TrackEnd(lines, at.X, at.Z) is { } end ? new LayPoint(end.X, end.Z) : new LayPoint(at.X, at.Z);
+    }
+
     /// Works out what a click at the pointer would do, for the panel and the marker.
     public void Update(NetworkLines lines, TrackEditor tracks, (double X, double Z)? ground, Func<double, string> length)
     {
         (Snapped, Note, Plan, Run) = (null, null, null, null);
         if (Mode != PlaceMode.Pole)
             (RunFrom, RunFirst) = (null, null);
+        if (Mode != PlaceMode.Pole || Drawn != PoleDraw.Pen)
+            Pen.Clear();
+        if (Mode == PlaceMode.Pole && Drawn == PoleDraw.Pen)
+        {
+            var preview = !Pen.Busy && PenSnap(lines, ground) is { } next ? (next.X, next.Z) : ((double, double)?)null;
+            if (preview is { } shown)
+                Snapped = shown;
+            if (Pen.Count > 0)
+            {
+                Run = PoleRuns.Along(Pen.Points(preview, PoleRuns.PenStep(PoleKind)), PoleKind, Gap);
+                Note = Run.Problem ?? $"{Run.Poles.Count}, {length(Run.Length)}";
+            }
+            else if (PoleKind.IsTie() && ground is { } near && PoleRuns.TrackEnd(lines, near.X, near.Z) is not null)
+            {
+                Note = "Track end";
+            }
+
+            return;
+        }
+
         if (ground is not { } at)
             return;
         if (Mode == PlaceMode.Pole)
@@ -252,9 +283,25 @@ public sealed class PlaceTool
             var (x, z) = place(o);
             if (project(x, z) is not { } at)
                 continue;
+            // (There may be thousands of single ties: only a speck each.)
+            if (o.Kind == PlacedKind.TieSingle && o.Id != Selected)
+            {
+                draw.AddCircleFilled(at, 2f * scale, Style.Accent, 4);
+                continue;
+            }
+
             var r = (o.Id == Selected ? 7f : 5f) * scale;
             draw.AddCircleFilled(at, r, o.Id == Selected ? Rgba.White : Style.Accent, 12);
             draw.AddCircle(at, r, new Rgba(0f, 0f, 0f, 0.8f), 12, 1.5f * scale);
+        }
+
+        if (Mode == PlaceMode.Pole && Drawn == PoleDraw.Pen)
+        {
+            Pen.Draw(draw, project, Pen.Busy ? null : Snapped);
+            if (Run is { Problem: null, Poles.Count: <= 400 } planned)
+                foreach (var pole in planned.Poles)
+                    if (project(pole.X, pole.Z) is { } here)
+                        draw.AddCircleFilled(here, 3f * scale, Style.Caution, 6);
         }
 
         if (Run is { } run && RunFrom is { } start && project(start.X, start.Z) is { } last)
@@ -267,9 +314,10 @@ public sealed class PlaceTool
                     last = here;
                 }
 
-            foreach (var pole in run.Poles)
-                if (project(pole.X, pole.Z) is { } here)
-                    draw.AddCircleFilled(here, 4f * scale, seen, 10);
+            if (run.Poles.Count <= 400)
+                foreach (var pole in run.Poles)
+                    if (project(pole.X, pole.Z) is { } here)
+                        draw.AddCircleFilled(here, 4f * scale, seen, 10);
         }
 
         var color = Plan?.Problem is null ? Style.Caution : Style.Stop;

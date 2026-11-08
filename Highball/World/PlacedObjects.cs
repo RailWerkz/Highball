@@ -4,20 +4,23 @@ using RailWerkz.Core.Logging;
 
 namespace Highball.World;
 
-public enum PlacedKind { Signal, HandThrow, GradeCrossing, PoleTelegraph, PoleDistribution, PoleTelecom, LightCobra, LightYardMast, LightPlatform }
+public enum PlacedKind { Signal, HandThrow, GradeCrossing, PoleTelegraph, PoleDistribution, PoleTelecom, LightCobra, LightYardMast, LightPlatform, TieSingle, TieSection, TieSectionBallast }
 
 /// A signal, hand throw, grade crossing, utility pole or light pole placed by hand. Heading: the way it faces, degrees from +X towards
 /// +Z (a grade crossing: the way its road runs; a utility pole: the way its wires would). Node: the switch a hand throw works. Width: a
-/// grade crossing's road. Opposite: a hand throw on the switch's other side.
-public sealed record PlacedObject(long Id, PlacedKind Kind, double Lat, double Lon, double Heading, long? Node = null, float Width = 0f, bool Opposite = false);
+/// grade crossing's road. Opposite: a hand throw on the switch's other side. Run: what it was laid along with (the id they share).
+public sealed record PlacedObject(long Id, PlacedKind Kind, double Lat, double Lon, double Heading, long? Node = null, float Width = 0f, bool Opposite = false, long? Run = null);
 
 public static class PlacedKinds
 {
     public static bool IsUtilityPole(this PlacedKind kind) => kind is PlacedKind.PoleTelegraph or PlacedKind.PoleDistribution or PlacedKind.PoleTelecom;
     public static bool IsLightPole(this PlacedKind kind) => kind is PlacedKind.LightCobra or PlacedKind.LightYardMast or PlacedKind.LightPlatform;
-    public static bool IsPole(this PlacedKind kind) => kind.IsUtilityPole() || kind.IsLightPole();
+    public static bool IsTie(this PlacedKind kind) => kind is PlacedKind.TieSingle or PlacedKind.TieSection or PlacedKind.TieSectionBallast;
 
-    /// A pole's model under Models/Poles.
+    /// What goes down anywhere, or off a road or track, singly or in runs: the poles, and the loose ties.
+    public static bool IsPole(this PlacedKind kind) => kind.IsUtilityPole() || kind.IsLightPole() || kind.IsTie();
+
+    /// Its model under Models/Poles.
     public static string PoleModel(this PlacedKind kind) => kind switch
     {
         PlacedKind.PoleTelegraph => "pole_telegraph",
@@ -25,7 +28,10 @@ public static class PlacedKinds
         PlacedKind.PoleTelecom => "pole_telecom",
         PlacedKind.LightCobra => "light_cobra",
         PlacedKind.LightYardMast => "light_yard_mast",
-        _ => "light_platform",
+        PlacedKind.LightPlatform => "light_platform",
+        PlacedKind.TieSingle => "tie_single",
+        PlacedKind.TieSection => "tie_section",
+        _ => "tie_section_ballast",
     };
 
     public static string Name(this PlacedKind kind) => kind switch
@@ -38,7 +44,10 @@ public static class PlacedKinds
         PlacedKind.PoleTelecom => "Telephone pole",
         PlacedKind.LightCobra => "Street light",
         PlacedKind.LightYardMast => "Yard mast",
-        _ => "Platform lamp",
+        PlacedKind.LightPlatform => "Platform lamp",
+        PlacedKind.TieSingle => "Single tie",
+        PlacedKind.TieSection => "Tie section, no ballast",
+        _ => "Tie section, on ballast",
     };
 }
 

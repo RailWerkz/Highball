@@ -5,14 +5,24 @@ namespace Highball.Builder;
 /// What a pole goes by: nothing, or a road or track that it stands off.
 public enum PoleSnap { Anywhere, Road, Track }
 
-/// Where poles go: one at a click, or a run of them at a gap. A utility pole faces along its line, the way its wires would run. A
-/// light faces the road or track it's beside, or to the left of the way a run's going, for its arm to reach over.
+/// How clicks lay them: one each; a fence, on from the last at a gap; or a pen, a path of corners and curves laid whole at a gap.
+public enum PoleDraw { One, Fence, Pen }
+
+/// Where poles and loose ties go: one at a click, or a run of them at a gap. A utility pole faces along its line, the way its wires would
+/// run, and a tie's section runs along it. A light faces the road or track it's beside, or to the left of the way a run's going, for its
+/// arm to reach over. A tie put down near a track's open end starts from that end, going on the way the track was going.
 public static class PoleRuns
 {
     public const float MaxOffset = 40f;
-    public const float MinGap = 3f;
     public const float MaxGap = 300f;
-    private const int MaxPoles = 500;
+    private const double EndReach = 8.0;
+
+    /// How close together they can go, and how many a click can lay.
+    public static float MinGap(PlacedKind kind) => kind.IsTie() ? 0.3f : 3f;
+    private static int MaxIn(PlacedKind kind) => kind.IsTie() ? 2000 : 500;
+
+    /// How finely a pen's path is walked for these: ties close together would show its corners.
+    public static double PenStep(PlacedKind kind) => kind.IsTie() ? 1.0 : 5.0;
 
     /// How far off a road or track a click may be and still go by it, which is to say past the furthest a pole may stand off one.
     private const double SnapReach = MaxOffset + 25.0;
@@ -38,6 +48,8 @@ public static class PoleRuns
     /// A single pole at a click, or null if it's to snap and there's nothing there to snap to.
     public static Pole? At(NetworkLines lines, PoleSnap snap, PlacedKind kind, float offset, double x, double z)
     {
+        if (snap == PoleSnap.Anywhere && kind.IsTie() && TrackEnd(lines, x, z) is { } end)
+            return end;
         if (snap == PoleSnap.Anywhere)
             return new Pole(x, z, 0.0);
         if (Nearest(lines, snap, x, z) is not { } on)
@@ -48,12 +60,60 @@ public static class PoleRuns
         return new Pole(px + rx * side * clear, pz + rz * side * clear, HeadingOf(kind, fx, fz, side));
     }
 
+    /// The open end of a track near a place, if there is one, and the way on from it. Other lines joining there, it isn't open.
+    public static Pole? TrackEnd(NetworkLines lines, double x, double z)
+    {
+        var joins = Joins(lines, true);
+        Pole? found = null;
+        var best = EndReach * EndReach;
+        foreach (var line in lines.Lines)
+        {
+            if (!line.Rail || line.Disused || x < line.MinX - EndReach || x > line.MaxX + EndReach || z < line.MinZ - EndReach || z > line.MaxZ + EndReach)
+                continue;
+            foreach (var (point, s, way) in ((int, float, double)[])[(0, 0f, -1.0), (line.Count - 1, line.S[^1], 1.0)])
+            {
+                var away = (line.X[point] - x) * (line.X[point] - x) + (line.Z[point] - z) * (line.Z[point] - z);
+                if (away >= best || line.Nodes.Any(n => n.Point == point && joins.ContainsKey(n.Node)) || OnOtherTrack(lines, line, line.X[point], line.Z[point]))
+                    continue;
+                var (px, pz, _, fx, fz, _, _) = new Leg(line, 0, 1).At(s);
+                best = away;
+                found = new Pole(px, pz, Math.Atan2(fz * way, fx * way) * 180.0 / Math.PI);
+            }
+        }
+
+        return found;
+    }
+
+    /// Whether another track runs through a place: a line that ends on another isn't open, whether or not they share a node there.
+    private static bool OnOtherTrack(NetworkLines lines, NetworkLine line, double x, double z)
+    {
+        foreach (var other in lines.Lines)
+        {
+            if (other == line || !other.Rail || other.Disused || x < other.MinX - 1.5 || x > other.MaxX + 1.5 || z < other.MinZ - 1.5 || z > other.MaxZ + 1.5)
+                continue;
+            for (var i = 0; i + 1 < other.Count; i++)
+            {
+                var (dx, dz) = (other.X[i + 1] - other.X[i], other.Z[i + 1] - other.Z[i]);
+                var t = Math.Clamp(((x - other.X[i]) * dx + (z - other.Z[i]) * dz) / Math.Max(dx * dx + dz * dz, 1e-9), 0.0, 1.0);
+                var (ex, ez) = (other.X[i] + dx * t - x, other.Z[i] + dz * t - z);
+                if (ex * ex + ez * ez < 2.25)
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// The poles along a pen's path, the first at its start.
+    public static Plan Along(IReadOnlyList<LayPoint> points, PlacedKind kind, float gap) =>
+        Along(points.Select(p => (p.X, p.Z)).ToList(), kind, gap, 1.0, first: true);
+
     /// The poles on from a place to a click, every gap, none beyond the click: straight there, or along the road or track and on the
     /// side the place is on.
     public static Plan Lay(NetworkLines lines, PoleSnap snap, PlacedKind kind, float offset, float gap, (double X, double Z) from, (double X, double Z) to)
     {
         if (snap == PoleSnap.Anywhere)
-            return Along([from, to], kind, gap, 1.0);
+            return Along([from, to], kind, gap, 1.0, first: false);
         if (Nearest(lines, snap, from.X, from.Z) is not { } start || Nearest(lines, snap, to.X, to.Z) is not { } end)
             return new Plan([], [], 0.0, snap == PoleSnap.Road ? "No road here" : "No track here");
         if (Route(lines, start.Line, start.S, end.Line, end.S) is not { } centre)
@@ -66,15 +126,16 @@ public static class PoleRuns
         var path = OffsetBy(centre, side * Clear(start.Line, offset));
         // It starts at the pole it's going on from, wherever that is: it may have been dragged.
         path[0] = from;
-        return Along(path, kind, gap, side);
+        return Along(path, kind, gap, side, first: false);
     }
 
-    /// Poles along a path, every gap on from its start.
-    private static Plan Along(List<(double X, double Z)> path, PlacedKind kind, double gap, double side)
+    /// Poles along a path, every gap on from its start, and at its start if first.
+    private static Plan Along(List<(double X, double Z)> path, PlacedKind kind, double gap, double side, bool first)
     {
         var poles = new List<Pole>();
         var walked = 0.0;
-        var next = gap;
+        var next = first ? 0.0 : gap;
+        var most = MaxIn(kind);
         for (var i = 0; i + 1 < path.Count; i++)
         {
             var (dx, dz) = (path[i + 1].X - path[i].X, path[i + 1].Z - path[i].Z);
@@ -84,8 +145,8 @@ public static class PoleRuns
             var (fx, fz) = (dx / length, dz / length);
             while (next <= walked + length)
             {
-                if (poles.Count >= MaxPoles)
-                    return new Plan([], path, walked + length, $"That's over {MaxPoles} poles: make the gap wider or the run shorter");
+                if (poles.Count >= most)
+                    return new Plan([], path, walked + length, $"That's over {most}: make the gap wider or the run shorter");
                 var t = next - walked;
                 poles.Add(new Pole(path[i].X + fx * t, path[i].Z + fz * t, HeadingOf(kind, fx, fz, side)));
                 next += gap;

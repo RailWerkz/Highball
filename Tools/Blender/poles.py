@@ -1,8 +1,8 @@
-"""Builds Highball's utility poles and light poles in Blender and exports them for the game.
+"""Builds Highball's utility poles, light poles and loose ties in Blender and exports them for the game.
 
     blender -b --factory-startup --python Tools/Blender/poles.py -- <Content folder> [preview folder]
 
-Writes these under Content/Models/Poles, and all six side by side in Assembled/poles.blend:
+Writes these under Content/Models/Poles, and all of them side by side in Assembled/poles.blend:
 
     pole_telegraph     a railroad pole line's: bare wood, two crossarms of glass insulators
     pole_distribution  a street's: three phases on a crossarm, a transformer, then the phone cable
@@ -10,10 +10,13 @@ Writes these under Content/Models/Poles, and all six side by side in Assembled/p
     light_cobra        a roadway light: tapered steel, a davit arm and a cobra head
     light_yard_mast    a rail yard's mast: slip-jointed steel, a ring of eight floods, bollards round the foot
     light_platform     a station platform's: a black post, a ladder rest and an acorn globe
+    tie_single         one bare tie, across the way it faces, for laying one at a time round any curve
+    tie_section        4.95 m of ties with their plates and no rails, each a little out of true
+    tie_section_ballast the same on a bed of ballast
 
 As in lineside.py: Blender is Z-up, the exporter turns that into the game's Y-up, each model stands on the ground at the origin
 facing -Y (any pole line's wires would run along Y), and every object is one paint named Fixed_<paint>, one line.frag knows
-(World/NetworkMeshes.cs, Paints). Wood alone has a map's coordinates, in metres: v along the grain, u round it. Sizes are real, in
+(World/NetworkMeshes.cs, Paints). Wood and Ballast alone have a map's coordinates, in metres: v along, u round. Sizes are real, in
 metres. Wires between poles aren't part of these.
 """
 import math
@@ -29,9 +32,12 @@ CONTENT = os.path.abspath(args[0] if args else "Content")
 PREVIEW = os.path.abspath(args[1]) if len(args) > 1 else None
 
 COLORS = {"Black": (0.02, 0.02, 0.02), "White": (0.75, 0.75, 0.72), "Galv": (0.33, 0.34, 0.35), "Yellow": (0.7, 0.5, 0.05),
-          "Red": (0.6, 0.03, 0.02), "Green": (0.03, 0.4, 0.15), "Concrete": (0.35, 0.34, 0.31), "Wood": (0.13, 0.085, 0.05)}
+          "Red": (0.6, 0.03, 0.02), "Green": (0.03, 0.4, 0.15), "Concrete": (0.35, 0.34, 0.31), "Wood": (0.13, 0.085, 0.05), "Ballast": (0.2, 0.19, 0.17)}
 
 UP = Vector((0, 0, 1))
+
+# The paints that wear a map on coordinates of their own.
+MAPPED = ("Wood", "Ballast")
 
 
 def frame(axis, hint=None):
@@ -53,7 +59,7 @@ class Model:
         """A closed skin through rings of as many points each, going along the way each ring's points turn anticlockwise."""
         bm = self.bm(paint)
         verts = [[bm.verts.new(p) for p in ring] for ring in rings]
-        layer = bm.loops.layers.uv.verify() if paint == "Wood" else None
+        layer = bm.loops.layers.uv.verify() if paint in MAPPED else None
         n = len(rings[0])
         step = sum((rings[0][(k + 1) % n] - rings[0][k]).length for k in range(n)) / n
         along = 0.0
@@ -72,7 +78,7 @@ class Model:
 
     def caps(self, paint, first, last):
         bm = self.bm(paint)
-        layer = bm.loops.layers.uv.verify() if paint == "Wood" else None
+        layer = bm.loops.layers.uv.verify() if paint in MAPPED else None
         for ring in (list(reversed(first)), last):
             face = bm.faces.new([bm.verts.new(p) for p in ring])
             if layer:
@@ -480,8 +486,66 @@ def light_platform():
     return m, 4.6
 
 
+# The ties: as track_parts.py's, 8 ft 6 in x 9 in x 7 in at 19.5 in centres.
+
+TIE_LENGTH, TIE_WIDTH, TIE_DEPTH, TIE_SPACING = 2.5908, 0.2286, 0.1778, 0.495
+TIES_IN_SECTION = 10
+SECTION = TIE_SPACING * TIES_IN_SECTION
+
+
+def tie(m, y, bottom, skew=0.0, shift=0.0, plates=False):
+    """A tie across at y, its ends along X; skew turns it a little (metres at its end), shift moves it along itself."""
+    half = TIE_LENGTH / 2
+    m.beam("Wood", (shift - half, y - skew, bottom + TIE_DEPTH / 2), (shift + half, y + skew, bottom + TIE_DEPTH / 2), TIE_WIDTH, TIE_DEPTH)
+    if plates:
+        top = bottom + TIE_DEPTH
+        for side in (-1, 1):
+            x = shift + side * 0.7175
+            at = y + skew * side * 0.55
+            m.box("Black", (x, at, top + 0.01), (0.18, 0.1, 0.01))
+            # The spikes, standing proud of the plate either side of where the rail was.
+            for sx in (-0.11, 0.11):
+                m.box("Black", (x + sx, at, top + 0.03), (0.012, 0.012, 0.015))
+
+
+def section_ties(m, bottom):
+    # (Fixed, so a section comes out the same every time it's built.)
+    wander = [(0.012, 0.01, 0.004), (-0.018, -0.02, -0.007), (0.006, 0.03, 0.009), (0.02, -0.012, 0.0), (-0.01, 0.018, -0.011),
+              (0.016, -0.026, 0.006), (-0.022, 0.006, 0.012), (0.004, 0.024, -0.005), (-0.014, -0.016, 0.008), (0.01, 0.012, -0.009)]
+    for k, (skew, shift, along) in enumerate(wander):
+        tie(m, (k + 0.5) * TIE_SPACING - SECTION / 2 + along, bottom, skew, shift, plates=True)
+
+
+def tie_single():
+    """One bare tie, let a little into the ground."""
+    m = Model()
+    tie(m, 0.0, -0.06)
+    return m, 1.5
+
+
+def tie_section():
+    """No rails and no ballast: ties with their plates, as where a track's been lifted, let a little into the ground."""
+    m = Model()
+    section_ties(m, -0.06)
+    return m, 3.0
+
+
+def tie_section_ballast():
+    """The same on a bed of ballast, whose sides run down into the ground; its ends butt up to the next section's."""
+    m = Model()
+    top, foot = 0.1, -0.35
+    half_top, half_foot = 1.7, 2.45
+    ends = [[(-half_foot, y, foot), (-half_top, y, top), (half_top, y, top), (half_foot, y, foot)] for y in (-SECTION / 2, SECTION / 2)]
+    rings = [[Vector(p) for p in ring] for ring in ends]
+    m.rings("Ballast", rings, smooth=False)
+    m.caps("Ballast", rings[0], rings[1])
+    section_ties(m, top - 0.1)
+    return m, 3.0
+
+
 UTILITY = [("pole_telegraph", pole_telegraph), ("pole_distribution", pole_distribution), ("pole_telecom", pole_telecom)]
 LIGHTS = [("light_cobra", light_cobra), ("light_yard_mast", light_yard_mast), ("light_platform", light_platform)]
+TIES = [("tie_single", tie_single), ("tie_section", tie_section), ("tie_section_ballast", tie_section_ballast)]
 
 
 def aim(camera, location, target):
@@ -528,20 +592,21 @@ def shoot(scene, camera, path, location, target, lens, size):
 
 
 folder = os.path.join(CONTENT, "Models", "Poles")
-for name, builder in UTILITY + LIGHTS:
+for name, builder in UTILITY + LIGHTS + TIES:
     model, _ = builder()
     model.export(os.path.join(folder, f"{name}.glb"))
 
 # Where the close preview of each looks: the point, and how far back.
 CLOSE = {"pole_telegraph": ((0, 0, 9.0), 3.6), "pole_distribution": ((0, -0.2, 11.0), 4.6), "pole_telecom": ((0, 0, 6.6), 3.6),
-         "light_cobra": ((0, -1.9, 10.1), 2.2), "light_yard_mast": ((0, 0, 24.0), 4.8), "light_platform": ((0, 0, 3.8), 1.8)}
+         "light_cobra": ((0, -1.9, 10.1), 2.2), "light_yard_mast": ((0, 0, 24.0), 4.8), "light_platform": ((0, 0, 3.8), 1.8),
+         "tie_single": ((0, 0, 0.1), 2.2), "tie_section": ((0, 0, 0.1), 4.0), "tie_section_ballast": ((0, 0, 0.1), 4.5)}
 
 # All six side by side for looking at, each in a collection of its own.
 bpy.ops.wm.read_factory_settings(use_empty=True)
 heights = {}
 x = 0.0
 places = {}
-for name, builder in UTILITY + LIGHTS:
+for name, builder in UTILITY + LIGHTS + TIES:
     model, height = builder()
     collection = bpy.data.collections.new(name)
     bpy.context.scene.collection.children.link(collection)
@@ -559,7 +624,7 @@ bpy.ops.wm.save_as_mainfile(filepath=assembled)
 print("wrote", assembled)
 
 if PREVIEW:
-    middle = (places["pole_telegraph"] + places["light_platform"]) / 2
+    middle = (places["pole_telegraph"] + places["tie_section_ballast"]) / 2
     shoot(scene, camera, os.path.join(PREVIEW, "all.png"), (middle - 4, -60, 5), (middle, 0, 12.8), 35, (1800, 900))
     for name, height in heights.items():
         at = places[name]

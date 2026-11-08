@@ -208,6 +208,8 @@ public sealed partial class EditorView : IDisposable
             _flattenSample = null;
         else if (_tool == Tool.Place && _place.RunFrom is not null)
             (_place.RunFrom, _place.RunFirst) = (null, null);
+        else if (_tool == Tool.Place && _place.Pen.Count > 0)
+            _place.Pen.Clear();
         else if (_selection.Count > 0)
             _selection.Clear();
         else if (_tool == Tool.Parallel && (_parallel.Anchor is not null || _parallelPen.Count > 0))
@@ -793,6 +795,26 @@ public sealed partial class EditorView : IDisposable
         _place.Selected = after?.Id;
     }
 
+    /// Lays what the pen's drawn, as one undo.
+    private void PenLay()
+    {
+        var run = PoleRuns.Along(_place.Pen.Points(null, PoleRuns.PenStep(_place.PoleKind)), _place.PoleKind, _place.Gap);
+        if (run.Problem is { } problem)
+        {
+            _switchRefused = problem;
+            return;
+        }
+
+        var id = DateTime.UtcNow.Ticks;
+        var shared = id;
+        var edits = run.Poles.Select(pole => new PlacedEdit(null, Placed(_place.PoleKind, pole.X, pole.Z, pole.Heading, id: id++) with { Run = shared })).ToList();
+        ApplyPlaced(edits);
+        _undo.Push(new PlacedRunEdit(edits));
+        _redo.Clear();
+        _place.Pen.Clear();
+        _place.Selected = null;
+    }
+
     /// A click with a pole in hand: one pole; or, with Fence on, a run's first pole and then each stretch of it, one undo a stretch.
     private void PolePress(NetworkLines lines, double x, double z)
     {
@@ -805,9 +827,11 @@ public sealed partial class EditorView : IDisposable
             }
 
             var made = Placed(_place.PoleKind, start.X, start.Z, start.Heading);
+            if (_place.Drawn == PoleDraw.Fence)
+                made = made with { Run = made.Id };
             PlacedChange(null, made);
-            if (_place.Fence)
-                (_place.RunFrom, _place.RunFirst, _place.Selected) = ((start.X, start.Z), made.Id, null);
+            if (_place.Drawn == PoleDraw.Fence)
+                (_place.RunFrom, _place.RunFirst, _place.RunId, _place.Selected) = ((start.X, start.Z), made.Id, made.Id, null);
             return;
         }
 
@@ -830,7 +854,7 @@ public sealed partial class EditorView : IDisposable
             edits.Add(new PlacedEdit(first, first with { Heading = run.Poles[0].Heading }));
         var id = DateTime.UtcNow.Ticks;
         foreach (var pole in run.Poles)
-            edits.Add(new PlacedEdit(null, Placed(_place.PoleKind, pole.X, pole.Z, pole.Heading, id: id++)));
+            edits.Add(new PlacedEdit(null, Placed(_place.PoleKind, pole.X, pole.Z, pole.Heading, id: id++) with { Run = _place.RunId }));
         ApplyPlaced(edits);
         _undo.Push(new PlacedRunEdit(edits));
         _redo.Clear();
@@ -1049,9 +1073,9 @@ public sealed partial class EditorView : IDisposable
             case var kind when kind.IsPole():
                 // As the tool's set: dropped where it's let go, keeping its turn; or set off the road or track again.
                 if (_place.Snap == PoleSnap.Anywhere)
-                    PlacedChange(o, Placed(o.Kind, x, z, o.Heading, id: o.Id));
+                    PlacedChange(o, Placed(o.Kind, x, z, o.Heading, id: o.Id) with { Run = o.Run });
                 else if (PoleRuns.At(lines, _place.Snap, o.Kind, _place.PoleOffset, x, z) is { } pole)
-                    PlacedChange(o, Placed(o.Kind, pole.X, pole.Z, pole.Heading, id: o.Id));
+                    PlacedChange(o, Placed(o.Kind, pole.X, pole.Z, pole.Heading, id: o.Id) with { Run = o.Run });
                 break;
             case PlacedKind.Signal when PlaceTool.SignalAt(lines, x, z) is { } signal:
                 PlacedChange(o, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, id: o.Id));
@@ -1075,6 +1099,19 @@ public sealed partial class EditorView : IDisposable
         _place.Update(lines, _tracks!, ground, PanelLength);
         if (blocked || _rebuild is not null)
             return;
+
+        // The pen has the pointer and keys to itself, as in the Pen tool: to pick something, go back to One or Fence.
+        if (_place.Mode == PlaceMode.Pole && _place.Drawn == PoleDraw.Pen)
+        {
+            _place.Pen.Update(mouse, _place.PenSnap(lines, ground), ground, ProjectGround, Input.MouseDown(GlfwMouseButton.Left), Input.Mouse(GlfwMouseButton.Left));
+            if (Input.MouseDown(GlfwMouseButton.Left))
+                (_place.Selected, _switchRefused) = (null, null);
+            if (!Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.Backspace))
+                _place.Pen.RemoveLast();
+            if (!Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.Enter) && _place.Pen.Count >= 2)
+                PenLay();
+            return;
+        }
 
         var picked = source.Objects.FirstOrDefault(o => o.Id == _place.Selected);
         if (Input.MouseDown(GlfwMouseButton.Left))
@@ -1195,6 +1232,18 @@ public sealed partial class EditorView : IDisposable
         ImGui.SameLine(0f, -1f);
         if (ImGui.Button("Delete"u8))
             PlacedChange(picked, null);
+        if (picked.Run is { } shared)
+        {
+            var all = _terrain!.Source.Objects.Where(o => o.Run == shared).ToList();
+            if (all.Count > 1 && ImGui.Button($"Delete Its Run ({all.Count})"))
+            {
+                var edits = all.Select(o => new PlacedEdit(o, null)).ToList();
+                ApplyPlaced(edits);
+                _undo.Push(new PlacedRunEdit(edits));
+                _redo.Clear();
+                _place.Selected = null;
+            }
+        }
     }
 
     // --- Following guides. ---
@@ -1772,8 +1821,8 @@ public sealed partial class EditorView : IDisposable
                     _place.RoadOffset = (float)Number(3);
                 else
                     _place.TrackOffset = (float)Number(3);
-                _place.Fence = Number(4) > 0.0;
-                if (_place.Fence)
+                _place.Drawn = Number(4) > 0.0 ? PoleDraw.Fence : PoleDraw.One;
+                if (Number(4) > 0.0)
                     _place.Gap = (float)Number(4);
                 (_place.RunFrom, _place.RunFirst) = (null, null);
                 for (var i = 5; i + 1 < parts.Length; i += 2)
@@ -1794,6 +1843,36 @@ public sealed partial class EditorView : IDisposable
                 }
 
                 (_place.RunFrom, _place.RunFirst) = (null, null);
+                break;
+            }
+
+            case "polepen":
+            {
+                // Through the tool: polepen,kind,gap, then a lat,lon,outx,outz for each point of the path, and it's laid.
+                _tool = Tool.Place;
+                _place.Mode = PlaceMode.Pole;
+                _place.PoleKind = Enum.Parse<PlacedKind>(parts[1]);
+                _place.Drawn = PoleDraw.Pen;
+                _place.Gap = (float)Number(2);
+                _place.Pen.Clear();
+                for (var i = 3; i + 3 < parts.Length; i += 4)
+                {
+                    var (px, pz) = At(i);
+                    var snapped = _place.PenSnap(lines, (px, pz))!.Value;
+                    Log.Info(string.Create(CultureInfo.InvariantCulture, $"Pole pen point {px:0.0} {pz:0.0} goes at {snapped.X:0.0} {snapped.Z:0.0}"));
+                    _place.Pen.Add(snapped, Number(i + 2), Number(i + 3));
+                }
+
+                _switchRefused = null;
+                var before = source.Objects.Count;
+                PenLay();
+                Log.Info($"Pole pen {parts[1]}: refused: {_switchRefused ?? "no"}, {source.Objects.Count - before} made, {source.Objects.Count} objects");
+                foreach (var made in source.Objects.Where(o => o.Kind.IsPole()).TakeLast(3))
+                {
+                    var (poleX, poleZ) = PlacedAtWorld(made);
+                    Log.Info(string.Create(CultureInfo.InvariantCulture, $"Pole {made.Kind} at {poleX:0.0} {poleZ:0.0} heading {made.Heading:0.0}"));
+                }
+
                 break;
             }
 
@@ -3229,7 +3308,8 @@ public sealed partial class EditorView : IDisposable
                     : [("LMB", "Point, or a track to run beside"), ("DRAG", "Curve"), ("ENTER", "Lay tracks"), ("F", _parallel.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")],
                 Tool.Switches => [("LMB", "Pick a switch"), ("DRAG", "Move points, curve end or crossover"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.RunFrom is not null => [("LMB", "Lay to here"), ("ESC", "End run"), ("CTRL+Z", "Undo")],
-                Tool.Place when _place.Mode == PlaceMode.Pole && _place.Fence && _place.Selected is null => [("LMB", "Start run"), ("CTRL+Z", "Undo")],
+                Tool.Place when _place.Mode == PlaceMode.Pole && _place.Drawn == PoleDraw.Fence && _place.Selected is null => [("LMB", "Start run"), ("CTRL+Z", "Undo")],
+                Tool.Place when _place.Mode == PlaceMode.Pole && _place.Drawn == PoleDraw.Pen => [("LMB", "Point"), ("DRAG", "Curve"), ("ENTER", "Lay"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.Mode == PlaceMode.Track && _place.Selected is null => [("LMB", "Lay piece"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Mirror"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Place => [("LMB", "Place, pick, drag"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Turn round or other side"), ("DEL", "Delete"), ("CTRL+Z", "Undo")],
                 Tool.Follow when _yard.Mode != YardMode.Follow => [("LMB", "Pick a track, then lay"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],

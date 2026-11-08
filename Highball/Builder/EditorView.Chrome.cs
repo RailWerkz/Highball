@@ -54,6 +54,7 @@ public sealed partial class EditorView
     [
         ("Utility Poles", ToolIcon.UtilityPole, [PlacedKind.PoleTelegraph, PlacedKind.PoleDistribution, PlacedKind.PoleTelecom]),
         ("Light Poles", ToolIcon.LightPole, [PlacedKind.LightCobra, PlacedKind.LightYardMast, PlacedKind.LightPlatform]),
+        ("Ties", ToolIcon.Ties, [PlacedKind.TieSingle, PlacedKind.TieSection, PlacedKind.TieSectionBallast]),
     ];
 
     /// The terrain brush last used, which the strip's Terrain button goes back to.
@@ -242,7 +243,12 @@ public sealed partial class EditorView
                 continue;
             foreach (var kind in kinds)
                 if (PaletteRow(icon, kind.Name(), _place.Mode == PlaceMode.Pole && _place.PoleKind == kind))
+                {
                     (_place.Mode, _place.PoleKind, _place.RunFrom, _place.RunFirst, _switchRefused) = (PlaceMode.Pole, kind, null, null, null);
+                    // Ties are for laying along something, as a rule, not one by one.
+                    if (kind.IsTie() && _place.Drawn == PoleDraw.One)
+                        _place.Drawn = PoleDraw.Pen;
+                }
         }
 
         if (ImGui.CollapsingHeader("Bridges"u8, ImGuiTreeNodeFlags.None))
@@ -262,15 +268,17 @@ public sealed partial class EditorView
         var imperial = Settings.Current.Units == UnitSystem.Imperial;
         var factor = imperial ? FeetPerMeter : 1f;
         ImGui.SeparatorText(_place.PoleKind.Name());
-        foreach (var (snap, name) in ((PoleSnap, string)[])[(PoleSnap.Anywhere, "Anywhere"), (PoleSnap.Road, "Road"), (PoleSnap.Track, "Track")])
-        {
-            if (ImGui.RadioButton(name, _place.Snap == snap))
-                (_place.Snap, _place.RunFrom, _place.RunFirst) = (snap, null, null);
-            if (snap != PoleSnap.Track)
-                ImGui.SameLine(0f, -1f);
-        }
+        // (A pen's path goes where it's drawn.)
+        if (_place.Drawn != PoleDraw.Pen)
+            foreach (var (snap, name) in ((PoleSnap, string)[])[(PoleSnap.Anywhere, "Anywhere"), (PoleSnap.Road, "Road"), (PoleSnap.Track, "Track")])
+            {
+                if (ImGui.RadioButton(name, _place.Snap == snap))
+                    (_place.Snap, _place.RunFrom, _place.RunFirst) = (snap, null, null);
+                if (snap != PoleSnap.Track)
+                    ImGui.SameLine(0f, -1f);
+            }
 
-        if (_place.Snap != PoleSnap.Anywhere)
+        if (_place.Snap != PoleSnap.Anywhere && _place.Drawn != PoleDraw.Pen)
         {
             var offset = _place.PoleOffset * factor;
             var label = _place.Snap == PoleSnap.Road ? (imperial ? "Off road edge (ft)"u8 : "Off road edge (m)"u8) : (imperial ? "Off track (ft)"u8 : "Off track (m)"u8);
@@ -284,15 +292,26 @@ public sealed partial class EditorView
             }
         }
 
-        var fence = _place.Fence;
-        if (ImGui.Checkbox("Fence: repeat along a run"u8, ref fence))
-            (_place.Fence, _place.RunFrom, _place.RunFirst) = (fence, null, null);
-        if (!_place.Fence)
+        foreach (var (way, name) in ((PoleDraw, string)[])[(PoleDraw.One, "One"), (PoleDraw.Fence, "Fence"), (PoleDraw.Pen, "Pen")])
+        {
+            if (ImGui.RadioButton(name, _place.Drawn == way))
+                (_place.Drawn, _place.RunFrom, _place.RunFirst) = (way, null, null);
+            if (way != PoleDraw.Pen)
+                ImGui.SameLine(0f, -1f);
+        }
+
+        if (_place.Drawn == PoleDraw.One)
+        {
+            if (_place.PoleKind.IsTie() && _place.Snap == PoleSnap.Anywhere)
+                ImGui.TextWrapped("Near a track's open end, it starts from that end."u8);
             return;
+        }
         var gap = _place.Gap * factor;
-        if (ImGui.SliderFloat(imperial ? "Gap (ft)"u8 : "Gap (m)"u8, ref gap, PoleRuns.MinGap * factor, PoleRuns.MaxGap * factor, "%.1f"u8, ImGuiSliderFlags.Logarithmic))
-            _place.Gap = Math.Clamp(gap / factor, PoleRuns.MinGap, PoleRuns.MaxGap);
-        ImGui.TextWrapped(_place.RunFrom is null
+        if (ImGui.SliderFloat(imperial ? "Gap (ft)"u8 : "Gap (m)"u8, ref gap, PoleRuns.MinGap(_place.PoleKind) * factor, PoleRuns.MaxGap * factor, "%.2f"u8, ImGuiSliderFlags.Logarithmic))
+            _place.Gap = Math.Clamp(gap / factor, PoleRuns.MinGap(_place.PoleKind), PoleRuns.MaxGap);
+        ImGui.TextWrapped(_place.Drawn == PoleDraw.Pen
+            ? "Click for a corner, drag for a curve, Enter to lay. Backspace takes a point back, Esc drops it."u8
+            : _place.RunFrom is null
             ? "Click where the run starts."u8
             : _place.Snap == PoleSnap.Anywhere
                 ? "Click where it goes to: it goes on from there, round any corner. Esc ends it."u8
