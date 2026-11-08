@@ -74,6 +74,9 @@ public sealed class Settings
     public string SelectSound { get; set; } = "BELLS";
     public string BackSound { get; set; } = "BELLS";
     public string TypingSound { get; set; } = "NOISE";
+    /// The train's horn and bell, by file name in Content/Audio/Horns and Bells (empty: the first there is).
+    public string TrainHorn { get; set; } = "";
+    public string TrainBell { get; set; } = "";
 
     // Controls
     public float Sensitivity { get; set; } = 1f;

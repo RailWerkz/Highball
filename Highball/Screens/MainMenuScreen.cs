@@ -6,7 +6,7 @@ using static RailWerkz.UI.Style;
 
 namespace Highball.Screens;
 
-/// The front door: SINGLE PLAYER, MULTIPLAYER, ROUTE BUILDER, then the rest, beside the changelog.
+/// The front door: SINGLE PLAYER, MULTIPLAYER, ROUTE BUILDER, CONSIST EDITOR, then the rest, beside the changelog.
 public sealed class MainMenuScreen : MenuScreen
 {
     private readonly List<Changelog.Release> _changelog = Changelog.Load();
@@ -17,7 +17,8 @@ public sealed class MainMenuScreen : MenuScreen
         Menu.ShowHeader = false;
         Menu.Add(new MenuItem { Label = "SINGLE PLAYER", OnSelect = () => HighballApp.Instance.Push(new SinglePlayerScreen()) })
             .Add(new MenuItem { Label = "MULTIPLAYER", OnSelect = () => HighballApp.Instance.Push(new MultiplayerScreen()) })
-            .Add(new MenuItem { Label = "ROUTE BUILDER", OnSelect = () => HighballApp.Instance.Push(new RouteBuilderScreen()), SeparatorAfter = true })
+            .Add(new MenuItem { Label = "ROUTE BUILDER", OnSelect = () => HighballApp.Instance.Push(new RouteBuilderScreen()) })
+            .Add(new MenuItem { Label = "CONSIST EDITOR", OnSelect = () => HighballApp.Instance.Push(new ConsistEditorScreen()), SeparatorAfter = true })
             .Add(new MenuItem { Label = "SETTINGS", OnSelect = () => HighballApp.Instance.Push(new SettingsScreen()) })
             .Add(new MenuItem { Label = "CREDITS", OnSelect = () => HighballApp.Instance.Push(new CreditsScreen()) })
             .Add(new MenuItem { Label = "QUIT", OnSelect = () => HighballApp.Instance.Quit() });

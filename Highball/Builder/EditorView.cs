@@ -187,6 +187,7 @@ public sealed partial class EditorView : IDisposable
             }
         _backgroundTiles.Dispose();
         _circuitEditor?.Dispose();
+        _trains.Dispose();
         _terrain?.Dispose();
         _network?.Dispose();
         _renderer.Dispose();
@@ -335,6 +336,8 @@ public sealed partial class EditorView : IDisposable
             EditCircuits();
             PollRebuild();
             _circuitEditor!.Update(_terrain.Source.Network);
+            RefreshRailGraph();
+            UpdateTrains(dt);
         }
 
         KeepWorldCurrent();
@@ -467,6 +470,8 @@ public sealed partial class EditorView : IDisposable
             _camera.Y = source.HeightAt(_camera.X, _camera.Z) + dev.Height;
             _camera.Yaw = dev.Yaw * MathF.PI / 180f;
             _camera.Pitch = dev.Pitch * MathF.PI / 180f;
+            if (DevTools.Zoom is { } zoom)
+                _camera.Zoom = zoom;
         }
     }
 
@@ -2260,6 +2265,105 @@ public sealed partial class EditorView : IDisposable
         return new float2((clip.X / clip.W * 0.5f + 0.5f) * _screen.X, (0.5f - clip.Y / clip.W * 0.5f) * _screen.Y);
     }
 
+    private Trains.RailGraph? _railGraph;
+    private NetworkLines? _railGraphFor;
+    private readonly TrainPanel _trains = new();
+    private (double X, double Y, double Z)? _followed;
+
+    /// The trains' rail graph, built again whenever the lines change (at first, and after an edit), with the train put
+    /// back on it. With --railgraph, checked and logged too.
+    private void RefreshRailGraph()
+    {
+        if (_terrain!.Source.Lines is not { } lines || _network is not { } network || ReferenceEquals(lines, _railGraphFor))
+            return;
+        _railGraphFor = lines;
+        _railGraph = Trains.RailGraph.Build(lines);
+        _railGraph.Reversed = network.Reversed;
+        _trains.SetSwitch = network.Set;
+        _trains.Ground = (x, z) => _terrain!.Source.HeightAt(x, z);
+        _trains.Use(_railGraph);
+        if (DevTools.RailGraphReport)
+            Log.Info(Trains.RailGraphCheck.Report(_railGraph, lines));
+    }
+
+    /// The train: placing it where the track's clicked, running it on, and the camera along with it if it follows.
+    private void UpdateTrains(float dt)
+    {
+        if (DevTools.Train is { } dev && _railGraph is not null && DevTools.Lay is null && _rebuild is null && ReferenceEquals(_railGraphFor, _terrain!.Source.Lines))
+        {
+            DevTools.Train = null;
+            var at = _route.Projection!.Forward(new GeoPoint(dev.Lat, dev.Lon));
+            var forward = _camera.Forward;
+            if (!_trains.Pick(dev.Consist))
+                Log.Warn($"--train: no saved consist called {dev.Consist}");
+            _trains.PlaceAt(at.East, -at.North, forward.X, forward.Z);
+            if (_trains.Train is null)
+                Log.Warn($"--train: not placed ({_trains.Notice})");
+            if (_trains.Train is { } placed)
+            {
+                placed.Reverser = 1;
+                placed.Independent = 0.0;
+                placed.Notch = dev.Notch;
+                var (hx, hz) = placed.Graph.FacingOf(placed.Head);
+                double From((double X, double Y, double Z) p) => Math.Sqrt((p.X - _camera.X) * (p.X - _camera.X) + (p.Z - _camera.Z) * (p.Z - _camera.Z));
+                Log.Info(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                    $"--train: facing ({hx:0.00}, {hz:0.00}), camera ({forward.X:0.00}, {forward.Z:0.00}); lead front truck {From(placed.Cars[0].FrontAt):0.0} m from the camera, last rear truck {From(placed.Cars[^1].RearAt):0.0} m"));
+                _trains.Follow = true;
+            }
+
+            _trains.Open = true;
+            if (_trains.Train is { } cut && DevTools.Uncouple is { } behind && behind >= 1 && behind < cut.Cars.Count)
+            {
+                var air = cut.Body.Brakes;
+                air.CockAhead[behind - 1] = air.CockBehind[behind - 1] = 0.0;
+                air.Hose[behind - 1] = false;
+                cut.Body.Uncouple(behind - 1, out _);
+            }
+
+            if (DevTools.TrainTab is { } tab)
+                _trains.ShowTab(tab);
+            if (DevTools.PickCoupling is { } coupling)
+                _trains.SelectCoupling(coupling - 1);
+            if (DevTools.PickVehicle is { } pick)
+                _trains.Select(pick - 1);
+            else if (DevTools.PickCoupling is null)
+                _trains.Graphs.Open = true;
+        }
+
+        // --trainbrake: the brake worked on a timetable once it's placed.
+        if (_trains.Train is { } braked && DevTools.TrainBrakes.Count > 0 && braked.Time >= DevTools.TrainBrakes[0].At)
+        {
+            var (_, handle) = DevTools.TrainBrakes[0];
+            DevTools.TrainBrakes.RemoveAt(0);
+            braked.Notch = 0;
+            braked.Emergency = handle < 0.0;
+            braked.Brake = Math.Max(handle, 0.0);
+            Log.Info($"--trainbrake: at {braked.Time:0.0} s, automatic brake {(handle < 0.0 ? "emergency" : handle.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture))}");
+        }
+
+        if (_trains.Placing)
+        {
+            _tool = Tool.Look;
+            if (ImGui.IsKeyPressed(ImGuiKey.Escape))
+                _trains.CancelPlacing();
+            else if (ImGui.IsMouseClicked(ImGuiMouseButton.Left) && !Blocked && Pick(Input.MousePosition) is { } p)
+            {
+                var forward = _camera.Forward;
+                _trains.PlaceAt(p.X, p.Z, forward.X, forward.Z);
+            }
+        }
+        else if (_tool == Tool.Look && _trains.Train is not null && ImGui.IsMouseClicked(ImGuiMouseButton.Left) && !Blocked)
+            // Free Look's left button picks a vehicle (or lets go of it, off them).
+            _trains.SelectAt(Input.MousePosition, Project, new double3(_camera.X, _camera.Y, _camera.Z));
+
+        _trains.Update(dt);
+        var (bx, by, bz) = _trains.FollowBy(ref _followed);
+        _camera.X += bx;
+        _camera.Y += by;
+        _camera.Z += bz;
+        _trains.Hear(_camera, dt);
+    }
+
     private void EditTrack()
     {
         var tracks = _tracks!;
@@ -2685,7 +2789,13 @@ public sealed partial class EditorView : IDisposable
                 draw.AddLine(a, b, color, S(1.5f));
     }
 
-    public void RenderWorld(CommandBuffer cmd, int width, int height) => _renderer.Render(cmd, new int2(width, height), _camera, _terrain, _network);
+    public void RenderWorld(CommandBuffer cmd, int width, int height)
+    {
+        // The train's lit lamps.
+        _renderer.SceneLights.Clear();
+        _renderer.SceneLights.AddRange(_trains.Lamps);
+        _renderer.Render(cmd, new int2(width, height), _camera, _terrain, _network, _trains.Draws);
+    }
 
     public void CompositeWorld(CommandBuffer cmd) => _renderer.Composite(cmd);
 
@@ -2706,6 +2816,7 @@ public sealed partial class EditorView : IDisposable
         else if (_showGrades)
             DrawGrades(draw, size);
         DrawBrush(draw);
+        _trains.Overlay(draw, Project, new double3(_camera.X, _camera.Y, _camera.Z), new float2(0f, _headerBottom), new float2(size.X, MathF.Min(size.Y, _footerTop)));
         if (_tool == Tool.Switches)
             DrawSwitches(draw);
         if (_tool == Tool.Switches && _terrain?.Source.Lines is { } handled && _switch is { } handledNode && handled.Turnouts.FirstOrDefault(t => t.Node == handledNode) is { } handledSwitch)
@@ -2940,6 +3051,7 @@ public sealed partial class EditorView : IDisposable
         if (ImGui.MenuItem("Wireframe", "F", _renderer.Wireframe, true))
             _renderer.Wireframe = !_renderer.Wireframe;
         ImGui.MenuItem("Track Grades"u8, "G"u8, ref _showGrades);
+        ImGui.MenuItem("Train"u8, ""u8, ref _trains.Open);
     }
 
     /// Whether the side panel has anything to show.
@@ -3275,7 +3387,11 @@ public sealed partial class EditorView : IDisposable
         RebuildNetwork();
     }
 
-    public void Windows() => ToolStrip();
+    public void Windows()
+    {
+        ToolStrip();
+        _trains.Window(_headerBottom);
+    }
 
     /// The editor's lines in Frame Statistics.
     public void DebugStats()
@@ -3300,7 +3416,7 @@ public sealed partial class EditorView : IDisposable
         {
             (string, string)[] tool = _tool switch
             {
-                Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", _topDown ? "Zoom" : "Speed"), .. (_topDown ? ((string, string)[])[] : [("ALT+WHEEL", _camera.Zoom <= 1.01f ? "Zoom" : string.Create(CultureInfo.InvariantCulture, $"Zoom {_camera.Zoom:0.0}x"))]), ("G", "Grades"), ("T", "Throw switch")],
+                Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", _topDown ? "Zoom" : "Speed"), .. (_topDown ? ((string, string)[])[] : [("ALT+WHEEL", _camera.Zoom <= 1.01f ? "Zoom" : string.Create(CultureInfo.InvariantCulture, $"Zoom {_camera.Zoom:0.0}x"))]), ("G", "Grades"), ("T", "Throw switch"), .. (_trains.Train is null ? ((string, string)[])[] : [("LMB", "Pick vehicle or coupling")])],
                 Tool.Road when _road.Mode == RoadMode.Remove => [("LMB", "Remove road"), ("CTRL+Z", "Undo")],
                 Tool.Road => [("LMB", "Next point"), ("SHIFT", "15 degree steps"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Parallel => _parallel.Anchor is not null

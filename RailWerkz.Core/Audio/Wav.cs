@@ -9,6 +9,25 @@ public sealed class Sound(short[] samples, int channels, int sampleRate)
     public int Channels { get; } = channels;
     public int SampleRate { get; } = sampleRate;
     public float Duration => Samples.Length / (float)(Channels * SampleRate);
+
+    /// The same folded down to one channel (the channels averaged), for placing in the world: OpenAL only places mono.
+    public Sound ToMono()
+    {
+        if (Channels == 1)
+            return this;
+
+        var frames = Samples.Length / Channels;
+        var mono = new short[frames];
+        for (var f = 0; f < frames; f++)
+        {
+            var sum = 0;
+            for (var c = 0; c < Channels; c++)
+                sum += Samples[f * Channels + c];
+            mono[f] = (short)(sum / Channels);
+        }
+
+        return new Sound(mono, 1, SampleRate);
+    }
 }
 
 /// Reads RIFF WAV files: 8/16-bit PCM and 32-bit float (the M61 loops), converted to 16-bit.

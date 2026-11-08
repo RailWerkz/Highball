@@ -62,6 +62,9 @@ public sealed partial class NetworkMeshes : IDisposable
     private const float RoadRise = 0.06f;
     private const float RailHeadHalf = 0.0373f;
     internal const float RailTop = 0.1857f;
+    /// The rail head's top over a rail line's formation (NetworkLine.Y): the ballast, a tie, its plate and the rail. Where
+    /// wheels run.
+    public const float RailTopRise = NetworkLine.BallastHeight + TieRise + PlateDepth + RailTop;
     private const float Wrap = 1200f;
     /// Parts are sorted into Cells x Cells squares of each chunk, so each square can be drawn in the detail its
     /// distance calls for.
@@ -446,6 +449,10 @@ public sealed partial class NetworkMeshes : IDisposable
         _target[nearest.Node] = _target.GetValueOrDefault(nearest.Node) > 0.5f ? 0f : 1f;
         return nearest;
     }
+
+    /// Sets a switch for one route, its blades swinging over if they're not there already: a train running through it
+    /// trailing forces them over.
+    public void Set(long node, bool reversed) => _target[node] = reversed ? 1f : 0f;
 
     /// Whether a switch is set (or going) for its reverse route.
     public bool Reversed(long node) => _target.GetValueOrDefault(node) > 0.5f;

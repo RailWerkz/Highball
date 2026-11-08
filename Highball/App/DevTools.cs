@@ -8,14 +8,15 @@ using RailWerkz.Vulkan;
 namespace Highball.App;
 
 /// Command-line helpers for development and testing:
-///   --menu SCREEN                                   open a menu after the splash: single, multi, builder, settings, credits,
-///                                                   lighting (the lighting test scene)
+///   --menu SCREEN                                   open a menu after the splash: single, multi, builder, consists, settings,
+///                                                   credits, lighting (the lighting test scene)
 ///   --lighting PRESET [MODEL]                       with --menu lighting, start at noon, golden or night, with the model
-///                                                   csx (the game's SD40) or source (its source file, with PBR maps)
+///                                                   black (the game's SD40-2) or source (the old SD40's source file, with PBR maps)
 ///   --orbit YAW PITCH DISTANCE                      with --menu lighting, where the camera starts (degrees, metres)
 ///   --skytime YYYY-MM-DD HOUR                       the procedural sky's date and time, in hours on the route's clock
 ///   --clouds COVERAGE                               how much of the procedural sky is cloud, 0 to 1
 ///   --tab NAME                                      with --menu settings, open on that tab: display, graphics, lighting, audio, simulation
+///   --consist NAME                                  open that saved consist in the Consist Editor
 ///   --route NAME                                    open that route in the Route Builder (made if there isn't one)
 ///   --select LAT LON N                              with --route, pick N x N tiles there and build them
 ///   --trackbuild                                    with --select, build lidar only where track runs, standard elsewhere
@@ -28,6 +29,18 @@ namespace Highball.App;
 ///   --panels                                        with --view, open the Frame Statistics and Profiler windows
 ///   --skybox NAME                                   with --view, show that sky (a file name in Textures/Skyboxes, or Procedural)
 ///   --throw LAT LON                                 with --view or --view2d, once loaded, throw the switch nearest there
+///   --train CONSIST LAT LON NOTCH                   with --view, once loaded, put that saved consist on the track there
+///                                                   (facing away from the camera), throttle at NOTCH, camera following,
+///                                                   the Train window and its graphs open
+///   --pickvehicle N                                 with --train, pick its Nth vehicle (from 1) once it's placed
+///   --traintab NAME                                 with --train, open the Train window on that tab (drive, power, vehicle,
+///                                                   coupling, train)
+///   --pickcoupling K                                with --train, pick the coupling behind vehicle K (0 the front end)
+///   --uncouple K                                    with --train, cut the train behind vehicle K as it's placed: angle
+///                                                   cocks closed, hose parted, uncoupled
+///   --trainbrake SECONDS HANDLE                     with --train, that long after it's placed close the throttle and put
+///                                                   the automatic brake at HANDLE (0 release to 1 full service, e emergency)
+///   --railgraph                                     with --view, once loaded, build the trains' rail graph and log its checks
 ///   --profilestats                                  with --view or --view2d, log how the rail profiles came out
 ///   --clean                                         with --view or --view2d, no overlays (track grades)
 ///   --tool N                                        with --view or --view2d, start with tool N (its number key)
@@ -99,6 +112,7 @@ public static class DevTools
     public static (double Lat, double Lon, double Zoom)? Look { get; set; }
 
     private static string? _route;
+    private static string? _consist;
     private static bool _view;
     private static bool _view2D;
 
@@ -117,9 +131,27 @@ public static class DevTools
     /// --switch LAT LON SIZE: picks the switch nearest there with the Switches tool, and sets its size (-1 automatic, 0 as
     /// mapped, else a frog number).
     public static (double Lat, double Lon, int Size)? SwitchAt { get; set; }
+    public static (string Consist, double Lat, double Lon, int Notch)? Train { get; set; }
+
+    /// With --train: when (seconds after it's placed) to work the automatic brake, and to what (0 release to 1 full
+    /// service, or -1 emergency), throttle closed. In time order.
+    public static List<(double At, double Handle)> TrainBrakes { get; } = [];
+    /// With --train: log how smoothly the train moves on the screen, each second.
+    public static bool TrainLog { get; private set; }
+
+    /// With --pickvehicle: the vehicle (from 1) to pick once the train's placed.
+    public static int? PickVehicle { get; private set; }
+
+    /// With --pickcoupling and --uncouple: the coupling behind that vehicle (from 1; 0 the front end).
+    public static int? PickCoupling { get; private set; }
+    public static int? Uncouple { get; private set; }
+
+    /// With --traintab: the Train window's tab to open on.
+    public static string? TrainTab { get; private set; }
 
     /// Log the rail profiles' statistics once the terrain opens (--profilestats).
     public static bool ProfileStats { get; private set; }
+    public static bool RailGraphReport { get; private set; }
 
     /// Where to write the audit of the track, once a route's open (TrackAudit).
     public static string? AuditFile { get; set; }
@@ -221,6 +253,9 @@ public static class DevTools
                 case "--settingsfile" when i + 1 < args.Length:
                     SettingsFile = args[++i];
                     break;
+                case "--consist" when i + 1 < args.Length:
+                    _consist = args[++i];
+                    break;
                 case "--route" when i + 1 < args.Length:
                     _route = args[++i];
                     break;
@@ -263,6 +298,30 @@ public static class DevTools
                     ThrowAt = (double.Parse(args[i + 1], w), double.Parse(args[i + 2], w));
                     i += 2;
                     break;
+                case "--trainbrake" when i + 2 < args.Length:
+                    var tb = System.Globalization.CultureInfo.InvariantCulture;
+                    TrainBrakes.Add((double.Parse(args[i + 1], tb), args[i + 2] == "e" ? -1.0 : double.Parse(args[i + 2], tb)));
+                    TrainBrakes.Sort((a, b) => a.At.CompareTo(b.At));
+                    i += 2;
+                    break;
+                case "--train" when i + 4 < args.Length:
+                    var tc = System.Globalization.CultureInfo.InvariantCulture;
+                    Train = (args[i + 1], double.Parse(args[i + 2], tc), double.Parse(args[i + 3], tc), int.Parse(args[i + 4], tc));
+                    TrainLog = true;
+                    i += 4;
+                    break;
+                case "--traintab" when i + 1 < args.Length:
+                    TrainTab = args[++i];
+                    break;
+                case "--pickcoupling" when i + 1 < args.Length:
+                    PickCoupling = int.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
+                    break;
+                case "--uncouple" when i + 1 < args.Length:
+                    Uncouple = int.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
+                    break;
+                case "--pickvehicle" when i + 1 < args.Length:
+                    PickVehicle = int.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
+                    break;
                 case "--switch" when i + 3 < args.Length:
                     var v = System.Globalization.CultureInfo.InvariantCulture;
                     SwitchAt = (double.Parse(args[i + 1], v), double.Parse(args[i + 2], v), int.Parse(args[i + 3], v));
@@ -270,6 +329,9 @@ public static class DevTools
                     break;
                 case "--audit" when i + 1 < args.Length:
                     AuditFile = args[++i];
+                    break;
+                case "--railgraph":
+                    RailGraphReport = true;
                     break;
                 case "--profilestats":
                     ProfileStats = true;
@@ -356,6 +418,7 @@ public static class DevTools
             "single" => new SinglePlayerScreen(),
             "multi" => new MultiplayerScreen(),
             "builder" => new RouteBuilderScreen(),
+            "consists" or "consist" => new ConsistEditorScreen(),
             "settings" or "options" => new SettingsScreen(),
             "credits" => new CreditsScreen(),
             "lighting" => new LightingScreen(),
@@ -364,6 +427,15 @@ public static class DevTools
 
         if (screen is not null)
             app.Push(screen);
+
+        if (_consist is { } consistName)
+        {
+            _consist = null;
+            var consist = Trains.Consist.All().FirstOrDefault(c => c.Name.Equals(consistName, StringComparison.OrdinalIgnoreCase));
+            if (consist is null)
+                Log.Warn($"--consist: no saved consist called {consistName}");
+            app.Push(new ConsistEditorScreen(consist));
+        }
 
         if (_route is { } name)
         {
