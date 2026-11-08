@@ -107,19 +107,19 @@ public sealed partial class EditorView
                 return "";
             var imperial = Settings.Current.Units == UnitSystem.Imperial;
             string Height(double metres) => imperial
-                ? string.Create(CultureInfo.InvariantCulture, $"{metres * FeetPerMeter:#,0} ft")
-                : string.Create(CultureInfo.InvariantCulture, $"{metres:#,0} m");
+                ? string.Create(CultureInfo.InvariantCulture, $"{metres * FeetPerMeter:#,0} FT")
+                : string.Create(CultureInfo.InvariantCulture, $"{metres:#,0} M");
 
-            var above = Height(_camera.Y - terrain.Source.HeightAt(_camera.X, _camera.Z));
-            var camera = _topDown
-                ? $"view {above}"
-                : imperial
-                    ? string.Create(CultureInfo.InvariantCulture, $"{above} up, {_speed * 2.23694f:0} mph")
-                    : string.Create(CultureInfo.InvariantCulture, $"{above} up, {_speed * 3.6f:0} km/h");
+            // The pointer's ground over sea level (MSL), the camera over the ground under it (AGL), and how fast it's flying.
+            var camera = $"AGL {Height(_camera.Y - terrain.Source.HeightAt(_camera.X, _camera.Z))}";
+            if (!_topDown)
+                camera += imperial
+                    ? string.Create(CultureInfo.InvariantCulture, $"   {_speed * 2.23694f:0} MPH")
+                    : string.Create(CultureInfo.InvariantCulture, $"   {_speed * 3.6f:0} KM/H");
             if (_pointerAt is not { } at)
                 return camera;
             var geo = _route.Projection!.Inverse(new RoutePoint(at.X, -at.Z));
-            return string.Create(CultureInfo.InvariantCulture, $"{geo.Lat:0.00000}, {geo.Lon:0.00000}   {Height(at.Y)}   {camera}");
+            return string.Create(CultureInfo.InvariantCulture, $"{geo.Lat:0.00000}, {geo.Lon:0.00000}   MSL {Height(at.Y)}   {camera}");
         }
     }
 
