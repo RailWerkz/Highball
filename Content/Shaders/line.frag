@@ -17,6 +17,7 @@ layout(push_constant) uniform Push
     vec4 offset;
     vec4 camera;
     vec4 sun;
+    vec4 texOrigin; // the camera's x, z wrapped to the texture period, exact (see WorldRenderer.TexturePeriod)
 } pc;
 
 // Not read: the rock's in set 4 now. Only here because the layout's set 0 is.
@@ -169,9 +170,10 @@ vec2 boxUv(vec3 position, vec3 n)
 
 void main()
 {
+    // world for broad patterns, local (exact, wrapped to the texture period) for everything finer: as in terrain.frag.
     vec3 world = pc.camera.xyz + vRelative;
-    // (Not wrapped: nothing here repeats at any round distance, so a wrap would show as a line across the ground.)
-    vec2 tex = world.xz;
+    vec3 local = vec3(pc.texOrigin.x, pc.camera.y, pc.texOrigin.z) + vRelative;
+    vec2 tex = local.xz;
     float dist = length(vRelative);
     vec3 view = vRelative / max(dist, 1e-3);
     vec3 n = normalize(vNormal);
@@ -183,7 +185,7 @@ void main()
     int style = code >> 3;
     float u = vData.x;
     float v = vData.y;
-    float pixel = max(length(dFdx(world)), length(dFdy(world))) + 1e-4;
+    float pixel = max(length(dFdx(vRelative)), length(dFdy(vRelative))) + 1e-4;
     float uPixel = max(fwidth(u), 1e-4);
 
     if ((material == Rail || material == Painted) && dist > nearRadius)
@@ -257,10 +259,10 @@ void main()
     else if (material == Asphalt)
     {
         float grit = fbm(tex * 6.0, pixel * 6.0);
-        float wear = fbm(tex * 0.12, pixel * 0.12);
+        float wear = fbm(world.xz * 0.12, pixel * 0.12);
         albedo = vec3(0.036, 0.037, 0.039) * (0.85 + 0.3 * grit) * (0.85 + 0.3 * wear);
         roughness = mix(0.8, 0.95, grit);
-        puddle = smoothstep(0.55, 0.68, fbm(tex * 0.12, pixel * 0.12));
+        puddle = smoothstep(0.55, 0.68, fbm(world.xz * 0.12, pixel * 0.12));
         specular = 0.18;
 
         int lanes = style & 7;
@@ -331,11 +333,11 @@ void main()
     else if (material == Concrete)
     {
         // Cast in panels, with the joints showing, and streaked by the rain running down it.
-        vec2 face = boxUv(world, n);
+        vec2 face = boxUv(local, n);
         bool upright = abs(n.y) < 0.5;
-        float streaks = fbm(upright ? vec2(face.x * 1.6, world.y * 0.1) : face * 0.5, pixel * 1.6);
-        float stain = fbm(face * 0.5 + world.y * 0.3, pixel * 0.7);
-        float joints = upright ? max(stripe(fract(face.x / 3.0) * 3.0, 0.0, 0.012, pixel), stripe(fract(world.y / 2.4) * 2.4, 0.0, 0.01, pixel)) : 0.0;
+        float streaks = fbm(upright ? vec2(face.x * 1.6, local.y * 0.1) : face * 0.5, pixel * 1.6);
+        float stain = fbm(face * 0.5 + local.y * 0.3, pixel * 0.7);
+        float joints = upright ? max(stripe(fract(face.x / 3.0) * 3.0, 0.0, 0.012, pixel), stripe(fract(local.y / 2.4) * 2.4, 0.0, 0.01, pixel)) : 0.0;
         albedo = vec3(0.36, 0.34, 0.30) * (0.72 + 0.28 * stain) * (0.72 + 0.42 * streaks) * (1.0 - 0.55 * joints);
         roughness = 0.85;
         specular = 0.25;
@@ -343,11 +345,11 @@ void main()
     else if (material == BridgeSteel)
     {
         // Pale paint weathered by Metal024; on the girders it's peeled off in patches to the rust beneath.
-        vec2 worn = boxUv(world, n) / 1.2;
+        vec2 worn = boxUv(local, n) / 1.2;
         vec2 packed = texture(paintedPacked, worn).gb;
         vec3 grime = texture(paintedColor, worn).rgb;
         vec3 painted = (style == 1 ? vec3(0.34, 0.35, 0.35) : vec3(0.50, 0.51, 0.48)) * mix(vec3(1.0), grime * 2.0, 0.35);
-        float peeled = style == 1 ? 0.0 : 0.85 * smoothstep(0.66, 0.70, fbm(boxUv(world, n) * 1.8, pixel * 1.8));
+        float peeled = style == 1 ? 0.0 : 0.85 * smoothstep(0.66, 0.70, fbm(boxUv(local, n) * 1.8, pixel * 1.8));
         albedo = mix(painted, vec3(0.30, 0.20, 0.12) * (0.6 + grime), peeled);
         roughness = mix(0.55, 0.9, peeled);
         specular = 0.5;
@@ -368,7 +370,7 @@ void main()
     {
         albedo = Paints[clamp(style, 0, 6)];
         // Galvanised steel, or paint, either weathered by Metal024.
-        vec2 worn = boxUv(world, n) / 0.8;
+        vec2 worn = boxUv(local, n) / 0.8;
         vec2 packed = texture(paintedPacked, worn).gb;
         vec3 grime = texture(paintedColor, worn).rgb;
         albedo *= mix(vec3(1.0), grime * 2.0, style == 2 ? 0.8 : 0.3);
@@ -378,8 +380,19 @@ void main()
         n = bumped(n, texture(paintedNormal, worn).xyz * 2.0 - 1.0, worn);
     }
 
-    if (dot(n, view) > 0.0)
-        n = -n; // nothing's culled, so light the side we see
+    // Nothing's culled, so light the side we see. Which side that is goes by the triangle itself, from how its position changes
+    // across the screen: exact however low the view. Not by the normal, smoothed across the bed's rounded section, which looking
+    // along the track far off (or up it, over a crest) can lean a fraction past the line of sight while the top is what's seen,
+    // and would turn the whole normal into the ground, where no sky or sun reaches it and the rock goes dark. A bump that still
+    // leans away from the eye is bent back to just face it.
+    vec3 face = cross(dFdx(vRelative), dFdy(vRelative));
+    if (dot(face, view) > 0.0)
+        face = -face; // towards the eye
+    if (dot(normalize(vNormal), face) < 0.0)
+        n = -n;
+    float facing = dot(n, view);
+    if (facing > -0.05)
+        n = normalize(n - view * (facing + 0.05));
 
     Surface s;
     s.albedo = albedo;

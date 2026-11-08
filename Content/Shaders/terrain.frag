@@ -37,6 +37,7 @@ layout(push_constant) uniform Push
     vec4 offset;
     vec4 camera;
     vec4 sun;
+    vec4 texOrigin; // the camera's x, z wrapped to the texture period, exact (see WorldRenderer.TexturePeriod)
 } pc;
 
 // How many metres one repeat of each texture covers. Each is sampled again much larger too, so the repeats don't
@@ -46,7 +47,7 @@ const float EarthTile = 6.0;
 const float CliffTile = 9.0;
 const float DesertTile = 12.0;
 const float BeachTile = 7.0;
-const float Second = 5.37;
+const float Second = 5.4; // 27/5: with the 3-4-5 Turn, a whole number of repeats fits WorldRenderer.TexturePeriod, so its wrap leaves no seam
 
 // A material weighing less than this isn't read at all: most of the ground is one or two of them, and these reads are most of its cost.
 // The GPU works out each read's blur from the pixels beside it, which may have skipped it, but only where it weighs next to nothing.
@@ -87,15 +88,19 @@ const float GroundSpecular = 0.25;
 
 void main()
 {
+    // world: where this is, for broad patterns only. Far out the camera's position is coarse as a float (centimetres, 100 km
+    // from the origin), which a pattern tens of metres across doesn't show. local: the same place within the texture period,
+    // exact to under a millimetre anywhere, for everything finer; the period is a whole number of every texture's repeat, so
+    // the wrap leaves no seam in them.
     vec3 world = pc.camera.xyz + vRelative;
-    // (Not wrapped: nothing here repeats at any round distance, so a wrap would show as a line across the ground.)
-    vec2 tex = world.xz;
+    vec3 local = vec3(pc.texOrigin.x, pc.camera.y, pc.texOrigin.z) + vRelative;
+    vec2 tex = local.xz;
     float dist = length(vRelative);
     vec3 view = vRelative / max(dist, 1e-3);
     vec3 n = normalize(vNormal);
     vec3 sun = pc.sun.xyz;
 
-    float pixel = max(length(dFdx(world.xz)), length(dFdy(world.xz))) + 1e-4;
+    float pixel = max(length(dFdx(vRelative.xz)), length(dFdy(vRelative.xz))) + 1e-4;
 
     // At the edge of a triangle MSAA can read these from beyond its corners, where they overshoot, by more the smaller it is: +30 of one and
     // -29 of another still add up to 1, but anything left out because it weighs nothing leaves the rest 30 times too bright.
@@ -113,13 +118,13 @@ void main()
     }
 
     // Bare ground goes to weathered desert rock as it steepens, patchily.
-    float desert = clamp(smoothstep(0.985, 0.9, n.y) + (fbm(tex * 0.012, pixel * 0.012) - 0.55) * 1.2, 0.0, 1.0);
+    float desert = clamp(smoothstep(0.985, 0.9, n.y) + (fbm(world.xz * 0.012, pixel * 0.012) - 0.55) * 1.2, 0.0, 1.0);
 
     // Sand along the water's edge, in its own colour.
     float shore = smoothstep(0.02, 0.3, m.z) * (1.0 - smoothstep(0.55, 0.9, m.z)) * step(n.y, 2.0) * smoothstep(0.85, 0.95, n.y);
 
     // The land cover's colour, varied broadly, times the textures' detail.
-    vec3 albedo = vCover.rgb * (0.7 + 0.6 * fbm(tex * 0.004, pixel * 0.004));
+    vec3 albedo = vCover.rgb * (0.7 + 0.6 * fbm(world.xz * 0.004, pixel * 0.004));
 
     // grain: their detail. bump: their relief, laid onto the ground's own normal (projected straight down; flat ground mostly faces up).
     // finish: how much sky reaches it, and how rough it is. All in the same proportions, adding up only the materials that are here.
@@ -162,7 +167,7 @@ void main()
     vec3 surface = normalize(vec3(n.x + bump.x, n.y, n.z + bump.y));
 
     // Tree canopy: dark clumps with lighter crowns.
-    float canopy = vCover.a * smoothstep(0.35, 0.6, fbm(tex * 0.06, pixel * 0.06));
+    float canopy = vCover.a * smoothstep(0.35, 0.6, fbm(world.xz * 0.06, pixel * 0.06));
     albedo = mix(albedo, albedo * vec3(0.55, 0.7, 0.5), canopy * 0.6);
 
     // Steep ground is cliff, projected from all three sides so it doesn't smear down the slope.
@@ -171,7 +176,7 @@ void main()
     {
         vec3 blend = pow(abs(n), vec3(4.0));
         blend /= blend.x + blend.y + blend.z;
-        vec3 wx = world;
+        vec3 wx = local;
         // Rock in the colour of the ground it's cut through, its grain softened: a bank in pale desert isn't a black hole.
         vec3 grainy = detail2(cliffAlbedo, wx.zy, CliffTile) * blend.x + detail2(cliffAlbedo, wx.xz, CliffTile) * blend.y
             + detail2(cliffAlbedo, wx.xy, CliffTile) * blend.z;
@@ -200,11 +205,12 @@ void main()
     // Soil and grass at this scale are far bumpier than their maps say; water isn't.
     s.specular = mix(GroundSpecular, 1.0, clamp(m.z + m.w, 0.0, 1.0));
     float water = clamp(m.z + m.w, 0.0, 1.0);
-    weatherSurface(s, smoothstep(0.68, 0.76, fbm(tex * 0.05, pixel * 0.05)) * smoothstep(0.985, 0.998, n.y) * (1.0 - water), 1.0 - water);
+    weatherSurface(s, smoothstep(0.68, 0.76, fbm(world.xz * 0.05, pixel * 0.05)) * smoothstep(0.985, 0.998, n.y) * (1.0 - water), 1.0 - water);
 
     // Shadow from the ground's own shape: the relief is too fine for the map to resolve, and would only speckle it.
     vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative, n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative);
 
     color = applyFog(color, view, dist, pc.camera.y, sun);
+    
     outColor = vec4(color, 1.0);
 }

@@ -18,6 +18,23 @@ public sealed unsafe class WorldRenderer : IDisposable
         public float4 Offset;
         public float4 Camera;
         public float4 Sun;
+        /// The camera's x and z wrapped to TexturePeriod, worked out in doubles: what ground and track textures are laid from.
+        public float4 TexOrigin;
+    }
+
+    /// How far texture coordinates run before they wrap. The camera's own position is a float in the shaders, which 100 km
+    /// out can only move in steps of centimetres; textures laid from it would step with it. Laid from the camera's place
+    /// within this period instead (exact to half a millimetre), they glide. It's a whole number of every ground and track
+    /// texture's repeat (terrain.frag, line.frag: 4, 6, 9, 12, 7, 1.5, 1.2, 0.8, 3 and 2.4 m) and of terrain.frag's larger,
+    /// turned layer of each (5 x Second x its repeat, from the 3-4-5 Turn), so the wrap leaves no seam in them. The broad
+    /// patterns are laid from the full position, where centimetres don't show; the finer noise (over 0.2 a metre) wraps, and
+    /// steps once every period, where a random pattern doesn't show it. Change a repeat or Second and this must change too.
+    public const double TexturePeriod = 6804.0;
+
+    private static float4 TexOriginOf(Camera camera)
+    {
+        static double Wrap(double v) => v - Math.Floor(v / TexturePeriod) * TexturePeriod;
+        return new float4((float)Wrap(camera.X), 0f, (float)Wrap(camera.Z), 0f);
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -249,7 +266,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         if (terrain is not null)
         {
             using var _ = Profiler.Sample("Terrain", cmd);
-            var push = new TerrainPush { ViewProjection = camera.JitteredViewProjection(aspect), Camera = camPos, Sun = sun };
+            var push = new TerrainPush { ViewProjection = camera.JitteredViewProjection(aspect), Camera = camPos, Sun = sun, TexOrigin = TexOriginOf(camera) };
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _terrainWire : _terrain);
             Sky.Bind(cmd, _terrainLayout);
             _shadows.Bind(cmd, _terrainLayout);
@@ -269,6 +286,7 @@ public sealed unsafe class WorldRenderer : IDisposable
                 ViewProjection = camera.JitteredViewProjection(aspect),
                 Camera = new float4(camPos.X, camPos.Y, camPos.Z, network.NearRadius),
                 Sun = sun,
+                TexOrigin = TexOriginOf(camera),
             };
             void Push(float3 offset)
             {
