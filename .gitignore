@@ -16,16 +16,17 @@ Desktop.ini
 .DS_Store
 *.blend2
 
-# Route data that's fetched or worked out again: built terrain, the solved track and its markers.
-# (Kept: Route.json, the track and objects laid by hand, and each tile's painted cover and sculpting.)
-Content/Routes/*/Track.bin.gz
-Content/Routes/*/Junctions.json
-Content/Routes/*/Tiles/*/Heights.bin.gz
-Content/Routes/*/Tiles/*/Tile.json
+# Routes are working data, kept on each machine, not in git
+Content/Routes/
+
+# Train and lineside audio: too big for git, and not all of it ours to publish
+Content/Audio/
 
 # Downloaded source models and what the Blender scripts build from them
 Content/Models/**/Source/
 Content/Models/**/Assembled/*.blend
+# The vegetation pack's high-res version: the game loads the 1k one
+Content/Models/Vegetation/low_poly_vegetation_for_games_4k.glb
 
 # Terrain textures nothing loads
 Content/Textures/Terrain/Modifiers/
