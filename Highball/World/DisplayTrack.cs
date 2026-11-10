@@ -16,6 +16,10 @@ public sealed class DisplayTrack : IDisposable
 
     private readonly List<IDisposable> _owned = [];
     private readonly List<ModelDraw> _draws = [];
+    /// The ground, bed and rails, without the ties: what DrawsNear starts from.
+    private readonly List<ModelDraw> _fixed = [];
+    private RenderModel? _tie, _plate;
+    private float _tieHeight, _plateHeight;
 
     /// Metres either side of z = 0.
     public float HalfLength { get; }
@@ -44,16 +48,32 @@ public sealed class DisplayTrack : IDisposable
             _draws.Add(new ModelDraw(web, new float3(side * RailOffset, 0f, 0f)));
         }
 
-        var tie = Own(new RenderModel(Model.Load("Track/tie.glb")));
-        var plate = Own(new RenderModel(Model.Load("Track/plate.glb")));
-        var tieHeight = tie.Mesh.BoundsMax.Y;
-        var plateHeight = plate.Mesh.BoundsMax.Y;
-        for (var z = -HalfLength; z <= HalfLength; z += TieSpacing)
+        var tie = _tie = Own(new RenderModel(Model.Load("Track/tie.glb")));
+        var plate = _plate = Own(new RenderModel(Model.Load("Track/plate.glb")));
+        _tieHeight = tie.Mesh.BoundsMax.Y;
+        _plateHeight = plate.Mesh.BoundsMax.Y;
+        _fixed.AddRange(_draws);
+        // A short track has all its ties in Draws; a long one (a long consist on show) asks DrawsNear for those near the eye.
+        if (HalfLength <= 150f)
+            AddTies(_draws, -HalfLength, HalfLength);
+    }
+
+    private void AddTies(List<ModelDraw> into, float from, float to)
+    {
+        var first = MathF.Ceiling(Math.Max(from, -HalfLength) / TieSpacing) * TieSpacing;
+        for (var z = first; z <= Math.Min(to, HalfLength); z += TieSpacing)
         {
-            _draws.Add(new ModelDraw(tie, new float3(0f, TieTopY - tieHeight, z)));
+            into.Add(new ModelDraw(_tie!, new float3(0f, TieTopY - _tieHeight, z)));
             foreach (var side in (float[])[-1f, 1f])
-                _draws.Add(new ModelDraw(plate, new float3(side * RailOffset, -NetworkMeshes.RailTop - plateHeight, z)));
+                into.Add(new ModelDraw(_plate!, new float3(side * RailOffset, -NetworkMeshes.RailTop - _plateHeight, z)));
         }
+    }
+
+    /// The ground, bed and rails, and the ties within reach of z: for a track too long to draw every tie of.
+    public void DrawsNear(List<ModelDraw> into, float z, float reach)
+    {
+        into.AddRange(_fixed);
+        AddTies(into, z - reach, z + reach);
     }
 
     public void Dispose()

@@ -40,6 +40,9 @@ public sealed class PipelineDesc
     /// One sample per pixel, for a pass over the target's resolved image.
     public bool SingleSample { get; init; }
 
+    /// Writes no colour, only depth, into the main target (a depth pre-pass): same samples as the colour passes after it.
+    public bool NoColor { get; init; }
+
     public VkFormat ColorFormat { get; init; } = VkFormat.R16G16B16A16SFloat;
     public VkFormat DepthFormat { get; init; } = RenderTarget.DepthFormat;
     public VkRenderPass RenderPass { get; init; }
@@ -100,7 +103,7 @@ public static unsafe class Pipelines
             };
             var attachment = new VkPipelineColorBlendAttachmentState
             {
-                ColorWriteMask = VkColorComponentFlags.RBit | VkColorComponentFlags.GBit | VkColorComponentFlags.BBit | VkColorComponentFlags.ABit,
+                ColorWriteMask = desc.NoColor ? VkColorComponentFlags.None : VkColorComponentFlags.RBit | VkColorComponentFlags.GBit | VkColorComponentFlags.BBit | VkColorComponentFlags.ABit,
                 BlendEnable = new Bool32(desc.Blend),
                 SrcColorBlendFactor = VkBlendFactor.One,
                 DstColorBlendFactor = VkBlendFactor.SrcAlpha,

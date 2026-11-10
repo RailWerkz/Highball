@@ -61,6 +61,15 @@ on a timer never write the player's settings.
 
 Settings are saved to `%APPDATA%/Highball/Settings.json`, and the log is written next to them.
 
+## Track materials
+
+In the Route Builder's 3D Editor, **View > Track Materials** (or **M**) lists every texture the track and lineside parts are
+drawn with: ballast, rail top, rail sides, ties, tie plates, pole wood, bridge steel, and the paints that signals, hand throws,
+crossing masts and poles are made of (each with its own texture, colour, texture strength, roughness and metal). Pick any
+texture under `Content/Textures` (ambientCG `Name_2K-JPG.zip` sets, a zip, or a folder of `_Color`/`_NormalGL`/`_Roughness`
+maps), or type a path to one anywhere on disk; it shows on the track a moment later. **Save** writes
+`Content/Materials/Track.json`, which the game also reloads if it's edited while running. `--materials` opens the window.
+
 ## The lighting test scene
 
 ```bash

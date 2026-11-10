@@ -7,6 +7,7 @@
         <PackageVersion Include="Ahwoo.Brutal.Glfw" Version="2026.10.4" />
         <PackageVersion Include="Ahwoo.Brutal.Vulkan" Version="2026.10.2" />
         <PackageVersion Include="Ahwoo.Brutal.Vulkan.Abstractions" Version="2026.10.2" />
+        <PackageVersion Include="Ahwoo.Brutal.Vulkan.Vma" Version="2026.10.2" />
         <PackageVersion Include="Ahwoo.Brutal.ImGui" Version="2026.10.2" />
         <PackageVersion Include="Ahwoo.Brutal.ImGui.Backends" Version="2026.10.2" />
         <PackageVersion Include="Ahwoo.Brutal.OpenAl" Version="2026.10.2" />

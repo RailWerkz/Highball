@@ -10,7 +10,15 @@ public sealed class TrainCar
     public Livery? Livery { get; init; }
     /// Turned round in the consist: its own front faces the train's rear.
     public bool Reversed { get; init; }
-    public bool Loaded { get; init; }
+    /// The share of its rated load it carries, 0 to 1.
+    public double Fill { get; set; }
+    public bool Loaded => Fill > 0.0;
+
+    /// What it's seen carrying once loaded (a well car's stacks); null for a vehicle without cargoes.
+    public string? Cargo { get; set; }
+
+    /// The model it's drawn with: its paint, carrying its cargo once it's loaded.
+    public string? ModelPath => Livery?.ModelFor(Cargo, Fill);
 
     /// Its name, given by the player and shown on its tag; null for none.
     public string? Tag { get; set; }
@@ -21,7 +29,7 @@ public sealed class TrainCar
     /// Its name, or its type's when it hasn't one.
     public string Label => string.IsNullOrWhiteSpace(Tag) ? Def.Name : Tag;
 
-    public double Mass => Def.Mass(Loaded);
+    public double Mass => Def.Mass(Fill);
 
     public double TruckCentres => Def.Centres;
 
@@ -82,6 +90,29 @@ public sealed class Train
     // the radio tells them.
     /// +1 to pull towards the train's front, -1 towards its rear, 0 neutral.
     public int Reverser { get; set; }
+    /// The lead unit: the controlling locomotive (the first), or -1 if there's none.
+    public int LeadUnit => Body.Brakes.Control;
+
+    /// Which way the lead unit's cab faces along the train: +1 its front towards the train's front, -1 turned round.
+    public int CabSense => LeadUnit >= 0 && Cars[LeadUnit].Reversed ? -1 : 1;
+
+    /// The reverser as the lead unit's cab has it: +1 (forward) drives the way the cab faces, whichever way the train's
+    /// own front is (a train made up from cuts can have its front behind the cab).
+    public int CabReverser
+    {
+        get => Reverser * CabSense;
+        set => Reverser = value * CabSense;
+    }
+
+    /// The speed as the lead unit's cab sees it: positive going the way it faces.
+    public double CabSpeed => Speed * CabSense;
+
+    /// The sander switch: sand under every locomotive's wheels that has any, for grip.
+    public bool Sand { get; set; }
+
+    /// How hard the locomotives' wheels are slipping now, 0 to 1: the worst of them.
+    public double WheelSlip => Body.WheelSlip.Length == 0 ? 0.0 : Body.WheelSlip.Max();
+
     /// Throttle notch, 0 (idle) to Notches.
     public int Notch { get; set; }
     /// Automatic (train) brake, 0 release, then the service zone from the first notch to full service at 1.
@@ -126,19 +157,28 @@ public sealed class Train
     /// Why it stopped dead, if it did: the end of the track ahead or behind.
     public string? Stopped { get; private set; }
 
-    public double Mass { get; }
+    /// As loaded now: a car's load can change while it stands (see SetFill).
+    public double Mass => Body.Mass;
     public double Length { get; }
     public double Power { get; }
 
     /// The couplings' extensions before the last step, to put back if the step couldn't be placed.
     private readonly double[] _extensionBefore;
 
+    /// Loads car i to this share of its rated load, 0 to 1, and its weight with it, from the next step on.
+    public void SetFill(int i, double fill)
+    {
+        if (i < 0 || i >= Cars.Count || !Cars[i].Def.CanLoad)
+            return;
+        Cars[i].Fill = Math.Clamp(fill, 0.0, 1.0);
+        Body.SetMass(i, Cars[i].Mass);
+    }
+
     private Train(RailGraph graph, string name, List<TrainCar> cars)
     {
         Graph = graph;
         Name = name;
         Cars = cars;
-        Mass = cars.Sum(c => c.Mass);
         Length = cars.Sum(c => c.Def.Length);
         Power = cars.Sum(c => c.Def.Power);
         Body = new TrainBody(cars);
@@ -153,7 +193,7 @@ public sealed class Train
     public static Train? Place(RailGraph graph, Consist consist, TrackPosition head, out string? why, PlacedAs state = PlacedAs.StartingUp)
     {
         var cars = consist.Cars.Select((c, i) => (Car: c, Index: i)).Where(c => c.Car.Def is not null)
-            .Select(c => new TrainCar { Def = c.Car.Def!, Livery = c.Car.Def!.FindLivery(c.Car.Livery), Reversed = c.Car.Reversed, Loaded = c.Car.Loaded, Tag = c.Car.Tag, ConsistIndex = c.Index })
+            .Select(c => new TrainCar { Def = c.Car.Def!, Livery = c.Car.Def!.FindLivery(c.Car.Livery), Reversed = c.Car.Reversed, Fill = c.Car.Fill, Cargo = c.Car.CargoId, Tag = c.Car.Tag, ConsistIndex = c.Index })
             .ToList();
         if (cars.Count == 0)
         {
@@ -174,8 +214,10 @@ public sealed class Train
             }
         }
 
-        // Placed as a parked engine stands: independent brake on, the engines as asked. The lead engine's headlight is on
-        // bright with its ditch lights, at the train's front, and a trailing engine at the rear shows a dim light behind.
+        // Placed as a train's left standing: charged, with a full service held and the independent brake on, the engines as
+        // asked. The lead engine's headlight is on bright with its ditch lights, at the train's front, and a trailing engine at
+        // the rear shows a dim light behind.
+        train.Body.Brakes.HoldFullService();
         train.Independent = 1.0;
         switch (state)
         {
@@ -199,6 +241,121 @@ public sealed class Train
         why = null;
         Log.Info($"Train {train.Name}: {cars.Count} vehicles, {train.Length:0.0} m, {train.Mass / 1000.0:0} t, placed on edge {train.Head.Edge}");
         return train;
+    }
+
+    /// Left standing: throttle off, reverser centred, the independent brake full on and a full service held on the train.
+    public void Secure()
+    {
+        Notch = 0;
+        Reverser = 0;
+        Dynamic = 0.0;
+        Sand = false;
+        Emergency = false;
+        Brake = 1.0;
+        Independent = 1.0;
+    }
+
+    /// One train made of two cuts run together: a's cars then b's, each turned round end for end if flipped (so a's rear
+    /// meets b's front), coupled where they met with the slack at gap. Everything carries over as it stood: each car's
+    /// speed, air, engine and handbrake, each coupling's slack and hoses. The controls are a's. Null if it can't be put on
+    /// the track as it stands.
+    public static Train? Join(Train a, bool flipA, Train b, bool flipB, double gap)
+    {
+        var cars = Turned(a.Cars, flipA).Concat(Turned(b.Cars, flipB)).ToList();
+        var train = new Train(a.Graph, a.Name, cars);
+        train.Take(a, 0, flipA);
+        train.Take(b, a.Cars.Count, flipB);
+        train.Body.Joined(a.Cars.Count - 1, gap);
+        train.Body.Brakes.FrontCock = flipA ? a.Body.Brakes.RearCock : a.Body.Brakes.FrontCock;
+        train.Body.Brakes.RearCock = flipB ? b.Body.Brakes.FrontCock : b.Body.Brakes.RearCock;
+        train.Body.Brakes.TakeValve(a.Body.Brakes);
+        train.TakeControls(a, flipA);
+        var head = flipA ? a.Cars[^1].Rear.Reversed : a.Head;
+        if (!train.TryPlace(head, out _))
+            return null;
+        train.Dp.LinkAllNow();
+        return train;
+    }
+
+    /// The train cut in two at an uncoupled link: cars 0..link, and the rest. Each keeps its cars' state as it stood; the
+    /// controls stay with the front unless the controlling locomotive's behind. Null if either can't be put on the track.
+    public (Train Front, Train Rear)? Split(int link)
+    {
+        if (link < 0 || link >= Cars.Count - 1)
+            return null;
+        var front = new Train(Graph, Name, [.. Cars.Take(link + 1).Select(c => Copy(c, false))]);
+        var rear = new Train(Graph, Name, [.. Cars.Skip(link + 1).Select(c => Copy(c, false))]);
+        front.TakeRange(this, 0, link + 1);
+        rear.TakeRange(this, link + 1, Cars.Count - link - 1);
+        front.Body.Brakes.FrontCock = Body.Brakes.FrontCock;
+        front.Body.Brakes.RearCock = Body.Brakes.CockAhead[link];
+        rear.Body.Brakes.FrontCock = Body.Brakes.CockBehind[link];
+        rear.Body.Brakes.RearCock = Body.Brakes.RearCock;
+        var control = Body.Brakes.Control;
+        var (driven, other) = control > link ? (rear, front) : (front, rear);
+        driven.Body.Brakes.TakeValve(Body.Brakes);
+        driven.TakeControls(this, false);
+        other.Body.Brakes.Handle = 1.0;
+        if (!front.TryPlace(Head, out _) || !rear.TryPlace(Cars[link + 1].Front, out _))
+            return null;
+        front.Dp.LinkAllNow();
+        rear.Dp.LinkAllNow();
+        return (front, rear);
+    }
+
+    /// The same train turned end for end: its last vehicle first, so a locomotive at its rear becomes the lead unit. Each
+    /// car keeps its state and the controls keep driving the same way. Null if it can't be put back on the track.
+    public Train? Turned()
+    {
+        var train = new Train(Graph, Name, [.. Turned(Cars, true)]);
+        train.Take(this, 0, true);
+        train.Body.Brakes.FrontCock = Body.Brakes.RearCock;
+        train.Body.Brakes.RearCock = Body.Brakes.FrontCock;
+        train.Body.Brakes.TakeValve(Body.Brakes);
+        train.TakeControls(this, true);
+        if (!train.TryPlace(Cars[^1].Rear.Reversed, out _))
+            return null;
+        train.Dp.LinkAllNow();
+        return train;
+    }
+
+    private static TrainCar Copy(TrainCar c, bool turn) => new()
+    {
+        Def = c.Def, Livery = c.Livery, Reversed = turn ? !c.Reversed : c.Reversed, Fill = c.Fill, Cargo = c.Cargo, Tag = c.Tag, ConsistIndex = c.ConsistIndex,
+    };
+
+    private static IEnumerable<TrainCar> Turned(List<TrainCar> cars, bool turn) =>
+        (turn ? Enumerable.Reverse(cars) : cars).Select(c => Copy(c, turn));
+
+    /// Cars from `at` on take all of another train's cars' and couplings' state, turned end for end if flipped.
+    private void Take(Train other, int at, bool flip)
+    {
+        var n = other.Cars.Count;
+        for (var i = 0; i < n; i++)
+            Body.TakeCar(at + i, other.Body, flip ? n - 1 - i : i, flip);
+        for (var l = 0; l < n - 1; l++)
+            Body.TakeLink(at + l, other.Body, flip ? n - 2 - l : l, flip);
+        Time = other.Time;
+        Distance = other.Distance;
+    }
+
+    /// Cars 0..count take another train's cars from `from` on, and their couplings, as they stand.
+    private void TakeRange(Train other, int from, int count)
+    {
+        for (var i = 0; i < count; i++)
+            Body.TakeCar(i, other.Body, from + i, false);
+        for (var l = 0; l < count - 1; l++)
+            Body.TakeLink(l, other.Body, from + l, false);
+        Time = other.Time;
+        Distance = other.Distance;
+    }
+
+    private void TakeControls(Train other, bool flipped)
+    {
+        Reverser = flipped ? -other.Reverser : other.Reverser;
+        Notch = other.Notch;
+        Dynamic = other.Dynamic;
+        Sand = other.Sand;
     }
 
     /// The usual lights for a train: the lead engine's headlight bright towards the front with its ditch lights, and if the
@@ -361,6 +518,7 @@ public sealed class Train
         var cut = Emergency || (brakes.Control >= 0 && brakes.Valve[brakes.Control] == ValveState.Emergency);
         // Each locomotive's told what to do: the lead's consist straight off the controls, the remotes by radio.
         Dp.Update(Time);
+        Body.Sanding = Sand;
         var along = Body.Step(h, cut);
 
         Traction = Body.Traction.Sum();

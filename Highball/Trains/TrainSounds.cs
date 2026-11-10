@@ -12,14 +12,24 @@ public sealed class TrainSounds
     private const float HornAttack = 1f;
     private const float HornRelease = 1f;
 
+    /// How much the horns' presence (above 1.5 kHz) is turned up. The recordings have nearly all their sound at 300-1000 Hz
+    /// and little of the 2-5 kHz bite a horn has close to, where the ear hears most: played as they are they sound far off and
+    /// muffled, and quieter than they are.
+    private const float HornBrighten = 10f;
+
+    /// And how hard it's then pushed into a soft limiter: the recordings already peak at full scale, so being louder means
+    /// rounding their peaks off (about 7 dB louder to the ear than the bells, as a horn should be, without clipping).
+    private const float HornDrive = 8f;
+
     /// Within these many metres each is at full volume; beyond, it halves (-6 dB) every time the distance doubles.
     /// A horn is far louder than the engine under it (about 110 dB at 30 m against 85-90), so it holds full volume out to 40 m;
     /// the bell to 8 m, so it's heard over the engine idling near the cab.
-    public const float HornReference = 40f;
+    public const float HornReference = 80f;
     public const float BellReference = 8f;
 
     /// How far off each can be heard at all, in metres: it's turned down more and more all the way out to this, and is silent beyond.
     public const float HornRange = 2414f; // 1.5 miles
+
     public const float BellRange = 400f;
 
     private AudioEngine.LoopHandle _bell = AudioEngine.LoopHandle.None, _bellTail = AudioEngine.LoopHandle.None;
@@ -112,7 +122,7 @@ public sealed class TrainSounds
         }
 
         var name = "horn:" + Horn;
-        if (Loaded.Add(name) && !AudioEngine.LoadSustained(name, Path.Combine("Horns", Horn + ".wav"), HornAttack, HornRelease, mono: true))
+        if (Loaded.Add(name) && !AudioEngine.LoadSustained(name, Path.Combine("Horns", Horn + ".wav"), HornAttack, HornRelease, mono: true, brighten: HornBrighten, drive: HornDrive))
             return;
         _hornSound = Horn;
         _horn = AudioEngine.PlaySustained(name, at: _hornAt);

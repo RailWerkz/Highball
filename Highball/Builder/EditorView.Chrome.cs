@@ -19,35 +19,73 @@ namespace Highball.Builder;
 /// The editor's tool strip down the left, the Place palette, and what the top bar and status line say about it.
 public sealed partial class EditorView
 {
-    public const float StripWidth = 76f;
+    public const float StripWidth = 92f;
     private const float DockPanelWidth = 320f;
-    private const float StripButton = 58f;
+    private const float StripButton = 62f;
 
-    private static readonly (Tool Tool, ToolIcon Icon, string Name, string Key, bool Gap)[] Strip =
+    /// The Place tool's buttons on the strip, each with its own part of the palette: premade and fitted pieces, structures,
+    /// signals, and what stands beside the line.
+    private enum PlaceGroup { Assemblies, Structures, Signals, Lineside }
+
+    private static PlaceGroup GroupOf(PlaceMode mode) => mode switch
+    {
+        PlaceMode.Track or PlaceMode.Diamond or PlaceMode.GradeCrossing => PlaceGroup.Assemblies,
+        PlaceMode.Bridge or PlaceMode.RemoveBridge or PlaceMode.EditBridge => PlaceGroup.Structures,
+        PlaceMode.Signal or PlaceMode.HandThrow => PlaceGroup.Signals,
+        _ => PlaceGroup.Lineside,
+    };
+
+    /// The strip, by what each part is for: each section's title, then its buttons.
+    private static readonly (string Section, (Tool Tool, PlaceGroup Group, ToolIcon Icon, string Name, string Tip)[] Items)[] Strip =
     [
-        (Tool.Look, ToolIcon.Look, "Free Look", "1", true),
-        (Tool.Track, ToolIcon.Edit, "Edit", "7", false),
-        (Tool.Pen, ToolIcon.Pen, "Pen", "8", false),
-        (Tool.Shape, ToolIcon.Shape, "Shape", "-", false),
-        (Tool.Follow, ToolIcon.Lay, "Lay", "=", false),
-        (Tool.Parallel, ToolIcon.Parallel, "Parallel", "P", false),
-        (Tool.Switches, ToolIcon.Switches, "Switches", "0", true),
-        (Tool.Place, ToolIcon.Place, "Objects", "O", false),
-        (Tool.Road, ToolIcon.Road, "Roads", ";", false),
-        (Tool.Circuits, ToolIcon.Circuits, "Circuits", "9", true),
-        (Tool.Raise, ToolIcon.Terrain, "Terrain", "2-6", false),
+        ("", [(Tool.Look, default, ToolIcon.Look, "Free Look", "Free Look (1)")]),
+        ("TRACK",
+        [
+            (Tool.Follow, default, ToolIcon.Lay, "Lay", "Lay track along guides (=)"),
+            (Tool.Pen, default, ToolIcon.Pen, "Pen", "Draw track (8)"),
+            (Tool.Track, default, ToolIcon.Edit, "Edit", "Edit control points (7)"),
+            (Tool.Shape, default, ToolIcon.Shape, "Shape", "Shape a line's curves (-)"),
+            (Tool.Parallel, default, ToolIcon.Parallel, "Parallel", "Lay tracks beside a track (P)"),
+            (Tool.Switches, default, ToolIcon.Switches, "Switches", "Switch sizes, power machines and hand throws (0)"),
+        ]),
+        ("BUILD",
+        [
+            (Tool.Place, PlaceGroup.Assemblies, ToolIcon.Pieces, "Assembly", "Track pieces, diamonds and grade crossings"),
+            (Tool.Place, PlaceGroup.Structures, ToolIcon.Bridge, "Structures", "Bridges"),
+        ]),
+        ("SIGNAL",
+        [
+            (Tool.Place, PlaceGroup.Signals, ToolIcon.Signal, "Signals", "Signals"),
+            (Tool.Circuits, default, ToolIcon.Circuits, "Circuits", "Track circuits (9)"),
+        ]),
+        ("WORLD",
+        [
+            (Tool.Road, default, ToolIcon.Road, "Roads", "Roads (;)"),
+            (Tool.Place, PlaceGroup.Lineside, ToolIcon.UtilityPole, "Lineside", "Poles, lights and loose ties"),
+            (Tool.Raise, default, ToolIcon.Terrain, "Terrain", "Terrain (2-6)"),
+        ]),
     ];
+
+    /// The Place tool, on one of its buttons: what's in hand is let go if it belongs to another.
+    private void OpenPlace(PlaceGroup group)
+    {
+        _tool = Tool.Place;
+        if (GroupOf(_place.Mode) == group)
+            return;
+        _place.Mode = group switch
+        {
+            PlaceGroup.Assemblies => PlaceMode.Track,
+            PlaceGroup.Structures => PlaceMode.EditBridge,
+            PlaceGroup.Signals => PlaceMode.Signal,
+            _ => PlaceMode.Pole,
+        };
+        (_place.Selected, _place.Stamp, _place.RunFrom, _place.RunFirst, _bridgeFrom, _switchRefused) = (null, null, null, null, null, null);
+        _place.Pen.Clear();
+    }
 
     private static readonly (Tool Tool, string Name)[] Brushes =
         [(Tool.Raise, "Raise"), (Tool.Lower, "Lower"), (Tool.Smooth, "Smooth"), (Tool.Flatten, "Flatten"), (Tool.Paint, "Paint")];
 
-    /// The Objects palette's lineside menus: each one's title, what it places, and what's counted beside it.
-    private static readonly (string Menu, PlaceMode Mode, ToolIcon Icon, string Name, PlacedKind Kind)[] Lineside =
-    [
-        ("Signals", PlaceMode.Signal, ToolIcon.Signal, "Signal", PlacedKind.Signal),
-        ("Hand Throws", PlaceMode.HandThrow, ToolIcon.HandThrow, "Hand throw", PlacedKind.HandThrow),
-        ("Grade Crossings", PlaceMode.GradeCrossing, ToolIcon.Crossing, "Grade crossing", PlacedKind.GradeCrossing),
-    ];
 
     /// The Objects palette's pole menus.
     private static readonly (string Menu, ToolIcon Icon, PlacedKind[] Kinds)[] PoleMenus =
@@ -136,33 +174,31 @@ public sealed partial class EditorView
         if (ImGui.Begin("Tools"u8, flags))
         {
             var draw = ImGui.GetWindowDrawList();
-            foreach (var (tool, icon, name, key, gap) in Strip)
+            foreach (var (section, items) in Strip)
             {
-                var on = tool == Tool.Raise ? IsBrush(_tool) : _tool == tool;
-                var at = ImGui.GetCursorScreenPos() + new float2(4f, 0f);
-                var size = new float2(StripWidth - 8f, StripButton);
-                ImGui.SetCursorScreenPos(at);
-                if (ImGui.InvisibleButton(name, size))
-                    _tool = tool == Tool.Raise ? _brush : tool;
-                var hovered = ImGui.IsItemHovered();
-                if (on)
-                    draw.AddRectFilled(at, at + size, Accent, 5f);
-                else if (hovered)
-                    draw.AddRectFilled(at, at + size, StrokeStrong, 5f);
-
-                var color = on ? OnAccent : hovered ? Style.Text : TextDim;
-                ToolIcons.Draw(draw, icon, at + new float2(size.X * 0.5f, 20f), 11f, color, 1.6f);
-                Canvas.Text(draw, Medium, 12f, at + new float2(size.X * 0.5f, 38f), color, name, Align.Center);
-                if (hovered)
-                    ImGui.SetTooltip($"{name} ({key})");
-
-                if (gap)
+                StripSection(draw, section);
+                foreach (var (tool, group, icon, name, tip) in items)
                 {
-                    var y = ImGui.GetCursorScreenPos().Y + 2f;
-                    draw.AddLine(new float2(at.X + 8f, y), new float2(at.X + size.X - 8f, y), StrokeStrong, 1f);
-                    ImGui.Dummy(new float2(1f, 5f));
+                    var on = tool switch
+                    {
+                        Tool.Raise => IsBrush(_tool),
+                        Tool.Place => _tool == Tool.Place && GroupOf(_place.Mode) == group,
+                        _ => _tool == tool,
+                    };
+                    if (StripItem(draw, icon, name, tip, on))
+                    {
+                        if (tool == Tool.Place)
+                            OpenPlace(group);
+                        else
+                            _tool = tool == Tool.Raise ? _brush : tool;
+                    }
                 }
             }
+
+            // Not a tool: the train panel, open beside whatever tool is in hand.
+            StripSection(draw, "");
+            if (StripItem(draw, ToolIcon.Consist, "Consist", "Consist panel: place, drive and couple stock", _trains.Open))
+                _trains.Open = !_trains.Open;
 
             // Undo and redo at the foot of the strip.
             var half = (StripWidth - 10f) * 0.5f;
@@ -175,6 +211,47 @@ public sealed partial class EditorView
 
         ImGui.End();
         ImGui.PopStyleVar();
+    }
+
+    /// A button on the strip: its icon over its name, lit when it's on.
+    private static bool StripItem(ImDrawListPtr draw, ToolIcon icon, string name, string tooltip, bool on)
+    {
+        var at = ImGui.GetCursorScreenPos() + new float2(4f, 0f);
+        var size = new float2(StripWidth - 8f, StripButton);
+        ImGui.SetCursorScreenPos(at);
+        var clicked = ImGui.InvisibleButton(name, size);
+        var hovered = ImGui.IsItemHovered();
+        if (on)
+            draw.AddRectFilled(at, at + size, Accent, 5f);
+        else if (hovered)
+            draw.AddRectFilled(at, at + size, StrokeStrong, 5f);
+
+        var color = on ? OnAccent : hovered ? Style.Text : TextDim;
+        ToolIcons.Draw(draw, icon, at + new float2(size.X * 0.5f, 21f), 11f, color, 1.6f);
+        Canvas.Text(draw, Medium, 14f, at + new float2(size.X * 0.5f, 39f), color, name, Align.Center);
+        if (hovered)
+            ImGui.SetTooltip(tooltip);
+        return clicked;
+    }
+
+    /// A section's start on the strip: a rule (but at the very top), and its title under it in small spaced capitals.
+    private static void StripSection(ImDrawListPtr draw, string title)
+    {
+        if (ImGui.GetCursorScreenPos().Y > ImGui.GetWindowPos().Y + 10f)
+            StripGap(draw);
+        if (title.Length == 0)
+            return;
+        var at = ImGui.GetCursorScreenPos();
+        Canvas.Text(draw, Medium, 11.5f, new float2(at.X + StripWidth * 0.5f, at.Y + 1f), TextDim, title, Align.Center);
+        ImGui.Dummy(new float2(1f, 15f));
+    }
+
+    private static void StripGap(ImDrawListPtr draw)
+    {
+        var x = ImGui.GetCursorScreenPos().X + 4f;
+        var y = ImGui.GetCursorScreenPos().Y + 2f;
+        draw.AddLine(new float2(x + 8f, y), new float2(x + StripWidth - 16f, y), StrokeStrong, 1f);
+        ImGui.Dummy(new float2(1f, 5f));
     }
 
     private static bool HistoryButton(ImDrawListPtr draw, string name, ToolIcon icon, float2 at, float size, bool enabled)
@@ -197,29 +274,63 @@ public sealed partial class EditorView
         (StampGroup.Ladders, "Ladders", 3), (StampGroup.Straights, "Straights", 3), (StampGroup.Curves, "Curves", 3),
     ];
 
-    /// The palette: every track piece by kind, drawn from its own track, then what goes beside the track.
+    /// The palette, as much of it as belongs to the button it's on: every track piece by kind, drawn from its own
+    /// track; the signals and crossings; or the poles, ties and bridges.
     private void PlacePalette(TerrainSource source)
+    {
+        switch (GroupOf(_place.Mode))
+        {
+            case PlaceGroup.Assemblies:
+                AssembliesPalette(source);
+                break;
+            case PlaceGroup.Structures:
+                StructuresPalette();
+                break;
+            case PlaceGroup.Signals:
+                Kit.BeginCard("Place");
+                if (PaletteRow(ToolIcon.Signal, "Signal", _place.Mode == PlaceMode.Signal, source.Objects.Count(o => o.Kind == PlacedKind.Signal)))
+                    (_place.Mode, _switchRefused) = (PlaceMode.Signal, null);
+                Kit.EndCard();
+                break;
+            default:
+                LinesidePalette(source);
+                break;
+        }
+    }
+
+    /// What's fitted to where it lands (grade crossings, diamonds), then every premade track piece.
+    private void AssembliesPalette(TerrainSource source)
+    {
+        Kit.BeginCard("Fitted");
+        if (PaletteRow(ToolIcon.Crossing, "Grade crossing", _place.Mode == PlaceMode.GradeCrossing, source.Objects.Count(o => o.Kind == PlacedKind.GradeCrossing)))
+            (_place.Mode, _switchRefused) = (PlaceMode.GradeCrossing, null);
+        if (PaletteRow(ToolIcon.Diamond, "Diamond", _place.Mode == PlaceMode.Diamond))
+            (_place.Mode, _switchRefused) = (PlaceMode.Diamond, null);
+        Kit.EndCard();
+        PiecesPalette();
+    }
+
+    private void PiecesPalette()
     {
         var imperial = Settings.Current.Units == UnitSystem.Imperial;
         _place.Rebuild(imperial);
-
-        // (Track pieces': not to be taken for a pole run's gap.)
-        if (_place.Mode != PlaceMode.Pole)
+        Kit.BeginCard("Track pieces");
         {
-            var spacing = imperial ? _place.Spacing * FeetPerMeter : _place.Spacing;
-            ImGui.SliderFloat(imperial ? "Spacing (ft)"u8 : "Spacing (m)"u8, ref spacing, imperial ? YardTool.MinSpacing * FeetPerMeter : YardTool.MinSpacing, imperial ? YardTool.MaxSpacing * FeetPerMeter : YardTool.MaxSpacing, "%.1f"u8, ImGuiSliderFlags.None);
-            _place.Spacing = Math.Clamp(imperial ? spacing / FeetPerMeter : spacing, YardTool.MinSpacing, YardTool.MaxSpacing);
+            var factor = imperial ? FeetPerMeter : 1f;
+            var spacing = _place.Spacing * factor;
+            if (ToolPanel.Value("piecespacing", imperial ? "Spacing (ft)" : "Spacing (m)", ref spacing, YardTool.MinSpacing * factor, YardTool.MaxSpacing * factor, "0.0"))
+                _place.Spacing = Math.Clamp(spacing / factor, YardTool.MinSpacing, YardTool.MaxSpacing);
         }
 
         foreach (var (group, name, columns) in StampGroups)
         {
-            if (!ImGui.CollapsingHeader(name, group == StampGroup.Switches ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None))
+            var stamps = _place.Catalogue.Where(s => s.Group == group).ToList();
+            if (!ToolPanel.Section($"stamps{group}", name, stamps.Count.ToString(CultureInfo.InvariantCulture), group == StampGroup.Switches))
                 continue;
-            if (group == StampGroup.Diamonds && PaletteRow(ToolIcon.Diamond, "Join crossing tracks", _place.Mode == PlaceMode.Diamond))
-                (_place.Mode, _switchRefused) = (PlaceMode.Diamond, null);
+            ImGui.Dummy(new float2(1f, S(2f)));
             var column = 0;
-            var width = (ImGui.GetContentRegionAvail().X - 6f * (columns - 1)) / columns;
-            foreach (var stamp in _place.Catalogue.Where(s => s.Group == group))
+            var width = (Kit.Width - 6f * (columns - 1)) / columns;
+            foreach (var stamp in stamps)
             {
                 if (column % columns != 0)
                     ImGui.SameLine(0f, 6f);
@@ -229,20 +340,18 @@ public sealed partial class EditorView
             }
         }
 
-        foreach (var (menu, mode, icon, name, kind) in Lineside)
-        {
-            if (!ImGui.CollapsingHeader($"{menu} ({source.Objects.Count(o => o.Kind == kind)})###{menu}", ImGuiTreeNodeFlags.None))
-                continue;
-            if (PaletteRow(icon, name, _place.Mode == mode))
-                (_place.Mode, _switchRefused) = (mode, null);
-        }
+        Kit.EndCard();
+    }
 
+    private void LinesidePalette(TerrainSource source)
+    {
+        Kit.BeginCard("Place");
         foreach (var (menu, icon, kinds) in PoleMenus)
         {
-            if (!ImGui.CollapsingHeader($"{menu} ({source.Objects.Count(o => kinds.Contains(o.Kind))})###{menu}", ImGuiTreeNodeFlags.None))
+            if (!ToolPanel.Section($"poles{menu}", menu, source.Objects.Count(o => kinds.Contains(o.Kind)).ToString(CultureInfo.InvariantCulture), true))
                 continue;
             foreach (var kind in kinds)
-                if (PaletteRow(icon, kind.Name(), _place.Mode == PlaceMode.Pole && _place.PoleKind == kind))
+                if (PaletteRow(icon, kind.Name(), _place.Mode == PlaceMode.Pole && _place.PoleKind == kind, source.Objects.Count(o => o.Kind == kind)))
                 {
                     (_place.Mode, _place.PoleKind, _place.RunFrom, _place.RunFirst, _switchRefused) = (PlaceMode.Pole, kind, null, null, null);
                     // Ties are for laying along something, as a rule, not one by one.
@@ -251,15 +360,21 @@ public sealed partial class EditorView
                 }
         }
 
-        if (ImGui.CollapsingHeader("Bridges"u8, ImGuiTreeNodeFlags.None))
-        {
-            if (PaletteRow(ToolIcon.Bridge, "Place bridge", _place.Mode == PlaceMode.Bridge))
-                (_place.Mode, _bridgeFrom, _switchRefused) = (PlaceMode.Bridge, null, null);
-            if (PaletteRow(ToolIcon.RemoveBridge, "Remove bridge", _place.Mode == PlaceMode.RemoveBridge))
-                (_place.Mode, _bridgeFrom, _switchRefused) = (PlaceMode.RemoveBridge, null, null);
-            if (_place.Mode == PlaceMode.Bridge)
-                ImGui.TextWrapped(_bridgeFrom is null ? "Click where the bridge starts on a road or track, or press there and drag along it."u8 : "It follows the line wherever the cursor goes. Go past the end of the track to cross a gap: click where it lands, or Esc to cancel."u8);
-        }
+        Kit.EndCard();
+    }
+
+    private void StructuresPalette()
+    {
+        Kit.BeginCard("Bridges");
+        if (PaletteRow(ToolIcon.Bridge, "Edit bridge", _place.Mode == PlaceMode.EditBridge))
+            (_place.Mode, _bridgeFrom, _switchRefused) = (PlaceMode.EditBridge, null, null);
+        if (PaletteRow(ToolIcon.Bridge, "Place bridge", _place.Mode == PlaceMode.Bridge))
+            (_place.Mode, _bridgeFrom, _switchRefused) = (PlaceMode.Bridge, null, null);
+        if (PaletteRow(ToolIcon.RemoveBridge, "Remove bridge", _place.Mode == PlaceMode.RemoveBridge))
+            (_place.Mode, _bridgeFrom, _switchRefused) = (PlaceMode.RemoveBridge, null, null);
+        Kit.EndCard();
+        if (_place.Mode == PlaceMode.EditBridge)
+            BridgePanel();
     }
 
     /// How the pole in hand goes down: what it snaps to, how far off that, and whether it's a run and at what gap.
@@ -267,55 +382,49 @@ public sealed partial class EditorView
     {
         var imperial = Settings.Current.Units == UnitSystem.Imperial;
         var factor = imperial ? FeetPerMeter : 1f;
-        ImGui.SeparatorText(_place.PoleKind.Name());
+        Kit.BeginCard(_place.PoleKind.Name(), null, Accent);
+
+        Kit.Caption("Laid");
+        var ways = new[] { PoleDraw.One, PoleDraw.Fence, PoleDraw.Pen };
+        var drawn = Array.IndexOf(ways, _place.Drawn);
+        var pickDrawn = ToolPanel.Mode("poledraw", ["One", "Fence", "Pen"], drawn, 3);
+        if (pickDrawn != drawn && pickDrawn >= 0)
+            (_place.Drawn, _place.RunFrom, _place.RunFirst) = (ways[pickDrawn], null, null);
+
         // (A pen's path goes where it's drawn.)
         if (_place.Drawn != PoleDraw.Pen)
-            foreach (var (snap, name) in ((PoleSnap, string)[])[(PoleSnap.Anywhere, "Anywhere"), (PoleSnap.Road, "Road"), (PoleSnap.Track, "Track")])
-            {
-                if (ImGui.RadioButton(name, _place.Snap == snap))
-                    (_place.Snap, _place.RunFrom, _place.RunFirst) = (snap, null, null);
-                if (snap != PoleSnap.Track)
-                    ImGui.SameLine(0f, -1f);
-            }
-
-        if (_place.Snap != PoleSnap.Anywhere && _place.Drawn != PoleDraw.Pen)
         {
-            var offset = _place.PoleOffset * factor;
-            var label = _place.Snap == PoleSnap.Road ? (imperial ? "Off road edge (ft)"u8 : "Off road edge (m)"u8) : (imperial ? "Off track (ft)"u8 : "Off track (m)"u8);
-            if (ImGui.SliderFloat(label, ref offset, 0f, PoleRuns.MaxOffset * factor, "%.1f"u8, ImGuiSliderFlags.None))
+            Kit.Caption("Keeps to");
+            var snaps = new[] { PoleSnap.Anywhere, PoleSnap.Road, PoleSnap.Track };
+            var snap = Array.IndexOf(snaps, _place.Snap);
+            var pickSnap = ToolPanel.Mode("polesnap", ["Anywhere", "Road", "Track"], snap, 3);
+            if (pickSnap != snap && pickSnap >= 0)
+                (_place.Snap, _place.RunFrom, _place.RunFirst) = (snaps[pickSnap], null, null);
+            if (_place.Snap != PoleSnap.Anywhere)
             {
-                var metres = Math.Clamp(offset / factor, 0f, PoleRuns.MaxOffset);
-                if (_place.Snap == PoleSnap.Road)
-                    _place.RoadOffset = metres;
-                else
-                    _place.TrackOffset = metres;
+                var offset = _place.PoleOffset * factor;
+                var label = _place.Snap == PoleSnap.Road ? (imperial ? "Off road edge (ft)" : "Off road edge (m)") : (imperial ? "Off track (ft)" : "Off track (m)");
+                if (ToolPanel.Value("poleoffset", label, ref offset, 0f, PoleRuns.MaxOffset * factor, "0.0"))
+                {
+                    var metres = Math.Clamp(offset / factor, 0f, PoleRuns.MaxOffset);
+                    if (_place.Snap == PoleSnap.Road)
+                        _place.RoadOffset = metres;
+                    else
+                        _place.TrackOffset = metres;
+                }
             }
-        }
-
-        foreach (var (way, name) in ((PoleDraw, string)[])[(PoleDraw.One, "One"), (PoleDraw.Fence, "Fence"), (PoleDraw.Pen, "Pen")])
-        {
-            if (ImGui.RadioButton(name, _place.Drawn == way))
-                (_place.Drawn, _place.RunFrom, _place.RunFirst) = (way, null, null);
-            if (way != PoleDraw.Pen)
-                ImGui.SameLine(0f, -1f);
         }
 
         if (_place.Drawn == PoleDraw.One)
         {
-            if (_place.PoleKind.IsTie() && _place.Snap == PoleSnap.Anywhere)
-                ImGui.TextWrapped("Near a track's open end, it starts from that end."u8);
+            Kit.EndCard();
             return;
         }
+
         var gap = _place.Gap * factor;
-        if (ImGui.SliderFloat(imperial ? "Gap (ft)"u8 : "Gap (m)"u8, ref gap, PoleRuns.MinGap(_place.PoleKind) * factor, PoleRuns.MaxGap * factor, "%.2f"u8, ImGuiSliderFlags.Logarithmic))
+        if (ToolPanel.Value("polegap", imperial ? "Gap (ft)" : "Gap (m)", ref gap, PoleRuns.MinGap(_place.PoleKind) * factor, PoleRuns.MaxGap * factor, "0.00", log: true))
             _place.Gap = Math.Clamp(gap / factor, PoleRuns.MinGap(_place.PoleKind), PoleRuns.MaxGap);
-        ImGui.TextWrapped(_place.Drawn == PoleDraw.Pen
-            ? "Click for a corner, drag for a curve, Enter to lay. Backspace takes a point back, Esc drops it."u8
-            : _place.RunFrom is null
-            ? "Click where the run starts."u8
-            : _place.Snap == PoleSnap.Anywhere
-                ? "Click where it goes to: it goes on from there, round any corner. Esc ends it."u8
-                : "Click how far along it goes: it follows the line, and goes on from there. Esc ends it."u8);
+        Kit.EndCard();
     }
 
     private static readonly (string? Id, string Name)[] Beds =
@@ -329,83 +438,71 @@ public sealed partial class EditorView
     /// What track's laid on: for what's laid next, and for what's selected in the Edit tool.
     private void BedPanel()
     {
-        ImGui.SeparatorText("Track bed"u8);
         var imperial = Settings.Current.Units == UnitSystem.Imperial;
         var tracks = _tracks!;
-        var shown = Array.Find(Beds, b => b.Id == tracks.NewBed).Name;
-        if (ImGui.BeginCombo("Bed"u8, shown))
+        Kit.BeginCard("Track bed");
+        var current = Array.FindIndex(Beds, b => b.Id == tracks.NewBed);
+        var pick = ToolPanel.Mode("bed", Beds.Select(b => b.Id is null ? "Auto" : b.Id == nameof(TrackBed.Mainline) ? "Main" : b.Name).ToArray(), current, 3);
+        if (pick != current && pick >= 0)
         {
-            foreach (var (id, name) in Beds)
-            {
-                if (ImGui.Selectable(name, id == tracks.NewBed))
-                {
-                    tracks.NewBed = id;
-                    _bedHeightSet = false;
-                    if (Enum.TryParse<TrackBed>(id, out var chosen))
-                        _bedHeight = NetworkLine.BedHeightOf(chosen);
-                }
-            }
-
-            ImGui.EndCombo();
+            tracks.NewBed = Beds[pick].Id;
+            _bedHeightSet = false;
+            if (Enum.TryParse<TrackBed>(Beds[pick].Id, out var chosen))
+                _bedHeight = NetworkLine.BedHeightOf(chosen);
         }
 
         var street = tracks.NewBed == nameof(TrackBed.Street);
-        ImGui.BeginDisabled(street);
         var height = imperial ? _bedHeight * FeetPerMeter * 12f : _bedHeight * 100f;
-        if (ImGui.SliderFloat(imperial ? "Height (in)"u8 : "Height (cm)"u8, ref height, imperial ? 1f : 2f, imperial ? 59f : 150f, imperial ? "%.0f"u8 : "%.0f"u8, ImGuiSliderFlags.None))
+        if (ToolPanel.Value("bedheight", imperial ? "Height (in)" : "Height (cm)", ref height, imperial ? 1f : 2f, imperial ? 59f : 150f, "0", enabled: !street))
         {
             _bedHeight = imperial ? height / 12f / FeetPerMeter : height / 100f;
             _bedHeightSet = true;
         }
 
-        ImGui.EndDisabled();
         tracks.NewBedHeight = _bedHeightSet && !street ? _bedHeight : null;
 
-        ImGui.PushStyleColor(ImGuiCol.Text, TextDim);
-        ImGui.TextWrapped(tracks.NewBed switch
-        {
-            null => "As the track's class has it: mainline, or lower in yards and sidings."u8,
-            nameof(TrackBed.Mainline) => "A full bed of ballast, raised on the ground."u8,
-            nameof(TrackBed.Low) => "A lesser bed, for yards and branches."u8,
-            nameof(TrackBed.Sunken) => "No bed to speak of: ties in the ground, the rock worked into it."u8,
-            _ => "Rails flush in a pavement. Switches can't be laid on it."u8,
-        });
-        ImGui.PopStyleColor();
-
-        if (_tool == Tool.Track && _selection.Count > 0 && ImGui.Button("Apply to selected track"u8))
+        if (_tool == Tool.Track && Kit.Button("applybed", "Apply to Selection", 0f, ButtonKind.Secondary, _selection.Count > 0))
             Committed(tracks.SetBed(_selection, tracks.NewBed, tracks.NewBedHeight));
+        Kit.EndCard();
+    }
+
+    /// What class track's laid as: for what's laid next, and for what's selected in the Edit tool. Auto leaves it to the
+    /// tool (drawn track takes the class of the track it leaves; track along a guide is yard).
+    private void ClassPanel()
+    {
+        var tracks = _tracks!;
+        Kit.BeginCard("Track class");
+        var classes = TrackEditor.Settable;
+        var current = tracks.NewClass is { } chosen ? Array.IndexOf(classes, chosen) + 1 : 0;
+        var labels = new[] { "Auto" }.Concat(classes.Select(c => c == RailClass.Industrial ? "Indust" : RailColours.Name((int)c))).ToArray();
+        var pick = ToolPanel.Mode("railclass", labels, current, 3);
+        if (pick != current && pick >= 0)
+            tracks.NewClass = pick == 0 ? null : classes[pick - 1];
+
+        if (_tool == Tool.Track && Kit.Button("applyclass", "Apply to Selection", 0f, ButtonKind.Secondary, _selection.Count > 0 && tracks.NewClass is not null))
+            Committed(tracks.SetClass(_selection, tracks.NewClass!.Value));
+        Kit.EndCard();
     }
 
     /// The Roads tool's panel: how it draws, and what.
     private void RoadPanel()
     {
-        ImGui.SeparatorText("Draw"u8);
-        foreach (var (mode, name) in ((RoadMode, string)[])[(RoadMode.Straight, "Straight"), (RoadMode.Curved, "Curved"), (RoadMode.Freeform, "Freeform"), (RoadMode.Remove, "Remove")])
+        var modes = new[] { RoadMode.Straight, RoadMode.Curved, RoadMode.Freeform, RoadMode.Remove };
+        var current = Array.IndexOf(modes, _road.Mode);
+        var pick = ToolPanel.Mode("roadmode", ["Straight", "Curved", "Freeform", "Remove"], current, 2);
+        if (pick != current && pick >= 0)
         {
-            if (ImGui.RadioButton(name, _road.Mode == mode))
-            {
-                _road.Mode = mode;
-                _road.Clear();
-            }
-
-            if (mode is RoadMode.Straight or RoadMode.Curved)
-                ImGui.SameLine(0f, -1f);
+            _road.Mode = modes[pick];
+            _road.Clear();
         }
-
-        ImGui.TextWrapped(_road.Mode switch
-        {
-            RoadMode.Straight => "Click a start, then click on from there. Shift keeps to 15 degree steps.",
-            RoadMode.Curved => "Click a start, a point the curve pulls towards, then an end.",
-            RoadMode.Freeform => "Click a start, then each next point: it curves on from the way it was going.",
-            _ => "Click a road to take it out.",
-        });
 
         if (_road.Mode == RoadMode.Remove)
             return;
-        ImGui.SeparatorText("Road"u8);
+        Kit.BeginCard("Road");
         for (var i = 0; i < RoadTool.Kinds.Length; i++)
-            if (ImGui.Selectable(RoadTool.Kinds[i].Name, _road.Kind == i))
+            if (ToolPanel.Item($"roadkind{i}", ToolIcon.Road, RoadTool.Kinds[i].Name, null, _road.Kind == i))
                 _road.Kind = i;
+        Kit.EndCard();
     }
 
     /// A piece on the palette: its plan, its name, lit when it's in hand.
@@ -419,7 +516,9 @@ public sealed partial class EditorView
         var on = _place.Mode == PlaceMode.Track && _place.Stamp?.Id == stamp.Id;
         var clicked = ImGui.InvisibleButton(stamp.Id, size) && stamp.Problem is null;
         var hovered = ImGui.IsItemHovered();
-        draw.AddRectFilled(at, at + size, on ? Accent : hovered ? RaisedHover : Raised, 4f);
+        // As Kit's cells: square, framed, lit with the accent when it's the one in hand.
+        draw.AddRectFilled(at, at + size, on ? Accent.WithAlpha(0.85f) : hovered ? Rgba.Lerp(Surface, Accent.WithAlpha(0.15f), 0.6f) : Surface);
+        draw.AddRect(at, at + size, on ? Accent : hovered ? Rgba.Mix(StrokeStrong, Accent, 1f) : StrokeStrong, 0f, ImDrawFlags.None, 1f);
 
         var color = on ? OnAccent : stamp.Problem is not null ? TextFaint : hovered ? Style.Text : TextDim;
         var sign = _place.Mirror ? -1.0 : 1.0;
@@ -449,75 +548,64 @@ public sealed partial class EditorView
         return clicked;
     }
 
-    /// A row of the Place palette: its icon and name, lit when it's the one in hand.
-    private bool PaletteRow(ToolIcon icon, string name, bool on)
-    {
-        var draw = ImGui.GetWindowDrawList();
-        var at = ImGui.GetCursorScreenPos();
-        var size = new float2(ImGui.GetContentRegionAvail().X, 30f);
-        var clicked = ImGui.InvisibleButton(name, size);
-        var hovered = ImGui.IsItemHovered();
-        if (on)
-            draw.AddRectFilled(at, at + size, Accent, 4f);
-        else if (hovered)
-            draw.AddRectFilled(at, at + size, StrokeStrong, 4f);
-        var color = on ? OnAccent : Style.Text;
-        ToolIcons.Draw(draw, icon, at + new float2(16f, 15f), 8f, color, 1.4f);
-        Canvas.Text(draw, Medium, 14f, at + new float2(34f, 7f), color, name);
-        return clicked;
-    }
+    /// A row of a palette, as every list in the panels: its icon and name (and how many are placed), lit when it's in hand.
+    private static bool PaletteRow(ToolIcon icon, string name, bool on, int? placed = null) =>
+        ToolPanel.Item($"palette.{name}", icon, name, placed is { } n ? n.ToString(CultureInfo.InvariantCulture) : null, on);
 
     /// The terrain brushes, their size, and what to paint.
     private void BrushPanel(bool imperial)
     {
-        foreach (var (tool, name) in Brushes)
-        {
-            if (tool is not (Tool.Raise or Tool.Flatten))
-                ImGui.SameLine(0f, -1f);
-            if (ImGui.RadioButton(name, _tool == tool))
-                _tool = tool;
-        }
+        var current = Array.FindIndex(Brushes, b => b.Tool == _tool);
+        var pick = ToolPanel.Mode("brush", Brushes.Select(b => b.Name).ToArray(), current, 3);
+        if (pick != current && pick >= 0)
+            _tool = Brushes[pick].Tool;
 
-        var radius = imperial ? _radius * FeetPerMeter : _radius;
-        if (ImGui.SliderFloat(imperial ? "Radius (ft)"u8 : "Radius (m)"u8, ref radius, imperial ? MinRadius * FeetPerMeter : MinRadius, imperial ? MaxRadius * FeetPerMeter : MaxRadius, "%.0f"u8, ImGuiSliderFlags.Logarithmic))
-            _radius = Math.Clamp(imperial ? radius / FeetPerMeter : radius, MinRadius, MaxRadius);
+        Kit.BeginCard("Brush");
+        var factor = imperial ? FeetPerMeter : 1f;
+        var radius = _radius * factor;
+        if (ToolPanel.Value("brushradius", imperial ? "Radius (ft)" : "Radius (m)", ref radius, MinRadius * factor, MaxRadius * factor, "0", log: true))
+            _radius = Math.Clamp(radius / factor, MinRadius, MaxRadius);
+        Kit.EndCard();
 
         if (_tool != Tool.Paint)
             return;
-        for (var i = 0; i < PaintCovers.Length; i++)
-        {
-            if (i % 3 != 0)
-                ImGui.SameLine(0f, -1f);
-            if (ImGui.RadioButton(PaintCovers[i].Name.ToLowerInvariant(), _paint == i))
-                _paint = i;
-        }
+        Kit.BeginCard("Paint");
+        var covers = PaintCovers.Select(c => c.Name[..1] + c.Name[1..].ToLowerInvariant()).ToArray();
+        var chosen = ToolPanel.Mode("paintcover", covers, _paint, 3);
+        if (chosen >= 0)
+            _paint = chosen;
+        Kit.EndCard();
     }
 
     /// How many tracks to lay, and how far apart: beside a track, on whichever side of it the pointer is, or on open ground.
     private void ParallelPanel()
     {
         var imperial = Settings.Current.Units == UnitSystem.Imperial;
+        Kit.BeginCard("Tracks");
+        var mode = ToolPanel.Mode("parallelmode", ["Draw", "Follow"], _parallelFollowing ? 1 : 0, 2);
+        if (mode == 1 != _parallelFollowing)
+        {
+            _parallelFollowing = mode == 1;
+            _parallelPen.Clear();
+            _parallelFollow.Clear();
+            _parallel.Clear();
+        }
+
         var tracks = _parallel.ParallelTracks;
-        if (ImGui.InputInt("Tracks"u8, ref tracks))
-            _parallel.ParallelTracks = Math.Clamp(tracks, 1, YardTool.MaxParallel);
-        var spacing = imperial ? _parallel.Spacing * FeetPerMeter : _parallel.Spacing;
-        if (ImGui.SliderFloat(imperial ? "Spacing (ft)"u8 : "Spacing (m)"u8, ref spacing, imperial ? YardTool.MinSpacing * FeetPerMeter : YardTool.MinSpacing, imperial ? YardTool.MaxSpacing * FeetPerMeter : YardTool.MaxSpacing, "%.1f"u8, ImGuiSliderFlags.None))
-            _parallel.Spacing = Math.Clamp(imperial ? spacing / FeetPerMeter : spacing, YardTool.MinSpacing, YardTool.MaxSpacing);
+        if (ToolPanel.Count("paralleltracks", "Tracks", ref tracks, 1, YardTool.MaxParallel))
+            _parallel.ParallelTracks = tracks;
+        var factor = imperial ? FeetPerMeter : 1f;
+        var spacing = _parallel.Spacing * factor;
+        if (ToolPanel.Value("parallelspacing", imperial ? "Spacing (ft)" : "Spacing (m)", ref spacing, YardTool.MinSpacing * factor, YardTool.MaxSpacing * factor, "0.0"))
+            _parallel.Spacing = Math.Clamp(spacing / factor, YardTool.MinSpacing, YardTool.MaxSpacing);
 
         if (_parallel.Plan is not { } plan)
-        {
-            ImGui.TextDisabled(_parallel.Anchor is not null ? "Click where they end" : _parallelPen.Count > 0 ? "Enter lays them"
-                : "Draw as with Pen, or click a track");
-            return;
-        }
-
-        if (plan.Problem is { } problem)
-        {
-            ImGui.PushStyleColor(ImGuiCol.Text, Stop);
-            ImGui.TextWrapped(problem);
-            ImGui.PopStyleColor();
-        }
+            ToolPanel.Hint(_parallel.Anchor is not null ? "Click where they end." : _parallelPen.Count > 0 || _parallelFollow.Count > 0 ? "Enter lays them."
+                : _parallelFollowing ? "Click along a guide." : "Click a track, or draw.");
+        else if (plan.Problem is { } problem)
+            ToolPanel.Problem(problem);
         else
-            ImGui.TextWrapped(plan.Summary);
+            ToolPanel.Line(plan.Summary);
+        Kit.EndCard();
     }
 }

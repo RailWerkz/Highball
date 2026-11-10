@@ -28,6 +28,7 @@ public sealed class RunningGear
     private static readonly string[] Clank = SoundFiles.Matching(Folder, "axleClank");
     private const string MotorLow = Folder + "/tractionMotorLow.wav";
     private const string MotorHigh = Folder + "/tractionMotorHi.wav";
+    private const string WheelSlipSound = Folder + "/wheelSlip.wav";
 
     private sealed class Wheel
     {
@@ -42,7 +43,7 @@ public sealed class RunningGear
     private sealed class Motor
     {
         public int Car;
-        public AudioEngine.LoopHandle Low = AudioEngine.LoopHandle.None, High = AudioEngine.LoopHandle.None;
+        public AudioEngine.LoopHandle Low = AudioEngine.LoopHandle.None, High = AudioEngine.LoopHandle.None, Slip = AudioEngine.LoopHandle.None;
         public float Effort;
     }
 
@@ -112,6 +113,22 @@ public sealed class RunningGear
         AudioEngine.SetLoopVolume(motor.High, MathF.Sin(w) * level * 0.8f * Level, Math.Clamp(0.6f + speed / 30f, 0.6f, 1.6f));
         AudioEngine.Move(motor.Low, at);
         AudioEngine.Move(motor.High, at);
+
+        // Its wheels spinning: the slip loop, up and higher the harder they spin, only while they do.
+        var slip = (float)body.WheelSlip[i];
+        if (slip > 0.02f && !motor.Slip.IsValid && SoundFiles.Loop(WheelSlipSound) is { } spinning)
+            motor.Slip = AudioEngine.PlayLoop(spinning, volume: 0f, at: at);
+        if (motor.Slip.IsValid)
+        {
+            var wheelAt = At(body, i, middle, pair, WheelHeight, listener, WheelReference, WheelRange);
+            AudioEngine.SetLoopVolume(motor.Slip, Math.Clamp(slip * 1.4f, 0f, 1f) * Level, 0.85f + 0.35f * slip + Math.Clamp(speed / 40f, 0f, 0.3f));
+            AudioEngine.Move(motor.Slip, wheelAt);
+            if (slip <= 0.01f)
+            {
+                AudioEngine.FadeLoop(motor.Slip, 0.3f);
+                motor.Slip = AudioEngine.LoopHandle.None;
+            }
+        }
     }
 
     /// Keeps the emitters on the nearest trucks. One moves only once its truck's dropped well out of the nearest few, so
@@ -220,6 +237,7 @@ public sealed class RunningGear
         {
             AudioEngine.FadeLoop(motor.Low, 0.3f);
             AudioEngine.FadeLoop(motor.High, 0.3f);
+            AudioEngine.FadeLoop(motor.Slip, 0.3f);
         }
 
         _motors.Clear();

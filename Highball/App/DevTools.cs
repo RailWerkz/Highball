@@ -8,7 +8,7 @@ using RailWerkz.Vulkan;
 namespace Highball.App;
 
 /// Command-line helpers for development and testing:
-///   --menu SCREEN                                   open a menu after the splash: single, multi, builder, consists, settings,
+///   --menu SCREEN                                   open a menu after the splash: single, multi, builder, openroute, consists, settings,
 ///                                                   credits, lighting (the lighting test scene)
 ///   --lighting PRESET [MODEL]                       with --menu lighting, start at noon, golden or night, with the model
 ///                                                   black (the game's SD40-2) or source (the old SD40's source file, with PBR maps)
@@ -26,7 +26,7 @@ namespace Highball.App;
 ///                                                   paint) STEPS times at the middle of the screen
 ///   --fly SPEED                                     with --view, fly straight ahead at SPEED metres a second, logging the
 ///                                                   frame times and the terrain left waiting every second
-///   --panels                                        with --view, open the Frame Statistics and Profiler windows
+///   --panels                                        with --view, open the Frame Statistics, Profiler, Threading and Camera windows
 ///   --skybox NAME                                   with --view, show that sky (a file name in Textures/Skyboxes, or Procedural)
 ///   --throw LAT LON                                 with --view or --view2d, once loaded, throw the switch nearest there
 ///   --train CONSIST LAT LON NOTCH                   with --view, once loaded, put that saved consist on the track there
@@ -118,6 +118,12 @@ public static class DevTools
 
     /// Open the 3D view's Frame Statistics and Profiler windows (--panels).
     public static bool Panels { get; set; }
+
+    /// The lamps every signal has lit unless set by hand (--lamps red,yellow,green, all or none).
+    public static World.SignalLamps? Lamps { get; set; }
+
+    /// Open the Track Materials window (--materials).
+    public static bool Materials { get; set; }
 
     /// The sky to show in the 3D view (--skybox), read once by it.
     public static string? Skybox { get; set; }
@@ -290,6 +296,14 @@ public static class DevTools
                 case "--panels":
                     Panels = true;
                     break;
+                case "--lamps" when i + 1 < args.Length:
+                    var named = args[++i].ToLowerInvariant();
+                    Lamps = named == "all" ? World.SignalLamps.Red | World.SignalLamps.Yellow | World.SignalLamps.Green
+                        : named.Split(',').Aggregate(World.SignalLamps.None, (lit, n) => lit | (Enum.TryParse<World.SignalLamps>(n, true, out var l) ? l : World.SignalLamps.None));
+                    break;
+                case "--materials":
+                    Materials = true;
+                    break;
                 case "--skybox" when i + 1 < args.Length:
                     Skybox = args[++i];
                     break;
@@ -418,6 +432,7 @@ public static class DevTools
             "single" => new SinglePlayerScreen(),
             "multi" => new MultiplayerScreen(),
             "builder" => new RouteBuilderScreen(),
+            "openroute" => new OpenRouteScreen(),
             "consists" or "consist" => new ConsistEditorScreen(),
             "settings" or "options" => new SettingsScreen(),
             "credits" => new CreditsScreen(),

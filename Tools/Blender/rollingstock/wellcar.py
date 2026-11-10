@@ -102,13 +102,13 @@ class WellCar(Car):
             m.box("Body", (x0, -WE, c.girder_bottom), (x1, WE, chord))
             for e in (-1, 1):
                 m.prism("Body", [(e * WE, c.girder_bottom), (e * ramp, c.end_bottom), (e * ramp, chord), (e * WE, chord)][::e], "x", min(x0, x1), max(x0, x1))
-                m.box("Body", (x0, e * ramp, c.end_bottom), (x1, e * OS, chord))
+                m.box("Body", (x0, e * ramp, c.end_bottom), (x1, e * (OS - .005), chord))  # the girders end just inside the end sill's face
             # The top chord, full length, a box standing out from the web.
-            m.box("Body", (s * c.sill_in, -OS, c.sill_top - .2), (s * c.sill_out, OS, c.sill_top), .006)
+            m.box("Body", (s * c.sill_in, -(OS - .005), c.sill_top - .2), (s * c.sill_out, OS - .005, c.sill_top), .006)
             # The bottom chord along the well, and along the ends.
             m.box("Body", (s * c.sill_in, -WE, c.girder_bottom), (s * (c.sill_in + .2), WE, c.girder_bottom + .1))
             for e in (-1, 1):
-                m.box("Body", (s * c.sill_in, e * ramp, c.end_bottom), (s * (c.sill_in + .2), e * OS, c.end_bottom + .08))
+                m.box("Body", (s * c.sill_in, e * ramp, c.end_bottom), (s * (c.sill_in + .2), e * (OS - .005), c.end_bottom + .08))
                 # Along the ramp's lower edge.
                 m.prism("Body", [(e * WE, c.girder_bottom), (e * ramp, c.end_bottom), (e * ramp, c.end_bottom + .08), (e * WE, c.girder_bottom + .1)][::e], "x",
                         min(s * c.sill_in, s * (c.sill_in + .2)), max(s * c.sill_in, s * (c.sill_in + .2)))
@@ -167,7 +167,7 @@ class WellCar(Car):
         m.cyl("Steel", (0, y, c.truck.centre_plate), (0, y, .70), .19, 24)
         for s in (-1, 1):
             sb = s * c.truck.side_bearing
-            m.box("Frame", (sb - .08, y - .1, .705), (sb + .08, y + .1, .78))
+            m.box("Frame", (sb - .08, y - .09, .705), (sb + .08, y + .09, .78))  # shorter than the truck's, whose top it sits into
         # Cross members under the deck, and the deck: grating from the bulkhead to the end sill.
         for yy in (self.WE + .7, tc + 1.0):
             m.box("Frame", (-x, e * yy - .05, c.deck - .2), (x, e * yy + .05, c.deck - .04))
@@ -178,7 +178,7 @@ class WellCar(Car):
             m.box("Grating", (xx - .006, e * (self.WE + .35), c.deck), (xx + .006, e * E, c.deck + .012))
         # The end sill, with the coupler's opening, and the striker.
         for s in (-1, 1):
-            m.box("Frame", (s * .24, e * E, .80), (s * x, e * OS, c.deck))
+            m.box("Frame", (s * .24, e * E, .805), (s * x, e * OS, c.deck))  # its bottom off the girder's bottom chord
         hi = cz + .17
         m.box("Frame", (-.24, e * E, hi + .02), (.24, e * OS, c.deck))
         m.box("Frame", (-.32, e * OS, hi), (.32, e * (OS + .03), hi + .08))
@@ -189,8 +189,9 @@ class WellCar(Car):
         top = c.deck + 1.0
         for s in (-1, 1):
             px, py = s * (x - .06), e * (OS - .08)
-            m.tube("Grab", [(px, e * (self.WE + .9), c.deck), (px, e * (self.WE + .9), top), (px, py, top), (s * .55, py, top), (s * .55, py, c.deck)], .02, .08, 8)
-            m.tube("Grab", [(px, py, c.deck), (px, py, top)], .02, 0, 8)
+            foot = c.deck + .013  # standing on the grating's bars
+            m.tube("Grab", [(px, e * (self.WE + .9), foot), (px, e * (self.WE + .9), top), (px, py, top), (s * .55, py, top), (s * .55, py, foot)], .02, .08, 8)
+            m.tube("Grab", [(px, py, foot), (px, py, top)], .02, 0, 8)
             m.tube("Grab", [(px, e * (self.WE + .9), c.deck + .5), (px, py, c.deck + .5), (s * .55, py, c.deck + .5)], .015, .06, 8)
         # A sill step under each corner, and a grab on the end sill beside it.
         for s in (-1, 1):

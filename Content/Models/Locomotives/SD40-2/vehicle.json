@@ -17,6 +17,13 @@
   "wheelDiameterM": 1.108,
   "massEmptyKg": 166920,
   "massLoadedKg": 166920,
+  // Wet (above, in working order: 368,000 lb) and dry. Wet is dry plus its supplies, full: 3,200 gal of fuel, 395 gal of lube
+  // oil, 275 gal of cooling water, 56 cu ft of sand.
+  "massDryKg": 151730,
+  "supplies": { "fuelL": 12113, "oilL": 1495, "waterL": 1041, "sandM3": 1.586 },
+  // DC traction: rated to start at 25% adhesion, sanded; about 22% on dry rail without.
+  "traction": "DC",
+  "adhesion": 0.22,
   "powerKw": 2237,
   "startingTractiveEffortKn": 409,
   "continuousTractiveEffortKn": 365,

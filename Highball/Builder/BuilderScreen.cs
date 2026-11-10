@@ -28,6 +28,13 @@ public sealed class BuilderScreen : Screen, IWorldScreen
     private int _editorBuild;
     private Mode _mode;
     private bool _showPanel = true;
+
+    /// The Developer menu: in a Debug build, or with Developer tools on in Settings.
+#if DEBUG
+    private static bool DeveloperMenu => true;
+#else
+    private static bool DeveloperMenu => RailWerkz.Core.Settings.Settings.Current.DeveloperTools;
+#endif
     private bool _exit;
 
     private float _headerBottom;
@@ -50,6 +57,7 @@ public sealed class BuilderScreen : Screen, IWorldScreen
     {
         _editor?.Dispose();
         _planner.Dispose();
+        World.MaterialsWindow.Instance.Dispose();
     }
 
     /// A short notice on the right of the footer.
@@ -189,7 +197,26 @@ public sealed class BuilderScreen : Screen, IWorldScreen
 
         var noticing = RailWerkz.Core.Time.Time.Now - _noticeAt < NoticeSeconds;
         var right = noticing ? _notice : _mode == Mode.Planner ? _planner.Attribution : "";
-        if (right.Length > 0)
+
+        // The track overlay's key at the right while it's shown (a notice takes its place while it lasts).
+        if (!noticing && _mode != Mode.Planner && _editor!.OverlayKey is var (title, key))
+        {
+            var x = size.X - S(24f);
+            var y = _footerTop + (height - S(12f)) * 0.5f;
+            for (var i = key.Length - 1; i >= 0; i--)
+            {
+                var (color, name) = key[i];
+                x -= Canvas.TextSize(Medium, S(12f), name).X;
+                Canvas.Text(draw, Medium, S(12f), new float2(x, y), TextDim, name);
+                x -= S(22f);
+                draw.AddRectFilled(new float2(x, y + S(4f)), new float2(x + S(16f), y + S(9f)), color);
+                x -= S(16f);
+            }
+
+            var heading = $"{title}  G";
+            Canvas.Spaced(draw, Medium, S(10f), new float2(x - Canvas.SpacedWidth(Medium, S(10f), heading, 0.18f), y + S(1f)), TextFaint, heading, 0.18f);
+        }
+        else if (right.Length > 0)
             Canvas.Text(draw, Medium, S(13f), new float2(size.X - S(24f), _footerTop + (height - S(13f)) * 0.5f), noticing ? Style.Text : TextDim, right, Align.Right);
     }
 
@@ -202,6 +229,8 @@ public sealed class BuilderScreen : Screen, IWorldScreen
             _headerBottom = ImGui.GetWindowSize().Y;
             var editing = _mode != Mode.Planner;
 
+            // File: the route as a file. Edit: undo and the selection. Route: what's done to the route as a whole. View: where
+            // and what's shown. Developer: the test scene and the debug windows, only when they're turned on in Settings.
             if (ImGui.BeginMenu("File"))
             {
                 if (editing)
@@ -210,10 +239,25 @@ public sealed class BuilderScreen : Screen, IWorldScreen
                     ImGui.Separator();
                 }
 
-                if (ImGui.MenuItem("Settings"))
+                if (ImGui.MenuItem("Settings..."))
                     HighballApp.Instance.Push(new Screens.SettingsScreen(this, _route.Origin.Latitude, _route.Origin.Longitude));
+                ImGui.Separator();
                 if (ImGui.MenuItem("Exit Route Builder", editing ? "" : "Esc"))
                     _exit = true;
+                ImGui.EndMenu();
+            }
+
+            if (editing && ImGui.BeginMenu("Edit"))
+            {
+                _editor!.MenuEdit();
+                ImGui.EndMenu();
+            }
+
+            if (editing && ImGui.BeginMenu("Route"))
+            {
+                _editor!.MenuRoute();
+                if (ImGui.MenuItem("Track Materials...", "M", World.MaterialsWindow.Instance.Open, true))
+                    World.MaterialsWindow.Instance.Toggle();
                 ImGui.EndMenu();
             }
 
@@ -233,10 +277,15 @@ public sealed class BuilderScreen : Screen, IWorldScreen
                     _editor!.MenuView();
                 }
 
+                ImGui.EndMenu();
+            }
+
+            if (DeveloperMenu && ImGui.BeginMenu("Developer"))
+            {
+                DebugWindows.Menu();
                 ImGui.Separator();
                 if (ImGui.MenuItem("Lighting Test Scene"))
                     HighballApp.Instance.Push(new Screens.LightingScreen());
-                DebugWindows.Menu();
                 ImGui.EndMenu();
             }
 
@@ -250,11 +299,14 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         if (_showPanel && (_mode == Mode.Planner || _editor?.HasPanel == true))
             Panel();
         if (_mode != Mode.Planner)
+        {
             _editor?.Windows();
+            World.MaterialsWindow.Instance.Draw();
+        }
 
         var left = (_mode == Mode.Planner ? 0f : EditorView.StripWidth) + (_showPanel ? PanelWidth : 0f) + 12f;
         Action lines = _mode == Mode.Planner || _editor is null ? _planner.DebugStats : _editor.DebugStats;
-        DebugWindows.Draw(left, _headerBottom + 12f, lines, _planner.BuildJob);
+        DebugWindows.Draw(left, _headerBottom + 12f, lines, _planner.BuildJob, _mode == Mode.Planner || _editor is null ? null : _editor.CameraInfo);
         WindowBounds.Reset();
     }
 
@@ -306,20 +358,26 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         ImGui.SetNextWindowSize(new float2(PanelWidth, Math.Max(100f, _footerTop - _headerBottom)), ImGuiCond.Always);
         const ImGuiWindowFlags flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoResize |
                                        ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings;
-        if (ImGui.Begin("Route"u8, flags))
+        // Spaced as Kit's windows are, so the cards and rows sit the same here as in the Train panel.
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new float2(S(14f), S(12f)));
+        var shown = ImGui.Begin("Route"u8, flags);
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new float2(S(8f), S(6f)));
+        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 0f);
+        if (shown)
         {
             if (_mode == Mode.Planner)
             {
-                ImGui.TextDisabled(_route.Grid is null
+                ToolPanel.Header("Planner", "F1", _route.Grid is null
                     ? "Origin not set"
-                    : string.Create(CultureInfo.InvariantCulture, $"Origin {_route.Origin.Latitude:0.00000}, {_route.Origin.Longitude:0.00000}"));
-                ImGui.TextDisabled($"{_planner.Built.Count} tile{(_planner.Built.Count == 1 ? "" : "s")} built");
+                    : string.Create(CultureInfo.InvariantCulture, $"{_route.Origin.Latitude:0.0000}, {_route.Origin.Longitude:0.0000}  ·  {_planner.Built.Count} tiles"));
                 _planner.Panel();
             }
             else
                 _editor!.Panel();
         }
 
+        ImGui.PopStyleVar(2);
         ImGui.End();
+        ImGui.PopStyleVar();
     }
 }

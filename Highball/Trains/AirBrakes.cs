@@ -207,6 +207,52 @@ public sealed class AirBrakes
         MaxStep = 0.4 / fastest;
     }
 
+    /// As a train's left standing: charged, then a full service made and held (the handle at full service), every car's
+    /// valve lapped with its cylinder at a full service's pressure, and the main reservoirs pumped up.
+    public void HoldFullService()
+    {
+        Handle = 1.0;
+        EmergencyHandle = false;
+        Equalizing = Feed - FullServiceReduction;
+        for (var i = 0; i < Count; i++)
+        {
+            Pipe[i] = Aux[i] = _last[i] = Feed - FullServiceReduction;
+            Reserve[i] = Feed;
+            Cylinder[i] = FullServiceCylinder;
+            Valve[i] = ValveState.Lap;
+            _rate[i] = _quick[i] = _vent[i] = _pickup[i] = 0.0;
+        }
+
+        if (Control >= 0)
+            Main = MainCutOut;
+    }
+
+    /// Car `to` takes car `from` of another train's brakes as they stand: its pipe, reservoirs, cylinder and valve.
+    public void TakeCar(int to, AirBrakes other, int from)
+    {
+        Pipe[to] = other.Pipe[from];
+        Aux[to] = other.Aux[from];
+        Reserve[to] = other.Reserve[from];
+        Cylinder[to] = other.Cylinder[from];
+        Valve[to] = other.Valve[from];
+        _last[to] = other._last[from];
+        _rate[to] = other._rate[from];
+        _quick[to] = other._quick[from];
+        _vent[to] = other._vent[from];
+        _pickup[to] = other._pickup[from];
+    }
+
+    /// The brake valve's own state taken from another train's (the one whose controls these now are).
+    public void TakeValve(AirBrakes other)
+    {
+        Main = Math.Max(Main, other.Main);
+        Equalizing = other.Equalizing;
+        Independent = other.Independent;
+        Handle = other.Handle;
+        EmergencyHandle = other.EmergencyHandle;
+        IndependentHandle = other.IndependentHandle;
+    }
+
     /// The pressure on a car's cylinder, the independent brake included on a locomotive.
     public double CylinderOf(int car) => _loco[car] ? Math.Max(Cylinder[car], Independent) : Cylinder[car];
 

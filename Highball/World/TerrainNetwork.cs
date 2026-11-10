@@ -22,6 +22,7 @@ public sealed partial class TerrainSource
         var shapes = TrackEdits.Snapshot();
         var built = _tiles.Keys.ToHashSet();
         var samples = Samples;
+        var crossings = Objects.Where(o => o.Kind == PlacedKind.GradeCrossing).ToList();
 
         return Task.Run(() =>
         {
@@ -29,6 +30,7 @@ public sealed partial class TerrainSource
             if (solveAgain)
                 NetworkLines.ForgetSolved(_route);
             var lines = NetworkLines.Build(ways, _route, built, shapes);
+            lines.SetCrossings(crossings, _route.Projection!);
             Parallel.ForEach(lines.AdoptGround(previous), id =>
             {
                 var data = RouteTile.Load(_route.TileFolder(id));
@@ -66,6 +68,20 @@ public sealed partial class TerrainSource
                 areas.Add((line.MinX, line.MinZ, line.MaxX, line.MaxZ));
             }
 
+            // A crossing's pad that's new, gone or changed reshapes the ground round it, and its roads' ends.
+            var size = _route.Grid!.TileSize;
+            foreach (var pad in PadsChanged(previous.Pads, lines.Pads))
+            {
+                var reach = pad.Half + 20f;
+                var (a, b) = (pad.At(pad.From - 10f), pad.At(pad.To + 10f));
+                var (x0, x1, z0, z1) = (Math.Min(a.X, b.X) - reach, Math.Max(a.X, b.X) + reach, Math.Min(a.Z, b.Z) - reach, Math.Max(a.Z, b.Z) + reach);
+                areas.Add((x0, z0, x1, z1));
+                for (var j = (int)Math.Floor(-z1 / size); j <= (int)Math.Floor(-z0 / size); j++)
+                    for (var i = (int)Math.Floor(x0 / size); i <= (int)Math.Floor(x1 / size); i++)
+                        if (_tiles.ContainsKey(new TileId(i, j)))
+                            tiles.Add(new TileId(i, j));
+            }
+
             var heights = new ConcurrentDictionary<TileId, float[]>();
             Parallel.ForEach(tiles, id =>
             {
@@ -79,6 +95,10 @@ public sealed partial class TerrainSource
             return new NetworkChange(lines, heights, areas);
         });
     }
+
+    /// The pads in either list that the other hasn't the same of.
+    private static IEnumerable<CrossingPad> PadsChanged(IReadOnlyList<CrossingPad> before, IReadOnlyList<CrossingPad> after) =>
+        before.Where(p => !after.Contains(p)).Concat(after.Where(p => !before.Contains(p)));
 
     private static bool SameProfile(NetworkLine a, NetworkLine b)
     {

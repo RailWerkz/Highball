@@ -65,13 +65,13 @@ public sealed class NetworkLine
     public const int MarkPoints = 5;
 
     // Roads.
-    public float Width { get; init; }
+    public float Width { get; set; }
     public int Lanes { get; init; }
     public bool Oneway { get; init; }
     public bool Unpaved { get; init; }
 
     /// Half the width of the flat ground the line is laid on: the ballast and a walkway, or the road and its shoulders.
-    public float Formation { get; init; }
+    public float Formation { get; set; }
 
     public double MinX, MinZ, MaxX, MaxZ;
 
@@ -245,7 +245,9 @@ public sealed partial class NetworkLines
             lines.SaveSolved(route, stamp);
         }
 
+        lines.ShapeRoads();
         lines.LayShapes(shapes);
+        lines.EaseJoins();
         lines.IndexLines(built);
         return lines;
     }
@@ -1005,6 +1007,8 @@ public sealed partial class NetworkLines
         FindJunctions();
         LetDownBeds();
         LevelRoadsAtRails();
+        MakePads();
+        LevelRoadsAtPads();
 
         Parallel.ForEach(_lines, line => line.Junction = JunctionDistances(line));
         Layer();
@@ -1023,7 +1027,9 @@ public sealed partial class NetworkLines
             {
                 var (normal, reverse) = (t.Normal, t.Reverse);
                 var line = reverse.Line;
-                var end = t.TimberEnd;
+                // As far as the normal route's ballast widens to carry it (past the timbers, to where the two beds part), so the
+                // widened bed's end never stands proud of, or sinks under, a diverging route already climbing away.
+                var end = MathF.Max(t.TimberEnd, t.BallastNormal);
                 var nodes = line.Nodes.Where(n => _junctionNodes.Contains(n.Node) && n.Point != reverse.Point).Select(n => n.Point).ToHashSet();
 
                 // Where the routes lie together, and each point's lift to the normal route's height there.
@@ -1045,20 +1051,30 @@ public sealed partial class NetworkLines
                 {
                     var span = MathF.Max(MathF.Abs(line.S[p] - line.S[reverse.Point]), 1f);
                     foreach (var (q, lift) in lifts)
-                        line.Y[q] += lift * Ease(MathF.Abs(line.S[p] - line.S[q]) / span);
+                        Lift(line, q, lift * Ease(MathF.Abs(line.S[p] - line.S[q]) / span));
                     continue;
                 }
 
                 foreach (var (q, lift) in lifts)
-                    line.Y[q] += lift;
+                    Lift(line, q, lift);
                 var last = lifts[^1].Lift;
                 var stop = p;
                 while (stop >= 0 && stop < line.Count && !nodes.Contains(stop) && MathF.Abs(line.S[stop] - line.S[lifts[^1].Point]) < reach)
                     stop += reverse.Direction;
                 var length = MathF.Max(MathF.Abs(line.S[Math.Clamp(stop, 0, line.Count - 1)] - line.S[lifts[^1].Point]), 1f);
                 for (var q = p; q != stop && q >= 0 && q < line.Count; q += reverse.Direction)
-                    line.Y[q] += last * Ease(1f - MathF.Abs(line.S[q] - line.S[lifts[^1].Point]) / length);
+                    Lift(line, q, last * Ease(1f - MathF.Abs(line.S[q] - line.S[lifts[^1].Point]) / length));
             }
+
+        // A diverging route raised to a higher bed's height (a low yard track off a main) is raised on a taller bed, not
+        // lifted bodily with its ground: its toe stays on the ground and its ballast meets the normal route's at the top,
+        // so neither buries the other's ties. (Lowered, its bed's let down the same way.)
+        static void Lift(NetworkLine line, int q, float by)
+        {
+            line.Y[q] += by;
+            if (q < line.Sink.Length && !line.Embedded)
+                line.Sink[q] = Math.Clamp(line.Sink[q] - by, 0f, NetworkLine.BallastHeight);
+        }
     }
 
     /// How far apart in height two rail lines whose ballast overlaps are set, so one's ballast and ties lie cleanly over
@@ -1468,6 +1484,12 @@ public sealed partial class NetworkLines
         {
             if (list.Count != 3 || touching[node] != 3)
                 continue;
+            // (A divided road's carriageways already spread apart when the roads were shaped.)
+            if (_spreadNodes.Contains(node))
+            {
+                _forks.Add(node);
+                continue;
+            }
             var ordered = list.OrderByDescending(e => e.Line.Width).ToList();
             var (main, a, b) = (ordered[0], ordered[1], ordered[2]);
             var width = main.Line.Width;
@@ -1939,12 +1961,18 @@ public sealed partial class NetworkLines
                         var toe = rail.BallastHalfTop + flank;
                         var bed = rail.BedHeight * Math.Clamp(1f - (n.D - rail.BallastHalfTop) / flank, 0f, 1f);
                         var cap = n.Y - CrossingUnderBallast + MathF.Max(bed, (n.D - toe) * FillSlope);
+                        // Under the road itself, off the ballast's top (which the crossing's panels cover), the road's fill buries
+                        // the ballast's shoulders, as it's built: no wedge of gravel shows beside the road.
+                        if (d <= line.Formation && n.D >= rail.BallastHalfTop + CrossingBuryFrom)
+                            cap = float.MaxValue;
                         var target = MathF.Min(lift, cap);
                         if (target > heights[sample])
                             heights[sample] = target;
                     }
             }
         }
+
+        ConformPads(heights, samples, gx0, gz0, near);
 
         foreach (var index in list)
             if (Array.IndexOf(_lines[index].Structures, Structure.Bridge) >= 0)
@@ -2007,6 +2035,8 @@ public sealed partial class NetworkLines
     /// under the ballast's surface that ground stays.
     private const float CrossingFillReach = 6f;
     private const float CrossingUnderBallast = 0.04f;
+    /// How far past a track's ballast top a road's fill may bury the ballast at a level crossing.
+    private const float CrossingBuryFrom = 0.25f;
 
     /// How far apart two rail lines can be for the ground between them to be graded as one.
     private const float YardGap = 45f;

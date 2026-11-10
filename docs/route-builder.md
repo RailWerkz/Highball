@@ -298,7 +298,7 @@ multiple-track lines, street track, crossings and slips are left as plain track 
 The track is solved once and saved with the route (`Track.bin.gz`): every line's shape, its straights and arcs, and what
 was worked out about its switches. After that the route opens to what's saved, so the track doesn't move because the fitting
 code changed. It's solved again only if the map data, a hand-picked switch size or the built tiles changed, on an edit
-(of the map data, with Edit Track or the Pen), with File > Solve Track Again, or with `--refit`.
+(of the map data, with Edit Track or the Pen), with Route > Solve Track Again, or with `--refit`.
 
 ## Where the heights come from
 
@@ -374,8 +374,15 @@ by many tracks tightens the inner ones. Backspace or Esc starts over, and Ctrl+Z
 
 ## Objects
 
-The Objects tool (O) lays premade track and puts signals, hand throws, grade crossings and diamonds on the route. Pick one in the panel
-and click; each click places another, and clicking one already placed picks it instead. Esc lets go of what's picked.
+The tool strip is in sections by what each tool is for: Track (Lay, Pen, Edit, Shape, Parallel, Switches), Build (Assembly: premade
+track pieces, diamonds and grade crossings; Structures: bridges), Signal (Signals, Circuits) and World (Roads, Lineside: poles,
+lights and loose ties; Terrain). The placing buttons share one way of working: pick one in the panel and click; each click places
+another, and clicking one already placed picks it instead. Esc lets go of what's picked.
+
+The menus: File (Save, Settings, Exit), Edit (Undo, Redo, Delete the picked object), Route (Audit Route, which lists everything the
+audit finds by check and flies to one when it's clicked; Track Materials; Solve Track Again, which asks first), View (Planner, 2D and
+3D, the side panel, Track Grades, Wireframe) and Developer (the debug windows and the lighting test scene), shown in a Debug build
+or with Settings > Simulation > Developer tools on. F4 to F6 open the debug windows either way.
 
 Track pieces are real track, drawn in place before they're laid, in red with why if they can't be:
 
@@ -401,12 +408,20 @@ spacing crossovers and ladders are built to. Mapped nodes tagged as slips or thr
 The rest:
 
 - Signal: snaps 3.6 m off the nearest track within 15 m, on the side clicked, facing trains that have it on their right.
-- Hand Throw: goes on the nearest switch within 20 m, in place of its power machine, and its target and lever turn as the switch
-  is thrown.
+- Hand Throw: set in Switches, on the switch picked (Worked by: Power machine or Hand throw, and Other Side). It stands in place of
+  the power machine, and its target and lever turn as the switch is thrown.
 - Grade Crossing: snaps onto the nearest track and takes the line and width of a road crossing it within 15 m, or lies square
-  across the track, 8 m wide, if there's none. One crossing takes in every track the road meets, within 12 m of one another: one
-  deck level with the rail tops from outside the first to outside the last, ramps down to the road or ground, and a mast each end
-  with a crossbuck, flashers and a raised gate. Clicking another of its tracks picks it rather than making a second.
+  across the track, 8 m wide, if there's none. One crossing takes in every track the road meets, within 12 m of one another. Each
+  track gets whole 8 ft panels (a field panel between the rails and a gauge panel outside each, level with the rail tops, with
+  flangeways) from past one edge of the road to past the other, and lays no ties under them; asphalt runs between tracks and ramps
+  down to the road or ground, and the road's fill buries the ballast's shoulders under it. The crossing owns a pad of road from
+  6 m past its panels on one side to 6 m past them on the other: placed on a road, the road is cut back to the pad's ends, with a
+  node at each for it (or any road drawn there later, which snaps to them) to end on, and roads ending there are brought up to
+  the deck's level, so the road and deck meet as one surface. The ground under the pad is shaped to it whether or not a road
+  joins, and nothing grows on it. Cut Roads to Crossing does the same for a crossing placed before. A mast each end has a crossbuck,
+  flashers and a raised gate. Picked, it shows its surface (concrete panels, rubber panels, timber planks or asphalt), the gate
+  turn (masts turned on their posts) and Other Side (masts on the left of traffic instead of the right). Clicking another of its
+  tracks picks it rather than making a second.
 - Diamond: joins two built tracks where they cross, within 15 m, with a control point in both. Refused under 8 degrees. Edit Track
   moves that point, and the assembly is rebuilt to whatever the tracks then make.
 - Utility Poles and Light Poles: three of each (telegraph, power and telephone poles; street light, yard mast and platform lamp). Anywhere
@@ -431,6 +446,24 @@ A crossing's deck is built again whenever the track changes, so it follows the t
 placed, and a hand throw whose switch has gone does nothing. Signals, stands and masts are from `Tools/Blender/lineside.py`.
 Poles are from `Tools/Blender/poles.py`; like signals, they aren't drawn past the track's near radius (1 km). Their wood is Wood062, at 4K if
 `Content/Textures/Wood/Wood062_4K-JPG.zip` is there, and otherwise the size the ties use. They have no wires yet, and the lights don't light.
+
+## Bridges
+
+A bridge is one structure however many lines it carries: the bridged stretches of tracks or roads side by side over the same gap,
+going the same way at much the same height, share one deck the full width, one set of piers and an abutment each end. Railings run
+along its outer edges only; between and beside what it carries the deck is a slab. Its piers are placed clear of whatever runs
+underneath (each road's width and shoulders, each track's formation, with a metre to spare), as few as keep every span within what
+the deck can carry (40 m steel, 30 m concrete), and a pier near what it stands beside runs along it, as one in a median does.
+
+Structures > Edit bridge: click a bridge to pick it. Its piers show as numbered handles on its underside: drag one along the bridge,
+or pick one and press Del to take it out. Its card sets the deck (steel girders or a concrete beam), the piers' style (walls under a
+railway and columns under a road unless set: wall, a row of columns, or one column), adds or removes piers (Add goes in the middle
+of the longest span; Auto puts them back where they'd be placed), gives the deck room for up to four more tracks or lanes each side,
+and sets each end's retaining walls: their length (0 for as the bank needs) and how far they flare back from square. What's set is
+saved in Bridges.json with the route, keyed by the bridge's end nodes, and each change is one undo.
+
+Pier columns, walls, caps and bearings come from a kit (`Tools/Blender/bridges.py`, writing `Models/Track/bridge_kit.glb`), each
+stretched to fit; without it they're plain blocks. A guide's mapped bridge keeps its own simpler deck until track's laid across it.
 
 ## Shaping track by hand
 

@@ -30,6 +30,21 @@ public static class UnitText
         ? (newtons / NewtonsPerPoundForce).ToString("#,0", Invariant) + " lbf"
         : (newtons / 1000.0).ToString("#,0", Invariant) + " kN";
 
+    /// A liquid's volume, from litres: US gallons, or litres.
+    public static string Volume(double litres) => Imperial
+        ? (litres / 3.785411784).ToString("#,0", Invariant) + " gal"
+        : litres.ToString("#,0", Invariant) + " L";
+
+    /// Sand, from cubic metres: cubic feet, or cubic metres.
+    public static string SandVolume(double cubicMetres) => Imperial
+        ? (cubicMetres / 0.0283168).ToString("0.0", Invariant) + " cu ft"
+        : cubicMetres.ToString("0.00", Invariant) + " m³";
+
+    /// A rate of burning fuel, from litres an hour: gallons an hour, or litres an hour.
+    public static string FuelRate(double litresPerHour) => Imperial
+        ? (litresPerHour / 3.785411784).ToString("#,0", Invariant) + " gal/h"
+        : litresPerHour.ToString("#,0", Invariant) + " L/h";
+
     public static string Speed(double metresPerSecond) => Imperial
         ? (metresPerSecond * 2.2369363).ToString("0", Invariant) + " mph"
         : (metresPerSecond * 3.6).ToString("0", Invariant) + " km/h";

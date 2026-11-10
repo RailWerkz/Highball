@@ -1,3 +1,4 @@
+using Highball.World;
 using Brutal.ImGuiApi;
 using Highball.Routes;
 using RailWerkz.UI;
@@ -80,11 +81,19 @@ public sealed class RoadEditor
         return best;
     }
 
-    /// Where a road laid at this place would join: a road's point there, a road passing there, or just the ground.
+    /// Other places a road laid nearby should end exactly on: the ends of the grade crossings' pads.
+    public Func<IEnumerable<(double X, double Z)>>? Anchors { get; set; }
+
+    /// Where a road laid at this place would join: a road's point there, a road passing there, a crossing's end, or just the ground.
     public LayPoint Snap(double x, double z, double within)
     {
         if (Nearest(x, z, within, IsRoad) is not { } hit)
+        {
+            foreach (var (ax, az) in Anchors?.Invoke() ?? [])
+                if ((ax - x) * (ax - x) + (az - z) * (az - z) < Math.Max(within, 4.0) * Math.Max(within, 4.0))
+                    return new LayPoint(ax, az);
             return new LayPoint(x, z);
+        }
 
         var (_, xs, zs) = _ways.First(w => w.Way.Id == hit.Way);
         foreach (var i in (int[])[hit.Segment, hit.Segment + 1])
@@ -171,6 +180,95 @@ public sealed class RoadEditor
         }
 
         return best;
+    }
+
+    /// Cuts every road running along a crossing's pad back to its ends: each is split where it crosses either end (a node there,
+    /// for it to end on), and what lay between taken out. Roads crossing the pad the other way (along the track) are left be.
+    public NetworkEdit? CutAt(CrossingPad pad)
+    {
+        Refresh();
+        var reach = pad.Half + 4f;
+        var changes = new List<(long Id, NetworkWay? Before, NetworkWay? After)>();
+        foreach (var (way, xs, zs) in _ways)
+        {
+            if (!IsRoad(way) || IsBridge(way))
+                continue;
+
+            // The way's points, with a new one wherever it passes either end of the pad (on the road, not off to a side).
+            var points = new List<(long Node, double Lat, double Lon, float T, float W)>();
+            for (var i = 0; i < way.Nodes.Length; i++)
+            {
+                var (t, w) = pad.Local(xs[i], zs[i]);
+                if (i > 0)
+                {
+                    var (pt, pw) = (points[^1].T, points[^1].W);
+                    foreach (var end in pt < t ? (float[])[pad.From, pad.To] : [pad.To, pad.From])
+                    {
+                        if ((pt - end) * (t - end) >= 0f)
+                            continue;
+                        var f = (end - pt) / (t - pt);
+                        var cw = pw + (w - pw) * f;
+                        if (MathF.Abs(cw) > reach)
+                            continue;
+                        var (cx, cz) = pad.At(end, cw);
+                        var geo = Geo(cx, cz);
+                        points.Add((_network.NewId(), geo.Lat, geo.Lon, end, cw));
+                    }
+                }
+
+                points.Add((way.Nodes[i], way.Lat[i], way.Lon[i], t, w));
+            }
+
+            // Which stretches lie on the pad, running along it.
+            var gone = new bool[points.Count - 1];
+            var any = false;
+            for (var k = 0; k + 1 < points.Count; k++)
+            {
+                var (a, b) = (points[k], points[k + 1]);
+                var (mt, mw) = ((a.T + b.T) * 0.5f, (a.W + b.W) * 0.5f);
+                var (dt, dw) = (b.T - a.T, b.W - a.W);
+                var along = MathF.Abs(dt) / MathF.Max(MathF.Sqrt(dt * dt + dw * dw), 1e-4f);
+                gone[k] = mt > pad.From + 0.05f && mt < pad.To - 0.05f && MathF.Abs(mw) <= reach && along > 0.7f;
+                any |= gone[k];
+            }
+
+            if (!any)
+                continue;
+
+            // What's left, stretch by stretch: the first keeps the way's id.
+            var kept = false;
+            var run = new List<int>();
+            void Flush()
+            {
+                if (run.Count >= 2)
+                {
+                    var id = kept ? _network.NewId() : way.Id;
+                    changes.Add((id, kept ? null : way, Edited(way, id, [.. run.Select(r => points[r].Node)], [.. run.Select(r => points[r].Lat)], [.. run.Select(r => points[r].Lon)])));
+                    kept = true;
+                }
+
+                run.Clear();
+            }
+
+            for (var k = 0; k + 1 < points.Count; k++)
+            {
+                if (gone[k])
+                {
+                    Flush();
+                    continue;
+                }
+
+                if (run.Count == 0)
+                    run.Add(k);
+                run.Add(k + 1);
+            }
+
+            Flush();
+            if (!kept)
+                changes.Add((way.Id, way, null));
+        }
+
+        return Commit(changes);
     }
 
     public NetworkEdit? Remove(long way) =>

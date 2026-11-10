@@ -7,6 +7,7 @@ layout(location = 2) in vec4 inData;
 layout(location = 0) out vec3 vRelative;
 layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec4 vData;
+out float gl_ClipDistance[1];
 
 layout(push_constant) uniform Push
 {
@@ -30,4 +31,9 @@ void main()
     if ((int(inData.z + 0.5) & 7) == 3 && inData.w < 0.0)
         nearer += min(0.3, 30.0 / max(length(relative), 1.0));
     gl_Position = pc.viewProjection * vec4(relative * (1.0 - nearer), 1.0);
+    // Rails and painted parts stop at the detail reach (past it the ballast paints them): clipped there by the hardware, each
+    // triangle cut exactly where it crosses, so the fragment shader needn't discard (which would cost every pixel it draws its
+    // early depth test). Everything else is kept.
+    int material = int(inData.z + 0.5) & 7;
+    gl_ClipDistance[0] = material == 1 || material == 5 ? pc.camera.w - length(relative) : 1.0;
 }

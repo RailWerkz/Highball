@@ -83,6 +83,12 @@ public sealed class TrainBody
     public bool[] Coupled { get; }
     private readonly bool[] _readyToCouple;
 
+    /// Each car's handbrake: wound on (HandbrakeOn), and how far it's taken up, 0 off to 1 hard on. It's wound on and off
+    /// over HandbrakeTime, and holds as hard as a full service does: it slows a car moving as the air brake does, not at once.
+    public bool[] HandbrakeOn { get; }
+    public double[] Handbrake { get; }
+    public const double HandbrakeTime = 4.0;
+
     /// What happened to the couplings (coupled up, a hose parted), for the crew to be told.
     public Action<string>? Happened { get; set; }
 
@@ -127,13 +133,19 @@ public sealed class TrainBody
         Coupled = new bool[Extension.Length];
         Array.Fill(Coupled, true);
         _readyToCouple = new bool[Extension.Length];
+        HandbrakeOn = new bool[Count];
+        Handbrake = new double[Count];
         for (var i = 0; i < Count; i++)
             if (cars[i].Def is { Kind: VehicleKind.Locomotive, Power: > 0.0 } loco)
-                Systems[i] = new LocoSystems(loco.EngineSound?.StartupSeconds ?? 10.0);
+                Systems[i] = new LocoSystems(loco.EngineSound?.StartupSeconds ?? 10.0, loco.Supplies);
         _mass = new double[Count];
         _inertia = new double[Count];
         _gravity = new double[Count];
         _next = new double[Count];
+        WheelSlip = new double[Count];
+        _slipping = new bool[Count];
+        _slipCut = new double[Count];
+        Array.Fill(_slipCut, 1.0);
         var lightest = double.MaxValue;
         for (var i = 0; i < Count; i++)
         {
@@ -149,6 +161,39 @@ public sealed class TrainBody
     }
 
     public double Mass => _mass.Sum();
+
+    /// Sand's wanted under the locomotives' wheels (the lead's sander switch, trainlined and radioed to the remotes).
+    public bool Sanding { get; set; }
+
+    /// Each locomotive's wheels slipping, 0 gripping to 1 spinning hard, eased so it can be heard and shown.
+    public double[] WheelSlip { get; private set; } = [];
+
+    /// Each locomotive's wheels are slipping now (they've broken away and not yet got hold again), and how far its wheel
+    /// slip control has cut its power back to get them to (1 none, falling as it cuts).
+    private bool[] _slipping = [];
+    private double[] _slipCut = [];
+
+    /// Grip as the wheels slip rather than roll: a share of what they hold rolling. AC's control keeps the creep small.
+    private const double SlidingGripDc = 0.75, SlidingGripAc = 0.90;
+    /// Sand on the rail adds this much to what the wheels grip with.
+    public const double SandGrip = 1.20;
+
+    /// Adhesion falls with speed (Curtius and Kniffler), as a share of its value standing.
+    public static double AdhesionAtSpeed(double metresPerSecond)
+    {
+        var kmh = Math.Abs(metresPerSecond) * 3.6;
+        return (0.161 + 7.5 / (kmh + 44.0)) / (0.161 + 7.5 / 44.0);
+    }
+
+    /// The most a locomotive's wheels can pull with before they slip, newtons, at its speed now.
+    public double AdhesionLimit(int i) => Cars[i].Def.Adhesion * AdhesionAtSpeed(Velocity[i]) * (Systems[i]?.Sanding == true ? SandGrip : 1.0) * _mass[i] * Gravity;
+
+    /// Car i weighs this now (its load changed): its inertia goes with it, as worked out when the train was made up.
+    public void SetMass(int i, double mass)
+    {
+        _inertia[i] = mass * (Cars[i].Def.Kind == VehicleKind.Locomotive ? 1.15 : 1.05);
+        _mass[i] = mass;
+    }
 
     /// Runs on for h seconds with each locomotive doing as Commands says. Returns how far the lead car went along the rail.
     public double Step(double h, bool powerCut)
@@ -181,10 +226,33 @@ public sealed class TrainBody
 
         Brakes.CompressorShare = engines > 0 ? (double)pumping / engines : 1.0;
 
+        // Fuel, oil and water burnt, sand put down; a locomotive weighs what it's carrying.
+        for (var i = 0; i < Count; i++)
+        {
+            if (Systems[i] is not { } systems)
+                continue;
+            var def = Cars[i].Def;
+            var notch = Commands[i].Dynamic > 0.0 ? 0 : Commands[i].Notch;
+            var kilowatts = Math.Abs(Traction[i] * Velocity[i]) / 1000.0 + 40.0 * notch / Train.Notches;
+            systems.Use(h, kilowatts, Sanding);
+            if (def.Supplies is not null)
+            {
+                var mass = def.MassDry + systems.SuppliesMass;
+                if (Math.Abs(mass - _mass[i]) > 1.0)
+                    SetMass(i, mass);
+            }
+        }
+
+        for (var i = 0; i < Count; i++)
+        {
+            var wound = HandbrakeOn[i] ? 1.0 : 0.0;
+            Handbrake[i] = wound > Handbrake[i] ? Math.Min(wound, Handbrake[i] + h / HandbrakeTime) : Math.Max(wound, Handbrake[i] - h / HandbrakeTime);
+        }
+
         for (var s = 0; s < steps; s++)
         {
             Brakes.Step(hs);
-            Forces(powerCut);
+            Forces(powerCut, hs);
 
             for (var i = 0; i < Count; i++)
             {
@@ -249,6 +317,46 @@ public sealed class TrainBody
         }
     }
 
+    /// Car `to` takes car `from` of another body's state as it stands: its speed (negated, turned round), engine and
+    /// handbrake.
+    public void TakeCar(int to, TrainBody other, int from, bool turned)
+    {
+        Velocity[to] = turned ? -other.Velocity[from] : other.Velocity[from];
+        Systems[to] = other.Systems[from];
+        WheelSlip[to] = other.WheelSlip[from];
+        _slipping[to] = other._slipping[from];
+        _slipCut[to] = other._slipCut[from];
+        SetMass(to, other._mass[from]);
+        Starting[to] = other.Starting[from];
+        HandbrakeOn[to] = other.HandbrakeOn[from];
+        Handbrake[to] = other.Handbrake[from];
+        Brakes.TakeCar(to, other.Brakes, from);
+    }
+
+    /// Coupling `to` takes coupling `from` of another body (car from to from + 1): its slack, knuckles and air hose, its
+    /// cocks swapped if it's turned round.
+    public void TakeLink(int to, TrainBody other, int from, bool turned)
+    {
+        Extension[to] = other.Extension[from];
+        Coupled[to] = other.Coupled[from];
+        _readyToCouple[to] = other._readyToCouple[from];
+        Brakes.Hose[to] = other.Brakes.Hose[from];
+        (Brakes.CockAhead[to], Brakes.CockBehind[to]) = turned
+            ? (other.Brakes.CockBehind[from], other.Brakes.CockAhead[from])
+            : (other.Brakes.CockAhead[from], other.Brakes.CockBehind[from]);
+    }
+
+    /// A coupling just made between two cuts run together: locked, but the hose not joined and both cocks shut (the crew
+    /// joins them), its slack where the two met.
+    public void Joined(int link, double extension)
+    {
+        Extension[link] = extension;
+        Coupled[link] = true;
+        _readyToCouple[link] = false;
+        Brakes.Hose[link] = false;
+        Brakes.CockAhead[link] = Brakes.CockBehind[link] = 0.0;
+    }
+
     /// Stops the lead car dead (it's come up against the end of the track); the rest run in on it.
     public void HaltLead() => Velocity[0] = 0.0;
 
@@ -297,7 +405,7 @@ public sealed class TrainBody
         return Math.Min(Math.Min(1.0, (v - 1.0) / 3.5), 11.2 / v);
     }
 
-    private void Forces(bool powerCut)
+    private void Forces(bool powerCut, double hs)
     {
         // Couplers first: they decide the rest. An uncoupled pair only pushes, when they meet.
         for (var j = 0; j < Extension.Length; j++)
@@ -333,6 +441,9 @@ public sealed class TrainBody
                 Traction[i] = reverser * share * Math.Min(def.StartingTractiveEffort, def.Power / pulling);
             }
 
+            if (loco)
+                Traction[i] = Adhere(i, Traction[i], hs);
+
             // Rolling and curve resistance, Davis.
             var mph = Math.Abs(v) * MphPerMetrePerSecond;
             var tons = _mass[i] / KgPerShortTon;
@@ -351,8 +462,41 @@ public sealed class TrainBody
 
             // Brake shoes press with a force set by the car's empty weight, so a loaded car stops slower: at a full
             // service, 10% of it on a car, 8% on a locomotive.
-            Braking[i] = Brakes.Braking(i) * (loco ? 0.08 : 0.10) * def.MassEmpty * Gravity;
+            Braking[i] = Math.Max(Brakes.Braking(i), Handbrake[i]) * (loco ? 0.08 : 0.10) * def.MassEmpty * Gravity;
         }
+    }
+
+    /// What a locomotive's wheels actually pull with, asked for `wanted`: all of it while they grip; once it's more than they
+    /// can hold they break away and slip, pulling with less, and its wheel slip control cuts the power back until they
+    /// take hold again, then lets it build back up. Sand lets them hold more.
+    private double Adhere(int i, double wanted, double hs)
+    {
+        var def = Cars[i].Def;
+        var ac = def.AcTraction;
+        var asked = Math.Abs(wanted) * _slipCut[i];
+        var limit = AdhesionLimit(i);
+        if (!_slipping[i] && asked > limit && asked > 1000.0)
+            _slipping[i] = true;
+        // Once slipping they only take hold again with the pull well under what they'd grip with.
+        else if (_slipping[i] && (asked < limit * (ac ? 0.97 : 0.85) || asked <= 1000.0))
+            _slipping[i] = false;
+
+        double pull, spin;
+        if (_slipping[i])
+        {
+            pull = Math.Min(asked, limit * (ac ? SlidingGripAc : SlidingGripDc));
+            spin = Math.Clamp(0.35 + (asked / limit - 1.0) * 3.0, 0.3, 1.0) * (ac ? 0.45 : 1.0);
+            _slipCut[i] = Math.Max(0.2, _slipCut[i] - hs * (ac ? 3.0 : 0.9));
+        }
+        else
+        {
+            pull = asked;
+            spin = 0.0;
+            _slipCut[i] = Math.Min(1.0, _slipCut[i] + hs * (ac ? 0.6 : 0.18));
+        }
+
+        WheelSlip[i] += (spin - WheelSlip[i]) * Math.Min(1.0, hs * (spin > WheelSlip[i] ? 8.0 : 2.5));
+        return Math.Sign(wanted) * pull;
     }
 
     /// What a coupling carries at an extension, opening (rate positive with it) or closing.

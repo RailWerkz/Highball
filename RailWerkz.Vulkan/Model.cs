@@ -54,8 +54,9 @@ public sealed class Model : IDisposable
 
     /// Loads Content/Models/relativePath. targetLength, if set, scales the model so its longest side is that many metres.
     /// preRotation (radians XYZ) turns the model before sizing, for files that aren't Y-up. nodeName picks one model
-    /// out of a pack: only that node and its children are loaded. skipNode leaves a node and its children out (or several,
-    /// comma-separated). frame,
+    /// out of a pack: only that node and its children are loaded (or several, comma-separated). skipNode leaves a node and
+    /// its children out (or several, comma-separated). Either may end a name in * to match every node starting so
+    /// ("Truck_*"). frame,
     /// if given, places the model the way another part of the same file was placed instead of sizing it. skinned keeps
     /// the file's skins for animating (see Skeleton) rather than freezing them in their bind pose.
     public static Model Load(string relativePath, float targetLength = 0f, float3 preRotation = default, string? nodeName = null,
@@ -71,7 +72,8 @@ public sealed class Model : IDisposable
         var perMaterial = new SortedDictionary<int, (List<Vertex> Vertices, List<uint> Indices)>();
 
         var found = nodeName is null;
-        var skip = SkipSet(skipNode);
+        var skip = NamePatterns(skipNode);
+        var pick = NamePatterns(nodeName);
         var origin = default(float3);
 
         void AddNode(int nodeIndex, float4x4 parent, bool include)
@@ -80,13 +82,14 @@ public sealed class Model : IDisposable
             var trs = float4x4.CreateScale(node.Scale) * float4x4.CreateFromQuaternion(node.Rotation) * float4x4.CreateTranslation(node.Translation);
             var world = node.Matrix * trs * parent;
 
-            if (node.Name is { } name && skip.Contains(name))
+            if (node.Name is { } name && Matches(skip, name))
                 return;
 
-            if (!include && node.Name == nodeName)
+            if (!include && node.Name is { } picked && Matches(pick, picked))
             {
+                if (!found)
+                    origin = new float3(world.M41, world.M42, world.M43);
                 include = found = true;
-                origin = new float3(world.M41, world.M42, world.M43);
             }
 
             if (include && node.Mesh is { } meshIndex)
@@ -217,8 +220,23 @@ public sealed class Model : IDisposable
         return new Model(mesh, subMeshes, surfaces, min, max, placement) { Origin = pivot };
     }
 
-    private static HashSet<string> SkipSet(string? skipNode) =>
-        skipNode is null ? [] : [.. skipNode.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)];
+    private static HashSet<string> SkipSet(string? skipNode) => NamePatterns(skipNode);
+
+    private static HashSet<string> NamePatterns(string? names) =>
+        names is null ? [] : [.. names.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)];
+
+    /// A node name against a set of names, any of which may end in * for every name starting so.
+    private static bool Matches(HashSet<string> patterns, string name)
+    {
+        if (patterns.Count == 0)
+            return false;
+        if (patterns.Contains(name))
+            return true;
+        foreach (var pattern in patterns)
+            if (pattern.EndsWith('*') && name.StartsWith(pattern.AsSpan(0, pattern.Length - 1), StringComparison.Ordinal))
+                return true;
+        return false;
+    }
 
     // The skinned path: bones from the skins' joints and the nodes above them, vertices kept at bind pose with up to
     // four weights each into one shared palette. Each mesh's own node transform is folded into its vertices (and out

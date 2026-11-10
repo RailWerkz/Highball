@@ -90,6 +90,8 @@ public sealed partial class EditorView : IDisposable
     private (double X, double Z)? _grabFrom;
     private (double X, double Z)? _dragOffset;
     private float2? _boxFrom;
+    /// Editing track, with no control point under the pointer: the place on a track it's over, where Ctrl+click puts a new point.
+    private (long Way, int Segment, double X, double Z)? _insertAt;
     private readonly PenTool _pen = new();
     private readonly RoadTool _road = new();
     private RoadEditor? _roads;
@@ -113,9 +115,15 @@ public sealed partial class EditorView : IDisposable
     private (double X, double Y, double Z, float Yaw, float Pitch)? _flight;
     private float2? _panFrom;
 
-    // The grades on the track (G), left as they were each time the view opens.
-    private static bool _showGrades = true;
-    private (float2 Screen, float Grade, float Height)? _gradeAt;
+    /// What the track overlay colours rail lines by: nothing, their grade, or their class (Main, Branch, Yard...).
+    private enum TrackOverlay { Off, Grade, Class, ClassMap }
+
+    /// Built track coloured by its class (with or without the mapped track beside it).
+    private static bool ByClass => _overlay is TrackOverlay.Class or TrackOverlay.ClassMap;
+
+    // The track overlay (G cycles it), left as it was each time the view opens.
+    private static TrackOverlay _overlay = TrackOverlay.Grade;
+    private (float2 Screen, float Grade, float Height, int Class)? _gradeAt;
 
     /// R held with something in the Objects tool to turn: the wheel turns it instead of moving the camera.
     private bool WheelTurns => _tool == Tool.Place && !Keyboard.KeysBlocked && Input.Key(GlfwKey.R) && _terrain is { } terrain &&
@@ -134,6 +142,10 @@ public sealed partial class EditorView : IDisposable
     private long? _switch;
     private readonly ShapeTool _shape = new();
     private readonly FollowTool _follow = new();
+
+    /// Parallel started on a guide: its first track follows the guide as Follow lays it, the others beside it.
+    private readonly FollowTool _parallelFollow = new();
+    private bool _parallelFollowing;
     private readonly YardTool _yard = new();
     private readonly YardTool _parallel = YardTool.ForParallel();
 
@@ -168,7 +180,7 @@ public sealed partial class EditorView : IDisposable
         Lighting = new LightingPanel(_renderer, route.Origin.Latitude, route.Origin.Longitude);
         _opening = TerrainSource.Open(route);
         if (DevTools.Clean)
-            _showGrades = false;
+            _overlay = TrackOverlay.Off;
         if (DevTools.Skybox is { } sky)
         {
             DevTools.Skybox = null;
@@ -213,9 +225,10 @@ public sealed partial class EditorView : IDisposable
             _place.Pen.Clear();
         else if (_selection.Count > 0)
             _selection.Clear();
-        else if (_tool == Tool.Parallel && (_parallel.Anchor is not null || _parallelPen.Count > 0))
+        else if (_tool == Tool.Parallel && (_parallel.Anchor is not null || _parallelPen.Count > 0 || _parallelFollow.Count > 0))
         {
             _parallelPen.Clear();
+            _parallelFollow.Clear();
             _parallel.Clear();
         }
         else if (_tool == Tool.Place && _place.Selected is not null)
@@ -302,7 +315,6 @@ public sealed partial class EditorView : IDisposable
 
             _terrain = new Terrain(_opening.Result);
             _network = new NetworkMeshes(_opening.Result);
-            _opening.Result.Objects.AddRange(RouteObjects.Load(_route));
             _network.SetObjects(_opening.Result.Objects, [], _route.Projection!);
             if (DevTools.AuditFile is { } auditFile)
             {
@@ -342,10 +354,13 @@ public sealed partial class EditorView : IDisposable
 
         KeepWorldCurrent();
 
-        if (ImGui.IsKeyPressed(ImGuiKey.F))
+        // (Left Shift with it: F alone is the tools' own, flipping a side.)
+        if (ImGui.IsKeyPressed(ImGuiKey.F) && ImGui.IsKeyDown(ImGuiKey.LeftShift) && !Keyboard.KeysBlocked)
             _renderer.Wireframe = !_renderer.Wireframe;
         if (ImGui.IsKeyPressed(ImGuiKey.G) && !Keyboard.KeysBlocked)
-            _showGrades = !_showGrades;
+            _overlay = _overlay switch { TrackOverlay.Off => TrackOverlay.Grade, TrackOverlay.Grade => TrackOverlay.Class, TrackOverlay.Class => TrackOverlay.ClassMap, _ => TrackOverlay.Off };
+        if (ImGui.IsKeyPressed(ImGuiKey.M) && !Keyboard.KeysBlocked)
+            World.MaterialsWindow.Instance.Toggle();
 
         // T throws the switch nearest the pointer.
         if (ImGui.IsKeyPressed(ImGuiKey.T) && !Keyboard.KeysBlocked && Pick(Input.MousePosition) is { } at)
@@ -600,7 +615,7 @@ public sealed partial class EditorView : IDisposable
 
         _pointerAt = Blocked ? null : Pick(Input.MousePosition);
         _hit = _tool == Tool.Look ? null : _pointerAt;
-        if (_tool == Tool.Flatten && !Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.F) && _hit is { } sampled)
+        if (_tool == Tool.Flatten && !Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.F) && !ImGui.IsKeyDown(ImGuiKey.LeftShift) && _hit is { } sampled)
             SampleFlatten(source, sampled.X, sampled.Z);
         if (_tool == Tool.Switches && source.Lines is { } picked)
             SwitchesUpdate(picked);
@@ -618,8 +633,14 @@ public sealed partial class EditorView : IDisposable
         if (_tool == Tool.Road)
             RoadUpdate();
         BridgeUpdate();
-        if (DevTools.ShapeOps is { Count: > 0 } && _rebuild is null)
-            ShapeOp(source, DevTools.ShapeOps.Dequeue());
+        // "until:<seconds>" holds the ops after it till the app's been running that long.
+        if (DevTools.ShapeOps is { Count: > 0 } ops && _rebuild is null
+            && !(ops.Peek().StartsWith("until:", StringComparison.Ordinal) && RailWerkz.Core.Time.Time.Now < double.Parse(ops.Peek()[6..], CultureInfo.InvariantCulture)))
+        {
+            var op = ops.Dequeue();
+            if (!op.StartsWith("until:", StringComparison.Ordinal))
+                ShapeOp(source, op);
+        }
 
         if (_tool is Tool.Track or Tool.Pen or Tool.Circuits or Tool.Switches or Tool.Shape or Tool.Follow or Tool.Place or Tool.Road or Tool.Parallel)
             return;
@@ -699,12 +720,22 @@ public sealed partial class EditorView : IDisposable
                 (_place.RunFrom, _place.RunFirst) = (null, null);
                 ApplyPlaced(undo ? run.Edits.Select(e => new PlacedEdit(e.After, e.Before)).ToList() : run.Edits);
                 break;
+            case BridgeChange bridge:
+                ApplyBridge(bridge.Key, undo ? bridge.Before : bridge.After);
+                break;
+            case CrossingEdit crossing:
+                if (crossing.Roads is { } roads)
+                    _tracks!.Apply(roads, undo);
+                ApplyPlaced(undo ? crossing.Placed.After : crossing.Placed.Before, undo ? crossing.Placed.Before : crossing.Placed.After);
+                RebuildNetwork();
+                break;
         }
     }
 
     private bool Save(TerrainSource source)
     {
         _circuitEditor?.Save();
+        SaveStock();
         if (source.Unsaved)
             source.SaveEdits();
         if (!source.Network.Unsaved)
@@ -790,6 +821,28 @@ public sealed partial class EditorView : IDisposable
 
         RouteObjects.Save(_route, source.Objects);
         _network!.SetObjects(source.Objects, changed, _route.Projection!);
+
+        // A crossing's pad shapes the ground and its roads' ends: placed, taken away or moved, the lines are worked out again.
+        if (edits.Any(e => (e.Before?.Kind == PlacedKind.GradeCrossing || e.After?.Kind == PlacedKind.GradeCrossing)
+            && (e.Before?.Lat, e.Before?.Lon, e.Before?.Heading, e.Before?.Width) != (e.After?.Lat, e.After?.Lon, e.After?.Heading, e.After?.Width)))
+            RebuildNetwork();
+    }
+
+    /// A grade crossing placed (or put back) with the roads along it cut back to its pad's ends, as one undo.
+    private void CrossingPlace(NetworkLines lines, PlacedObject after, PlacedObject? before)
+    {
+        var x = PlacedAtWorld(after);
+        NetworkEdit? roads = null;
+        if (lines.PadFor(after.Id, x.X, x.Z, after.Heading, after.Width) is { } pad)
+            roads = Roads.CutAt(pad);
+        if (before is not null && roads is null && before == after)
+            return;
+        ApplyPlaced(before, after);
+        _undo.Push(new CrossingEdit(roads, new PlacedEdit(before, after)));
+        _redo.Clear();
+        _place.Selected = after.Id;
+        if (roads is not null)
+            RebuildNetwork();
     }
 
     private void PlacedChange(PlacedObject? before, PlacedObject? after)
@@ -887,7 +940,7 @@ public sealed partial class EditorView : IDisposable
                 _place.Selected = existing.Id;
                 break;
             case PlaceMode.GradeCrossing when PlaceTool.CrossingAt(lines, x, z) is { } crossing:
-                PlacedChange(null, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, crossing.Width));
+                CrossingPlace(lines, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, crossing.Width), null);
                 break;
             case PlaceMode.Pole:
                 PolePress(lines, x, z);
@@ -916,7 +969,10 @@ public sealed partial class EditorView : IDisposable
         }
     }
 
-    private RoadEditor Roads => _roads ??= new RoadEditor(_route, _terrain!.Source.Network, _tracks!);
+    private RoadEditor Roads => _roads ??= new RoadEditor(_route, _terrain!.Source.Network, _tracks!)
+    {
+        Anchors = () => _terrain?.Source.Lines?.Pads.SelectMany(p => (IEnumerable<(double, double)>)[p.Start, p.End]) ?? [],
+    };
 
     /// How many metres of ground a few pixels cover, at a place on it.
     private double PickReach(double x, double z)
@@ -1086,7 +1142,7 @@ public sealed partial class EditorView : IDisposable
                 PlacedChange(o, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, id: o.Id));
                 break;
             case PlacedKind.GradeCrossing when PlaceTool.CrossingAt(lines, x, z) is { } crossing:
-                PlacedChange(o, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, id: o.Id));
+                PlacedChange(o, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, o.Opposite, id: o.Id) with { Turn = o.Turn, Style = o.Style });
                 break;
             case PlacedKind.HandThrow when PlaceTool.SwitchAt(lines, x, z) is { } turnout && _terrain!.Source.Objects.All(p => p.Node != turnout.Node):
                 PlacedChange(o, Placed(PlacedKind.HandThrow, turnout.X, turnout.Z, 0.0, turnout.Node, opposite: o.Opposite, id: o.Id));
@@ -1101,7 +1157,19 @@ public sealed partial class EditorView : IDisposable
         var blocked = Blocked;
         var mouse = Input.MousePosition;
         var ground = !blocked && _hit is { } hit ? (hit.X, hit.Z) : ((double, double)?)null;
+        if (_place.Mode == PlaceMode.EditBridge)
+        {
+            if (!blocked && _rebuild is null)
+                BridgeEditUpdate(ground, mouse);
+            return;
+        }
+
         _place.Update(lines, _tracks!, ground, PanelLength);
+        // What's under the pointer, ringed as what a click would pick. (A run being laid isn't stopped by a pole in its way.)
+        var under = blocked || _place.RunFrom is not null || (_place.Mode == PlaceMode.Pole && _place.Drawn == PoleDraw.Pen)
+            ? null
+            : PlaceTool.At(source.Objects, o => ProjectGround(PlacedAtWorld(o).X, PlacedAtWorld(o).Z), mouse, S(1f));
+        _place.Hovered = under;
         if (blocked || _rebuild is not null)
             return;
 
@@ -1121,8 +1189,6 @@ public sealed partial class EditorView : IDisposable
         var picked = source.Objects.FirstOrDefault(o => o.Id == _place.Selected);
         if (Input.MouseDown(GlfwMouseButton.Left))
         {
-            // (A run being laid isn't stopped by a pole in its way.)
-            var under = _place.RunFrom is not null ? null : PlaceTool.At(source.Objects, o => ProjectGround(PlacedAtWorld(o).X, PlacedAtWorld(o).Z), mouse, S(1f));
             if (under is not null)
             {
                 _place.Selected = under.Id;
@@ -1147,13 +1213,15 @@ public sealed partial class EditorView : IDisposable
         if (Keyboard.KeysBlocked)
             return;
 
-        // R held with the wheel turns it a little at a time; R tapped alone turns it 15 degrees as it's let go.
+        // R held with the wheel turns it a little at a time (a quarter degree a notch; Ctrl, a twentieth, for lining up
+        // exactly; Shift, 5 degrees); R tapped alone turns it 15 degrees as it's let go.
         if (Input.KeyDown(GlfwKey.R))
             _wheeled = false;
         if (WheelTurns && Input.Scroll != 0f)
         {
             _wheeled = true;
-            var degrees = Input.Scroll * (shift ? 5.0 : 1.0);
+            var ctrl = Input.Key(GlfwKey.LeftControl) || Input.Key(GlfwKey.RightControl);
+            var degrees = Input.Scroll * (shift ? 5.0 : ctrl ? 0.05 : 0.25);
             if (picked is not null)
             {
                 _wheelFrom ??= picked;
@@ -1195,17 +1263,54 @@ public sealed partial class EditorView : IDisposable
     }
 
     /// A signal or crossing turned right round; a hand throw to the switch's other side.
-    private void PlaceFlip(PlacedObject o) => PlacedChange(o, o.Kind == PlacedKind.HandThrow ? o with { Opposite = !o.Opposite } : o with { Heading = o.Heading + 180.0 });
+    private void PlaceFlip(PlacedObject o) => PlacedChange(o, o.Kind is PlacedKind.HandThrow or PlacedKind.GradeCrossing ? o with { Opposite = !o.Opposite } : o with { Heading = o.Heading + 180.0 });
+
+    /// The gate turn being dragged on the slider, until it's let go (then it's one edit, for undo).
+    private float? _crossingTurn;
+
+    /// A grade crossing's surface, and its masts: turned on their posts, and which side of the road they stand.
+    private void CrossingPanel(PlacedObject picked)
+    {
+        Kit.Caption("Surface");
+        var style = (int)picked.Style;
+        var styles = Enum.GetValues<CrossingStyle>();
+        var names = styles.Select(CrossingStyleName).ToArray();
+        var chosen = ToolPanel.Mode("surface", names, style, 2);
+        if (chosen != style)
+            PlacedChange(picked, picked with { Style = chosen });
+
+        var turn = _crossingTurn ?? picked.Turn;
+        ToolPanel.Value("gateturn", "Gate turn (degrees)", ref turn, -180f, 180f, "0", out var let);
+        _crossingTurn = ImGui.IsItemActive() ? turn : null;
+        if (let)
+            PlacedChange(picked, picked with { Turn = turn });
+        var nudges = new[] { ("-15", -15f), ("-5", -5f), ("+5", 5f), ("+15", 15f), ("0", 0f) };
+        var hit = Kit.Buttons("gatenudge", nudges.Select(n => n.Item1).ToArray());
+        if (hit >= 0)
+        {
+            var by = nudges[hit].Item2;
+            PlacedChange(picked, picked with { Turn = by == 0f ? 0f : ((picked.Turn + by + 540f) % 360f) - 180f });
+        }
+
+        if (_terrain?.Source.Lines is { } lines && Kit.Button("cutroads", "Cut Roads"))
+            CrossingPlace(lines, picked, picked);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Ends the roads along this crossing at its edges, with a node each side for roads to join"u8);
+    }
+
+    private static string CrossingStyleName(CrossingStyle style) => style switch
+    {
+        CrossingStyle.Concrete => "Concrete",
+        CrossingStyle.Rubber => "Rubber",
+        CrossingStyle.Timber => "Timber",
+        _ => "Asphalt",
+    };
+
 
     private void PlacePanel(TerrainSource source)
     {
         if (_switchRefused is { } refused)
-        {
-            ImGui.PushStyleColor(ImGuiCol.Text, Style.Stop);
-            ImGui.TextWrapped(refused);
-            ImGui.PopStyleColor();
-        }
-
+            ToolPanel.Problem(refused);
         if (source.Objects.FirstOrDefault(o => o.Id == _place.Selected) is { } picked)
             PlacePicked(picked);
         if (_place.Mode == PlaceMode.Pole)
@@ -1216,31 +1321,66 @@ public sealed partial class EditorView : IDisposable
     /// What can be done to the object picked.
     private void PlacePicked(PlacedObject picked)
     {
-        ImGui.SeparatorText(picked.Kind.Name());
+        Kit.BeginCard(picked.Kind.Name(), null, Accent);
         if (picked.Kind == PlacedKind.GradeCrossing)
         {
             var imperial = Settings.Current.Units == UnitSystem.Imperial;
-            var width = imperial ? picked.Width * FeetPerMeter : picked.Width;
-            if (ImGui.InputFloat(imperial ? "Road (ft)"u8 : "Road (m)"u8, ref width, 1f, 5f, "%.0f"u8, ImGuiInputTextFlags.EnterReturnsTrue))
-                PlacedChange(picked, picked with { Width = Math.Clamp(imperial ? width / FeetPerMeter : width, PlaceTool.MinCrossingWidth, PlaceTool.MaxCrossingWidth) });
+            var factor = imperial ? FeetPerMeter : 1f;
+            var width = _crossingWidth ?? picked.Width * factor;
+            ToolPanel.Value("crossingwidth", imperial ? "Road width (ft)" : "Road width (m)", ref width, PlaceTool.MinCrossingWidth * factor, PlaceTool.MaxCrossingWidth * factor, "0", out var let);
+            _crossingWidth = ImGui.IsItemActive() ? width : null;
+            if (let)
+                PlacedChange(picked, picked with { Width = Math.Clamp(width / factor, PlaceTool.MinCrossingWidth, PlaceTool.MaxCrossingWidth) });
+            CrossingPanel(picked);
         }
 
-        if (picked.Kind != PlacedKind.HandThrow)
+        if (picked.Kind == PlacedKind.Signal && _network is { } network)
         {
-            if (ImGui.Button("Turn 15"u8))
-                PlaceTurn(picked, 15.0);
-            ImGui.SameLine(0f, -1f);
+            // By hand for now, until there are signalling rules to set them; not saved with the route.
+            var lit = network.LampsOf(picked.Id);
+            Kit.Caption("Lamps (test only)");
+            var first = true;
+            foreach (var (lamp, _, _, _, _) in NetworkMeshes.Lamps)
+            {
+                if (!first)
+                    ImGui.SameLine(0f, S(16f));
+                first = false;
+                var on = lit.HasFlag(lamp);
+                if (Kit.Toggle($"lamp{lamp}", lamp.ToString(), ref on))
+                    network.SetLamps(picked, on ? lit | lamp : lit & ~lamp);
+            }
+
+            switch (Kit.Buttons("lamps", ["All", "None"]))
+            {
+                case 0:
+                    network.SetLamps(picked, SignalLamps.Red | SignalLamps.Yellow | SignalLamps.Green);
+                    break;
+                case 1:
+                    network.SetLamps(picked, SignalLamps.None);
+                    break;
+            }
         }
 
-        if (ImGui.Button(picked.Kind == PlacedKind.HandThrow ? "Other Side"u8 : "Turn Round"u8))
-            PlaceFlip(picked);
-        ImGui.SameLine(0f, -1f);
-        if (ImGui.Button("Delete"u8))
-            PlacedChange(picked, null);
+        // Its actions, one row: turning (what can turn), the other side or round, and taking it away.
+        var sided = picked.Kind is PlacedKind.HandThrow or PlacedKind.GradeCrossing;
+        string[] actions = sided ? ["Other Side", "Delete"] : ["Turn 15", "Turn Round", "Delete"];
+        switch (Kit.Buttons("picked", actions))
+        {
+            case var hit when hit >= 0 && actions[hit] == "Turn 15":
+                PlaceTurn(picked, 15.0);
+                break;
+            case var hit when hit >= 0 && actions[hit] is "Other Side" or "Turn Round":
+                PlaceFlip(picked);
+                break;
+            case var hit when hit >= 0 && actions[hit] == "Delete":
+                PlacedChange(picked, null);
+                break;
+        }
+
         if (picked.Run is { } shared)
         {
             var all = _terrain!.Source.Objects.Where(o => o.Run == shared).ToList();
-            if (all.Count > 1 && ImGui.Button($"Delete Its Run ({all.Count})"))
+            if (all.Count > 1 && Kit.Button("deleterun", $"Delete Its Run ({all.Count})"))
             {
                 var edits = all.Select(o => new PlacedEdit(o, null)).ToList();
                 ApplyPlaced(edits);
@@ -1249,7 +1389,12 @@ public sealed partial class EditorView : IDisposable
                 _place.Selected = null;
             }
         }
+
+        Kit.EndCard();
     }
+
+    /// The crossing road width being dragged on the slider, until it's let go.
+    private float? _crossingWidth;
 
     // --- Following guides. ---
 
@@ -1376,7 +1521,7 @@ public sealed partial class EditorView : IDisposable
 
         var tracks = _tracks!;
         _parallelPreview = null;
-        if (!Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.F))
+        if (!Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.F) && !ImGui.IsKeyDown(ImGuiKey.LeftShift))
             _parallel.Side = -_parallel.Side;
         if (blocked || _rebuild is not null)
         {
@@ -1386,10 +1531,18 @@ public sealed partial class EditorView : IDisposable
 
         var mouse = Input.MousePosition;
         var node = tracks.NodeAt(mouse, _camera.X, _camera.Z, ProjectGround);
-        if (_parallelPen.Count == 0 && node is null && Input.MouseDown(GlfwMouseButton.Left) && _hit is { } hit &&
+        if (!_parallelFollowing && _parallelPen.Count == 0 && node is null && Input.MouseDown(GlfwMouseButton.Left) && _hit is { } hit &&
             tracks.SegmentAt(mouse, _camera.X, _camera.Z, ProjectGround) is not null)
         {
             _parallel.Start(tracks, hit.X, hit.Z);
+            return;
+        }
+
+        // Follow: clicked along the guides (from a track's end, or off a track) as Lay's Follow is.
+        if (_parallelFollowing)
+        {
+            var guideClick = FollowClick(_guides!.PlaceAt(mouse, ProjectGround, _camera.X, _camera.Z, ViewReach, S(12f)), tracks.SegmentAt(mouse, _camera.X, _camera.Z, ProjectGround));
+            ParallelFollow(tracks, guideClick ?? (_hit is { } spot ? new FollowTool.Click(spot.X, spot.Z, null, new LayPoint(spot.X, spot.Z)) : null));
             return;
         }
 
@@ -1405,11 +1558,35 @@ public sealed partial class EditorView : IDisposable
         var drawn = _parallelPen.Points(_parallelPreview);
         _parallel.Show(drawn.Count >= 2 ? _parallel.PenParallel(tracks, drawn, PanelLength) : null, _hit is { } p ? (p.X, p.Z) : null);
         if (!Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.Enter) && _parallelPen.Count >= 2 &&
-            _parallel.PenParallel(tracks, _parallelPen.Points(), PanelLength) is { Problem: null } plan && tracks.LayWays(plan.Ways) is { } edit)
+            _parallel.PenParallel(tracks, _parallelPen.Points(), PanelLength, laying: true) is { Problem: null } plan && tracks.LayWays(plan.Ways) is { } edit)
         {
             _parallelPen.Clear();
             _parallel.Show(null, null);
             Committed(edit);
+        }
+    }
+
+    /// Parallel along a guide: the clicks as Follow takes them, the first track the fit through them and the rest beside it.
+    private void ParallelFollow(TrackEditor tracks, FollowTool.Click? click)
+    {
+        _parallelFollow.Update(_guides!, click);
+        _parallel.Show(_parallelFollow.Preview is { } preview ? _parallel.FollowParallel(tracks, preview, null, PanelLength) : null, click is { } at ? (at.X, at.Z) : null);
+        if (Input.MouseDown(GlfwMouseButton.Left) && click is { } placed)
+            _parallelFollow.Add(placed);
+        if (Keyboard.KeysBlocked)
+            return;
+        if (Input.KeyDown(GlfwKey.Backspace))
+            _parallelFollow.RemoveLast();
+        if (Input.KeyDown(GlfwKey.Enter))
+        {
+            _parallelFollow.Update(_guides!, null);
+            if (_parallelFollow.Preview is { } pieces && _parallelFollow.Points() is { } first &&
+                _parallel.FollowParallel(tracks, pieces, first, PanelLength) is { Problem: null } plan && tracks.LayWays(plan.Ways) is { } edit)
+            {
+                _parallelFollow.Clear();
+                _parallel.Show(null, null);
+                Committed(edit);
+            }
         }
     }
 
@@ -1434,64 +1611,58 @@ public sealed partial class EditorView : IDisposable
 
     private void YardControls()
     {
-        foreach (var (mode, name) in ((YardMode, string)[])[(YardMode.Follow, "Follow"), (YardMode.Crossover, "Crossover"), (YardMode.Ladder, "Ladder")])
+        var modes = new[] { YardMode.Follow, YardMode.Crossover, YardMode.Ladder };
+        var current = Array.IndexOf(modes, _yard.Mode);
+        var pick = ToolPanel.Mode("yardmode", ["Follow", "Crossover", "Ladder"], current, 3, _rebuild is null);
+        if (pick != current && pick >= 0)
         {
-            if (mode is YardMode.Crossover or YardMode.Ladder)
-                ImGui.SameLine(0f, -1f);
-            if (ImGui.RadioButton(name, _yard.Mode == mode))
-            {
-                _yard.SetMode(mode);
-                _follow.Clear();
-            }
+            _yard.SetMode(modes[pick]);
+            _follow.Clear();
         }
 
         if (_yard.Mode == YardMode.Follow)
             return;
 
+        Kit.BeginCard(_yard.Mode == YardMode.Ladder ? "Ladder" : "Crossover");
         if (_yard.Mode != YardMode.Crossover)
         {
             var imperial = Settings.Current.Units == UnitSystem.Imperial;
-            var spacing = imperial ? _yard.Spacing * FeetPerMeter : _yard.Spacing;
-            if (ImGui.InputFloat(imperial ? "Spacing (ft)"u8 : "Spacing (m)"u8, ref spacing, 0.1f, 0.5f, "%.1f"u8, ImGuiInputTextFlags.None))
-                _yard.Spacing = Math.Clamp(imperial ? spacing / FeetPerMeter : spacing, YardTool.MinSpacing, YardTool.MaxSpacing);
+            var factor = imperial ? FeetPerMeter : 1f;
+            var spacing = _yard.Spacing * factor;
+            if (ToolPanel.Value("yardspacing", imperial ? "Spacing (ft)" : "Spacing (m)", ref spacing, YardTool.MinSpacing * factor, YardTool.MaxSpacing * factor, "0.0"))
+                _yard.Spacing = Math.Clamp(spacing / factor, YardTool.MinSpacing, YardTool.MaxSpacing);
         }
 
         if (_yard.Mode == YardMode.Ladder)
         {
-            var tracks = (float)_yard.Tracks;
-            if (ImGui.InputFloat("Tracks"u8, ref tracks, 1f, 2f, "%.0f"u8, ImGuiInputTextFlags.None))
-                _yard.Tracks = Math.Clamp((int)MathF.Round(tracks), 1, YardTool.MaxTracks);
+            var tracks = _yard.Tracks;
+            if (ToolPanel.Count("yardtracks", "Tracks", ref tracks, 1, YardTool.MaxTracks))
+                _yard.Tracks = tracks;
         }
 
-        if (_yard.Mode != YardMode.Parallel)
-        {
-            if (_yard.Mode == YardMode.Crossover && ImGui.RadioButton("Automatic##yardsize"u8, _yard.Size == 0))
-                _yard.Size = 0;
-            var first = _yard.Mode == YardMode.Ladder;
-            foreach (var (number, _) in Turnout.Sizes)
-            {
-                if (_yard.Mode == YardMode.Ladder && number > 10)
-                    continue;
-                if (!first)
-                    ImGui.SameLine(0f, -1f);
-                first = false;
-                var picked = _yard.Size == number || (_yard.Mode == YardMode.Ladder && _yard.Size == 0 && number == 8);
-                if (ImGui.RadioButton($"No. {number}##yardsize", picked))
-                    _yard.Size = number;
-            }
-        }
+        // The switch size: any standard one (a ladder's up to No. 10), or automatic for a crossover.
+        var sizes = new List<(int Number, string Name)>();
+        if (_yard.Mode == YardMode.Crossover)
+            sizes.Add((0, "Auto"));
+        foreach (var (number, _) in Turnout.Sizes)
+            if (_yard.Mode != YardMode.Ladder || number <= 10)
+                sizes.Add((number, $"No. {number}"));
+        var size = _yard.Mode == YardMode.Ladder && _yard.Size == 0 ? 8 : _yard.Size;
+        Kit.Caption("Switch size");
+        var shown = sizes.FindIndex(s => s.Number == size);
+        var chosen = ToolPanel.Mode("yardsize", sizes.Select(s => s.Name).ToArray(), shown, 4);
+        if (chosen != shown && chosen >= 0)
+            _yard.Size = sizes[chosen].Number;
 
         if (_yard.Plan is { } plan)
         {
             if (plan.Problem is { } problem)
-            {
-                ImGui.PushStyleColor(ImGuiCol.Text, Style.Stop);
-                ImGui.TextWrapped(problem);
-                ImGui.PopStyleColor();
-            }
+                ToolPanel.Problem(problem);
             else
-                ImGui.TextWrapped(plan.Summary);
+                ToolPanel.Line(plan.Summary);
         }
+
+        Kit.EndCard();
     }
 
     private void FollowLay()
@@ -1507,23 +1678,20 @@ public sealed partial class EditorView : IDisposable
     /// The route's yards, to clear for laying by hand or put back to be generated; and how much of the guides is done.
     private void FollowPanel()
     {
-        if (_guides is not { } guides)
-            return;
         var imperial = Settings.Current.Units == UnitSystem.Imperial;
         string Far(double metres) => imperial ? string.Create(CultureInfo.InvariantCulture, $"{metres * FeetPerMeter / 5280.0:0.0} mi") : string.Create(CultureInfo.InvariantCulture, $"{metres / 1000.0:0.0} km");
         string Near(double metres) => imperial ? string.Create(CultureInfo.InvariantCulture, $"{metres * FeetPerMeter:0} ft") : string.Create(CultureInfo.InvariantCulture, $"{metres:0} m");
 
-        ImGui.BeginDisabled(_rebuild is not null);
         YardControls();
-        ImGui.EndDisabled();
         if (_follow.Preview is not null)
+            ToolPanel.Line($"{Near(_follow.Length)}{(_follow.Unfitted ? ", as mapped: no clean fit" : _follow.Radius < double.MaxValue ? $", tightest curve {Near(_follow.Radius)}" : ", straight")}");
+
+        if (_guides is { GuideLength: > 0.0 } guides)
         {
-            ImGui.Text($"{Near(_follow.Length)}{(_follow.Unfitted ? ", as mapped: no clean fit" : _follow.Radius < double.MaxValue ? $", tightest curve {Near(_follow.Radius)}" : ", straight")}");
+            Kit.BeginCard("Guides", $"{Far(guides.DoneLength)} of {Far(guides.GuideLength)}");
+            Kit.Gauge((float)(guides.DoneLength / guides.GuideLength), Accent);
+            Kit.EndCard();
         }
-
-        if (guides.GuideLength > 0.0)
-            ImGui.Text($"Guides laid: {Far(guides.DoneLength)} of {Far(guides.GuideLength)}");
-
     }
 
     // --- Shaping track. ---
@@ -1767,11 +1935,23 @@ public sealed partial class EditorView : IDisposable
                         ? new LayPoint(_tracks.PositionOf(near).X, _tracks.PositionOf(near).Z, Node: near) : new LayPoint(px, pz));
                 }
 
-                var planned = _parallel.PenParallel(_tracks!, drawn, PanelLength);
+                var planned = _parallel.PenParallel(_tracks!, drawn, PanelLength, laying: true);
                 var joined = planned.Ways.Count(w => w.Points[0].Node is not null || w.Points[^1].Node is not null);
-                Log.Info($"Parallel pen: {planned.Summary}, problem: {planned.Problem ?? "none"}, {planned.Ways.Count} ways, {joined} joined");
+                Log.Info($"Parallel pen: {planned.Summary}, problem: {planned.Problem ?? "none"}, {planned.Ways.Count} ways, {joined} joined, points {string.Join("/", planned.Ways.Select(w => w.Points.Count))}");
                 if (planned.Problem is null)
                     Committed(_tracks!.LayWays(planned.Ways));
+                break;
+            }
+
+            case "bridgetrack":
+            {
+                // bridgetrack,lat,lon,SIDE: the bridge there picked, and a track laid onto it on that side (1 right, -1 left).
+                var (bx0, bz0) = At(1);
+                var picked = _network?.BridgeAt(bx0, bz0, 30.0);
+                var before = source.Network.Ways.Count;
+                if (picked is not null)
+                    LayTrackOnBridge(picked, (int)Number(3));
+                Log.Info($"Bridge track: bridge {picked?.Key.ToString() ?? "none"}, {source.Network.Ways.Count - before} ways added, problem {_bridgeProblem ?? "none"}");
                 break;
             }
 
@@ -2150,6 +2330,36 @@ public sealed partial class EditorView : IDisposable
                 break;
             }
 
+            case "parallelfollow":
+            {
+                // parallelfollow,TRACKS,SPACING,SIDE,lat,lon,lat,lon...: Parallel clicked along the guides at those places, and Enter.
+                _tool = Tool.Parallel;
+                _parallelFollowing = true;
+                (_parallel.ParallelTracks, _parallel.Spacing, _parallel.Side) = ((int)Number(1), (float)Number(2), (int)Number(3));
+                _parallelFollow.Clear();
+                for (var k = 4; k + 1 < parts.Length; k += 2)
+                {
+                    var (fx, fz) = At(k);
+                    // (The first may be a track's loose end, as a click on it is.)
+                    if (k == 4 && _tracks!.LooseEndNear(fx, fz, 15.0) is { } loose)
+                    {
+                        var (ex, ez) = _tracks.PositionOf(loose);
+                        _parallelFollow.Add(new FollowTool.Click(ex, ez, null, new LayPoint(ex, ez, Node: loose), _tracks.RunsAt(loose)));
+                        Log.Info($"Parallel follow: from loose end {loose}");
+                    }
+                    else if (FollowClick(_guides!.PlaceNear(fx, fz, 60.0), null) is { } placed)
+                        _parallelFollow.Add(placed);
+                }
+
+                _parallelFollow.Update(_guides!, null);
+                var plan = _parallelFollow.Preview is { } pieces && _parallelFollow.Points() is { } first ? _parallel.FollowParallel(_tracks!, pieces, first, PanelLength) : null;
+                Log.Info($"Parallel follow: {_parallelFollow.Length:0} m, {plan?.Summary}, problem {plan?.Problem ?? "none"}, points {string.Join("/", plan?.Ways.Select(w => w.Points.Count) ?? [])}, joined {plan?.Ways.Count(w => w.Points[0].Node is not null || w.Points[^1].Node is not null)}");
+                if (plan is { Problem: null })
+                    Committed(_tracks!.LayWays(plan.Ways));
+                _parallelFollow.Clear();
+                break;
+            }
+
             case "view":
                 _tool = Tool.Follow;
                 (_camera.X, _camera.Z) = At(1);
@@ -2201,6 +2411,49 @@ public sealed partial class EditorView : IDisposable
                 break;
             case "remove" when Nearest(At(1), true) is { } h:
                 Report("remove", h.Line, TrackShaping.Remove(h.Line, h.Handles, h.Point));
+                break;
+            case "followtest" when _guides is { } guides:
+                // followtest,LAT,LON,LAT,LON: Follow along the guides between the two places, logged, laid nowhere.
+                var (fa, fb) = (At(1), At(3));
+                if (guides.PlaceNear(fa.X, fa.Z, 60.0) is not { } ga || guides.PlaceNear(fb.X, fb.Z, 60.0) is not { } gb)
+                {
+                    Log.Warn("Follow test: no guide there");
+                    break;
+                }
+
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                _follow.Clear();
+                _follow.Add(new FollowTool.Click(ga.X, ga.Z, ga, new LayPoint(ga.X, ga.Z)));
+                var end = new FollowTool.Click(gb.X, gb.Z, gb, new LayPoint(gb.X, gb.Z));
+                _follow.Update(guides, end);
+                _follow.Add(end);
+                _follow.Update(guides, null);
+                var fitted = watch.ElapsedMilliseconds;
+                var followed = _follow.Points();
+                Log.Info($"Follow test: {_follow.Length:0} m, {(_follow.Unfitted ? "partly as mapped" : "fitted")}, {_follow.Preview?.Count ?? 0} pieces, tightest {_follow.Radius:0} m; " +
+                    $"{followed?.Count ?? 0} points (every 2 m would be {Math.Ceiling(_follow.Length / 2.0) + 1:0}); fit {fitted} ms, points {watch.ElapsedMilliseconds - fitted} ms");
+                break;
+            case "bridgepick":
+                // bridgepick,LAT,LON: Structures, Edit bridge, with the bridge nearest there picked.
+                var bridgeAt = At(1);
+                (_tool, _place.Mode) = (Tool.Place, PlaceMode.EditBridge);
+                _bridgeKey = _network?.BridgeAt(bridgeAt.X, bridgeAt.Z, 30.0)?.Key;
+                Log.Info($"Bridge pick: {_bridgeKey?.ToString() ?? "none"}");
+                break;
+            case "crossingcut":
+                // crossingcut,LAT,LON: the grade crossing nearest there has its roads cut back to its ends.
+                var cutAt = At(1);
+                if (source.Objects.Where(o => o.Kind == PlacedKind.GradeCrossing).MinBy(o =>
+                    {
+                        var (ox, oz) = PlacedAtWorld(o);
+                        return (ox - cutAt.X) * (ox - cutAt.X) + (oz - cutAt.Z) * (oz - cutAt.Z);
+                    }) is { } cut)
+                {
+                    CrossingPlace(lines, cut, cut);
+                    var cutRoads = _undo.TryPeek(out var top) && top is CrossingEdit { Roads: { } r } ? r.Ways : [];
+                    Log.Info($"Crossing cut: {cut.Id}: {string.Join("; ", cutRoads.Select(w => $"way {w.Id} {w.Before?.Nodes.Length ?? 0} -> {w.After?.Nodes.Length ?? 0} points"))}");
+                }
+
                 break;
             case "reset" when Nearest(At(1), false) is { } h:
                 CommitShape(source, h.Line, null);
@@ -2270,6 +2523,43 @@ public sealed partial class EditorView : IDisposable
     private readonly TrainPanel _trains = new();
     private (double X, double Y, double Z)? _followed;
 
+    /// The route's saved stock has been put back on the track (once, on the first rail graph). Until then nothing's saved
+    /// over it, so a save before the track's ready doesn't lose it.
+    private bool _stockRestored;
+
+    /// The stock on the track written to the route's Stock.json.
+    private void SaveStock()
+    {
+        if (!_stockRestored || _route.Projection is not { } projection)
+            return;
+        try
+        {
+            Trains.RouteStock.Save(_route, _trains.Snapshot((x, z) =>
+            {
+                var geo = projection.Inverse(new RoutePoint(x, -z));
+                return (geo.Lat, geo.Lon);
+            }));
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"Placed stock: not saved ({e.Message})");
+        }
+    }
+
+    private void RestoreStock()
+    {
+        if (_stockRestored || _route.Projection is not { } projection)
+            return;
+        _stockRestored = true;
+        var saved = Trains.RouteStock.Load(_route);
+        if (saved.Count > 0)
+            _trains.Restore(saved, (lat, lon) =>
+            {
+                var p = projection.Forward(new GeoPoint(lat, lon));
+                return (p.East, -p.North);
+            });
+    }
+
     /// The trains' rail graph, built again whenever the lines change (at first, and after an edit), with the train put
     /// back on it. With --railgraph, checked and logged too.
     private void RefreshRailGraph()
@@ -2282,6 +2572,7 @@ public sealed partial class EditorView : IDisposable
         _trains.SetSwitch = network.Set;
         _trains.Ground = (x, z) => _terrain!.Source.HeightAt(x, z);
         _trains.Use(_railGraph);
+        RestoreStock();
         if (DevTools.RailGraphReport)
             Log.Info(Trains.RailGraphCheck.Report(_railGraph, lines));
     }
@@ -2303,6 +2594,7 @@ public sealed partial class EditorView : IDisposable
             {
                 placed.Reverser = 1;
                 placed.Independent = 0.0;
+                placed.Brake = 0.0;
                 placed.Notch = dev.Notch;
                 var (hx, hz) = placed.Graph.FacingOf(placed.Head);
                 double From((double X, double Y, double Z) p) => Math.Sqrt((p.X - _camera.X) * (p.X - _camera.X) + (p.Z - _camera.Z) * (p.Z - _camera.Z));
@@ -2411,6 +2703,7 @@ public sealed partial class EditorView : IDisposable
 
         if (_tool == Tool.Track)
         {
+            _insertAt = _hover is null && _grabbed is null && _boxFrom is null ? tracks.SegmentAt(mouse, _camera.X, _camera.Z, ProjectGround) : null;
             SelectAndDrag(tracks, mouse);
             return;
         }
@@ -2441,6 +2734,21 @@ public sealed partial class EditorView : IDisposable
     private void SelectAndDrag(TrackEditor tracks, float2 mouse)
     {
         var shift = Input.Key(GlfwKey.LeftShift) || Input.Key(GlfwKey.RightShift);
+        var ctrl = Input.Key(GlfwKey.LeftControl) || Input.Key(GlfwKey.RightControl);
+        if (Input.MouseDown(GlfwMouseButton.Left) && ctrl && _hover is null && _insertAt is { } at)
+        {
+            // A new point in the track, selected, ready to drag.
+            if (tracks.InsertPoint(at.Way, at.Segment, at.X, at.Z, out var made) is { } inserted)
+            {
+                Committed(inserted);
+                _selection.Clear();
+                _selection.Add(made);
+                _insertAt = null;
+            }
+
+            return;
+        }
+
         if (Input.MouseDown(GlfwMouseButton.Left))
         {
             if (_hover is { } node && shift)
@@ -2492,6 +2800,8 @@ public sealed partial class EditorView : IDisposable
             Committed(tracks.Straighten(_selection));
         if (Input.KeyDown(GlfwKey.K))
             Committed(tracks.Smooth(_selection));
+        if (Input.KeyDown(GlfwKey.I))
+            Committed(tracks.Simplify(_selection));
         if (Input.KeyDown(GlfwKey.J))
             Committed(tracks.Join(_selection));
         if (Input.KeyDown(GlfwKey.U))
@@ -2514,7 +2824,7 @@ public sealed partial class EditorView : IDisposable
     [
         ("Straighten", "L", (t, s) => t.Straighten(s)),
         ("Smooth", "K", (t, s) => t.Smooth(s)),
-        ("Simplify", "", (t, s) => t.Simplify(s)),
+        ("Simplify", "I", (t, s) => t.Simplify(s)),
         ("Join", "J", (t, s) => t.Join(s)),
         ("Split", "U", (t, s) => t.Split(s)),
         ("Delete", "Del", (t, s) => t.DeleteMany(s)),
@@ -2746,6 +3056,13 @@ public sealed partial class EditorView : IDisposable
         if (_tool is Tool.Track or Tool.Pen)
         {
             _tracks!.Draw(draw, _camera.X, _camera.Z, ProjectGround, _hover, _selection, _dragOffset);
+            // Where Ctrl+click would put a new point: a ring on the track under the pointer, lit while Ctrl's held.
+            if (_tool == Tool.Track && _insertAt is { } at && ProjectGround(at.X, at.Z) is { } spot)
+            {
+                var ctrl = Input.Key(GlfwKey.LeftControl) || Input.Key(GlfwKey.RightControl);
+                draw.AddCircleFilled(spot, S(4f), ctrl ? Rgba.White : Rgba.White.WithAlpha(0.55f), 16);
+                draw.AddCircle(spot, S(8f), (ctrl ? Style.Accent : Rgba.White).WithAlpha(ctrl ? 1f : 0.45f), 20, S(1.5f));
+            }
             if (_boxFrom is { } from)
             {
                 var to = Input.MousePosition;
@@ -2813,8 +3130,12 @@ public sealed partial class EditorView : IDisposable
         if (_tool == Tool.Circuits)
             _circuitEditor?.Draw(draw, _camera.X, _camera.Z, ViewReach, ProjectGround,
                 !_topDown || _camera.Y - _terrain.Source.HeightAt(_camera.X, _camera.Z) < 5000.0);
-        else if (_showGrades)
+        else if (_overlay != TrackOverlay.Off)
+        {
+            if (_overlay == TrackOverlay.ClassMap)
+                _guides?.DrawClasses(draw, ProjectGround, _camera.X, _camera.Z, ViewReach, size);
             DrawGrades(draw, size);
+        }
         DrawBrush(draw);
         _trains.Overlay(draw, Project, new double3(_camera.X, _camera.Y, _camera.Z), new float2(0f, _headerBottom), new float2(size.X, MathF.Min(size.Y, _footerTop)));
         if (_tool == Tool.Switches)
@@ -2826,7 +3147,7 @@ public sealed partial class EditorView : IDisposable
         }
         if (_tool == Tool.Shape && _terrain?.Source.Lines is { } shaping)
             _shape.Draw(draw, shaping, Project, S(1f));
-        if (_tool is Tool.Follow or Tool.Pen or Tool.Shape or Tool.Parallel)
+        if (_tool is Tool.Follow or Tool.Parallel || (_tool is Tool.Pen or Tool.Shape && _overlay != TrackOverlay.ClassMap))
             _guides?.Draw(draw, ProjectGround, _camera.X, _camera.Z, ViewReach);
         if (_tool is Tool.Follow or Tool.Pen or Tool.Parallel || (_tool == Tool.Place && _place.Mode is PlaceMode.Track or PlaceMode.Bridge))
             _tracks?.DrawAttach(draw, _camera.X, _camera.Z, ProjectGround, Input.MousePosition);
@@ -2839,7 +3160,9 @@ public sealed partial class EditorView : IDisposable
             _parallelPen.Draw(draw, ProjectGround, _parallelPreview);
             _parallel.Draw(draw, ProjectGround, S(1f));
         }
-        if (_tool == Tool.Place && _terrain is { } shown)
+        if (_tool == Tool.Place && _place.Mode == PlaceMode.EditBridge)
+            BridgeDraw(draw);
+        else if (_tool == Tool.Place && _terrain is { } shown)
             _place.Draw(draw, ProjectGround, shown.Source.Objects, PlacedAtWorld, S(1f));
         if (_tool == Tool.Road)
         {
@@ -2860,7 +3183,9 @@ public sealed partial class EditorView : IDisposable
         {
             var imperial = Settings.Current.Units == UnitSystem.Imperial;
             var height = imperial ? $"{at.Height * FeetPerMeter:#,0} ft" : $"{at.Height:#,0} m";
-            PenTool.Label(draw, at.Screen, string.Create(CultureInfo.InvariantCulture, $"Grade {at.Grade * 100:0.00}%   {height}"), GradeColor(at.Grade));
+            var grade = string.Create(CultureInfo.InvariantCulture, $"Grade {at.Grade * 100:0.00}%   {height}");
+            PenTool.Label(draw, at.Screen, ByClass ? $"{RailColours.Name(at.Class)}   {grade}" : grade,
+                ByClass ? RailColours.Of(at.Class) : GradeColor(at.Grade));
         }
     }
 
@@ -2972,7 +3297,7 @@ public sealed partial class EditorView : IDisposable
         while (i1 < l.Count - 1 && l.S[i1] - l.S[over.Point] < GradeReadoutWindow)
             i1++;
         var span = l.S[i1] - l.S[i0];
-        _gradeAt = (mouse, span > 0.01f ? (l.Y[i1] - l.Y[i0]) / span : 0f, l.Y[over.Point]);
+        _gradeAt = (mouse, span > 0.01f ? (l.Y[i1] - l.Y[i0]) / span : 0f, l.Y[over.Point], l.Class);
     }
 
     /// One slice of the lines' coloured segments on the screen (a job). Each segment's colour is the grade over
@@ -3018,7 +3343,8 @@ public sealed partial class EditorView : IDisposable
                         hi++;
                     var ds = line.S[hi] - line.S[lo];
                     var grade = ds > 0.01f ? (line.Y[hi] - line.Y[lo]) / ds : 0f;
-                    into.Add((a, b, GradeColor(grade).WithAlpha(0.9f), line, i));
+                    var color = ByClass ? RailColours.Of(line.Class) : GradeColor(grade);
+                    into.Add((a, b, color.WithAlpha(0.9f), line, i));
                 }
 
                 previous = b;
@@ -3042,20 +3368,170 @@ public sealed partial class EditorView : IDisposable
         var source = _terrain?.Source;
         if (ImGui.MenuItem("Save", "Ctrl+S", false, source is not null && (source.Unsaved || source.Network.Unsaved)))
             Save(source!);
-        if (ImGui.MenuItem("Solve Track Again", "", false, source is not null && _rebuild is null))
-            SolveTrackAgain();
+    }
+
+    public void MenuEdit()
+    {
+        if (ImGui.MenuItem("Undo", "Ctrl+Z", false, CanUndo))
+            UndoLast();
+        if (ImGui.MenuItem("Redo", "Ctrl+Y", false, CanRedo))
+            RedoLast();
+        ImGui.Separator();
+        var picked = _tool == Tool.Place ? _terrain?.Source.Objects.FirstOrDefault(o => o.Id == _place.Selected) : null;
+        if (ImGui.MenuItem(picked is null ? "Delete Selected" : $"Delete {picked.Kind.Name()}", "Del", false, picked is not null))
+            PlacedChange(picked, null);
+    }
+
+    /// The route's own items, besides Track Materials (the screen's): the audit, and fitting the track again.
+    public void MenuRoute()
+    {
+        var source = _terrain?.Source;
+        if (ImGui.MenuItem("Audit Route...", "", _audit.Open, source is not null))
+        {
+            _audit.Open = !_audit.Open;
+            if (_audit.Open)
+                RunAudit();
+        }
+
+        if (ImGui.MenuItem("Solve Track Again...", "", false, source is not null && _rebuild is null))
+            _confirmSolve = true;
     }
 
     public void MenuView()
     {
-        if (ImGui.MenuItem("Wireframe", "F", _renderer.Wireframe, true))
+        if (ImGui.MenuItem("Track Grades"u8, "G"u8, _overlay == TrackOverlay.Grade))
+            _overlay = _overlay == TrackOverlay.Grade ? TrackOverlay.Off : TrackOverlay.Grade;
+        if (ImGui.MenuItem("Track Classes"u8, "G"u8, _overlay == TrackOverlay.Class))
+            _overlay = _overlay == TrackOverlay.Class ? TrackOverlay.Off : TrackOverlay.Class;
+        if (ImGui.MenuItem("Track Classes + Map"u8, "G"u8, _overlay == TrackOverlay.ClassMap))
+            _overlay = _overlay == TrackOverlay.ClassMap ? TrackOverlay.Off : TrackOverlay.ClassMap;
+        if (ImGui.MenuItem("Wireframe", "Shift+F",_renderer.Wireframe, true))
             _renderer.Wireframe = !_renderer.Wireframe;
-        ImGui.MenuItem("Track Grades"u8, "G"u8, ref _showGrades);
-        ImGui.MenuItem("Train"u8, ""u8, ref _trains.Open);
+    }
+
+    /// Solve Track Again was picked: asked about before it's done, since it throws the fitted track away.
+    private bool _confirmSolve;
+
+    private void ConfirmSolve()
+    {
+        if (_confirmSolve)
+        {
+            ImGui.OpenPopup("Solve Track Again?"u8);
+            _confirmSolve = false;
+        }
+
+        ImGui.SetNextWindowSize(new float2(420f, 0f), ImGuiCond.Always);
+        if (!ImGui.BeginPopupModal("Solve Track Again?"u8, ImGuiWindowFlags.AlwaysAutoResize))
+            return;
+        ToolPanel.Line("Refits all track to the map from scratch. Hand shaping is kept. This can't be undone.");
+        ImGui.Dummy(new float2(1f, S(6f)));
+        var answer = Kit.Buttons("solveagain", ["Solve Again", "Cancel"]);
+        if (answer == 0)
+            SolveTrackAgain();
+        if (answer >= 0 || ImGui.IsKeyPressed(ImGuiKey.Escape))
+            ImGui.CloseCurrentPopup();
+        ImGui.EndPopup();
+    }
+
+    /// The route audit's window: open, what it found last, and whether it's still looking.
+    private sealed class AuditState
+    {
+        public bool Open;
+        public List<AuditFinding>? Findings;
+        public Task<List<AuditFinding>>? Running;
+    }
+
+    private readonly AuditState _audit = new();
+
+    private void RunAudit()
+    {
+        if (_terrain?.Source is not { Lines: { } lines } source || _audit.Running is { IsCompleted: false })
+            return;
+        var objects = source.Objects.ToList();
+        var (projection, built, size) = (_route.Projection!, _route.BuiltTiles(), _route.Grid!.TileSize);
+        _audit.Running = Task.Run(() => TrackAudit.Run(lines, objects, projection, built, size));
+    }
+
+    /// Everything the audit found, by check, worst first; clicking one flies there.
+    private void AuditWindow()
+    {
+        if (_audit.Running is { IsCompleted: true } done)
+        {
+            _audit.Findings = done.IsCompletedSuccessfully ? done.Result : [];
+            if (!done.IsCompletedSuccessfully)
+                Log.Error($"Audit: {done.Exception?.InnerException?.Message}");
+            _audit.Running = null;
+        }
+
+        if (!_audit.Open)
+            return;
+        ImGui.SetNextWindowSize(new float2(380f, 460f), ImGuiCond.FirstUseEver);
+        if (ImGui.Begin("Route Audit"u8, ref _audit.Open))
+        {
+            ToolPanel.Header("Route audit", null, _audit.Findings is not { } counted ? "Checking the route..."
+                : counted.Count == 0 ? "Nothing found" : $"{counted.Count} found, {counted.Count(f => f.Severe)} serious");
+            if (Kit.Button("auditagain", _audit.Running is null ? "Run Again" : "Checking...", 0f, ButtonKind.Secondary, _audit.Running is null))
+                RunAudit();
+            if (_audit.Findings is { } findings)
+            {
+                var index = 0;
+                foreach (var check in findings.GroupBy(f => f.Check).OrderByDescending(g => g.Any(f => f.Severe)).ThenBy(g => g.Key))
+                {
+                    if (!ToolPanel.Section($"check{check.Key}", check.Key, check.Count().ToString(CultureInfo.InvariantCulture)))
+                        continue;
+                    foreach (var finding in check)
+                        if (ToolPanel.Item($"finding{index++}", null, finding.Detail, finding.Severe ? "SERIOUS" : null, false, swatch: finding.Severe ? Style.Stop : Style.Caution))
+                            FlyTo(finding.X, finding.Z);
+                }
+            }
+        }
+
+        ImGui.End();
+    }
+
+    /// The camera to a place: over it, top down; flying, stood back from it and looking down at it, facing as it faced.
+    private void FlyTo(double x, double z)
+    {
+        if (_topDown)
+        {
+            MoveTo(new RoutePoint(x, -z));
+            return;
+        }
+
+        var (sy, cy) = MathF.SinCos(_camera.Yaw);
+        _camera.Pitch = -0.6f;
+        _camera.X = x - sy * 50.0;
+        _camera.Z = z + cy * 50.0;
+        _camera.Y = _terrain!.Source.HeightAt(x, z) + 35.0;
     }
 
     /// Whether the side panel has anything to show.
-    public bool HasPanel => _terrain is null || _tool != Tool.Look || _topDown || _showGrades;
+    public bool HasPanel => _terrain is null || _tool != Tool.Look || _topDown;
+
+    /// The track overlay's key and its title, for the footer while it's shown (the Circuits tool draws its own colours
+    /// instead). The class key lists only the classes the route has.
+    public (string Title, (Rgba Color, string Name)[] Entries)? OverlayKey
+    {
+        get
+        {
+            if (_tool == Tool.Circuits || _overlay == TrackOverlay.Off)
+                return null;
+            if (_overlay == TrackOverlay.Grade)
+                return ("GRADES", [(GradeColor(0f), "<1%"), (GradeColor(0.015f), "1-2%"), (GradeColor(0.03f), "2%+")]);
+
+            var present = 0;
+            if (_terrain?.Source.Lines is { } lines)
+                foreach (var line in lines.Lines)
+                    if (line.Rail)
+                        present |= 1 << line.Class;
+            if (_overlay == TrackOverlay.ClassMap && _terrain?.Source.Network is { } network)
+                foreach (var way in network.Ways.Values)
+                    if (way.Rail && RouteNetwork.IsGuide(way))
+                        present |= 1 << way.Class;
+            return (_overlay == TrackOverlay.ClassMap ? "CLASS + MAP (DASHED)" : "TRACK CLASS", [.. Enum.GetValues<RailClass>().Where(c => (present & (1 << (int)c)) != 0)
+                .Select(c => (RailColours.Of((int)c), RailColours.Name((int)c)))]);
+        }
+    }
 
     /// The camera and the tool in hand, for the side panel.
     public void Panel()
@@ -3064,58 +3540,29 @@ public sealed partial class EditorView : IDisposable
             return;
 
         var imperial = Settings.Current.Units == UnitSystem.Imperial;
-
-        // (Leaves the labels room inside the panel.)
-        ImGui.PushItemWidth(-104f);
-        if (_tool == Tool.Pen)
-            ImGui.Text($"{_pen.Count} point{(_pen.Count == 1 ? "" : "s")}");
+        var (title, key) = PanelTitle;
+        ToolPanel.Header(title, key);
         if (IsBrush(_tool))
             BrushPanel(imperial);
         if (_tool == Tool.Parallel)
             ParallelPanel();
-        if (_tool == Tool.Pen && _penMeasure is { } m)
-        {
-            string Length(double metres) => imperial
-                ? metres >= 1609.344 ? $"{metres / 1609.344:0.00} mi" : $"{metres * FeetPerMeter:0} ft"
-                : metres >= 1000 ? $"{metres / 1000:0.00} km" : $"{metres:0} m";
-            ImGui.Text($"Length {Length(m.Length)}");
-            ImGui.Text(double.IsInfinity(m.MinRadius) ? "Straight" : $"Tightest curve radius {Length(m.MinRadius)}");
-            ImGui.Text(string.Create(CultureInfo.InvariantCulture, $"Ground grade {m.Grade * 100:0.00}% end to end, {m.SteepestGrade * 100:0.00}% steepest"));
-        }
-
+        if (_tool == Tool.Pen)
+            PenPanel(imperial);
         if (_tool == Tool.Circuits)
             Record(_circuitEditor?.Panel(imperial));
-
         if (_tool == Tool.Switches)
             SwitchPanel();
-
         if (_tool == Tool.Shape)
             ShapePanel();
-
         if (_tool == Tool.Follow)
             FollowPanel();
-
         if (_tool == Tool.Track)
-        {
-            ImGui.Text($"{_selection.Count} point{(_selection.Count == 1 ? "" : "s")} selected");
-            ImGui.BeginDisabled(_selection.Count == 0);
-            var right = ImGui.GetCursorScreenPos().X + ImGui.GetContentRegionAvail().X;
-            var first = true;
-            foreach (var (name, _, act) in SelectionTools)
-            {
-                // On this row if it fits, else the next.
-                if (!first && ImGui.GetItemRectMax().X + ImGui.GetStyle().ItemSpacing.X + ImGui.CalcTextSize(name).X + ImGui.GetStyle().FramePadding.X * 2f <= right)
-                    ImGui.SameLine(0f, -1f);
-                first = false;
-                if (ImGui.Button(name))
-                    Committed(act(_tracks!, _selection));
-            }
-
-            ImGui.EndDisabled();
-        }
-
+            SelectionPanel();
         if (_tool is Tool.Track or Tool.Pen or Tool.Follow or Tool.Parallel || (_tool == Tool.Place && _place.Mode == PlaceMode.Track))
+        {
+            ClassPanel();
             BedPanel();
+        }
         if (_tool == Tool.Place)
             PlacePanel(_terrain.Source);
         if (_tool == Tool.Road)
@@ -3123,36 +3570,81 @@ public sealed partial class EditorView : IDisposable
 
         if (_topDown)
         {
-            ImGui.SeparatorText("Background"u8);
-            if (ImGui.RadioButton("Off"u8, !_showBackground))
-                _showBackground = false;
-            ImGui.SameLine(0f, -1f);
-            if (ImGui.RadioButton("Map"u8, _showBackground && MapTiles.Background == MapBackground.Map))
-                (_showBackground, MapTiles.Background) = (true, MapBackground.Map);
-            ImGui.SameLine(0f, -1f);
-            if (ImGui.RadioButton("Satellite"u8, _showBackground && MapTiles.Background == MapBackground.Satellite))
-                (_showBackground, MapTiles.Background) = (true, MapBackground.Satellite);
+            Kit.BeginCard("Background");
+            var shown = !_showBackground ? 0 : MapTiles.Background == MapBackground.Map ? 1 : 2;
+            var pick = ToolPanel.Mode("background", ["Off", "Map", "Aerial"], shown, 3);
+            if (pick != shown)
+                (_showBackground, MapTiles.Background) = pick switch { 0 => (false, MapTiles.Background), 1 => (true, MapBackground.Map), _ => (true, MapBackground.Satellite) };
             if (_showBackground)
             {
-                ImGui.SliderFloat("Opacity"u8, ref _backgroundOpacity, 0.1f, 1f, "%.1f"u8, ImGuiSliderFlags.None);
-                ImGui.TextDisabled(MapTiles.Attribution);
+                ToolPanel.Value("opacity", "Opacity", ref _backgroundOpacity, 0.1f, 1f, "0.0");
+                ToolPanel.Hint(MapTiles.Attribution);
             }
+
+            Kit.EndCard();
         }
 
+    }
 
-        if (_showGrades && _tool != Tool.Circuits)
+    /// The side panel's header: the tool in hand (the Place tool by its button) and its key.
+    private (string Title, string? Key) PanelTitle => _tool switch
+    {
+        Tool.Track => ("Edit", "7"),
+        Tool.Pen => ("Pen", "8"),
+        Tool.Shape => ("Shape", "-"),
+        Tool.Follow => ("Lay", "="),
+        Tool.Parallel => ("Parallel", "P"),
+        Tool.Switches => ("Switches", "0"),
+        Tool.Circuits => ("Circuits", "9"),
+        Tool.Road => ("Roads", ";"),
+        Tool.Place => (GroupOf(_place.Mode) switch
         {
-            ImGui.SeparatorText("Track Grades"u8);
-            foreach (var (grade, name) in (ReadOnlySpan<(float, string)>)[(0f, "under 1%"), (0.015f, "1 to 2%"), (0.03f, "over 2%")])
-            {
-                var c = GradeColor(grade);
-                ImGui.ColorButton($"##grade{name}", new float4(c.R, c.G, c.B, 1f), ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoBorder, new float2(28f, 6f));
-                ImGui.SameLine(0f, -1f);
-                ImGui.Text(name);
-            }
+            PlaceGroup.Assemblies => "Assembly",
+            PlaceGroup.Structures => "Structures",
+            PlaceGroup.Signals => "Signals",
+            _ => "Lineside",
+        }, null),
+        _ when IsBrush(_tool) => ("Terrain", "2-6"),
+        _ => ("Free Look", "1"),
+    };
+
+    /// What the pen's drawn so far: its points, length, tightest curve and the ground's grade along it.
+    private void PenPanel(bool imperial)
+    {
+        string Length(double metres) => imperial
+            ? metres >= 1609.344 ? $"{metres / 1609.344:0.00} mi" : $"{metres * FeetPerMeter:0} ft"
+            : metres >= 1000 ? $"{metres / 1000:0.00} km" : $"{metres:0} m";
+        if (_penMeasure is not { } m)
+            return;
+        Kit.BeginCard("Drawn", $"{_pen.Count} point{(_pen.Count == 1 ? "" : "s")}");
+            Kit.Stats(
+            [
+                new Stat("Length", Length(m.Length)),
+                new Stat("Tightest curve", double.IsInfinity(m.MinRadius) ? "Straight" : Length(m.MinRadius)),
+                new Stat("Ground grade", string.Create(CultureInfo.InvariantCulture, $"{m.Grade * 100:0.00}%")),
+                new Stat("Steepest", string.Create(CultureInfo.InvariantCulture, $"{m.SteepestGrade * 100:0.00}%")),
+            ], 2);
+        Kit.EndCard();
+    }
+
+    /// The Edit tool's selection, and what can be done to it.
+    private void SelectionPanel()
+    {
+        Kit.BeginCard("Selection", $"{_selection.Count} point{(_selection.Count == 1 ? "" : "s")}");
+        var tools = SelectionTools;
+        for (var i = 0; i < tools.Length; i += 2)
+        {
+            var count = Math.Min(2, tools.Length - i);
+            var labels = new string[count];
+            var enabled = new bool[count];
+            for (var k = 0; k < count; k++)
+                (labels[k], enabled[k]) = (tools[i + k].Name, _selection.Count > 0);
+            var hit = Kit.Buttons($"selection{i}", labels, enabled);
+            if (hit >= 0)
+                Committed(tools[i + hit].Act(_tracks!, _selection));
         }
 
-        ImGui.PopItemWidth();
+        Kit.EndCard();
     }
 
     // --- Switches: each one's size, picked from the models. ---
@@ -3220,24 +3712,25 @@ public sealed partial class EditorView : IDisposable
             return;
         if (_shape.LineIn(lines) is not { } line)
         {
-            ImGui.TextDisabled("Click a track"u8);
+            ToolPanel.Hint("Click a track.");
             return;
         }
 
         var imperial = Settings.Current.Units == UnitSystem.Imperial;
         string Length(double metres) => imperial ? string.Create(CultureInfo.InvariantCulture, $"{metres * FeetPerMeter:0} ft") : string.Create(CultureInfo.InvariantCulture, $"{metres:0.#} m");
-        ImGui.Text($"{Length(line.S[^1])} long, {(source.TrackEdits.Has(line.Key) ? "shaped by hand" : "as solved")}");
+        var shaped = source.TrackEdits.Has(line.Key);
+        Kit.BeginCard("Line", shaped ? "Shaped by hand" : "As solved");
+        var stats = new List<Stat> { new("Length", Length(line.S[^1])) };
         if (_shape.Preview is { } preview)
         {
-            if (preview.Radius < double.MaxValue)
-                ImGui.Text($"Tightest curve {Length(preview.Radius)}");
-            ImGui.Text($"Off the map {Length(preview.OffMap)}");
+            stats.Add(new Stat("Tightest curve", preview.Radius < double.MaxValue ? Length(preview.Radius) : "Straight"));
+            stats.Add(new Stat("Off the map", Length(preview.OffMap)));
         }
 
-        ImGui.BeginDisabled(!source.TrackEdits.Has(line.Key) || _rebuild is not null);
-        if (ImGui.Button("Back to Solved"u8))
+        Kit.Stats([.. stats], 2);
+        if (Kit.Button("backtosolved", "Back to Solved", 0f, ButtonKind.Secondary, shaped && _rebuild is null))
             CommitShape(source, line, null);
-        ImGui.EndDisabled();
+        Kit.EndCard();
     }
 
     /// The picked switch: what it is now, and the sizes to choose from, each shown by its model.
@@ -3247,48 +3740,44 @@ public sealed partial class EditorView : IDisposable
             return;
         if (_switch is not { } node || lines.Turnouts.FirstOrDefault(t => t.Node == node) is not { } turnout)
         {
-            ImGui.TextDisabled("Click a switch"u8);
+            ToolPanel.Hint("Click a switch.");
             IssueList(lines);
             return;
-        }
-
-        if (lines.Layouts.FirstOrDefault(l => l.Nodes.Contains(node)) is { } layout)
-        {
-            if (layout.Kind is JunctionKind.Crossover or JunctionKind.LadderLink or JunctionKind.ScissorsCrossover)
-                ImGui.Text($"Part of a {TrackLayouts.Name(layout.Kind, 0).ToLowerInvariant()}");
-            if (layout.Issue is { } issue)
-            {
-                ImGui.PushStyleColor(ImGuiCol.Text, Style.Stop);
-                ImGui.TextWrapped(issue);
-                ImGui.PopStyleColor();
-            }
-        }
-
-        if (_switchRefused is { } refused)
-        {
-            ImGui.PushStyleColor(ImGuiCol.Text, Style.Stop);
-            ImGui.TextWrapped(refused);
-            ImGui.PopStyleColor();
         }
 
         var options = lines.SwitchOptions.GetValueOrDefault(node);
         var chosen = options?.Chosen;
         var byHand = options?.ReachByHand == true;
-        ImGui.Text(turnout.Number is { } now
-            ? $"No. {now}, {(byHand ? "curve set by hand" : chosen is null ? "sized automatically" : "picked")}"
-            : chosen == SwitchSizes.AsMapped ? "As mapped (picked)" : "As mapped: no standard size fits");
-        ImGui.TextDisabled($"Node {node}");
+        Kit.BeginCard("Switch", $"Node {node}");
+        Kit.Stats(
+        [
+            new Stat("Size", turnout.Number is { } now ? $"No. {now}" : "As mapped"),
+            new Stat("Sized", turnout.Number is null
+                ? chosen == SwitchSizes.AsMapped ? "Picked" : "No standard fits"
+                : byHand ? "Curve by hand" : chosen is null ? "Automatically" : "Picked"),
+        ], 2);
+        if (lines.Layouts.FirstOrDefault(l => l.Nodes.Contains(node)) is { } layout)
+        {
+            if (layout.Kind is JunctionKind.Crossover or JunctionKind.LadderLink or JunctionKind.ScissorsCrossover)
+                ToolPanel.Line($"Part of a {TrackLayouts.Name(layout.Kind, 0).ToLowerInvariant()}");
+            if (layout.Issue is { } issue)
+                ToolPanel.Problem(issue);
+        }
 
-        ImGui.BeginDisabled(_rebuild is not null);
-        if (ImGui.RadioButton("Automatic"u8, chosen is null && !byHand))
-            PickSize(node, null);
-        ImGui.SameLine(0f, -1f);
-        if (ImGui.RadioButton("As mapped"u8, chosen == SwitchSizes.AsMapped))
-            PickSize(node, SwitchSizes.AsMapped);
-        ImGui.EndDisabled();
+        if (_switchRefused is { } refused)
+            ToolPanel.Problem(refused);
+        Kit.EndCard();
+
+        SwitchWorking(turnout);
+
+        Kit.BeginCard("Size");
+        var sizing = chosen is null && !byHand ? 0 : chosen == SwitchSizes.AsMapped ? 1 : -1;
+        var pickSizing = ToolPanel.Mode("sizing", ["Automatic", "As mapped"], sizing, 2, _rebuild is null);
+        if (pickSizing != sizing && pickSizing >= 0)
+            PickSize(node, pickSizing == 0 ? null : SwitchSizes.AsMapped);
 
         _sizePictures ??= LoadSizePictures();
-        var width = ImGui.GetContentRegionAvail().X;
+        var width = Kit.Width;
         var imperial = Settings.Current.Units == UnitSystem.Imperial;
         string Length(float metres) => imperial ? $"{metres * FeetPerMeter:0} ft" : $"{metres:0} m";
         foreach (var (number, radius) in Turnout.Sizes)
@@ -3298,9 +3787,15 @@ public sealed partial class EditorView : IDisposable
             var frog = Turnout.FrogOf(number);
             var angle = MathF.Atan(frog / radius / 2f) * 360f / MathF.PI;
 
-            ImGui.Spacing();
-            ImGui.Text($"No. {number}{(options?.Auto == number ? "   automatic pick" : "")}{(fits ? "" : "   no room")}");
-            ImGui.TextDisabled(string.Create(CultureInfo.InvariantCulture, $"Curve {Length(radius)}   frog {Length(frog)} out   {angle:0.0} deg"));
+            ImGui.Dummy(new float2(1f, S(4f)));
+            var draw = ImGui.GetWindowDrawList();
+            var top = ImGui.GetCursorScreenPos();
+            Canvas.Text(draw, current ? Bold : Medium, S(15.5f), top, fits ? Style.Text : TextFaint, $"No. {number}");
+            var tag = current ? "IN USE" : options?.Auto == number ? "AUTOMATIC PICK" : fits ? "" : "NO ROOM";
+            if (tag.Length > 0)
+                Canvas.Spaced(draw, Medium, S(11.5f), new float2(top.X + width - Canvas.SpacedWidth(Medium, S(11.5f), tag, 0.16f), top.Y + S(3.5f)), current ? Style.Caution : TextFaint, tag, 0.16f);
+            ImGui.Dummy(new float2(width, S(21f)));
+            ToolPanel.Hint(string.Create(CultureInfo.InvariantCulture, $"{Length(radius)} curve, {angle:0.0} deg"));
 
             var size = new float2(width, width * 150f / 480f);
             var min = ImGui.GetCursorScreenPos();
@@ -3309,7 +3804,6 @@ public sealed partial class EditorView : IDisposable
                 PickSize(node, number);
             ImGui.EndDisabled();
             var hovered = fits && ImGui.IsItemHovered();
-            var draw = ImGui.GetWindowDrawList();
             if (_sizePictures.TryGetValue(number, out var picture))
                 draw.AddImage(picture.Ref, min, min + size, null, null, fits ? Rgba.White : new Rgba(1f, 1f, 1f, 0.3f));
             else
@@ -3317,6 +3811,25 @@ public sealed partial class EditorView : IDisposable
             if (current || hovered)
                 draw.AddRect(min, min + size, current ? Style.Caution : Style.Accent, 0f, ImDrawFlags.None, S(current ? 2.5f : 1.5f));
         }
+
+        Kit.EndCard();
+    }
+
+    /// What works the switch: its power machine, or a hand throw in its place (on either side of the track).
+    private void SwitchWorking(Turnout turnout)
+    {
+        var source = _terrain!.Source;
+        var hand = source.Objects.FirstOrDefault(o => o.Kind == PlacedKind.HandThrow && o.Node == turnout.Node);
+        Kit.BeginCard("Worked by");
+        var working = hand is null ? 0 : 1;
+        var pick = ToolPanel.Mode("working", ["Machine", "Hand throw"], working, 2);
+        if (pick == 0 && hand is not null)
+            PlacedChange(hand, null);
+        else if (pick == 1 && hand is null)
+            PlacedChange(null, Placed(PlacedKind.HandThrow, turnout.X, turnout.Z, 0.0, turnout.Node));
+        if (hand is not null && Kit.Button("handside", "Other Side"))
+            PlacedChange(hand, hand with { Opposite = !hand.Opposite });
+        Kit.EndCard();
     }
 
     /// Every junction that needs fixing, with why; clicking one flies there and picks its switch.
@@ -3326,32 +3839,20 @@ public sealed partial class EditorView : IDisposable
         if (issues.Count == 0)
             return;
 
-        ImGui.SeparatorText($"Needs Fixing ({issues.Count})");
+        Kit.BeginCard("Needs fixing", issues.Count.ToString(CultureInfo.InvariantCulture), Stop);
         for (var i = 0; i < issues.Count; i++)
         {
             var issue = issues[i];
-            if (ImGui.Selectable($"{TrackLayouts.Name(issue.Kind, issue.Number ?? 0)}##issue{i}", false, ImGuiSelectableFlags.None, default))
+            if (ToolPanel.Item($"issue{i}", ToolIcon.Switches, TrackLayouts.Name(issue.Kind, issue.Number ?? 0), null, false))
             {
                 _switch = issue.Nodes[0];
-                if (_topDown)
-                    MoveTo(new RoutePoint(issue.X, -issue.Z));
-                else
-                {
-                    // Flying: stand back from it, up and looking down at it, facing the way the camera faced.
-                    var (sy, cy) = MathF.SinCos(_camera.Yaw);
-                    _camera.Pitch = -0.6f;
-                    _camera.X = issue.X - sy * 50.0;
-                    _camera.Z = issue.Z + cy * 50.0;
-                    _camera.Y = _terrain!.Source.HeightAt(issue.X, issue.Z) + 35.0;
-                }
+                FlyTo(issue.X, issue.Z);
             }
 
-            ImGui.Indent();
-            ImGui.PushTextWrapPos(0f);
-            ImGui.TextDisabled(issue.Issue!);
-            ImGui.PopTextWrapPos();
-            ImGui.Unindent();
+            ToolPanel.Hint(issue.Issue!);
         }
+
+        Kit.EndCard();
     }
 
     private static Dictionary<int, (Texture2D Texture, ImTextureRef Ref)> LoadSizePictures()
@@ -3391,22 +3892,58 @@ public sealed partial class EditorView : IDisposable
     {
         ToolStrip();
         _trains.Window(_headerBottom);
+        AuditWindow();
+        ConfirmSolve();
     }
 
     /// The editor's lines in Frame Statistics.
     public void DebugStats()
     {
-        if (_terrain is { } terrain && _network is { } network)
-        {
-            var source = terrain.Source;
-            ImGui.Separator();
-            ImGui.Text($"Tiles {source.Tiles.Count}   lines {source.Lines?.Lines.Count ?? 0}   ways {source.Network.Ways.Count}");
-            ImGui.Text($"Terrain patches {terrain.PatchesInView} in view / {terrain.DrawnPatches} chosen / {terrain.PatchCount} held   {terrain.Building} building   {terrain.Waiting} waiting");
-            ImGui.Text($"Line chunks {network.DrawnChunks} drawn   {network.Building} building   {network.Turnouts} switches");
-            ImGui.Text($"Edits {_undo.Count} to undo   {(source.Unsaved || source.Network.Unsaved ? "unsaved" : "saved")}");
-        }
+        if (_terrain is not { } terrain || _network is not { } network)
+            return;
+        var source = terrain.Source;
+        DebugWindows.Heading("Route");
+        DebugWindows.Row("Tiles", $"{source.Tiles.Count}");
+        DebugWindows.Row("Lines / ways", $"{source.Lines?.Lines.Count ?? 0:#,0} / {source.Network.Ways.Count:#,0}");
+        DebugWindows.Row("Switches", $"{network.Turnouts}");
+        DebugWindows.Row("Edits", $"{_undo.Count} to undo, {(source.Unsaved || source.Network.Unsaved ? "unsaved" : "saved")}");
+        DebugWindows.Heading("Streaming");
+        DebugWindows.Row("Terrain patches", $"{terrain.PatchesInView} seen, {terrain.DrawnPatches} drawn, {terrain.PatchCount} held");
+        DebugWindows.Row("Terrain building", $"{terrain.Building} building, {terrain.Waiting} waiting");
+        DebugWindows.Row("Line chunks", $"{network.DrawnChunks} drawn, {network.Building} building");
+    }
 
-        ImGui.Text($"Camera {_camera.X:0} {_camera.Y:0} {_camera.Z:0}   yaw {_camera.Yaw * 180f / MathF.PI:0}   pitch {_camera.Pitch * 180f / MathF.PI:0}");
+    /// The Camera window's rows: where the camera is and how it's looking, the light, and the screen; and a launch line that
+    /// opens the route with the camera exactly here (--camera takes metres above the ground under it, degrees, yaw 0 north).
+    public string CameraInfo()
+    {
+        static string F(double v, string format) => v.ToString(format, CultureInfo.InvariantCulture);
+        var geo = _route.Projection!.Inverse(new RoutePoint(_camera.X, -_camera.Z));
+        var ground = _terrain?.Source.HeightAt(_camera.X, _camera.Z) ?? 0f;
+        var above = _camera.Y - ground;
+        var yaw = _camera.Yaw * 180.0 / Math.PI;
+        yaw -= Math.Floor(yaw / 360.0) * 360.0;
+        var pitch = _camera.Pitch * 180.0 / Math.PI;
+        var s = Settings.Current;
+        var hour = s.SkyHour;
+
+        DebugWindows.Heading("Place");
+        DebugWindows.Row("Route", $"{_route.Name} ({_route.Id})");
+        DebugWindows.Row("View", _topDown ? "2D Editor" : "3D Editor");
+        DebugWindows.Row("Lat, lon", $"{F(geo.Lat, "0.0000000")}, {F(geo.Lon, "0.0000000")}");
+        DebugWindows.Row("World X Y Z", $"{F(_camera.X, "0.00")}  {F(_camera.Y, "0.00")}  {F(_camera.Z, "0.00")}");
+        DebugWindows.Row("Above ground", $"{F(above, "0.00")} m  (ground {F(ground, "0.00")} m)");
+        DebugWindows.Heading("Looking");
+        DebugWindows.Row("Yaw (0 = north)", $"{F(yaw, "0.00")} deg");
+        DebugWindows.Row("Pitch", $"{F(pitch, "0.00")} deg");
+        DebugWindows.Row("Zoom, field of view", $"{F(_camera.Zoom, "0.00")}x / {F(_camera.FieldOfView * 180.0 / Math.PI, "0.0")} deg");
+        DebugWindows.Heading("Light");
+        DebugWindows.Row("Sky date, hour", $"{s.SkyYear:0000}-{s.SkyMonth:00}-{s.SkyDay:00}  {(int)hour:00}:{(int)((hour - (int)hour) * 60f):00}");
+        DebugWindows.Row("Clouds", $"{s.CloudType}, {F(s.CloudCoverage, "0.00")}");
+        DebugWindows.Row("Screen", $"{_screen.X:0} x {_screen.Y:0}");
+
+        return string.Create(CultureInfo.InvariantCulture,
+            $"--route {_route.Id} {(_topDown ? "--view2d" : "--view")} --camera {geo.Lat:0.0000000} {geo.Lon:0.0000000} {above:0.00} {yaw:0.00} {pitch:0.00} --zoom {_camera.Zoom:0.00} --skytime {s.SkyYear:0000}-{s.SkyMonth:00}-{s.SkyDay:00} {hour:0.000} --cloudtype {s.CloudType} --clouds {s.CloudCoverage:0.00}");
     }
 
     /// The controls for flying and for the tool in hand, for the footer.
@@ -3416,13 +3953,15 @@ public sealed partial class EditorView : IDisposable
         {
             (string, string)[] tool = _tool switch
             {
-                Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", _topDown ? "Zoom" : "Speed"), .. (_topDown ? ((string, string)[])[] : [("ALT+WHEEL", _camera.Zoom <= 1.01f ? "Zoom" : string.Create(CultureInfo.InvariantCulture, $"Zoom {_camera.Zoom:0.0}x"))]), ("G", "Grades"), ("T", "Throw switch"), .. (_trains.Train is null ? ((string, string)[])[] : [("LMB", "Pick vehicle or coupling")])],
+                Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", _topDown ? "Zoom" : "Speed"), .. (_topDown ? ((string, string)[])[] : [("ALT+WHEEL", _camera.Zoom <= 1.01f ? "Zoom" : string.Create(CultureInfo.InvariantCulture, $"Zoom {_camera.Zoom:0.0}x"))]), ("G", "Overlay"), ("T", "Throw switch"), .. (_trains.Train is null ? ((string, string)[])[] : [("LMB", "Pick vehicle or coupling")])],
                 Tool.Road when _road.Mode == RoadMode.Remove => [("LMB", "Remove road"), ("CTRL+Z", "Undo")],
                 Tool.Road => [("LMB", "Next point"), ("SHIFT", "15 degree steps"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Parallel => _parallel.Anchor is not null
                     ? [("LMB", "End"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")]
+                    : _parallelFollowing ? [("LMB", "Along a guide, from a track's end"), ("ENTER", "Lay tracks"), ("F", _parallel.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove click"), ("ESC", "Cancel")]
                     : [("LMB", "Point, or a track to run beside"), ("DRAG", "Curve"), ("ENTER", "Lay tracks"), ("F", _parallel.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")],
                 Tool.Switches => [("LMB", "Pick a switch"), ("DRAG", "Move points, curve end or crossover"), ("CTRL+Z", "Undo")],
+                Tool.Place when _place.Mode == PlaceMode.EditBridge => [("LMB", "Pick bridge, drag pier"), ("DEL", "Remove pier"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.RunFrom is not null => [("LMB", "Lay to here"), ("ESC", "End run"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.Mode == PlaceMode.Pole && _place.Drawn == PoleDraw.Fence && _place.Selected is null => [("LMB", "Start run"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.Mode == PlaceMode.Pole && _place.Drawn == PoleDraw.Pen => [("LMB", "Point"), ("DRAG", "Curve"), ("ENTER", "Lay"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel"), ("CTRL+Z", "Undo")],
@@ -3434,7 +3973,7 @@ public sealed partial class EditorView : IDisposable
                 Tool.Flatten when _flattenSample is not null => [("LMB", "Flatten"), ("F", FlattenSampleText), ("ESC", "Clear sample"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
                 Tool.Flatten => [("LMB", "Flatten"), ("F", FlattenSampleText), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
                 Tool.Paint => [("LMB", "Paint"), ("P", "Cover"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
-                Tool.Track => [("LMB", "Select, drag"), ("SHIFT", "Add"), ("L", "Straighten"), ("K", "Smooth"), ("J", "Join"), ("U", "Split"), ("DEL", "Delete")],
+                Tool.Track => [("LMB", "Select, drag"), ("SHIFT", "Add"), ("CTRL+LMB", "Insert point"), ("L", "Straighten"), ("K", "Smooth"), ("I", "Simplify"), ("J", "Join"), ("U", "Split"), ("DEL", "Delete")],
                 Tool.Circuits => [("LMB", "Select circuit"), ("SHIFT+LMB", "Add joint"), ("DRAG", "Move joint"), ("DEL", "Remove joint"), ("CTRL+Z", "Undo")],
                 Tool.Pen => [("LMB", "Point"), ("DRAG", "Curve"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")],
                 _ => [("LMB", _tool.ToString()), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
@@ -3443,3 +3982,6 @@ public sealed partial class EditorView : IDisposable
         }
     }
 }
+
+/// A grade crossing placed with the roads along it cut back to its ends: both undone together.
+public sealed record CrossingEdit(NetworkEdit? Roads, PlacedEdit Placed);

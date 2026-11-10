@@ -11,35 +11,70 @@ using RailWerkz.Vulkan;
 
 namespace Highball.Builder;
 
-/// A train to try the track with, in the 3D Editor: pick a saved consist, click the track to put it there (its front at
-/// the click, facing away from the camera), then drive it from this window. The window is a test bench, not a cab.
+/// Locomotives and rolling stock on the track, in the 3D Editor: as many cuts as are put down (up to MaxVehicles vehicles
+/// in all), each placed from a saved consist with a click on the track. One cut is looked at in this window (the focus,
+/// picked by clicking a vehicle) and one is driven (the controlled one): control is taken, and given up, from the window.
+/// Cuts that run into each other couple under CoupleSpeed; faster, both are taken off. A cut uncoupled and drawn away
+/// from the rest of its train becomes a cut of its own.
 public sealed partial class TrainPanel : IDisposable
 {
-    private readonly Dictionary<string, RenderModel?> _models = [];
+    /// The most vehicles there can be on the track at once.
+    public const int MaxVehicles = 10000;
+
+    /// Run together faster than this (mph, closing) and both cuts are taken off: there's no crash yet to show.
+    public const double CoupleSpeed = 15.0;
+
+    /// An uncoupled cut drawn this far (metres) from the rest of its train becomes a cut of its own.
+    private const double SplitGap = 3.0;
+
+    /// A cut on the track, with what it takes to draw it smoothly from one frame to the next.
+    private sealed class Cut
+    {
+        public required Train Train;
+        /// The consist it was made from, to keep the vehicles' names and loads in (null once cuts have been joined).
+        public Consist? From;
+        public readonly List<((double X, double Y, double Z) Front, (double X, double Y, double Z) Rear)> Pose = [];
+        public readonly List<(float4 Rotation, double3 At, float4 BodyRotation, double3 BodyAt)> Previous = [];
+        public readonly List<Suspension.Roll> Rolls = [];
+        /// Seconds it's stood still: a cut left standing a while isn't stepped, until something touches it.
+        public double Still;
+        public bool Asleep => Still > 3.0;
+    }
+
+    private readonly List<Cut> _cuts = [];
+    private Cut? _focus, _controlled;
+
+    private readonly Dictionary<string, VehicleModel?> _models = [];
     private readonly List<ModelDraw> _draws = [];
-    private readonly List<((double X, double Y, double Z) Front, (double X, double Y, double Z) Rear)> _pose = [];
+    private List<((double X, double Y, double Z) Front, (double X, double Y, double Z) Rear)> _pose = [];
     private List<Consist> _consists = Consist.All();
     private int _picked;
     private RailGraph? _graph;
 
-    public Train? Train
+    /// The cut looked at in the window: the last one picked or placed.
+    public Train? Train => _focus?.Train;
+
+    /// The cut being driven, if any.
+    public Train? Controlled => _controlled?.Train;
+
+    /// How many vehicles are on the track, and how many cuts.
+    public int VehicleCount => _cuts.Sum(c => c.Train.Cars.Count);
+    public int CutCount => _cuts.Count;
+
+    private void Focus(Cut? cut)
     {
-        get => _train;
-        private set
+        if (!ReferenceEquals(_focus, cut))
         {
-            if (!ReferenceEquals(_train, value))
-            {
-                Selected = -1;
-                SelectedCoupling = null;
-            }
-            _train = value;
+            Selected = -1;
+            SelectedCoupling = null;
         }
+        _focus = cut;
+        if (cut is not null)
+            cut.Still = 0.0;
     }
 
-    private Train? _train;
-
-    /// The consist the train was made from, to keep the vehicles' names in.
-    private Consist? _placedFrom;
+    /// The consist the looked-at cut was made from, to keep the vehicles' names in.
+    private Consist? _placedFrom => _focus?.From;
 
     /// The vehicle picked (an index into the train's cars), shown in the Vehicle tab and outlined; -1 for none.
     public int Selected { get; private set; } = -1;
@@ -105,11 +140,72 @@ public sealed partial class TrainPanel : IDisposable
     public void Use(RailGraph graph)
     {
         _graph = graph;
-        if (Train is { } train && !train.MoveTo(graph))
+        var lost = 0;
+        foreach (var cut in _cuts.ToList())
+            if (!cut.Train.MoveTo(graph))
+            {
+                Remove(cut);
+                lost++;
+            }
+        if (lost > 0)
+            _notice = lost == 1 ? "The track under a cut changed: it was taken off" : $"The track under {lost} cuts changed: they were taken off";
+    }
+
+    /// Takes a cut off the track.
+    private void Remove(Cut cut)
+    {
+        _cuts.Remove(cut);
+        if (ReferenceEquals(_controlled, cut))
+            _controlled = null;
+        if (ReferenceEquals(_focus, cut))
+            Focus(_cuts.LastOrDefault());
+    }
+
+    /// Takes control of the looked-at cut, giving up whichever's driven now (its brakes set as it's left). False, with a
+    /// notice, if it has no locomotive.
+    public bool TakeControl()
+    {
+        if (_focus is not { } cut)
+            return false;
+        if (!cut.Train.Cars.Any(c => c.Def.Kind == VehicleKind.Locomotive))
         {
-            Train = null;
-            _notice = "The track under the train changed: it was taken off";
+            _notice = "There's no locomotive in this cut to take control of";
+            return false;
         }
+
+        if (!ReferenceEquals(_controlled, cut))
+            Release();
+        _controlled = cut;
+        cut.Still = 0.0;
+        return true;
+    }
+
+    /// Gives up the driven cut, leaving it as a train's left standing: throttle off, brakes on.
+    public void Release()
+    {
+        if (_controlled is not { } cut)
+            return;
+        cut.Train.Secure();
+        cut.Still = 0.0;
+        _controlled = null;
+        Sounds.Stop();
+        _hornButton = false;
+    }
+
+    /// Hooks a cut's train up to tell the crew what happens and to force switches it runs through.
+    private void Hook(Train train)
+    {
+        train.Happened = what =>
+        {
+            Log.Info($"Train {train.Name}: {what}");
+            _notice = what;
+        };
+        train.RunThrough = node =>
+        {
+            Log.Info($"Train {train.Name}: ran through switch {node}, set against it");
+            _notice = "Ran through a switch set against the train: it's been forced over";
+            SetSwitch?.Invoke(node, !train.Graph.Reversed(node));
+        };
     }
 
     /// Puts the picked consist on the track nearest (x, z), its front there, facing as near (fx, fz) as the track allows.
@@ -122,9 +218,9 @@ public sealed partial class TrainPanel : IDisposable
             return;
         }
 
-        if (_picked < 0 || _picked >= _consists.Count)
+        if (_toPlace is null && (_picked < 0 || _picked >= _consists.Count))
         {
-            _notice = "Make a consist in the Consist Editor first";
+            _notice = "Make up a consist on the Build tab first";
             return;
         }
 
@@ -134,29 +230,168 @@ public sealed partial class TrainPanel : IDisposable
             return;
         }
 
+        // What the Build tab asked for (a consist made up there, or one vehicle), or the one picked on the Place tab.
+        var consist = _toPlace ?? _consists[_picked];
+        var fromLibrary = _toPlace is null || _consists.Any(c => c.Name == consist.Name && c.SavedAt is not null && !_buildChanged);
+        _toPlace = null;
+        if (VehicleCount + consist.Cars.Count > MaxVehicles)
+        {
+            _notice = $"That would make more than {MaxVehicles:#,0} vehicles on the track";
+            return;
+        }
+
         var (tx, tz) = graph.FacingOf(near);
         var head = tx * fx + tz * fz >= 0.0 ? near : near.Reversed;
-        var train = Trains.Train.Place(graph, _consists[_picked], head, out var why, _placeAs);
+        var train = Trains.Train.Place(graph, consist, head, out var why, _placeAs);
         if (train is null)
         {
             _notice = why;
             return;
         }
 
-        train.Happened = what =>
+        if (Overlapping(train) is { } there)
         {
-            Log.Info($"Train {train.Name}: {what}");
-            _notice = what;
-        };
-        train.RunThrough = node =>
-        {
-            Log.Info($"Train {train.Name}: ran through switch {node}, set against it");
-            _notice = "Ran through a switch set against the train: it's been forced over";
-            SetSwitch?.Invoke(node, !graph.Reversed(node));
-        };
-        Train = train;
-        _placedFrom = _consists[_picked];
+            _notice = $"There's already stock there ({there.Train.Name})";
+            return;
+        }
+
+        Hook(train);
+        // Names and loads go back into the consist it came from only if that's a saved one.
+        var cut = new Cut { Train = train, From = fromLibrary ? _consists.FirstOrDefault(c => c.Name == consist.Name) ?? consist : null };
+        _cuts.Add(cut);
+        Focus(cut);
+        // The first engine put down is driven; after that, control's taken from the window.
+        if (_controlled is null && train.Cars.Any(c => c.Def.Kind == VehicleKind.Locomotive))
+            _controlled = cut;
         _notice = null;
+    }
+
+    /// A cut already standing where a train would be put: any of its trucks within a car's width of the new one's.
+    private Cut? Overlapping(Train train)
+    {
+        foreach (var cut in _cuts)
+        {
+            if (!ReferenceEquals(cut.Train.Graph, train.Graph))
+                continue;
+            foreach (var a in train.Cars)
+                foreach (var b in cut.Train.Cars)
+                    foreach (var p in (ReadOnlySpan<(double X, double Y, double Z)>)[a.FrontAt, a.RearAt])
+                        foreach (var q in (ReadOnlySpan<(double X, double Y, double Z)>)[b.FrontAt, b.RearAt])
+                            if ((p.X - q.X) * (p.X - q.X) + (p.Z - q.Z) * (p.Z - q.Z) < 2.0 * 2.0 && Math.Abs(p.Y - q.Y) < 3.0)
+                                return cut;
+        }
+
+        return null;
+    }
+
+    // --- Cuts meeting, and cuts drawing apart. ---
+
+    /// Each end of a cut: where its coupler is, which way it faces out, and how fast it's moving out that way.
+    private static ((double X, double Y, double Z) At, (double X, double Z) Out, double Speed) End(Train train, bool front)
+    {
+        var at = front ? train.Head : train.Cars[^1].Rear;
+        var (fx, fz) = train.Graph.FacingOf(at);
+        return front
+            ? (train.Graph.PositionOf(at), (fx, fz), train.Body.Velocity[0])
+            : (train.Graph.PositionOf(at), (-fx, -fz), -train.Body.Velocity[^1]);
+    }
+
+    /// Cuts whose ends have met: coupled into one train under CoupleSpeed, both taken off above it.
+    private void Contacts(double dt)
+    {
+        for (var i = 0; i < _cuts.Count; i++)
+        {
+            for (var j = i + 1; j < _cuts.Count; j++)
+            {
+                var (a, b) = (_cuts[i], _cuts[j]);
+                if (!ReferenceEquals(a.Train.Graph, b.Train.Graph) || (a.Asleep && b.Asleep))
+                    continue;
+                foreach (var frontA in (ReadOnlySpan<bool>)[true, false])
+                {
+                    foreach (var frontB in (ReadOnlySpan<bool>)[true, false])
+                    {
+                        var ea = End(a.Train, frontA);
+                        var eb = End(b.Train, frontB);
+                        // Facing each other on the same track, near enough to have met this frame at the speed they're closing.
+                        if (ea.Out.X * eb.Out.X + ea.Out.Z * eb.Out.Z > -0.7)
+                            continue;
+                        var closing = ea.Speed + eb.Speed;
+                        var (dx, dy, dz) = (ea.At.X - eb.At.X, ea.At.Y - eb.At.Y, ea.At.Z - eb.At.Z);
+                        var apart = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+                        if (apart > 0.35 + Math.Max(0.0, closing) * dt * 1.5 || closing < -0.05)
+                            continue;
+
+                        var mph = Math.Abs(closing) * 2.2369363;
+                        if (mph > CoupleSpeed)
+                        {
+                            Log.Info($"Trains: {a.Train.Name} and {b.Train.Name} met at {mph:0.0} mph: both taken off");
+                            _notice = $"{a.Train.Name} and {b.Train.Name} ran together at {mph:0} mph (over {CoupleSpeed:0}): both were taken off";
+                            Remove(a);
+                            Remove(b);
+                            return;
+                        }
+
+                        Couple(a, frontA, b, frontB, mph);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Two cuts that met, as one: the driven one (or else the first) keeps the controls and stays the right way round.
+    private void Couple(Cut a, bool frontA, Cut b, bool frontB, double mph)
+    {
+        // The driven cut (or else the first) leads, so its engine's brake valve and controls work the train: turned end for
+        // end if it met at its front, so it meets the other at its rear; the other turned as needed to meet it at its front.
+        if (ReferenceEquals(b, _controlled))
+            (a, frontA, b, frontB) = (b, frontB, a, frontA);
+        var joined = Trains.Train.Join(a.Train, frontA, b.Train, !frontB, -0.02);
+        if (joined is null)
+            return;
+
+        Hook(joined);
+        var cut = new Cut { Train = joined };
+        var wasControlled = ReferenceEquals(a, _controlled) || ReferenceEquals(b, _controlled);
+        var wasFocus = ReferenceEquals(a, _focus) || ReferenceEquals(b, _focus);
+        _cuts.Remove(a);
+        _cuts.Remove(b);
+        _cuts.Add(cut);
+        if (wasControlled)
+            _controlled = cut;
+        if (wasFocus || _focus is null || !_cuts.Contains(_focus))
+            Focus(cut);
+        Log.Info($"Trains: coupled into {joined.Name}, {joined.Cars.Count} vehicles, at {mph:0.0} mph");
+        _notice = mph > 4.0
+            ? $"Coupled hard, at {mph:0.0} mph: keep it under 4. Join the air hose to cut the brakes in"
+            : "Coupled: join the air hose and open the angle cocks to cut the brakes in";
+    }
+
+    /// Uncoupled cuts drawn far enough from the rest of their train become cuts of their own.
+    private void Splits()
+    {
+        for (var i = 0; i < _cuts.Count; i++)
+        {
+            var cut = _cuts[i];
+            var body = cut.Train.Body;
+            for (var link = 0; link < body.Coupled.Length; link++)
+            {
+                if (body.Coupled[link] || body.Gap(link) < SplitGap || cut.Train.Split(link) is not var (front, rear))
+                    continue;
+                Hook(front);
+                Hook(rear);
+                Log.Info($"Trains: {cut.Train.Name} drew apart into {front.Cars.Count} and {rear.Cars.Count} vehicles");
+                var (f, r) = (new Cut { Train = front, From = cut.From }, new Cut { Train = rear, From = cut.From });
+                _cuts[i] = f;
+                _cuts.Add(r);
+                // The driven engine's half stays driven.
+                if (ReferenceEquals(_controlled, cut))
+                    _controlled = cut.Train.Body.Brakes.Control <= link ? f : r;
+                if (ReferenceEquals(_focus, cut))
+                    Focus(ReferenceEquals(_controlled, r) ? r : f);
+                break;
+            }
+        }
     }
 
     /// Picks the vehicle under the pointer, opening this window on it; clicking where there's none lets go of it. True
@@ -171,8 +406,20 @@ public sealed partial class TrainPanel : IDisposable
         }
 
         var hit = _overlay.Pick(_placed, pointer, project, camera);
-        Select(hit);
-        return hit >= 0;
+        if (hit < 0)
+        {
+            Select(-1);
+            return false;
+        }
+
+        // The cut the vehicle's in becomes the one looked at.
+        var car = _placed[hit].Car;
+        if (_cuts.FirstOrDefault(c => c.Train.Cars.Contains(car)) is { } cut)
+        {
+            Focus(cut);
+            Select(cut.Train.Cars.IndexOf(car));
+        }
+        return true;
     }
 
     public void Select(int car)
@@ -228,6 +475,11 @@ public sealed partial class TrainPanel : IDisposable
     /// The picked vehicle's outline and the name tags, over the 3D view between clipMin and clipMax.
     public void Overlay(ImDrawListPtr draw, VehicleOverlay.Projector project, double3 camera, float2 clipMin, float2 clipMax)
     {
+        // The engine driven, outlined green whether or not it's looked at.
+        if (_controlled?.Train is { } driven && driven.Body.Brakes.Control is var lead and >= 0)
+            foreach (var placed in _placed)
+                if (placed.Car == driven.Cars[lead])
+                    _overlay.Outline(draw, placed, project, clipMin, clipMax, Style.Clear);
         if (Train is not { } train)
             return;
         var picked = Selected >= 0 && Selected < train.Cars.Count ? train.Cars[Selected] : null;
@@ -283,6 +535,51 @@ public sealed partial class TrainPanel : IDisposable
         return train.Body.Coupled[k] && through ? Style.Clear : Style.Caution;
     }
 
+    /// How full the picked car is loaded: its weight changes at once (and it settles on its springs), and it's saved into
+    /// the consist the train was placed from when the slider's let go, as a rename is.
+    private void LoadControl(Train train, int index, TrainCar car)
+    {
+        ImGui.Dummy(new float2(1f, Style.S(4f)));
+        Kit.Caption("Load");
+        var fill = (float)car.Fill;
+        if (Kit.Slider("vehicle.load", ref fill, out var released))
+        {
+            // Snap to the ends, so empty and full are easy to hit.
+            var value = fill < 0.02f ? 0.0 : fill > 0.98f ? 1.0 : Math.Round(fill, 2);
+            train.SetFill(index, value);
+        }
+
+        if (released)
+            SaveLoad(car);
+
+        // What it's seen carrying, once it carries anything (the first unless another's picked).
+        if (car.Def.Cargoes is { Count: > 0 } cargoes && car.Fill > 0.0)
+        {
+            Kit.Caption("Cargo");
+            var labels = cargoes.Select(c => c.Name).ToArray();
+            var current = Math.Max(0, cargoes.ToList().FindIndex(c => c.Id == car.Cargo));
+            var picked = Kit.Segmented("vehicle.cargo", labels, current);
+            if (picked != current)
+            {
+                car.Cargo = cargoes[picked].Id;
+                Sfx.Tick();
+                SaveLoad(car);
+            }
+        }
+
+        var where = _placedFrom is { } consist ? $"saved to {consist.Name}" : "not saved: not from a consist";
+        Kit.Note($"{car.Fill * 100.0:0}%  ·  {UnitText.Mass(car.Mass)} of {UnitText.Mass(car.Def.MassLoaded)}  ·  {where}", Style.TextFaint);
+    }
+
+    /// Keeps a car's load in the consist it came from.
+    private void SaveLoad(TrainCar car)
+    {
+        if (_placedFrom is not { } consist || car.ConsistIndex < 0 || car.ConsistIndex >= consist.Cars.Count)
+            return;
+        consist.Cars[car.ConsistIndex] = consist.Cars[car.ConsistIndex].WithFill(car.Fill) with { Cargo = car.Cargo };
+        consist.Save();
+    }
+
     /// Gives a vehicle a name (blank takes it away), and keeps it in the consist it came from.
     private void Rename(TrainCar car, string name)
     {
@@ -295,41 +592,79 @@ public sealed partial class TrainPanel : IDisposable
 
     public void Update(float dt)
     {
-        Train?.Update(Paced(dt));
+        var step = Paced(dt);
+        // Every cut's stepped, but one left standing a while sleeps until it's driven, looked at or run into.
+        foreach (var cut in _cuts)
+        {
+            var awake = ReferenceEquals(cut, _controlled) || ReferenceEquals(cut, _focus) || !cut.Asleep;
+            if (!awake)
+                continue;
+            cut.Train.Update(step);
+            var moving = cut.Train.Body.Velocity.Any(v => Math.Abs(v) > 1e-4);
+            cut.Still = moving ? 0.0 : cut.Still + step;
+        }
+
+        Splits();
+        Contacts(step);
         Graphs.Record(Train, dt);
         _draws.Clear();
         _placed.Clear();
         _lamps.Clear();
-        if (Train is not { } train)
+        if (_controlled?.Train is { } driven)
+        {
+            var keys = !Keyboard.KeysBlocked;
+            if (keys && Input.KeyDown(GlfwKey.B))
+                Sounds.SetBell(!Sounds.BellRinging);
+            if (keys && Input.KeyDown(GlfwKey.X))
+                driven.Sand = !driven.Sand;
+            Sounds.SetHorn((keys && Input.Key(GlfwKey.Space)) || _hornButton);
+            // The ditch lights flash with the horn.
+            foreach (var systems in driven.Body.Systems)
+                if (systems is not null)
+                    systems.Horn = Sounds.HornBlowing;
+        }
+        else
         {
             Sounds.Stop();
-            StopEngines();
             _hornButton = false;
-            _previous.Clear();
+        }
+
+        if (_cuts.Count == 0)
+        {
+            StopEngines();
+            _pose = [];
             return;
         }
 
-        var keys = !Keyboard.KeysBlocked;
-        if (keys && Input.KeyDown(GlfwKey.B))
-            Sounds.SetBell(!Sounds.BellRinging);
-        Sounds.SetHorn((keys && Input.Key(GlfwKey.Space)) || _hornButton);
-        // The ditch lights flash with the horn.
-        foreach (var systems in train.Body.Systems)
-            if (systems is not null)
-                systems.Horn = Sounds.HornBlowing;
+        foreach (var cut in _cuts)
+            DrawCut(cut, dt, step);
+        _pose = (_focus ?? _cuts[0]).Pose;
+        _rolls = (_focus ?? _cuts[0]).Rolls;
+        _previous = (_focus ?? _cuts[0]).Previous;
+        if (Train is { } looked)
+        {
+            PlaceCouplings(looked);
+            Smoothness(dt, looked);
+        }
+    }
 
-        // Last frame's places count only for the same train on the same track.
-        if (!ReferenceEquals(train, _previousTrain) || !ReferenceEquals(train.Graph, _previousGraph) || _previous.Count != train.Cars.Count)
+    /// One cut's vehicles drawn where they are this frame (between physics steps, so it runs smoothly at any frame rate,
+    /// see Train.Pose), its bodies on their springs, and its engines' lamps.
+    private void DrawCut(Cut cut, float dt, double step)
+    {
+        var train = cut.Train;
+        (_pose, _previous, _rolls) = (cut.Pose, cut.Previous, cut.Rolls);
+        // Last frame's places count only for the same cars.
+        if (_previous.Count != train.Cars.Count)
             _previous.Clear();
-        _previousTrain = train;
-        _previousGraph = train.Graph;
+        if (_rolls.Count != train.Cars.Count)
+        {
+            _rolls.Clear();
+            _rolls.AddRange(new Suspension.Roll[train.Cars.Count]);
+        }
 
         train.Dp.Ground = Ground;
-
-        // Drawn between physics steps, so it runs smoothly at any frame rate (see Train.Pose).
         train.Pose(_pose);
-        PlaceCouplings(train);
-        Smoothness(dt, train);
         var hadPrevious = _previous.Count > 0;
         for (var i = 0; i < train.Cars.Count; i++)
         {
@@ -343,20 +678,31 @@ public sealed partial class TrainPanel : IDisposable
                 (dx, dy, dz) = (-dx, -dy, -dz);
             var rotation = Facing(dx, dy, dz);
             var at = new double3((fx + rx) * 0.5, (fy + ry) * 0.5, (fz + rz) * 0.5);
-            var (wasRotation, wasAt) = hadPrevious ? _previous[i] : (rotation, at);
-            if (Model(car.Livery) is { } model)
+            var (bodyRotation, bodyAt) = Sprung(train, i, rotation, at, step);
+            var (wasRotation, wasAt, wasBodyRotation, wasBodyAt) = hadPrevious ? _previous[i] : (rotation, at, bodyRotation, bodyAt);
+            if (Model(car.ModelPath) is { } model)
             {
-                // Where it was last frame too, so temporal anti-aliasing follows it (see MotionVectors).
-                _draws.Add(new ModelDraw(model, default, Rotation: rotation, At: at, PreviousRotation: wasRotation, PreviousAt: wasAt));
-                _placed.Add(new VehicleOverlay.Placed(car, car.Livery!.Model, rotation, at));
+                // Where it was last frame too, so temporal anti-aliasing follows it (see MotionVectors). The trucks stay on
+                // the rail; the body above them settles under its load and rolls a little on the springs.
+                if (model.Trucks is { } trucks)
+                {
+                    _draws.Add(new ModelDraw(trucks, default, Rotation: rotation, At: at, PreviousRotation: wasRotation, PreviousAt: wasAt));
+                    _draws.Add(new ModelDraw(model.Body, default, Rotation: bodyRotation, At: bodyAt, PreviousRotation: wasBodyRotation, PreviousAt: wasBodyAt));
+                }
+                else
+                {
+                    _draws.Add(new ModelDraw(model.Body, default, Rotation: rotation, At: at, PreviousRotation: wasRotation, PreviousAt: wasAt));
+                }
+
+                _placed.Add(new VehicleOverlay.Placed(car, car.ModelPath!, rotation, at));
             }
 
             if (train.Body.Systems[i] is { } systems)
                 AddLamps(car, systems, rotation, at);
             if (hadPrevious)
-                _previous[i] = (rotation, at);
+                _previous[i] = (rotation, at, bodyRotation, bodyAt);
             else
-                _previous.Add((rotation, at));
+                _previous.Add((rotation, at, bodyRotation, bodyAt));
         }
     }
 
@@ -421,10 +767,57 @@ public sealed partial class TrainPanel : IDisposable
         }
     }
 
-    /// Each car's place as drawn last frame, for its motion.
-    private readonly List<(float4 Rotation, double3 At)> _previous = [];
-    private Train? _previousTrain;
-    private RailGraph? _previousGraph;
+    /// The cut being drawn's cars as drawn last frame, and their bodies on the springs, for their motion.
+    private List<(float4 Rotation, double3 At, float4 BodyRotation, double3 BodyAt)> _previous = [];
+
+    /// The cut being drawn's car bodies' roll on their springs.
+    private List<Suspension.Roll> _rolls = [];
+
+    /// Where car i's body is drawn, given where the car stands on its trucks: lowered by its load, and rolled about its
+    /// centre plates by the track and by leaning out on curves. Moves its roll on by dt.
+    private (float4 Rotation, double3 At) Sprung(Train train, int i, float4 rotation, double3 at, double dt)
+    {
+        var car = train.Cars[i];
+
+        // Which way is the inside of the curve: the track's heading turns from the car behind to the car ahead, towards it.
+        (double X, double Y, double Z) Heading(int k)
+        {
+            var (f, r) = (_pose[k].Front, _pose[k].Rear);
+            var (hx, hy, hz) = (f.X - r.X, f.Y - r.Y, f.Z - r.Z);
+            var length = Math.Max(Math.Sqrt(hx * hx + hy * hy + hz * hz), 1e-9);
+            return (hx / length, hy / length, hz / length);
+        }
+
+        var ahead = Heading(Math.Max(0, i - 1));
+        var behind = Heading(Math.Min(train.Cars.Count - 1, i + 1));
+        var (tx, tz) = (ahead.X - behind.X, ahead.Z - behind.Z);
+        var turn = Math.Sqrt(tx * tx + tz * tz);
+        var side = VehicleOverlay.Rotate(rotation, new float3(1f, 0f, 0f));
+        var inward = turn > 1e-6 ? (side.X * tx + side.Z * tz) / turn : 0.0;
+
+        // A locomotive rolls as the heavy thing it is, heavier with its tanks full, and sits lower for what it carries.
+        var supplies = train.Body.Systems[i] is { } systems && car.Def.Supplies is not null ? systems.SuppliesShare : (double?)null;
+        var load = car.Def.Kind == VehicleKind.Locomotive ? Suspension.LocoLoad(supplies ?? 1.0) : car.Fill;
+        var sag = supplies is { } share ? Suspension.FullSuppliesSag * share : Suspension.Sag(car.Def, car.Fill);
+        var roll = _rolls[i];
+        Suspension.Step(ref roll, dt, train.Speed, car.Curvature, inward, load, at.X, at.Z);
+        _rolls[i] = roll;
+
+        // Rolled about a point RollCentre over the rail and lowered by the sag, in the car's own axes, then turned with it.
+        var (sin, cos) = Math.SinCos(roll.Angle);
+        var h = Suspension.RollCentre;
+        var local = new float3((float)(h * sin), (float)(h * (1.0 - cos) - sag), 0f);
+        var offset = VehicleOverlay.Rotate(rotation, local);
+        var (hs, hc) = MathF.SinCos((float)roll.Angle * 0.5f);
+        return (Multiply(rotation, new float4(0f, 0f, hs, hc)), new double3(at.X + offset.X, at.Y + offset.Y, at.Z + offset.Z));
+    }
+
+    /// q then p, as unit quaternions (x y z w): p turns first, in q's frame.
+    private static float4 Multiply(float4 q, float4 p) => new(
+        q.W * p.X + q.X * p.W + q.Y * p.Z - q.Z * p.Y,
+        q.W * p.Y - q.X * p.Z + q.Y * p.W + q.Z * p.X,
+        q.W * p.Z + q.X * p.Y - q.Y * p.X + q.Z * p.W,
+        q.W * p.W - q.X * p.X - q.Y * p.Y - q.Z * p.Z);
 
     // Frame times as measured wobble from one frame to the next by more than the screen's do: the picture is shown at the
     // display's own beat, so running the train on by each frame's own time makes it move unevenly on the screen. It's run on
@@ -485,6 +878,8 @@ public sealed partial class TrainPanel : IDisposable
 
         Log.Info(string.Create(CultureInfo.InvariantCulture,
             $"Train smoothness: {Math.Abs(train.Speed):0.00} m/s, {_drawnSpeeds.Count} frames ({Spread(_frameTimes, 1000.0, "ms")}); moved a frame: drawn {Spread(_drawnSpeeds, 100.0, "cm")}; steps alone {Spread(_steppedSpeeds, 100.0, "cm")}"));
+        Log.Info(string.Create(CultureInfo.InvariantCulture,
+            $"Train traction: {Math.Abs(train.Traction) / 1000.0:0} kN, slip {string.Join(" ", train.Body.WheelSlip.Where((_, k) => train.Body.Systems[k] is not null).Select(w => w.ToString("0.00", CultureInfo.InvariantCulture)))}, sand {train.Sand}, fuel {string.Join(" ", train.Body.Systems.Where(s => s is not null).Select(s => s!.FuelRate.ToString("0", CultureInfo.InvariantCulture)))} L/h, mass {train.Mass / 1000.0:0} t"));
         _drawnSpeeds.Clear();
         _steppedSpeeds.Clear();
         _frameTimes.Clear();
@@ -503,23 +898,23 @@ public sealed partial class TrainPanel : IDisposable
         return new float4((float)(cy * sx), (float)(sy * cx), (float)(-sy * sx), (float)(cy * cx));
     }
 
-    private RenderModel? Model(Livery? livery)
+    private VehicleModel? Model(string? path)
     {
-        if (livery is null)
+        if (path is null)
             return null;
-        if (_models.TryGetValue(livery.Model, out var model))
+        if (_models.TryGetValue(path, out var model))
             return model;
         try
         {
-            model = new RenderModel(RailWerkz.Vulkan.Model.Load(livery.Model));
+            model = VehicleModel.Load(path);
         }
         catch (Exception e)
         {
-            Log.Warn($"Trains: model {livery.Model} unreadable ({e.Message})");
+            Log.Warn($"Trains: model {path} unreadable ({e.Message})");
             model = null;
         }
 
-        return _models[livery.Model] = model;
+        return _models[path] = model;
     }
 
     /// Where the camera should move this frame to keep up with the train: how far its front moved.
@@ -561,9 +956,15 @@ public sealed partial class TrainPanel : IDisposable
         _lastEar = ear;
         RailWerkz.Core.Audio.AudioEngine.SetListener(default, camera.Forward, camera.Up, _earVelocity);
 
-        if (Train is not { } train || _pose.Count != train.Cars.Count)
+        // The horn, bell and engines heard are the driven cut's, or the looked-at one's when nothing's driven.
+        if ((_controlled ?? _focus) is not { } heard || heard.Pose.Count != heard.Train.Cars.Count)
+        {
+            StopEngines();
             return;
+        }
 
+        var train = heard.Train;
+        _pose = heard.Pose;
         var lead = Math.Max(0, train.Cars.FindIndex(c => c.Def.Kind == VehicleKind.Locomotive));
         var (front, rear) = (_pose[lead].Front, _pose[lead].Rear);
         // Moving along the track at the train's speed: towards its front, or back.
@@ -587,44 +988,74 @@ public sealed partial class TrainPanel : IDisposable
         Sounds.Move(new(At(car.Def.Horn, HornHeight), velocity, TrainSounds.HornReference, TrainSounds.HornRange),
             new(At(car.Def.Bell, BellHeight), velocity, TrainSounds.BellReference, TrainSounds.BellRange));
         Engines(train, camera, dt);
+        _pose = (_focus ?? heard).Pose;
     }
 
     // How high a prime mover sits over the rail tops, in metres: about the middle of the long hood.
     private const double EngineHeight = 3.2;
 
-    private readonly List<(int Car, EngineSound Sound)> _engines = [];
+    /// The most locomotives heard at once: each engine takes about five of the 64 voices, and the horn, bell, wheels and
+    /// couplers need theirs.
+    private const int MaxEngineSounds = 8;
+
+    /// Each locomotive heard now, by the vehicle (so its sound carries on when cuts couple or part).
+    private readonly Dictionary<TrainCar, EngineSound> _engines = [];
     private readonly RunningGear _gear = new();
     private readonly SlackSound _slack = new();
-    private Train? _enginesFor;
 
-    /// Every locomotive with an engine sound runs it, heard from the middle of its own body: the throttle sets the revs,
-    /// and how hard the train's pulling (its tractive effort, or its power once it's moving) is the load.
+    /// The engines of the locomotives nearest the camera, whichever cut they're in (up to MaxEngineSounds), each heard from
+    /// the middle of its own body: its train's throttle sets the revs, and how hard that train's pulling (its tractive
+    /// effort, or its power once it's moving) is the load. The wheels and couplers are the heard cut's.
     private void Engines(Train train, Camera camera, float dt)
     {
-        if (!ReferenceEquals(train, _enginesFor))
-        {
-            StopEngines();
-            _enginesFor = train;
-            for (var i = 0; i < train.Cars.Count; i++)
-                if (train.Cars[i].Def.EngineSound is { } def)
-                    // Each a little off the others, so a lash-up of the same engines doesn't phase into one.
-                    _engines.Add((i, new EngineSound(def, 1f + 0.012f * (_engines.Count % 3 - 1) + 0.004f * (_engines.Count / 3))));
-        }
-
         // The wheels, motors and couplers, whether or not there are engine sounds.
         _gear.Update(dt, train.Body, _pose, (camera.X, camera.Y, camera.Z));
         _slack.Update(dt, train.Body, _pose, (camera.X, camera.Y, camera.Z));
-        if (_engines.Count == 0)
-            return;
 
+        var near = new List<(Cut Cut, int Car, double Away)>();
+        foreach (var c in _cuts)
+        {
+            if (c.Pose.Count != c.Train.Cars.Count)
+                continue;
+            for (var i = 0; i < c.Train.Cars.Count; i++)
+            {
+                if (c.Train.Cars[i].Def.EngineSound is null)
+                    continue;
+                var (f, r) = (c.Pose[i].Front, c.Pose[i].Rear);
+                var (dx, dz) = ((f.X + r.X) * 0.5 - camera.X, (f.Z + r.Z) * 0.5 - camera.Z);
+                near.Add((c, i, dx * dx + dz * dz));
+            }
+        }
+
+        var heard = near.OrderBy(n => n.Away).Take(MaxEngineSounds).ToList();
+        foreach (var gone in _engines.Keys.Where(k => !heard.Any(h => ReferenceEquals(h.Cut.Train.Cars[h.Car], k))).ToList())
+        {
+            _engines[gone].Stop();
+            _engines.Remove(gone);
+        }
+
+        foreach (var (cut, car, _) in heard)
+        {
+            var t = cut.Train;
+            var vehicle = t.Cars[car];
+            if (!_engines.TryGetValue(vehicle, out var sound))
+                // Each a little off the others, so a lash-up of the same engines doesn't phase into one.
+                _engines[vehicle] = sound = new EngineSound(vehicle.Def.EngineSound!, 1f + 0.012f * (_engines.Count % 3 - 1) + 0.004f * (_engines.Count / 3));
+            EngineVoice(t, cut.Pose, car, sound, camera, dt);
+        }
+    }
+
+    /// One locomotive's engine sound this frame, from its train's controls and how hard it's pulling.
+    private static void EngineVoice(Train train, List<((double X, double Y, double Z) Front, (double X, double Y, double Z) Rear)> pose, int car, EngineSound sound,
+        Camera camera, float dt)
+    {
         // With the reverser centred the throttle doesn't load the engine, and it stays at idle, as on the real thing.
         var throttle = train.Reverser != 0 && train.Dynamic <= 0.0 ? train.Notch / (float)Trains.Train.Notches : 0f;
         var effort = train.Cars.Where(c => c.Def.Kind == VehicleKind.Locomotive).Sum(c => c.Def.StartingTractiveEffort);
         var traction = Math.Abs(train.Traction);
         var load = (float)Math.Max(effort > 0.0 ? traction / effort : 0.0, train.Power > 0.0 ? traction * Math.Abs(train.Speed) / train.Power : 0.0);
-
-        foreach (var (car, sound) in _engines)
         {
+            var _pose = pose;
             var systems = train.Body.Systems[car];
             var onLine = systems?.MakesPower ?? true;
             var (front, rear) = (_pose[car].Front, _pose[car].Rear);
@@ -641,21 +1072,33 @@ public sealed partial class TrainPanel : IDisposable
 
     private void StopEngines()
     {
-        foreach (var (_, sound) in _engines)
+        foreach (var sound in _engines.Values)
             sound.Stop();
         _engines.Clear();
-        _enginesFor = null;
         _gear.Stop();
     }
 
-    public void CancelPlacing() => Placing = false;
+    public void CancelPlacing()
+    {
+        Placing = false;
+        _toPlace = null;
+    }
 
     /// Picks a saved consist by name; false if there's none called that.
     public bool Pick(string name)
     {
         _consists = Consist.All();
+        _toPlace = null;
         _picked = _consists.FindIndex(c => c.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         return _picked >= 0;
+    }
+
+    /// Takes every cut off the track.
+    public void Clear()
+    {
+        Release();
+        _cuts.Clear();
+        Focus(null);
     }
 
     public void Dispose()

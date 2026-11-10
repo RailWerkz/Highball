@@ -9,6 +9,8 @@ running gear is built from its TruckSpec. Under Models/RollingStock/<folder> the
 The coupler is the shared one in Models/Couplers (see coupler.py): the build reads its height and reach before making the
 body, so that every car's draft gear and striker are made round it, and the assembly names it from there.
     Assembled/<key>_<livery>.glb and .blend, the whole car for looking at; the game loads the separate parts.
+Each assembled car is checked for faces of different paints overlapping in one plane, which flicker (check.py): the build
+prints a warning naming them.
 A car that carries containers (or other cargo models) gives them in cargo(), built once into Models/RollingStock/Containers,
 and its loads in loads(): each load's models and where they sit. Then Assembled has <key>_<livery>_<load> for each load.
 """
@@ -19,6 +21,7 @@ import os
 import bpy
 from mathutils import Matrix, Vector
 
+from . import check
 from . import coupler as shared_coupler
 from . import running_gear
 from .kit import Kit
@@ -53,7 +56,8 @@ class Car:
         return {}
 
     def places(self) -> dict:
-        """Where each moving part goes: {name: [{"position", "yaw" (degrees), "travel" (metres, in the part's own axes)}]}."""
+        """Where each moving part goes: {name: [{"position", "yaw" (degrees), and how it opens: "travel" (metres, in the part's
+        own axes) for one that slides, or "swing" (degrees about Z through its origin, its hinge) for one that turns}]}."""
         return {}
 
     def cargo(self) -> dict:
@@ -133,7 +137,8 @@ def _holder(name, at=(0, 0, 0), yaw=0.0, parent=None):
 
 
 def assemble(car: Car, folder, livery, open_parts=False, spin=0.0, carrying=None):
-    """Every part on an empty named for it, so a truck turns with its wheels on it. open_parts moves the parts to their travel's end."""
+    """Every part on an empty named for it, so a truck turns with its wheels on it. open_parts moves the parts to their travel's
+    end, or swings them open."""
     shared = {}
 
     def load(file, parent, prefix):
@@ -164,6 +169,8 @@ def assemble(car: Car, folder, livery, open_parts=False, spin=0.0, carrying=None
             at = Vector(place["position"])
             if open_parts and "travel" in place:
                 at += Matrix.Rotation(yaw, 3, "Z") @ Vector(place["travel"])
+            if open_parts and "swing" in place:
+                yaw += math.radians(place["swing"])
             label = f"{name.capitalize()}_{k}"
             load(f"{name}_{livery}.glb", _holder(label, tuple(at), yaw, root), label)
     for k, item in enumerate(car.loads().get(carrying, []) if carrying else [], 1):
@@ -182,6 +189,8 @@ def assemble(car: Car, folder, livery, open_parts=False, spin=0.0, carrying=None
 def combined(car: Car, out, livery, carrying=None):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     assemble(car, out, livery, carrying=carrying)
+    # Overlapping faces flicker in the game: warn about any, as the whole car's put together.
+    check.report(f"{car.key}_{livery}" + (f"_{carrying}" if carrying else ""))
     folder = os.path.join(out, "Assembled")
     os.makedirs(folder, exist_ok=True)
     for obj in bpy.data.objects:

@@ -9,7 +9,8 @@ namespace Highball.Builder;
 public enum YardMode { Follow, Parallel, Crossover, Ladder }
 
 /// What a yard tool would lay. Ways: the first of a ladder is its lead, the rest branch off it. Problem: why it can't be laid.
-public sealed record YardPlan(List<PlannedWay> Ways, string Summary, string? Problem, int Size)
+/// Shown: each way's line as drawn on screen, where it's laid through fewer points than show its curve.
+public sealed record YardPlan(List<PlannedWay> Ways, string Summary, string? Problem, int Size, List<List<(double X, double Z)>>? Shown = null)
 {
     public static YardPlan Refused(string why) => new([], "", why, 0);
 }
@@ -216,7 +217,7 @@ public sealed class YardTool
 
     /// Drawn as with Pen: the path is the first track, joined to whatever it starts or ends on, and the rest go beside it at the
     /// spacing, on Side. An end of one beside it that comes within JoinEnd of a track's loose end joins that track.
-    public YardPlan PenParallel(TrackEditor tracks, IReadOnlyList<LayPoint> drawn, Func<double, string> length)
+    public YardPlan PenParallel(TrackEditor tracks, IReadOnlyList<LayPoint> drawn, Func<double, string> length, bool laying = false)
     {
         if (drawn.Count < 2)
             return YardPlan.Refused("Draw where they go");
@@ -244,9 +245,17 @@ public sealed class YardTool
             var off = Spacing * t;
             var path = drawn.Select((p, i) => (X: p.X + across[i].X * off, Z: p.Z + across[i].Z * off)).ToList();
             var (startEnd, endEnd) = (tracks.LooseEndNear(path[0].X, path[0].Z, JoinEnd), tracks.LooseEndNear(path[^1].X, path[^1].Z, JoinEnd));
-            if (problem is null && tracks.RunsInto(path, Math.Min(RunClearance, Spacing - 0.4), startEnd is not null, endEnd is not null))
+            if (problem is null && tracks.RunsInto(Checked(path, startEnd is not null, endEnd is not null, Math.Min(RunClearance, Spacing - 0.4)), Math.Min(RunClearance, Spacing - 0.4), startEnd is not null, endEnd is not null))
                 problem = ParallelTracks > 2 ? $"Track {t + 1}: Runs into another track" : "Runs into another track";
-            var points = path.Select(p => new LayPoint(p.X, p.Z)).ToList();
+            // (Laid through as few points as the curve needs, as Follow lays them; shown as drawn, since fitting every frame is slow.)
+            var laid = path;
+            if (laying && TrackAlignment.FitPath(path) is { Fitted: true, Pieces.Count: > 0 } fit)
+            {
+                laid = Smart(fit.Pieces);
+                (laid[0], laid[^1]) = (path[0], path[^1]);
+            }
+
+            var points = laid.Select(p => new LayPoint(p.X, p.Z)).ToList();
             if (startEnd is { } s)
                 points[0] = new LayPoint(tracks.PositionOf(s).X, tracks.PositionOf(s).Z, Node: s);
             if (endEnd is { } e && e != startEnd)
@@ -256,6 +265,62 @@ public sealed class YardTool
 
         var summary = $"{ParallelTracks} track{(ParallelTracks == 1 ? "" : "s")}, {length(along)} long, {length(Spacing)} apart";
         return new YardPlan(ways, summary, problem, 0);
+    }
+
+    /// Along a fit (a guide followed): the first track the fit, laid through first's points (null: only shown), and the rest beside
+    /// it at the spacing, on Side, each laid through as few points as its own fit needs. Their ends join loose ends as with Pen.
+    public YardPlan FollowParallel(TrackEditor tracks, IReadOnlyList<TrackPiece> pieces, List<LayPoint>? first, Func<double, string> length)
+    {
+        var total = Alignment.LengthOf(pieces);
+        if (total < ShortestParallel)
+            return YardPlan.Refused($"Shorter than {length(ShortestParallel)}");
+        var laying = first is not null;
+        var dense = Sampled(pieces, []).Points;
+        var across = new (double X, double Z)[dense.Count];
+        for (var i = 0; i < dense.Count; i++)
+        {
+            var (a, b) = (dense[Math.Max(0, i - 1)], dense[Math.Min(dense.Count - 1, i + 1)]);
+            var (dx, dz) = (b.X - a.X, b.Z - a.Z);
+            var l = Math.Max(Math.Sqrt(dx * dx + dz * dz), 1e-9);
+            across[i] = (-dz / l * Side, dx / l * Side);
+        }
+
+        var ways = new List<PlannedWay> { new(first ?? [.. dense.Select(p => new LayPoint(p.X, p.Z))]) };
+        var shown = new List<List<(double X, double Z)>> { dense };
+        string? problem = null;
+        for (var t = 1; t < ParallelTracks; t++)
+        {
+            var off = Spacing * t;
+            var path = dense.Select((p, i) => (X: p.X + across[i].X * off, Z: p.Z + across[i].Z * off)).ToList();
+            var (startEnd, endEnd) = (tracks.LooseEndNear(path[0].X, path[0].Z, JoinEnd), tracks.LooseEndNear(path[^1].X, path[^1].Z, JoinEnd));
+            if (problem is null && tracks.RunsInto(Checked(path, startEnd is not null, endEnd is not null, Math.Min(RunClearance, Spacing - 0.4)), Math.Min(RunClearance, Spacing - 0.4), startEnd is not null, endEnd is not null))
+                problem = ParallelTracks > 2 ? $"Track {t + 1}: Runs into another track" : "Runs into another track";
+            if (problem is not null && Environment.GetEnvironmentVariable("HB_PFDEBUG") is not null)
+            {
+                var check = Checked(path, startEnd is not null, endEnd is not null, Math.Min(RunClearance, Spacing - 0.4));
+                for (var k = 0; k + 1 < check.Count; k++)
+                    if (tracks.RunsInto([check[k], check[k + 1]], Math.Min(RunClearance, Spacing - 0.4), false, false))
+                        RailWerkz.Core.Logging.Log.Info($"PFDBG track {t + 1} step {k}/{check.Count} at {check[k].X:0.0},{check[k].Z:0.0} start {path[0].X:0.0},{path[0].Z:0.0} joined {startEnd} {endEnd}");
+            }
+
+            var laid = path;
+            if (laying && TrackAlignment.FitPath(path) is { Fitted: true, Pieces.Count: > 0 } fit)
+            {
+                laid = Smart(fit.Pieces);
+                (laid[0], laid[^1]) = (path[0], path[^1]);
+            }
+
+            var points = laid.Select(p => new LayPoint(p.X, p.Z)).ToList();
+            if (startEnd is { } s)
+                points[0] = new LayPoint(tracks.PositionOf(s).X, tracks.PositionOf(s).Z, Node: s);
+            if (endEnd is { } e && e != startEnd)
+                points[^1] = new LayPoint(tracks.PositionOf(e).X, tracks.PositionOf(e).Z, Node: e);
+            ways.Add(new PlannedWay(points));
+            shown.Add(path);
+        }
+
+        var summary = $"{ParallelTracks} track{(ParallelTracks == 1 ? "" : "s")}, {length(total)} long, {length(Spacing)} apart";
+        return new YardPlan(ways, summary, problem, 0, shown);
     }
 
     private YardPlan Parallel(TrackEditor tracks, NetworkLines lines, (LayPoint Point, (double X, double Z) Runs) anchor, (double X, double Z) at, Func<double, string> length)
@@ -275,7 +340,7 @@ public sealed class YardTool
 
         var count = Math.Max(2, (int)Math.Ceiling((last - first) / 4.0));
         var (spacing, n) = (Spacing, ParallelTracks);
-        var fitted = new (bool Fitted, double Radius, double Length, List<(double X, double Z)> Points)[n];
+        var fitted = new (bool Fitted, double Radius, double Length, List<(double X, double Z)> Points, List<(double X, double Z)> Laid)[n];
         System.Threading.Tasks.Parallel.For(0, n, t =>
         {
             var path = new List<(double X, double Z)>(count + 1);
@@ -289,7 +354,8 @@ public sealed class YardTool
             }
 
             var fit = TrackAlignment.FitPath(path);
-            fitted[t] = (fit.Fitted, fit.Radius, Alignment.LengthOf(fit.Pieces), fit.Pieces.Count == 0 ? [] : Sampled(fit.Pieces, []).Points);
+            fitted[t] = (fit.Fitted, fit.Radius, Alignment.LengthOf(fit.Pieces), fit.Pieces.Count == 0 ? [] : Sampled(fit.Pieces, []).Points,
+                fit.Pieces.Count == 0 ? [] : Smart(fit.Pieces));
         });
 
         string? problem = null;
@@ -308,8 +374,28 @@ public sealed class YardTool
         var curve = tightest < double.MaxValue / 2.0 ? $", tightest curve {length(tightest)}" : ", straight";
         var total = fitted.Sum(f => f.Length);
         var summary = n == 1 ? $"{length(total)} track, {length(Spacing)} apart{curve}" : $"{n} tracks, {length(total)} in all, {length(Spacing)} apart{curve}";
-        return new YardPlan([.. fitted.Select(f => new PlannedWay([.. f.Points.Select(p => new LayPoint(p.X, p.Z))]))], summary, problem, 0);
+        return new YardPlan([.. fitted.Select(f => new PlannedWay([.. f.Laid.Select(p => new LayPoint(p.X, p.Z))]))], summary, problem, 0, [.. fitted.Select(f => f.Points)]);
     }
+
+    /// A path as it's checked for running into other track: an end that joins a track left out as far as the clearance (and a
+    /// little), since the track it carries on from is that near there.
+    private static List<(double X, double Z)> Checked(List<(double X, double Z)> path, bool joinsStart, bool joinsEnd, double clearance)
+    {
+        var reach = (clearance + 0.5) * (clearance + 0.5);
+        double Away((double X, double Z) a, (double X, double Z) b) => (a.X - b.X) * (a.X - b.X) + (a.Z - b.Z) * (a.Z - b.Z);
+        var (from, to) = (0, path.Count - 1);
+        if (joinsStart)
+            while (from < to - 1 && Away(path[from + 1], path[0]) < reach)
+                from++;
+        if (joinsEnd)
+            while (to > from + 1 && Away(path[to - 1], path[^1]) < reach)
+                to--;
+        return path.GetRange(from, to - from + 1);
+    }
+
+    /// The points a fit is laid through: as few as lay the same track, as Follow lays them.
+    private static List<(double X, double Z)> Smart(IReadOnlyList<TrackPiece> pieces) =>
+        [.. FollowTool.ControlPoints(pieces).Select(d => Alignment.Position(pieces, d))];
 
     // --- Crossover. ---
 
@@ -531,9 +617,23 @@ public sealed class YardTool
             return;
 
         var color = plan.Problem is null ? Style.Caution : Style.Stop;
-        foreach (var way in plan.Ways)
+        for (var w = 0; w < plan.Ways.Count; w++)
         {
+            var way = plan.Ways[w];
             float2? previous = null;
+            if (plan.Shown is { } shown && w < shown.Count)
+            {
+                foreach (var (x, z) in shown[w])
+                {
+                    var on = project(x, z);
+                    if (previous is { } a && on is { } b)
+                        draw.AddLine(a, b, color, 3f * scale);
+                    previous = on;
+                }
+
+                continue;
+            }
+
             for (var i = 0; i < way.Points.Count; i++)
             {
                 var (x, z) = way.From is { } from && i == 0 ? (plan.Ways[0].Points[from].X, plan.Ways[0].Points[from].Z) : (way.Points[i].X, way.Points[i].Z);

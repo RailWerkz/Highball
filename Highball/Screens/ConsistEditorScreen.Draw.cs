@@ -113,7 +113,7 @@ public sealed partial class ConsistEditorScreen
         FinishDrag(draw, mouse);
 
         Canvas.Hints(draw, new float2(margin, size.Y - S(30f)),
-            ("DRAG", "Orbit / reorder"), ("ENTER", "Add"), ("DEL", "Remove"), ("CTRL+↑↓", "Move"), ("F", "Flip"),
+            ("DRAG", "Orbit / reorder"), ("WASD", "Move view"), ("Q E", "Down, up"), ("ENTER", "Add"), ("DEL", "Remove"), ("CTRL+↑↓", "Move"), ("F", "Flip"),
             ("CTRL+Z", "Undo"), ("CTRL+S", "Save"), ("ESC", "Back"));
         DrawToast(draw, size);
     }
@@ -357,6 +357,15 @@ public sealed partial class ConsistEditorScreen
 
         y += S(46f);
 
+        // How full the selected car is loaded: dragged from empty to its rated load, one undo step a drag.
+        DrawLoad(draw, has ? car : null, left, right, y);
+        y += S(44f);
+        if (car?.Def is { Cargoes.Count: > 0 } cargoDef)
+        {
+            DrawCargo(draw, car, cargoDef, left, right, y);
+            y += S(44f);
+        }
+
         // The list.
         var footer = S(58f);
         var listTop = y;
@@ -366,19 +375,83 @@ public sealed partial class ConsistEditorScreen
         draw.AddRect(new float2(left, listTop), new float2(right, listBottom), Stroke, 0f, ImDrawFlags.None, 1f);
         DrawRows(draw, mouse, pressed);
 
-        // NEW, OPEN, SAVE.
+        // NEW, OPEN, SAVE, DELETE.
         var buttonY = max.Y - footer;
-        var third = (width - S(16f)) / 3f;
-        if (Widgets.Button(draw, "consist.new", "New", new float2(left, buttonY), new float2(third, S(40f))))
+        var quarter = (width - S(24f)) / 4f;
+        float2 Slot(int i) => new(left + i * (quarter + S(8f)), buttonY);
+        var buttonSize = new float2(quarter, S(40f));
+        if (Widgets.Button(draw, "consist.new", "New", Slot(0), buttonSize))
             New();
-        if (Widgets.Button(draw, "consist.open", "Open", new float2(left + third + S(8f), buttonY), new float2(third, S(40f))))
+        if (Widgets.Button(draw, "consist.open", "Open", Slot(1), buttonSize))
         {
             _editingName = false;
             HighballApp.Instance.Push(new OpenConsistScreen(this));
         }
 
-        if (Widgets.Button(draw, "consist.save", "Save", new float2(left + (third + S(8f)) * 2f, buttonY), new float2(third, S(40f)), ButtonKind.Primary, _dirty || _consist.SavedAt is null))
+        if (Widgets.Button(draw, "consist.save", "Save", Slot(2), buttonSize, ButtonKind.Primary, _dirty || _consist.SavedAt is null))
             Save();
+
+        // Only a consist that's on disk can be deleted; asks first.
+        if (Widgets.Button(draw, "consist.delete", "Delete", Slot(3), buttonSize, ButtonKind.Secondary, _consist.SavedAt is not null))
+        {
+            _editingName = false;
+            HighballApp.Instance.Push(new DeleteConsistScreen(this, _consist, fromList: false));
+        }
+    }
+
+    private static string LoadText(double fill) => fill <= 0.0 ? "Empty" : fill >= 1.0 ? "Loaded" : $"{fill * 100.0:0}% loaded";
+
+    private void DrawLoad(ImDrawListPtr draw, ConsistCar? car, float left, float right, float y)
+    {
+        var def = car?.Def;
+        var loadable = def is { CanLoad: true };
+        var height = S(34f);
+        var midY = y + height * 0.5f;
+        Canvas.Spaced(draw, Medium, S(10f), new float2(left, midY - S(7f)), TextFaint, "LOAD", 0.14f);
+
+        var readoutWidth = S(150f);
+        var sliderMin = new float2(left + S(52f), y);
+        var sliderSize = new float2(right - readoutWidth - S(8f) - sliderMin.X, height);
+        var fill = (float)(car?.Fill ?? 0.0);
+        if (Widgets.Slider(draw, "consist.load", ref fill, sliderMin, sliderSize, loadable, out var started) && car is not null)
+        {
+            var index = _selected;
+            // Snap to the ends, so empty and full are easy to hit.
+            var value = fill < 0.02f ? 0.0 : fill > 0.98f ? 1.0 : Math.Round(fill, 2);
+            if (started)
+                Change(cars => cars[index] = cars[index].WithFill(value));
+            else if (Math.Abs(value - car.Fill) > 1e-9)
+            {
+                _consist.Cars[index] = car.WithFill(value);
+                _dirty = true;
+            }
+
+            _previewRow = true;
+        }
+
+        var readout = !loadable ? car is null ? "No car picked" : "Carries no load"
+            : $"{(car!.Fill * 100.0):0}%  {UnitText.Mass(def!.Mass(car.Fill))}";
+        Canvas.Text(draw, Mono, S(13f), new float2(right, midY - S(8f)), loadable ? Style.Text : TextFaint, readout, Align.Right);
+    }
+
+    /// What the selected car is seen carrying (a well car's stacks), picked once it carries anything; the first unless
+    /// another is.
+    private void DrawCargo(ImDrawListPtr draw, ConsistCar car, VehicleDef def, float left, float right, float y)
+    {
+        var height = S(34f);
+        Canvas.Spaced(draw, Medium, S(10f), new float2(left, y + height * 0.5f - S(7f)), TextFaint, "CARGO", 0.14f);
+        var loaded = car.Fill > 0.0;
+        var current = car.CargoId;
+        var x0 = left + S(52f);
+        var gap = S(4f);
+        var width = (right - x0 - gap * (def.Cargoes.Count - 1)) / def.Cargoes.Count;
+        for (var i = 0; i < def.Cargoes.Count; i++)
+        {
+            var cargo = def.Cargoes[i];
+            var kind = loaded && cargo.Id == current ? ButtonKind.Primary : ButtonKind.Secondary;
+            if (Widgets.Button(draw, $"consist.cargo.{i}", cargo.Name, new float2(x0 + i * (width + gap), y), new float2(width, height), kind, loaded))
+                SetCargo(_selected, cargo.Id);
+        }
     }
 
     private void DrawRows(ImDrawListPtr draw, float2 mouse, bool pressed)
@@ -457,7 +530,8 @@ public sealed partial class ConsistEditorScreen
             Canvas.Text(draw, Bold, S(15f), new float2(textX, rowMin.Y + S(9f)), (def is null ? Stop : Style.Text).Fade(fade), Ellipsize(def?.Name ?? car.Vehicle, Bold, S(15f), room));
             var details = def is null
                 ? "Not in the catalog"
-                : Join(def.FindLivery(car.Livery)?.Name ?? "", car.Reversed ? "Reversed" : "", def.CanLoad ? car.Loaded ? "Loaded" : "Empty" : "");
+                : Join(def.FindLivery(car.Livery)?.Name ?? "", car.Reversed ? "Reversed" : "", def.CanLoad ? LoadText(car.Fill) : "",
+                    car.Fill > 0.0 && def.Cargoes.FirstOrDefault(k => k.Id == car.CargoId) is { } cargo ? cargo.Name : "");
             Canvas.Text(draw, Regular, S(12f), new float2(textX, rowMin.Y + S(30f)), TextDim.Fade(fade), Ellipsize(details, Regular, S(12f), room));
             Canvas.Text(draw, Mono, S(12f), new float2(rowMax.X - S(14f), midY - S(7f)), TextDim.Fade(fade), lengthText, Align.Right);
 
@@ -573,7 +647,7 @@ public sealed partial class ConsistEditorScreen
         var sub = Join(shown.Livery?.Name ?? "", def.Type, def.Builder, def.Built, shown.Reversed ? "Reversed" : "");
         Canvas.Text(draw, Regular, S(13f), new float2(x, plateMin.Y + S(60f)), TextDim, Ellipsize(sub, Regular, S(13f), width - S(52f)));
 
-        var mass = def.Mass(shown.Car?.Loaded ?? false);
+        var mass = def.Mass(shown.Car?.Fill ?? 0.0);
         var specs = new List<(string, string)> { ("Length", UnitText.Length(def.Length)), ("Weight", UnitText.Mass(mass)), ("Axles", def.Axles.ToString()) };
         if (def.Power > 0.0)
         {
@@ -597,7 +671,7 @@ public sealed partial class ConsistEditorScreen
             Canvas.Text(draw, Mono, S(14f), at + new float2(0f, S(14f)), Style.Text, Ellipsize(specs[i].Item2, Mono, S(14f), column - S(6f)));
         }
 
-        if (ModelFor(shown.Livery) is null)
+        if (ModelFor(ShownModel(shown)) is null)
             Canvas.Spaced(draw, Bold, S(12f), new float2(centre, (min.Y + plateMin.Y) * 0.5f), Stop, "MODEL MISSING", 0.2f, Align.Center);
     }
 

@@ -1,4 +1,7 @@
 #version 450
+// Depth is tested before shading: nothing here discards (see line.vert), and what's hidden behind nearer ground or track is
+// never shaded.
+layout(early_fragment_tests) in;
 #include "atmosphere.glsl"
 #include "lighting.glsl"
 #include "noise.glsl"
@@ -41,6 +44,42 @@ layout(set = 4, binding = 11) uniform sampler2D paintedPacked;
 layout(set = 4, binding = 12) uniform sampler2D woodColor;
 layout(set = 4, binding = 13) uniform sampler2D woodNormal;
 layout(set = 4, binding = 14) uniform sampler2D woodPacked;
+// Each paint's own maps (TrackMaterials.Paints: black, white, galv, yellow, red, green, concrete), then their palette: per paint, its
+// colour square-rooted and how strongly its texture shows through on the top row; metal and roughness on the bottom row.
+layout(set = 4, binding = 15) uniform sampler2D paint0Color;
+layout(set = 4, binding = 16) uniform sampler2D paint0Normal;
+layout(set = 4, binding = 17) uniform sampler2D paint0Packed;
+layout(set = 4, binding = 18) uniform sampler2D paint1Color;
+layout(set = 4, binding = 19) uniform sampler2D paint1Normal;
+layout(set = 4, binding = 20) uniform sampler2D paint1Packed;
+layout(set = 4, binding = 21) uniform sampler2D paint2Color;
+layout(set = 4, binding = 22) uniform sampler2D paint2Normal;
+layout(set = 4, binding = 23) uniform sampler2D paint2Packed;
+layout(set = 4, binding = 24) uniform sampler2D paint3Color;
+layout(set = 4, binding = 25) uniform sampler2D paint3Normal;
+layout(set = 4, binding = 26) uniform sampler2D paint3Packed;
+layout(set = 4, binding = 27) uniform sampler2D paint4Color;
+layout(set = 4, binding = 28) uniform sampler2D paint4Normal;
+layout(set = 4, binding = 29) uniform sampler2D paint4Packed;
+layout(set = 4, binding = 30) uniform sampler2D paint5Color;
+layout(set = 4, binding = 31) uniform sampler2D paint5Normal;
+layout(set = 4, binding = 32) uniform sampler2D paint5Packed;
+layout(set = 4, binding = 33) uniform sampler2D paint6Color;
+layout(set = 4, binding = 34) uniform sampler2D paint6Normal;
+layout(set = 4, binding = 35) uniform sampler2D paint6Packed;
+layout(set = 4, binding = 36) uniform sampler2D paintPalette;
+
+// A paint's three maps at uv: colour, roughness (from the packed map's green) and the normal map's bump.
+void paintMaps(int slot, vec2 uv, out vec3 color, out float rough, out vec3 bump)
+{
+    if (slot == 0) { color = texture(paint0Color, uv).rgb; rough = texture(paint0Packed, uv).g; bump = texture(paint0Normal, uv).xyz; }
+    else if (slot == 1) { color = texture(paint1Color, uv).rgb; rough = texture(paint1Packed, uv).g; bump = texture(paint1Normal, uv).xyz; }
+    else if (slot == 2) { color = texture(paint2Color, uv).rgb; rough = texture(paint2Packed, uv).g; bump = texture(paint2Normal, uv).xyz; }
+    else if (slot == 3) { color = texture(paint3Color, uv).rgb; rough = texture(paint3Packed, uv).g; bump = texture(paint3Normal, uv).xyz; }
+    else if (slot == 4) { color = texture(paint4Color, uv).rgb; rough = texture(paint4Packed, uv).g; bump = texture(paint4Normal, uv).xyz; }
+    else if (slot == 5) { color = texture(paint5Color, uv).rgb; rough = texture(paint5Packed, uv).g; bump = texture(paint5Normal, uv).xyz; }
+    else { color = texture(paint6Color, uv).rgb; rough = texture(paint6Packed, uv).g; bump = texture(paint6Normal, uv).xyz; }
+}
 
 // LineMaterial, and what each packs into vData (see LineVertex).
 const int Ballast = 0;
@@ -51,11 +90,19 @@ const int Concrete = 4;
 const int Painted = 5;
 const int BridgeSteel = 6; // a bridge's steel. Style 1: galvanised railing, otherwise painted girders
 
-// NetworkMeshes.Paints: what a placed model's parts are painted.
-const vec3 Paints[7] = vec3[](vec3(0.018), vec3(0.62, 0.62, 0.60), vec3(0.26, 0.27, 0.28), vec3(0.60, 0.42, 0.05),
-    vec3(0.50, 0.02, 0.015), vec3(0.02, 0.32, 0.12), vec3(0.30, 0.29, 0.26));
-// The last of them isn't a paint, but its map on the coordinates the model brought: v along the grain.
+// NetworkMeshes.Paints: what a placed model's parts are painted. The first seven are in paintPalette (TrackMaterials.Paints); the
+// one after them isn't a paint, but the pole wood's map on the coordinates the model brought: v along the grain.
 const int WoodPaint = 7;
+
+// A signal's lenses (NetworkMeshes.Paints, after the ballast): red, yellow and green as dark glass, then the same three lit, each
+// shining its own colour whatever lights it.
+const int LensPaint = 9;
+const int LitLensPaint = 12;
+
+// NetworkMeshes: how far the tie models reach (TieReach), how far apart they lie (TieSpacing, 19.5 in), and half a tie's width.
+const float TieReach = 1000.0;
+const float TieSpacing = 0.495;
+const float TieHalfWidth = 0.114;
 
 const vec3 Steel = vec3(0.40, 0.40, 0.40);
 const vec3 BareSteel = vec3(0.56, 0.57, 0.58);
@@ -145,20 +192,109 @@ vec2 parallax(sampler2D packed, vec2 uv, vec3 n, vec3 view, float relief, float 
 
 // The ballast's rock at where parallax took base to. What's read goes by base's own rate of change, since where stones overlap the
 // moved position jumps, and would pick a blurred mip all along each stone's edge.
-void rock(vec2 base, vec2 stone, float weather, inout vec3 n, out vec3 albedo, out float roughness, out float occlusion)
+// A random shift for a corner of the hex grid, a whole tile's worth either way.
+vec2 hexShift(ivec2 corner)
+{
+    vec2 p = vec2(corner);
+    return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453);
+}
+
+// Where uv is in a grid of triangles: its three corners, and how near it is to each (the weights add to 1). Each corner is the middle
+// of a hexagon about HexSize tiles across, the region where it counts most. (Mikkelsen, "Practical Real-Time Hex-Tiling", 2022.)
+const float HexSize = 0.85;
+void hexGrid(vec2 uv, out vec3 w, out ivec2 c1, out ivec2 c2, out ivec2 c3)
+{
+    uv *= 1.7320508 / HexSize;
+    vec2 skewed = vec2(uv.x - 0.57735027 * uv.y, 1.15470054 * uv.y);
+    ivec2 cell = ivec2(floor(skewed));
+    vec3 t = vec3(fract(skewed), 0.0);
+    t.z = 1.0 - t.x - t.y;
+    float s = t.z < 0.0 ? 1.0 : 0.0;
+    float s2 = 2.0 * s - 1.0;
+    w = vec3(-t.z * s2, s - t.y * s2, s - t.x * s2);
+    c1 = cell + ivec2(int(s), int(s));
+    c2 = cell + ivec2(int(s), 1 - int(s));
+    c3 = cell + ivec2(1 - int(s), int(s));
+}
+
+// Where the rock maps are taken for a place: the three shifts, how near each corner is, and parallax's lift (by the shift that counts
+// most here). The rock maps repeat every tile, which the eye picks out along a line, so they're taken three times, each shifted at
+// random by a corner of a hex grid, and blended by how near each corner is and by height: the stones of one sit on those of another,
+// and no stone comes round again where it'd be seen.
+struct Hex { vec2 s1; vec2 s2; vec2 s3; vec3 w; vec2 lift; };
+
+Hex hexAt(vec2 base, vec3 n, vec3 view, float relief, float dist)
+{
+    Hex h;
+    ivec2 c1, c2, c3;
+    hexGrid(base, h.w, c1, c2, c3);
+    h.s1 = hexShift(c1);
+    h.s2 = hexShift(c2);
+    h.s3 = hexShift(c3);
+    vec2 most = h.w.x >= h.w.y && h.w.x >= h.w.z ? h.s1 : h.w.y >= h.w.z ? h.s2 : h.s3;
+    h.lift = parallax(rockPacked, base + most, n, view, relief, 1.5, dist) - (base + most);
+    return h;
+}
+
+// How much each of the three counts: sharpened towards the nearest corner, and towards whichever's stone stands highest.
+vec3 hexWeights(Hex h, vec3 heights)
+{
+    vec3 k = h.w * h.w * h.w * exp2((heights - max(heights.x, max(heights.y, heights.z))) * 12.0);
+    return k / (k.x + k.y + k.z);
+}
+
+// The stones' height there, at a mip level.
+float hexHeight(Hex h, vec2 base, float lod)
+{
+    vec3 heights = vec3(textureLod(rockPacked, base + h.s1 + h.lift, lod).a, textureLod(rockPacked, base + h.s2 + h.lift, lod).a,
+        textureLod(rockPacked, base + h.s3 + h.lift, lod).a);
+    return dot(hexWeights(h, heights), heights);
+}
+
+// The ballast's stone at base (tile units), taken as h says.
+void rock(vec2 base, Hex h, float weather, inout vec3 n, out vec3 albedo, out float roughness, out float occlusion)
 {
     vec2 dx = dFdx(base);
     vec2 dy = dFdy(base);
-    vec4 maps = textureGrad(rockPacked, stone, dx, dy);
-    // Crushed rock weathered by dust and oil: the map on its own is clean river stone.
-    albedo = textureGrad(rockColor, stone, dx, dy).rgb * vec3(0.46, 0.44, 0.42) * (0.8 + 0.3 * weather);
+    vec2 s1 = h.s1, s2 = h.s2, s3 = h.s3, lift = h.lift;
+    vec4 p1 = textureGrad(rockPacked, base + s1 + lift, dx, dy);
+    vec4 p2 = textureGrad(rockPacked, base + s2 + lift, dx, dy);
+    vec4 p3 = textureGrad(rockPacked, base + s3 + lift, dx, dy);
+    // Sharpened towards the nearest corner, and towards whichever's stone stands highest.
+    vec3 k = hexWeights(h, vec3(p1.a, p2.a, p3.a));
+
+    vec4 maps = p1 * k.x + p2 * k.y + p3 * k.z;
+    // The blend's sharp: mostly one copy carries it all. Copies that add under 2% aren't read for colour and bump at all, the
+    // rest share their weight, which can't be seen and saves most of the reads.
+    vec3 use = step(vec3(0.02), k) * k;
+    use /= use.x + use.y + use.z;
+    vec3 color = vec3(0.0);
+    vec3 bump = vec3(0.0);
+    if (use.x > 0.0)
+    {
+        color += textureGrad(rockColor, base + s1 + lift, dx, dy).rgb * use.x;
+        bump += textureGrad(rockNormal, base + s1 + lift, dx, dy).xyz * use.x;
+    }
+    if (use.y > 0.0)
+    {
+        color += textureGrad(rockColor, base + s2 + lift, dx, dy).rgb * use.y;
+        bump += textureGrad(rockNormal, base + s2 + lift, dx, dy).xyz * use.y;
+    }
+    if (use.z > 0.0)
+    {
+        color += textureGrad(rockColor, base + s3 + lift, dx, dy).rgb * use.z;
+        bump += textureGrad(rockNormal, base + s3 + lift, dx, dy).xyz * use.z;
+    }
+    bump = bump * 2.0 - 1.0;
+
+    // Crushed rock weathered by dust and oil.
+    albedo = color * vec3(0.46, 0.44, 0.42) * (0.8 + 0.3 * weather);
     // Dark in the gaps between the stones whatever the light, which is what still reads from far off.
     albedo *= mix(0.45, 1.0, smoothstep(0.25, 0.7, maps.a));
     roughness = maps.g;
     occlusion = 0.8 * maps.r;
-    vec3 bump = textureGrad(rockNormal, stone, dx, dy).xyz * 2.0 - 1.0;
     bump.xy *= 1.5;
-    n = bumped(n, bump, base);
+    n = bumped(n, normalize(bump), base);
 }
 
 // A material's map seen straight down its strongest axis, so a part with no map of its own can still wear one.
@@ -188,8 +324,6 @@ void main()
     float pixel = max(length(dFdx(vRelative)), length(dFdy(vRelative))) + 1e-4;
     float uPixel = max(fwidth(u), 1e-4);
 
-    if ((material == Rail || material == Painted) && dist > nearRadius)
-        discard;
 
     vec3 albedo = vec3(0.2);
     float metallic = 0.0;
@@ -198,6 +332,7 @@ void main()
     float occlusion = 1.0;
     float puddle = 0.0;
     float hold = 1.0;
+    vec3 emit = vec3(0.0);
     float coverage = 1.0; // how much of the ground underneath it covers, where it fades into it
     vec3 shadowNormal = n;
     // The fade asks for its shadow from the ground it lies on, a little more the further out, so that where it meets the bed there's no step.
@@ -209,12 +344,20 @@ void main()
         // Along the track and across it as the surface runs, so the shoulder's stones aren't drawn out down its slope.
         vec3 shape = n;
         vec2 base = vec2(u, v) / 1.5;
-        rock(base, parallax(rockPacked, base, n, view, 0.06, 1.5, dist), patches, n, albedo, roughness, occlusion);
+        rock(base, hexAt(base, n, view, 0.06, dist), patches, n, albedo, roughness, occlusion);
 
         int tracks = style & 7;
         bool disused = (style & 8) != 0;
         float railOffset = vData.w;
         float far = smoothstep(nearRadius - 60.0, nearRadius, dist);
+        // The tie models stop sooner (NetworkMeshes.TieReach): from there the ties are painted, one by one where they're still
+        // far enough apart on screen to tell (they lie every TieSpacing along the line, at the same places as the models), and
+        // as their average where they aren't.
+        float tieFar = smoothstep(TieReach - 40.0, TieReach, dist);
+        float vPixel = max(fwidth(v), 1e-4);
+        float apart = abs(fract(v / TieSpacing + 0.5) - 0.5) * TieSpacing;
+        float oneByOne = clamp((TieHalfWidth - apart) / vPixel + 0.5, 0.0, 1.0);
+        float ties = mix(oneByOne, TieHalfWidth * 2.0 / TieSpacing, smoothstep(0.25, 0.5, vPixel / TieSpacing));
         if (shape.y > 0.95)
         {
             for (int k = 0; k < tracks; k++)
@@ -227,7 +370,7 @@ void main()
                 {
                     // Past the real rails and ties the track is painted on: the ties as a band (they cover 46% of
                     // it) and the rails as lines.
-                    albedo = paint(albedo, TieWood, stripe(u, o, 1.295, uPixel) * 0.46 * far);
+                    albedo = paint(albedo, TieWood, stripe(u, o, 1.295, uPixel) * ties * tieFar);
                     float rails = stripe(u, o - railOffset, 0.037, uPixel) + stripe(u, o + railOffset, 0.037, uPixel);
                     albedo = paint(albedo, Steel * 0.8, rails * far);
                 }
@@ -312,13 +455,13 @@ void main()
         float rise = fading ? clamp((-vData.w - 0.3) / 2.4, 0.0, 1.0) : 1.0;
         fadeShadowDrop = 0.06 * (1.0 - rise);
         vec2 base = (fading ? vec2(u, v) : tex) / 1.5;
-        vec2 stone = parallax(rockPacked, base, n, view, 0.06 * smoothstep(0.4, 1.0, rise), 1.5, dist);
+        Hex stone = hexAt(base, n, view, 0.06 * smoothstep(0.4, 1.0, rise), dist);
         if (fading)
         {
             // Where it's seen, so that what's left is stones and not the gaps between them.
             // Filtered the same every way: a low view draws a stretched footprint out into streaks.
             float footprint = max(length(dFdx(base)), length(dFdy(base))) * float(textureSize(rockPacked, 0).x);
-            float stones = textureLod(rockPacked, stone, log2(max(footprint, 1.0))).a;
+            float stones = hexHeight(stone, base, log2(max(footprint, 1.0)));
             float drift = fbm(tex * 0.9, pixel * 0.9);
             // The ground rises between the stones, filling the gaps first and leaving the tallest last. A stone's either there or
             // not, never see-through, until it's too far off to make out one.
@@ -355,6 +498,19 @@ void main()
         specular = 0.5;
         n = bumped(n, texture(paintedNormal, worn).xyz * 2.0 - 1.0, worn);
     }
+    else if (material == Painted && style >= LensPaint)
+    {
+        // Glass: dark and glossy, colourless until it's lit.
+        albedo = vec3(0.012);
+        roughness = 0.08;
+        specular = 1.0;
+        if (style >= LitLensPaint)
+        {
+            // TrackMaterials.Lamps: the lens's colour (square-rooted) and its brightness over TrackTextures.LensScale.
+            vec4 lens = texelFetch(paintPalette, ivec2(clamp(style - LitLensPaint, 0, 2), 2), 0);
+            emit = lens.rgb * lens.rgb * lens.a * 32.0;
+        }
+    }
     else if (material == Painted && style == WoodPaint)
     {
         // The map's grain runs across it, and it repeats every 1.5 m.
@@ -368,16 +524,19 @@ void main()
     }
     else if (material == Painted)
     {
-        albedo = Paints[clamp(style, 0, 6)];
-        // Galvanised steel, or paint, either weathered by Metal024.
+        // Galvanised steel, or paint, each weathered by its own texture (TrackMaterials: Metal024 unless changed).
+        int slot = clamp(style, 0, 6);
+        vec4 tint = texelFetch(paintPalette, ivec2(slot, 0), 0);
+        vec4 finish = texelFetch(paintPalette, ivec2(slot, 1), 0);
         vec2 worn = boxUv(local, n) / 0.8;
-        vec2 packed = texture(paintedPacked, worn).gb;
-        vec3 grime = texture(paintedColor, worn).rgb;
-        albedo *= mix(vec3(1.0), grime * 2.0, style == 2 ? 0.8 : 0.3);
-        metallic = style == 2 ? 1.0 : 0.0;
-        roughness = mix(style == 2 ? 0.5 : 0.45, packed.x, 0.6);
+        vec3 grime, bump;
+        float rough;
+        paintMaps(slot, worn, grime, rough, bump);
+        albedo = tint.rgb * tint.rgb * mix(vec3(1.0), grime * 2.0, tint.a);
+        metallic = finish.r;
+        roughness = mix(finish.g, rough, 0.6);
         specular = 1.0;
-        n = bumped(n, texture(paintedNormal, worn).xyz * 2.0 - 1.0, worn);
+        n = bumped(n, bump * 2.0 - 1.0, worn);
     }
 
     // Nothing's culled, so light the side we see. Which side that is goes by the triangle itself, from how its position changes
@@ -404,7 +563,7 @@ void main()
     s.specular = specular;
     weatherSurface(s, puddle, hold);
 
-    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative - vec3(0.0, fadeShadowDrop, 0.0), material == Gravel ? shadowNormal : n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative);
+    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative - vec3(0.0, fadeShadowDrop, 0.0), material == Gravel ? shadowNormal : n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative) + emit;
     color = applyFog(color, view, dist, pc.camera.y, sun);
     outColor = vec4(color, coverage);
 }

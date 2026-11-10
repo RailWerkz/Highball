@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using Brutal.ImGuiApi;
+using Highball.App;
 using Highball.Routes;
 using RailWerkz.Core.Logging;
 using RailWerkz.Core.Settings;
@@ -415,109 +416,85 @@ public sealed class PlannerView : IDisposable
     /// The Planner's lines in Frame Statistics.
     public void DebugStats()
     {
-        ImGui.Separator();
-        ImGui.Text($"Tiles {_built.Count} built   {_selected.Count} selected");
-        ImGui.Text($"Layouts {_layouts.Count}");
+        DebugWindows.Heading("Planner");
+        DebugWindows.Row("Tiles", $"{_built.Count} built, {_selected.Count} selected");
+        DebugWindows.Row("Layouts", $"{_layouts.Count}");
     }
 
     // --- Menus and the side panel (ImGui). ---
 
     public void Panel()
     {
-        ImGui.SeparatorText("Go To"u8);
-        ImGui.SetNextItemWidth(-1f);
+        Kit.BeginCard("Go to");
+        ImGui.SetNextItemWidth(Kit.Width);
         if (ImGui.InputTextWithHint("##goto"u8, "Place, or lat, lon"u8, _search, ImGuiInputTextFlags.EnterReturnsTrue) && _search.ToString().Trim() is { Length: > 0 } text)
             RunSearch(text);
+        Kit.EndCard();
 
-        ImGui.SeparatorText("Detail"u8);
-        Level("Roads"u8, ref _roadLevel, Detail.RoadLevels.Select(l => l.Name).ToArray());
-        Level("Rails"u8, ref _railLevel, Detail.RailLevels.Select(l => l.Name).ToArray());
+        Kit.BeginCard("Detail");
+        Kit.Caption("Roads");
+        _roadLevel = Math.Max(0, ToolPanel.Mode("roadlevel", Detail.RoadLevels.Select(l => l.Name).ToArray(), _roadLevel, 2));
+        Kit.Caption("Rails");
+        _railLevel = Math.Max(0, ToolPanel.Mode("raillevel", Detail.RailLevels.Select(l => l.Name).ToArray(), _railLevel, 2));
+        Kit.EndCard();
 
-        ImGui.SeparatorText("Select"u8);
-        if (ImGui.RadioButton("Tiles"u8, !_trackMode))
-            _trackMode = false;
-        ImGui.SameLine(0f, -1f);
-        if (ImGui.RadioButton("Along Track"u8, _trackMode))
-            _trackMode = true;
+        Kit.BeginCard("Select");
+        _trackMode = ToolPanel.Mode("selectmode", ["Tiles", "Along track"], _trackMode ? 1 : 0, 2) == 1;
         if (_trackMode)
         {
-            ImGui.TextDisabled("Drag an area: the tiles with track in it are picked"u8);
-            ImGui.SetNextItemWidth(-80f);
-            ImGui.SliderInt("Padding"u8, ref _trackPadding, 0, 10, "%d tiles"u8, ImGuiSliderFlags.AlwaysClamp);
-            HeightsFor("Track"u8, ref _trackLidar);
-            HeightsFor("Padding##heights"u8, ref _paddingLidar);
+            var padding = _trackPadding;
+            if (ToolPanel.Count("trackpadding", "Padding (tiles)", ref padding, 0, 10))
+                _trackPadding = padding;
+            Kit.Caption("Track tiles");
+            _trackLidar = ToolPanel.Mode("tracklidar", ["Lidar", "Standard"], _trackLidar ? 0 : 1, 2) == 0;
+            Kit.Caption("Padding tiles");
+            _paddingLidar = ToolPanel.Mode("paddinglidar", ["Lidar", "Standard"], _paddingLidar ? 0 : 1, 2) == 0;
         }
 
-        ImGui.SeparatorText("Heights"u8);
-        HeightRow("Lidar"u8, LidarColor, true, _lidar.Count, _builtLidar.Count);
-        HeightRow("Standard"u8, StandardColor, false, _selected.Count - _lidar.Count, _built.Count - _builtLidar.Count);
-        ImGui.BeginDisabled(_selected.Count == 0 || _generator.Running);
-        if (ImGui.Button("Lidar Along Track"u8))
+        Kit.EndCard();
+
+        Kit.BeginCard("Heights");
+        HeightRow("Lidar", LidarColor, true, _lidar.Count, _builtLidar.Count);
+        HeightRow("Standard", StandardColor, false, _selected.Count - _lidar.Count, _built.Count - _builtLidar.Count);
+        if (Kit.Button("lidaralong", "Lidar Along Track", 0f, ButtonKind.Secondary, _selected.Count > 0 && !_generator.Running))
             FindTrack();
-        ImGui.EndDisabled();
+        Kit.EndCard();
 
-        ImGui.SeparatorText("Build"u8);
-        ImGui.Text($"{_selected.Count} tile{(_selected.Count == 1 ? "" : "s")} selected");
-        ImGui.BeginDisabled(_selected.Count == 0 || _generator.Running);
-        if (ImGui.Button("Build"u8))
+        Kit.BeginCard("Build", $"{_selected.Count} selected");
+        if (Kit.Button("build", "Build", 0f, ButtonKind.Primary, _selected.Count > 0 && !_generator.Running))
             Build();
-        ImGui.EndDisabled();
-        ImGui.SameLine(0f, -1f);
-        ImGui.BeginDisabled(!_generator.Running);
-        if (ImGui.Button("Cancel"u8))
-            _generator.Cancel();
-        ImGui.EndDisabled();
-        ImGui.SameLine(0f, -1f);
-        ImGui.BeginDisabled(_selected.Count == 0);
-        if (ImGui.Button("Clear Selection"u8))
+        switch (Kit.Buttons("buildmore", ["Cancel", "Clear"], [_generator.Running, _selected.Count > 0]))
         {
-            _selected.Clear();
-            _lidar.Clear();
+            case 0:
+                _generator.Cancel();
+                break;
+            case 1:
+                _selected.Clear();
+                _lidar.Clear();
+                break;
         }
-        ImGui.EndDisabled();
-        ImGui.BeginDisabled(_built.Count == 0 || _generator.Running);
-        if (ImGui.Button($"Regenerate {_built.Count} Built Tile{(_built.Count == 1 ? "" : "s")}"))
-            Regenerate();
-        ImGui.EndDisabled();
 
+        if (Kit.Button("regenerate", $"Regenerate Built ({_built.Count})", 0f, ButtonKind.Secondary, _built.Count > 0 && !_generator.Running))
+            Regenerate();
         if (_generator.Running)
-            ImGui.ProgressBar(_generator.Progress, new float2(-1f, 0f), ImString.Null);
+            Kit.Gauge(_generator.Progress, Accent);
         if (_generator.Status.Length > 0)
-            ImGui.TextWrapped(_generator.Status);
+            ToolPanel.Line(_generator.Status);
+        Kit.EndCard();
 
         Key();
     }
 
     /// A kind of heights: picks what a drag marks, with how many tiles are selected and built that way.
-    private void HeightRow(ImString name, Rgba color, bool lidar, int selected, int built)
+    private void HeightRow(string name, Rgba color, bool lidar, int selected, int built)
     {
-        if (ImGui.RadioButton(name, _paintLidar == lidar))
+        if (ToolPanel.Item($"heights{name}", null, name, selected > 0 ? $"{selected} SEL" : $"{built} BUILT", _paintLidar == lidar, swatch: color))
             _paintLidar = lidar;
-        ImGui.SameLine(126f, -1f);
-        ImGui.ColorButton($"##{lidar}", new float4(color.R, color.G, color.B, 1f), ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoBorder, new float2(14f, 14f));
-        ImGui.SameLine(0f, -1f);
-        ImGui.TextDisabled($"{selected} selected, {built} built");
     }
 
-    /// Lidar or standard heights for one kind of tile Along Track picks.
-    private static void HeightsFor(ImString label, ref bool lidar)
-    {
-        var level = lidar ? 0 : 1;
-        Level(label, ref level, ["Lidar", "Standard"]);
-        lidar = level == 0;
-    }
 
-    private static void Level(ImString label, ref int level, string[] names)
-    {
-        ImGui.SetNextItemWidth(-80f);
-        if (ImGui.BeginCombo(label, names[level], ImGuiComboFlags.None))
-        {
-            for (var i = 0; i < names.Length; i++)
-                if (ImGui.Selectable(names[i], i == level, ImGuiSelectableFlags.None, null))
-                    level = i;
-            ImGui.EndCombo();
-        }
-    }
+
+
 
     /// What's on the map, by class, with how much of it there is.
     private void Key()
@@ -526,26 +503,27 @@ public sealed class PlannerView : IDisposable
         if (rows.Count == 0 && _layouts.Count == 0)
             return;
 
-        ImGui.SeparatorText("On the Map"u8);
+        Kit.BeginCard("On the map");
         var imperial = Settings.Current.Units == UnitSystem.Imperial;
-        if (!ImGui.BeginTable("key"u8, 3, ImGuiTableFlags.None))
-            return;
+        var draw = ImGui.GetWindowDrawList();
+        var width = Kit.Width;
 
-        ImGui.TableSetupColumn("##swatch"u8, ImGuiTableColumnFlags.WidthFixed, 34f, default);
-        ImGui.TableSetupColumn("##class"u8, ImGuiTableColumnFlags.WidthStretch, 0f, default);
-        ImGui.TableSetupColumn("##length"u8, ImGuiTableColumnFlags.WidthFixed, 0f, default);
+        // One row: its mark in the first 28 px, its name, and its amount at the card's right edge.
+        void Row(Action<float2> mark, string name, string amount)
+        {
+            var at = ImGui.GetCursorScreenPos();
+            mark(at + new float2(S(14f), S(9.5f)));
+            Canvas.Text(draw, Medium, S(15f), at + new float2(S(40f), 0f), Style.Text, name);
+            Canvas.Text(draw, Mono, S(14.5f), at + new float2(width, S(0.5f)), TextDim, amount, Align.Right);
+            ImGui.Dummy(new float2(width, S(21f)));
+        }
 
         foreach (var ((rail, cls), metres) in rows)
         {
             var (color, _) = LineStyle(rail, cls);
-            ImGui.TableNextRow();
-            ImGui.TableNextColumn();
-            var swatch = new float4(color.R, color.G, color.B, 1f);
-            ImGui.ColorButton($"##{rail}{cls}", swatch, ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoBorder, new float2(28f, 6f));
-            ImGui.TableNextColumn();
-            ImGui.Text($"{(rail ? "Rail" : "Road")} {(rail ? ((RailClass)cls).ToString() : ((RoadClass)cls).ToString())}");
-            ImGui.TableNextColumn();
-            ImGui.Text(imperial ? $"{metres / 1609.344:0.0} mi" : $"{metres / 1000.0:0.0} km");
+            Row(c => draw.AddRectFilled(c - new float2(S(14f), S(2.5f)), c + new float2(S(14f), S(2.5f)), color),
+                rail ? $"Rail {RailColours.Name(cls)}" : $"Road {(RoadClass)cls}",
+                imperial ? $"{metres / 1609.344:0.0} mi" : $"{metres / 1000.0:0.0} km");
         }
 
         var sample = new World.TrackLayouts.Marker(0, 0, World.JunctionKind.Turnout, 10, true, null);
@@ -559,18 +537,11 @@ public sealed class PlannerView : IDisposable
         {
             if (count == 0)
                 continue;
-            ImGui.TableNextRow();
-            ImGui.TableNextColumn();
-            var at = ImGui.GetCursorScreenPos() + new float2(S(14f), ImGui.GetTextLineHeight() * 0.5f);
-            Junction(ImGui.GetWindowDrawList(), at, marker);
-            ImGui.Dummy(new float2(S(28f), ImGui.GetTextLineHeight()));
-            ImGui.TableNextColumn();
-            ImGui.Text(label);
-            ImGui.TableNextColumn();
-            ImGui.Text($"{count}");
+            var shown = marker;
+            Row(c => Junction(draw, c, shown), label, count.ToString(CultureInfo.InvariantCulture));
         }
 
-        ImGui.EndTable();
+        Kit.EndCard();
         Issues();
     }
 
@@ -581,18 +552,16 @@ public sealed class PlannerView : IDisposable
         if (issues.Count == 0)
             return;
 
-        ImGui.SeparatorText($"Needs Fixing ({issues.Count})");
+        Kit.BeginCard("Needs fixing", issues.Count.ToString(CultureInfo.InvariantCulture), Stop);
         for (var i = 0; i < issues.Count; i++)
         {
             var issue = issues[i];
-            if (ImGui.Selectable($"{World.TrackLayouts.Name(issue.Kind, issue.Number)}##issue{i}", false, ImGuiSelectableFlags.None, default))
+            if (ToolPanel.Item($"issue{i}", ToolIcon.Switches, World.TrackLayouts.Name(issue.Kind, issue.Number), null, false))
                 _map.LookAt(new GeoPoint(issue.Lat, issue.Lon), Math.Max(_map.Zoom, 17.0));
-            ImGui.Indent();
-            ImGui.PushTextWrapPos(0f);
-            ImGui.TextDisabled(issue.Issue!);
-            ImGui.PopTextWrapPos();
-            ImGui.Unindent();
+            ToolPanel.Hint(issue.Issue!);
         }
+
+        Kit.EndCard();
     }
 
     // --- Drawing. ---
@@ -862,17 +831,13 @@ public sealed class PlannerView : IDisposable
     }
 
     private static (Rgba Color, float Width) LineStyle(bool rail, int cls) => rail
-        ? (RailClass)cls switch
+        ? (RailColours.Of(cls), (RailClass)cls switch
         {
-            // Each class its own hue, clear of the lidar blue and standard amber the tiles are marked in.
-            RailClass.Main => (Rgba.Hex(0xFF4D6D), 2.6f),
-            RailClass.Branch => (Rgba.Hex(0xC77DFF), 2f),
-            RailClass.Industrial => (Rgba.Hex(0x2EE6A8), 1.6f),
-            RailClass.Yard => (Rgba.Hex(0x9AA3AD), 1.2f),
-            RailClass.Transit => (Rgba.Hex(0x4DD7FF), 1.6f),
-            RailClass.NarrowGauge => (Rgba.Hex(0xD4E157), 1.6f),
-            _ => (TextFaint, 1.2f),
-        }
+            RailClass.Main => 2.6f,
+            RailClass.Branch => 2f,
+            RailClass.Industrial or RailClass.Transit or RailClass.NarrowGauge => 1.6f,
+            _ => 1.2f,
+        })
         : (RoadClass)cls switch
         {
             RoadClass.Highway => (new Rgba(1f, 1f, 1f, 0.8f), 2.4f),

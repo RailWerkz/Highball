@@ -40,8 +40,79 @@ public enum PlacedAs
 /// The battery is 32 lead-acid cells, about 64 V at rest. Everything runs off it until the engine's running, when the
 /// auxiliary alternator holds the supply at 74 V and charges it again. Cranking draws over a thousand amps, so the volts sag
 /// and the lamps dim while the engine turns over. It's never let run flat: it gets low, but it always has enough to start.
-public sealed class LocoSystems(double startupSeconds)
+public sealed class LocoSystems(double startupSeconds, LocoSupplies? capacity = null)
 {
+    // --- Supplies: fuel, lube oil and cooling water burnt and lost as it runs, and sand put down to grip. ---
+
+    /// What it holds full; null for an engine whose file doesn't say (it never runs short).
+    public LocoSupplies? Capacity { get; } = capacity;
+
+    /// What's aboard now: litres of fuel, oil and water, cubic metres of sand.
+    public double Fuel = capacity?.FuelL ?? 0.0, Oil = capacity?.OilL ?? 0.0, Water = capacity?.WaterL ?? 0.0, Sand = capacity?.SandM3 ?? 0.0;
+
+    /// Below these shares of full the engine's protection shuts it down (and won't let it start): low lube oil pressure,
+    /// and the low water detector.
+    public const double LowOil = 0.10, LowWater = 0.30;
+
+    /// Litres of fuel an hour: idling, and for each kW it puts out (about 0.2 kg a kWh, through the generator).
+    private const double IdleFuelPerHour = 13.0;
+    private const double FuelPerKwHour = 0.23;
+    /// Lube oil burnt for each litre of fuel; cooling water lost an hour, and for each litre of fuel.
+    private const double OilPerFuel = 0.003;
+    private const double WaterPerHour = 0.5, WaterPerFuel = 0.001;
+    /// The sanders' flow, cubic metres a second (about 0.6 cu ft a minute).
+    public const double SandFlow = 0.6 * 0.0283168 / 60.0;
+
+    /// Litres of fuel an hour it's burning now.
+    public double FuelRate { get; private set; }
+
+    /// Sand going down under its wheels now.
+    public bool Sanding { get; private set; }
+
+    /// Every tank and the sand boxes filled up.
+    public void FillUp()
+    {
+        if (Capacity is not { } c)
+            return;
+        (Fuel, Oil, Water, Sand) = (c.FuelL, c.OilL, c.WaterL, c.SandM3);
+        if (Notice is not null && !Turning)
+            Notice = null;
+    }
+
+    /// What its supplies weigh now.
+    public double SuppliesMass => LocoSupplies.MassOf(Fuel, Oil, Water, Sand);
+
+    /// Its supplies' weight as a share of full, 0 to 1.
+    public double SuppliesShare => Capacity is { FullMass: > 0.0 } c ? Math.Clamp(SuppliesMass / c.FullMass, 0.0, 1.0) : 1.0;
+
+    public double FuelShare => Capacity is { FuelL: > 0.0 } c ? Fuel / c.FuelL : 1.0;
+    public double OilShare => Capacity is { OilL: > 0.0 } c ? Oil / c.OilL : 1.0;
+    public double WaterShare => Capacity is { WaterL: > 0.0 } c ? Water / c.WaterL : 1.0;
+    public double SandShare => Capacity is { SandM3: > 0.0 } c ? Sand / c.SandM3 : 1.0;
+
+    /// What's short enough to stop the engine (or keep it from starting); null if nothing is.
+    private string? Short => Capacity is null ? null
+        : Fuel <= 0.0 ? "Out of fuel"
+        : OilShare < LowOil ? "Low lube oil: the oil pressure protection stopped the engine"
+        : WaterShare < LowWater ? "Low cooling water: the low water detector stopped the engine"
+        : null;
+
+    /// Burns and loses what it does over h seconds: fuel for its output (kW, at the rail and to run itself), oil and water
+    /// with it, and sand if it's asked to sand and has any (and control power to work the sanders).
+    public void Use(double h, double kilowatts, bool sand)
+    {
+        Sanding = sand && ControlPowered && (Capacity is null || Sand > 0.0);
+        if (Capacity is null)
+            return;
+        FuelRate = Running ? IdleFuelPerHour + FuelPerKwHour * Math.Max(kilowatts, 0.0) : Turning ? IdleFuelPerHour : 0.0;
+        var fuel = FuelRate * h / 3600.0;
+        Fuel = Math.Max(0.0, Fuel - fuel);
+        Oil = Math.Max(0.0, Oil - fuel * OilPerFuel);
+        Water = Math.Max(0.0, Water - (Turning ? WaterPerHour * h / 3600.0 : 0.0) - fuel * WaterPerFuel);
+        if (Sanding)
+            Sand = Math.Max(0.0, Sand - SandFlow * h);
+    }
+
     public const double ChargingVolts = 74.0;
     private const double CellsVolts = 58.0;           // open circuit, flat; plus 8 V more when full
     private const double InternalOhms = 0.012;
@@ -136,7 +207,7 @@ public sealed class LocoSystems(double startupSeconds)
             : !ComputerReady ? "The computer's still starting up"
             : !FuelPumpBreaker ? "The fuel pump breaker is off"
             : !Isolated ? "Put the isolation switch in Start/Stop to start it"
-            : null;
+            : Short;
         return why is null;
     }
 
@@ -214,10 +285,12 @@ public sealed class LocoSystems(double startupSeconds)
             }
         }
 
-        // Without control power or fuel it can't keep going.
-        if (Turning && (!ComputerReady || !FuelPumpBreaker))
+        // Without control power or fuel it can't keep going; short of oil or water, its protection stops it.
+        if (Turning && (!ComputerReady || !FuelPumpBreaker || Short is not null))
         {
-            Notice = !FuelPumpBreaker ? "The fuel pump was switched off: the engine's run out of fuel" : "Control power was lost: the engine shut down";
+            Notice = !FuelPumpBreaker ? "The fuel pump was switched off: the engine's run out of fuel"
+                : !ComputerReady ? "Control power was lost: the engine shut down"
+                : Short;
             Set(EngineState.Stopping);
         }
 

@@ -59,6 +59,46 @@ public static class Widgets
         return clicked;
     }
 
+    /// A horizontal slider over 0 to 1, dragged with the pointer (a click jumps to it). Returns true while it's held, value
+    /// following the pointer; started is true on the frame it was grabbed, for anything that wants one undo step a drag.
+    public static bool Slider(ImDrawListPtr draw, string id, ref float value, float2 min, float2 size, bool enabled, out bool started)
+    {
+        ImGui.SetCursorScreenPos(min);
+        ImGui.InvisibleButton(id, size);
+        var active = ImGui.IsItemActive() && enabled;
+        started = active && ImGui.IsItemActivated();
+        var hovered = ImGui.IsItemHovered() && enabled && !Keyboard.PointerBlocked;
+
+        var pad = S(8f);
+        var left = min.X + pad;
+        var span = MathF.Max(size.X - pad * 2f, 1f);
+        if (active)
+            value = Math.Clamp((ImGui.GetIO().MousePos.X - left) / span, 0f, 1f);
+        value = Math.Clamp(value, 0f, 1f);
+
+        if (hovered && !Hovered.Contains(id))
+            Sfx.Hover();
+        if (hovered) Hovered.Add(id); else Hovered.Remove(id);
+        var hover = Tween.Float(id, "hover", hovered || active ? 1f : 0f, 0.12f);
+        var alpha = enabled ? 1f : 0.4f;
+
+        var midY = min.Y + size.Y * 0.5f;
+        var knobX = left + span * value;
+        var track = S(2f);
+        draw.AddRectFilled(new float2(left, midY - track), new float2(left + span, midY + track), StrokeStrong.Fade(alpha));
+        if (enabled)
+            draw.AddRectFilled(new float2(left, midY - track), new float2(knobX, midY + track), Accent.Fade(alpha));
+
+        var knob = new float2(S(5f) + hover * S(1f), size.Y * 0.32f);
+        draw.AddRectFilled(new float2(knobX - knob.X, midY - knob.Y), new float2(knobX + knob.X, midY + knob.Y),
+            (enabled ? Rgba.Mix(Style.Text, Accent, 0.35f + 0.65f * hover) : TextFaint).Fade(alpha));
+
+        if (hovered)
+            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
+        return active;
+    }
+
     /// A one-line text field fed by Keyboard.Edit while focused. Returns true when Return is pressed in it.
     public static bool TextField(ImDrawListPtr draw, string id, string label, ref string text, float2 min, float width, bool focused, int maxLength = 64, Func<char, bool>? allow = null)
     {

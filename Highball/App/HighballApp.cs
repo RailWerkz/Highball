@@ -164,7 +164,7 @@ public sealed class HighballApp : IDisposable
     /// Keeps the window's place while it's an ordinary window, to go back to from fullscreen and to save.
     private void TrackWindow()
     {
-        if (_window.IsFullscreen || _window.IsMaximised || _window.IsIconified)
+        if (_borderless || _window.IsFullscreen || _window.IsMaximised || _window.IsIconified)
             return;
         (_windowedSize, _windowedPosition) = (_window.Size, _window.Position);
     }
@@ -173,26 +173,50 @@ public sealed class HighballApp : IDisposable
     {
         var s = Settings.Current;
         (s.WindowWidth, s.WindowHeight, s.WindowX, s.WindowY) = (_windowedSize.X, _windowedSize.Y, _windowedPosition.X, _windowedPosition.Y);
-        s.WindowMaximized = _window.IsMaximised;
+        s.WindowMaximized = _borderless ? _maximizedBeforeFullscreen : _window.IsMaximised;
     }
+
+    /// Fullscreen is a borderless window covering the monitor, not exclusive mode: clicking onto another
+    /// window or screen leaves it where it is instead of minimizing it.
+    private bool _borderless;
+    private bool _maximizedBeforeFullscreen;
 
     public void SetFullscreen(bool fullscreen)
     {
-        unsafe
+        if (fullscreen && !_borderless && MonitorUnderWindow() is { } monitor)
         {
-            var monitor = Glfw.PInvoke.GetPrimaryMonitor();
-            if (fullscreen && !_window.IsFullscreen && !monitor.IsNull())
-            {
-                var mode = Glfw.PInvoke.GetVideoMode(monitor);
-                _window.SetFullscreen(monitor, new int2(mode->Width, mode->Height), mode->RefreshRate);
-            }
-            else if (!fullscreen && _window.IsFullscreen)
-            {
-                _window.SetWindowed(_windowedPosition, _windowedSize);
-            }
+            _maximizedBeforeFullscreen = _window.IsMaximised;
+            if (_maximizedBeforeFullscreen)
+                _window.Restore();
+            _borderless = true;
+            _window.SetAttribute(GlfwWindowAttribute.Decorated, 0);
+            var mode = monitor.VideoMode;
+            _window.SetWindowed(monitor.Position, new int2(mode.Width, mode.Height));
+        }
+        else if (!fullscreen && _borderless)
+        {
+            _borderless = false;
+            _window.SetAttribute(GlfwWindowAttribute.Decorated, 1);
+            _window.SetWindowed(_windowedPosition, _windowedSize);
+            if (_maximizedBeforeFullscreen)
+                _window.Maximize();
         }
 
         ApplyVSync();
+    }
+
+    /// The monitor holding the middle of the window, or the primary one.
+    private GlfwMonitor? MonitorUnderWindow()
+    {
+        var middle = _window.Position + _window.Size / 2;
+        foreach (var monitor in Glfw.GetMonitors())
+        {
+            var (at, mode) = (monitor.Position, monitor.VideoMode);
+            if (middle.X >= at.X && middle.X < at.X + mode.Width && middle.Y >= at.Y && middle.Y < at.Y + mode.Height)
+                return monitor;
+        }
+
+        return Glfw.PrimaryMonitor;
     }
 
     private static bool VSyncWanted => Settings.Current.VSync && !DevTools.NoVSync;
@@ -313,7 +337,9 @@ public sealed class HighballApp : IDisposable
             var draw = ImGui.GetWindowDrawList();
 
             // Windows above the deck (future tools); while one has the pointer or a text field, the deck ignores input.
-            Keyboard.PointerBlocked = !ImGui.IsWindowHovered();
+            // AllowWhenBlockedByActiveItem: a deck button being held is itself the active item, and without it the
+            // pointer would read as blocked on the very frame the button is released, so its click was dropped.
+            Keyboard.PointerBlocked = !ImGui.IsWindowHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
             Keyboard.KeysBlocked = ImGui.GetIO().WantTextInput;
 
             // Draw every screen from the lowest one the top lets show through.

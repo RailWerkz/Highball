@@ -54,6 +54,11 @@ public sealed class YardGuides
     private readonly Dictionary<long, (double X, double Z)> _nodes = [];
     private readonly Dictionary<long, List<(long Other, double Length)>> _links = [];
     private readonly List<(long A, long B, bool Done)> _segments = [];
+    /// Every guide segment's class, and whether any built track (hand-laid or drawn) already runs along it.
+    private readonly List<(int Class, bool Covered)> _classes = [];
+
+    /// How close any built track has to be to a mapped segment for the class overlay to leave the map line out.
+    private const double CoveredWithin = 3.5;
     private int _version = -1;
     private NetworkLines? _lines;
 
@@ -77,6 +82,7 @@ public sealed class YardGuides
         _nodes.Clear();
         _links.Clear();
         _segments.Clear();
+        _classes.Clear();
 
         // Where hand-laid track runs.
         var laid = new HashSet<(int, int)>();
@@ -105,6 +111,29 @@ public sealed class YardGuides
             return false;
         }
 
+        // Where any built track runs: hand-laid, drawn with the Pen, or solved from the map.
+        var builtPoints = new Dictionary<(int, int), List<(double X, double Z)>>();
+        foreach (var line in lines.Lines.Where(l => l.Rail))
+            for (var p = 0; p < line.Count; p++)
+            {
+                var key = ((int)Math.Floor(line.X[p] / DoneCell), (int)Math.Floor(line.Z[p] / DoneCell));
+                if (!builtPoints.TryGetValue(key, out var list))
+                    builtPoints[key] = list = [];
+                list.Add((line.X[p], line.Z[p]));
+            }
+
+        bool NearBuilt(double x, double z)
+        {
+            var (cx, cz) = ((int)Math.Floor(x / DoneCell), (int)Math.Floor(z / DoneCell));
+            for (var dz = -1; dz <= 1; dz++)
+                for (var dx = -1; dx <= 1; dx++)
+                    if (builtPoints.TryGetValue((cx + dx, cz + dz), out var list))
+                        foreach (var q in list)
+                            if ((q.X - x) * (q.X - x) + (q.Z - z) * (q.Z - z) < CoveredWithin * CoveredWithin)
+                                return true;
+            return false;
+        }
+
         (GuideLength, DoneLength) = (0.0, 0.0);
         foreach (var way in _network.Ways.Values.Where(RouteNetwork.IsGuide))
         {
@@ -129,6 +158,11 @@ public sealed class YardGuides
                         hits++;
                 var done = hits > tries * 0.7;
                 _segments.Add((a, b, done));
+                var covered = 0;
+                for (var k = 0; k <= tries; k++)
+                    if (NearBuilt(pa.X + (pb.X - pa.X) * k / tries, pa.Z + (pb.Z - pa.Z) * k / tries))
+                        covered++;
+                _classes.Add((way.Class, covered > tries * 0.7));
                 GuideLength += length;
                 if (done)
                     DoneLength += length;
@@ -327,6 +361,73 @@ public sealed class YardGuides
     /// The sharpest a walk along the guides may turn from one segment to the next (the cosine of 35 degrees).
     private const double CosMaxTurn = 0.82;
 
+    /// The mapped track not yet built over, dashed in its class's colour: what the map says each track is, beside the
+    /// class overlay's solid lines for the track that's built.
+    public void DrawClasses(ImDrawListPtr draw, Func<double, double, float2?> project, double cx, double cz, double reach, float2 screen)
+    {
+        var (dash, gap) = (Style.S(7f), Style.S(5f));
+        for (var s = 0; s < _segments.Count; s++)
+        {
+            var (cls, covered) = _classes[s];
+            if (covered)
+                continue;
+            var (a, b, _) = _segments[s];
+            var (pa, pb) = (_nodes[a], _nodes[b]);
+            if ((Math.Abs(pa.X - cx) > reach && Math.Abs(pb.X - cx) > reach) || (Math.Abs(pa.Z - cz) > reach && Math.Abs(pb.Z - cz) > reach))
+                continue;
+            var color = RailColours.Of(cls).WithAlpha(0.85f);
+            var pieces = Math.Clamp((int)(Math.Sqrt((pb.X - pa.X) * (pb.X - pa.X) + (pb.Z - pa.Z) * (pb.Z - pa.Z)) / 20.0), 1, 32);
+            float2? previous = null;
+            for (var k = 0; k <= pieces; k++)
+            {
+                var at = project(pa.X + (pb.X - pa.X) * k / pieces, pa.Z + (pb.Z - pa.Z) * k / pieces);
+                if (previous is { } p0 && at is { } p1 && Clip(p0, p1, screen) is var (from, to))
+                {
+                    // Dashes counted whole along the clipped piece: a far point projected millions of pixels off the
+                    // screen can't make this loop run long (or, with float steps, forever).
+                    var d = to - from;
+                    var length = MathF.Sqrt(d.X * d.X + d.Y * d.Y);
+                    var period = dash + gap;
+                    var count = Math.Min((int)MathF.Ceiling(length / period), 2000);
+                    for (var n = 0; n < count; n++)
+                    {
+                        var t0 = n * period;
+                        var t1 = MathF.Min(t0 + dash, length);
+                        if (t1 > t0)
+                            draw.AddLine(from + d * (t0 / length), from + d * (t1 / length), color, Style.S(2f));
+                    }
+                }
+
+                previous = at;
+            }
+        }
+    }
+
+    /// A screen segment cut to the screen (with a little margin), or null if none of it is on it (Liang-Barsky).
+    private static (float2 From, float2 To)? Clip(float2 a, float2 b, float2 screen)
+    {
+        const float margin = 8f;
+        var d = b - a;
+        var (t0, t1) = (0f, 1f);
+        bool Edge(float p, float q)
+        {
+            if (p == 0f)
+                return q >= 0f;
+            var r = q / p;
+            if (p < 0f)
+                t0 = MathF.Max(t0, r);
+            else
+                t1 = MathF.Min(t1, r);
+            return t0 <= t1;
+        }
+
+        if (!float.IsFinite(a.X) || !float.IsFinite(a.Y) || !float.IsFinite(b.X) || !float.IsFinite(b.Y))
+            return null;
+        if (!Edge(-d.X, a.X + margin) || !Edge(d.X, screen.X + margin - a.X) || !Edge(-d.Y, a.Y + margin) || !Edge(d.Y, screen.Y + margin - a.Y))
+            return null;
+        return (a + d * t0, a + d * t1);
+    }
+
     public void Draw(ImDrawListPtr draw, Func<double, double, float2?> project, double cx, double cz, double reach)
     {
         var (open, done) = (new Rgba(0.2f, 0.85f, 0.6f, 0.9f), new Rgba(0.2f, 0.85f, 0.6f, 0.2f));
@@ -362,6 +463,10 @@ public sealed class FollowTool
     private const double BranchMax = 150.0;
 
     private readonly List<Click> _clicks = [];
+
+    /// The last path fitted, and its fit.
+    private List<(double X, double Z)>? _lastPath;
+    private (List<TrackPiece> Pieces, double Radius, bool Fitted) _lastFit;
 
     public int Count => _clicks.Count;
     public IReadOnlyList<TrackPiece>? Preview { get; private set; }
@@ -408,7 +513,10 @@ public sealed class FollowTool
             path.AddRange(piece.Skip(1));
         }
 
-        var fit = TrackAlignment.FitPath(path);
+        // (Fitted again only when the path's changed: a long one takes a while, and this runs every frame.)
+        if (_lastPath is null || !_lastPath.SequenceEqual(path))
+            (_lastPath, _lastFit) = (path, TrackAlignment.FitPath(path));
+        var fit = _lastFit;
         if (fit.Pieces.Count == 0)
         {
             (Preview, Radius, Length, Unfitted) = (null, double.MaxValue, 0.0, false);
@@ -493,17 +601,125 @@ public sealed class FollowTool
     {
         if (Preview is not { } pieces || _clicks.Count < 2)
             return null;
-        var total = Alignment.LengthOf(pieces);
-        var count = Math.Max(2, (int)Math.Ceiling(total / 2.0));
-        var points = new List<LayPoint>(count + 1) { _clicks[0].Point };
-        for (var k = 1; k < count; k++)
+        var keep = ControlPoints(pieces);
+        var points = new List<LayPoint>(keep.Count) { _clicks[0].Point };
+        for (var k = 1; k + 1 < keep.Count; k++)
         {
-            var (x, z) = Alignment.Position(pieces, total * k / count);
+            var (x, z) = Alignment.Position(pieces, keep[k]);
             points.Add(new LayPoint(x, z));
         }
 
         points.Add(_clicks[^1].Point);
         return points;
+    }
+
+    /// How far the laid track may stray from the fit; the most a curve may turn, and the longest a straight may run,
+    /// between two control points to start with; and the shortest span worth cutting again.
+    private const double PointTolerance = 0.05;
+    private const double PointTurn = 10.0 * Math.PI / 180.0;
+    private const double PointSpan = 400.0;
+    private const double PointMinSpan = 4.0;
+
+    /// As few control points (distances along the fit) as lay the same track: one where each straight and curve meets the
+    /// next, enough on each curve that no span turns more than PointTurn, then more only where the track laid through them
+    /// (a centripetal Catmull-Rom spline, as an exact way is built) would stray from the fit by more than PointTolerance.
+    internal static List<double> ControlPoints(IReadOnlyList<TrackPiece> pieces)
+    {
+        var total = Alignment.LengthOf(pieces);
+        var keep = new List<double> { 0.0 };
+        var u = 0.0;
+        foreach (var piece in pieces)
+        {
+            var parts = Math.Max(1, (int)Math.Max(Math.Ceiling(Math.Abs(piece.Curvature) * piece.Length / PointTurn), Math.Ceiling(piece.Length / PointSpan)));
+            for (var i = 1; i <= parts; i++)
+                if (u + piece.Length * i / parts - keep[^1] >= PointMinSpan * 0.5)
+                    keep.Add(u + piece.Length * i / parts);
+            u += piece.Length;
+        }
+
+        // The end, exactly (a last point too near it is moved onto it).
+        if (keep.Count > 1 && total - keep[^1] < PointMinSpan * 0.5)
+            keep[^1] = total;
+        else if (keep[^1] < total)
+            keep.Add(total);
+
+        // The fit itself, finely, to measure against.
+        const double step = 0.5;
+        var count = (int)Math.Ceiling(total / step);
+        var fine = new (double X, double Z)[count + 1];
+        for (var k = 0; k <= count; k++)
+            fine[k] = Alignment.Position(pieces, Math.Min(total, k * step));
+
+        for (var pass = 0; pass < 16; pass++)
+        {
+            var at = keep.Select(d => Alignment.Position(pieces, d)).ToArray();
+            var next = new List<double> { keep[0] };
+            var added = false;
+            for (var i = 0; i + 1 < keep.Count; i++)
+            {
+                if (keep[i + 1] - keep[i] >= 2.0 * PointMinSpan && Strays(at, i, fine, keep[i], keep[i + 1], step) > PointTolerance)
+                {
+                    next.Add((keep[i] + keep[i + 1]) * 0.5);
+                    added = true;
+                }
+
+                next.Add(keep[i + 1]);
+            }
+
+            keep = next;
+            if (!added)
+                break;
+        }
+
+        return keep;
+    }
+
+    /// How far the spline through the points strays from the fit over the span from point i to the next.
+    private static double Strays((double X, double Z)[] at, int i, (double X, double Z)[] fine, double from, double to, double step)
+    {
+        var n = at.Length;
+        (double X, double Z) P(int k) => k < 0 ? (2 * at[0].X - at[1].X, 2 * at[0].Z - at[1].Z)
+            : k >= n ? (2 * at[n - 1].X - at[n - 2].X, 2 * at[n - 1].Z - at[n - 2].Z)
+            : at[k];
+        static double Knot(double t, (double X, double Z) a, (double X, double Z) b) =>
+            t + Math.Max(Math.Sqrt(Math.Sqrt((b.X - a.X) * (b.X - a.X) + (b.Z - a.Z) * (b.Z - a.Z))), 1e-4);
+        var (p0, p1, p2, p3) = (P(i - 1), P(i), P(i + 1), P(i + 2));
+        var t1 = Knot(0.0, p0, p1);
+        var t2 = Knot(t1, p1, p2);
+        var t3 = Knot(t2, p2, p3);
+
+        // The fit's points over the span (a little either side), searched in order as the spline's points go along it.
+        var (first, last) = (Math.Max(0, (int)Math.Floor(from / step) - 2), Math.Min(fine.Length - 1, (int)Math.Ceiling(to / step) + 2));
+        var j = first;
+        var worst = 0.0;
+        var samples = Math.Clamp((int)Math.Ceiling((to - from) / 1.0), 4, 800);
+        for (var s = 1; s < samples; s++)
+        {
+            var t = t1 + (t2 - t1) * s / samples;
+            (double X, double Z) Mix((double X, double Z) a, (double X, double Z) b, double ta, double tb) =>
+                ((tb - t) / (tb - ta) * a.X + (t - ta) / (tb - ta) * b.X, (tb - t) / (tb - ta) * a.Z + (t - ta) / (tb - ta) * b.Z);
+            var b1 = Mix(Mix(p0, p1, 0.0, t1), Mix(p1, p2, t1, t2), 0.0, t2);
+            var b2 = Mix(Mix(p1, p2, t1, t2), Mix(p2, p3, t2, t3), t1, t3);
+            var c = Mix(b1, b2, t1, t2);
+            double Away(int k) => (fine[k].X - c.X) * (fine[k].X - c.X) + (fine[k].Z - c.Z) * (fine[k].Z - c.Z);
+            while (j < last && Away(j + 1) <= Away(j))
+                j++;
+            // (Between two of the fit's points: the nearer segment's distance.)
+            var best = Math.Sqrt(Away(j));
+            foreach (var k in (int[])[j - 1, j])
+                if (k >= first && k + 1 <= last)
+                {
+                    var (ax, az, bx, bz) = (fine[k].X, fine[k].Z, fine[k + 1].X, fine[k + 1].Z);
+                    var (dx, dz) = (bx - ax, bz - az);
+                    var f = Math.Clamp(((c.X - ax) * dx + (c.Z - az) * dz) / Math.Max(dx * dx + dz * dz, 1e-12), 0.0, 1.0);
+                    var (ex, ez) = (ax + dx * f - c.X, az + dz * f - c.Z);
+                    best = Math.Min(best, Math.Sqrt(ex * ex + ez * ez));
+                }
+
+            worst = Math.Max(worst, best);
+        }
+
+        return worst;
     }
 
     public void Draw(ImDrawListPtr draw, Func<double, double, float2?> project, float2? mouse)

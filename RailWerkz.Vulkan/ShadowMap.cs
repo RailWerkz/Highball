@@ -18,7 +18,7 @@ public sealed unsafe class ShadowMap : IDisposable
     {
         Size = size;
         Layers = layers;
-        _image = Gpu.Device.CreateImage(new ImageEx.CreateInfo
+        _image = Gpu.Allocator.CreateImage(new ImageEx.CreateInfo
         {
             Name = "world.shadows",
             ImageType = VkImageType._2D,

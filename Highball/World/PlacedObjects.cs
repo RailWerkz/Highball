@@ -8,8 +8,14 @@ public enum PlacedKind { Signal, HandThrow, GradeCrossing, PoleTelegraph, PoleDi
 
 /// A signal, hand throw, grade crossing, utility pole or light pole placed by hand. Heading: the way it faces, degrees from +X towards
 /// +Z (a grade crossing: the way its road runs; a utility pole: the way its wires would). Node: the switch a hand throw works. Width: a
-/// grade crossing's road. Opposite: a hand throw on the switch's other side. Run: what it was laid along with (the id they share).
-public sealed record PlacedObject(long Id, PlacedKind Kind, double Lat, double Lon, double Heading, long? Node = null, float Width = 0f, bool Opposite = false, long? Run = null);
+/// grade crossing's road. Opposite: a hand throw on the switch's other side; a grade crossing's masts on the left of the road's
+/// traffic rather than the right. Run: what it was laid along with (the id they share). Turn: a grade crossing's masts turned on
+/// their posts, degrees. Style: a grade crossing's surface (CrossingStyle).
+public sealed record PlacedObject(long Id, PlacedKind Kind, double Lat, double Lon, double Heading, long? Node = null, float Width = 0f, bool Opposite = false, long? Run = null,
+    float Turn = 0f, int Style = 0);
+
+/// What a grade crossing's laid with: precast concrete panels, rubber panels, timber planks, or asphalt poured level with the rails.
+public enum CrossingStyle { Concrete, Rubber, Timber, Asphalt }
 
 public static class PlacedKinds
 {

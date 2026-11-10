@@ -12,14 +12,30 @@
   "massEmptyKg": 39281,
   "massLoadedKg": 129727,
   "maxSpeedKmh": 113,
-  // The game picks a model by livery and has no loads of its own yet, so each paint comes three ways: empty, a 53 ft box in
-  // the well, and a 40 ft high cube stacked on that (Tools/Blender/rollingstock/wellcar.py; assembly.json lists the loads).
+  // What it can be seen carrying, picked once it's loaded (the first unless another is): a 53 ft box in the well, and a
+  // 40 ft high cube stacked on that (Tools/Blender/rollingstock/wellcar.py; assembly.json lists the loads). Each paint gives
+  // its model empty, and carrying each load; "was" maps the livery ids older consists saved, from when a paint came once
+  // for every load, to the load each meant.
+  "loads": [
+    { "id": "single", "name": "Single stack" },
+    { "id": "double", "name": "Double stack" }
+  ],
   "liveries": [
-    { "id": "rwkz_empty", "name": "RailWerkz, empty", "model": "RollingStock/WellCar_53ft/Assembled/well_53_rwkz_empty.glb" },
-    { "id": "rwkz_single", "name": "RailWerkz, single stack", "model": "RollingStock/WellCar_53ft/Assembled/well_53_rwkz_single.glb" },
-    { "id": "rwkz_double", "name": "RailWerkz, double stack", "model": "RollingStock/WellCar_53ft/Assembled/well_53_rwkz_double.glb" },
-    { "id": "hblx_empty", "name": "HBLX, empty", "model": "RollingStock/WellCar_53ft/Assembled/well_53_hblx_empty.glb" },
-    { "id": "hblx_single", "name": "HBLX, single stack", "model": "RollingStock/WellCar_53ft/Assembled/well_53_hblx_single.glb" },
-    { "id": "hblx_double", "name": "HBLX, double stack", "model": "RollingStock/WellCar_53ft/Assembled/well_53_hblx_double.glb" }
+    {
+      "id": "rwkz", "name": "RailWerkz", "model": "RollingStock/WellCar_53ft/Assembled/well_53_rwkz_empty.glb",
+      "loads": {
+        "single": "RollingStock/WellCar_53ft/Assembled/well_53_rwkz_single.glb",
+        "double": "RollingStock/WellCar_53ft/Assembled/well_53_rwkz_double.glb"
+      },
+      "was": { "rwkz_empty": null, "rwkz_single": "single", "rwkz_double": "double" }
+    },
+    {
+      "id": "hblx", "name": "HBLX", "model": "RollingStock/WellCar_53ft/Assembled/well_53_hblx_empty.glb",
+      "loads": {
+        "single": "RollingStock/WellCar_53ft/Assembled/well_53_hblx_single.glb",
+        "double": "RollingStock/WellCar_53ft/Assembled/well_53_hblx_double.glb"
+      },
+      "was": { "hblx_empty": null, "hblx_single": "single", "hblx_double": "double" }
+    }
   ]
 }

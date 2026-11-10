@@ -285,12 +285,21 @@ public sealed class CircuitEditor : IDisposable
                     continue;
 
                 float2? previous = null;
+                var (px, pz, first) = (0.0, 0.0, true);
                 void Point(double x, double z)
                 {
                     var screen = project(x, z);
                     if (previous is { } a && screen is { } b)
                         draw.AddLine(a, b, color, width);
-                    previous = screen;
+                    else if (!first && (previous is null) != (screen is null))
+                    {
+                        // One end's behind the camera, which happens on a long straight: draw the part in front.
+                        var (seen, (fromX, fromZ), (toX, toZ)) = previous is { } p ? (p, (px, pz), (x, z)) : (screen!.Value, (x, z), (px, pz));
+                        if (InFront(project, fromX, fromZ, toX, toZ) is { } edge)
+                            draw.AddLine(seen, edge, color, width);
+                    }
+
+                    (previous, px, pz, first) = (screen, x, z, false);
                 }
 
                 var (sx, sz, _, _) = graph.PointAt(index, from);
@@ -333,6 +342,24 @@ public sealed class CircuitEditor : IDisposable
         }
     }
 
+    /// The farthest point from (fromX, fromZ), which can be seen, towards (toX, toZ), which can't, that still can: found
+    /// by halving, since the ground's height under the line makes it no straight line in the air.
+    private static float2? InFront(Func<double, double, float2?> project, double fromX, double fromZ, double toX, double toZ)
+    {
+        float2? last = null;
+        var (lo, hi) = (0.0, 1.0);
+        for (var i = 0; i < 20; i++)
+        {
+            var t = (lo + hi) * 0.5;
+            if (project(fromX + (toX - fromX) * t, fromZ + (toZ - fromZ) * t) is { } at)
+                (lo, last) = (t, at);
+            else
+                hi = t;
+        }
+
+        return last;
+    }
+
     /// The side panel: totals, the selected circuit (renamed here), the circuit under the pointer, and laying out
     /// the automatic joints again. Returns the edit it made, if any.
     public SignallingEdit? Panel(bool imperial)
@@ -342,37 +369,46 @@ public sealed class CircuitEditor : IDisposable
             ? metres >= 1609.344 ? $"{metres / 1609.344:0.00} mi" : $"{metres * 3.28084:0} ft"
             : metres >= 1000 ? $"{metres / 1000:0.00} km" : $"{metres:0} m";
 
-        ImGui.SeparatorText("Circuits"u8);
         if (_circuits is not { } circuits)
         {
-            ImGui.TextDisabled("Building..."u8);
+            ToolPanel.Hint("Building...");
             return null;
         }
 
-        ImGui.Text($"{circuits.Circuits.Count} circuits, {circuits.Joints.Count} joints{(_jobs.Busy ? ", updating" : "")}");
-        ImGui.Text($"Under the pointer: {_hover?.Id ?? "none"}");
+        Kit.BeginCard("Circuits", _jobs.Busy ? "Updating" : null);
+        Kit.Stats([new Stat("Circuits", circuits.Circuits.Count.ToString()), new Stat("Joints", circuits.Joints.Count.ToString()), new Stat("Hovered", _hover?.Id ?? "None")], 2);
+        Kit.EndCard();
 
         if (circuits.Circuits.FirstOrDefault(c => c.Id == _selected) is { } selected)
         {
-            ImGui.SeparatorText("Selected"u8);
+            Kit.BeginCard("Picked circuit", null, Style.Accent);
             if (_renameFor != selected.Id)
             {
                 _rename = new ImInputString(32, selected.Id);
                 _renameFor = selected.Id;
             }
 
-            ImGui.SetNextItemWidth(-80f);
-            if (ImGui.InputText("Id"u8, _rename, ImGuiInputTextFlags.EnterReturnsTrue | ImGuiInputTextFlags.CharsUppercase))
+            Kit.Caption("Id");
+            ImGui.SetNextItemWidth(Kit.Width);
+            if (ImGui.InputText("##circuitid"u8, _rename, ImGuiInputTextFlags.EnterReturnsTrue | ImGuiInputTextFlags.CharsUppercase))
                 edit = Rename(selected, _rename.ToString());
-            ImGui.Text($"Length {Length(selected.Length)}");
-            ImGui.Text($"{selected.Spans.Count} stretch{(selected.Spans.Count == 1 ? "" : "es")} of track, {selected.Junctions} switch{(selected.Junctions == 1 ? "" : "es")} or crossing{(selected.Junctions == 1 ? "" : "s")}");
+            Kit.Stats(
+            [
+                new Stat("Length", Length(selected.Length)),
+                new Stat("Stretches", selected.Spans.Count.ToString()),
+                new Stat("Switches", selected.Junctions.ToString()),
+            ], 2);
+            Kit.EndCard();
         }
 
-        ImGui.SeparatorText("Automatic Joints"u8);
-        ImGui.SetNextItemWidth(-140f);
-        ImGui.InputFloat("Block length (m)"u8, ref _blockLength, 100f, 500f, "%.0f"u8, ImGuiInputTextFlags.None);
-        if (ImGui.Button("Lay Out Again"u8))
+        Kit.BeginCard("Automatic joints");
+        var factor = imperial ? 3.28084f : 1f;
+        var block = _blockLength * factor;
+        if (ToolPanel.Value("blocklength", imperial ? "Block length (ft)" : "Block length (m)", ref block, 200f * factor, 10000f * factor, "0", log: true))
+            _blockLength = MathF.Round(block / 50f) * 50f / factor;
+        if (Kit.Button("layoutagain", "Lay Out Again"))
             edit = Regenerate();
+        Kit.EndCard();
         return edit;
     }
 

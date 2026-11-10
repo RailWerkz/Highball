@@ -93,6 +93,8 @@ public sealed partial class TerrainSource
             NetworkLines.ForgetSolved(route);
         var edits = TrackEdits.Load(route);
         var lines = NetworkLines.Build(network.Ways.Values, route, built, edits.Snapshot());
+        var objects = RouteObjects.Load(route);
+        lines.SetCrossings(objects, route.Projection!);
 
         Parallel.For(0, ids.Length, i =>
         {
@@ -133,6 +135,9 @@ public sealed partial class TerrainSource
         });
 
         var source = new TerrainSource(route, [.. tiles.OfType<Tile>()]) { Lines = lines, Network = network, TrackEdits = edits };
+        source.Objects.AddRange(objects);
+        foreach (var (key, edit) in RouteBridges.Load(route))
+            source.Bridges[key] = edit;
         Log.Info($"Terrain: {source._tiles.Count} tiles and {lines.Lines.Count} lines opened in {watch.ElapsedMilliseconds} ms");
         return source;
     });
@@ -163,6 +168,9 @@ public sealed partial class TerrainSource
 
     /// The signals, hand throws and grade crossings placed on the route.
     public List<PlacedObject> Objects { get; } = [];
+
+    /// What's been set by hand on the route's bridges, by key (Bridges.json).
+    public Dictionary<long, BridgeEdit> Bridges { get; } = [];
 
     /// The ways they were made from, as edited.
     public RouteNetwork Network { get; private init; } = new();

@@ -100,20 +100,21 @@ class Boxcar(Car):
 
     def shell(self, m):
         c, S, E, D = self.c, self.S, self.E, self.D
-        m.box("Frame", (-S, -E, .99), (S, E, 1.10))
+        m.box("Frame", (-(S - .005), -(E - .01), .99), (S - .005, E - .01, 1.10))  # inside the side and end sheets, not level with their faces
         m.box("Floor", (-S + .06, -E + .06, 1.10), (S - .06, E - .06, c.floor))
         for s in (-1, 1):
             for y0, y1 in ((-E, -D), (D, E)):
                 m.box("Body", (s * (S - .006), y0, c.sill), (s * S, y1, c.eave))
-                m.box("Interior", (s * (S - .06), y0, c.floor), (s * (S - .006), y1, c.eave))
+                i0, i1 = (-(E - .06), -D) if y0 < 0 else (D, E - .06)  # the lining stops inside the end sheets
+                m.box("Interior", (s * (S - .06), i0, c.floor), (s * (S - .006), i1, c.eave - .01))
             # Over the door and under it.
             m.box("Body", (s * (S - .006), -D, c.door_top), (s * S, D, c.eave))
-            m.box("Interior", (s * (S - .06), -D, c.door_top), (s * (S - .006), D, c.eave))
+            m.box("Interior", (s * (S - .06), -D, c.door_top), (s * (S - .006), D, c.eave - .01))
             m.box("Body", (s * (S - .006), -D, c.sill), (s * S, D, c.floor))
-            m.box("Steel", (s * (S - .07), -D, c.floor - .004), (s * S, D, c.floor + .004))
+            m.box("Steel", (s * (S - .07), -(D - .002), c.floor - .004), (s * (S - .002), D - .002, c.floor + .004))  # inside the sheets' faces
         for e in (-1, 1):
             m.box("Body", (-S, e * (E - .06), c.sill), (S, e * E, c.eave))
-            m.box("Interior", (-S + .06, e * (E - .1), c.floor), (S - .06, e * (E - .06), c.eave))
+            m.box("Interior", (-S + .06, e * (E - .1), c.floor), (S - .06, e * (E - .06), c.eave - .01))
 
     def roof(self, m):
         c, S, E = self.c, self.S, self.E
@@ -155,14 +156,15 @@ class Boxcar(Car):
                 m.box("Frame", (s * .22, e * (tc + .45), low - .02), (s * .34, e * OS, low))
             m.box("Dark", (-.2, e * (p - .2), cz - .12), (.2, e * (p - .85), cz + .12), .01)
         # Body bolsters, tapering from the centre sill out to the side sills, on the centre plates and side bearings.
-        bolster = [(-S, .98), (-.34, .70), (.34, .70), (S, .98), (S, 1.0), (-S, 1.0)]
+        W = S - .005  # the bolsters and cross bearers stop inside the side sheets' face
+        bolster = [(-W, .98), (-.34, .70), (.34, .70), (W, .98), (W, 1.0), (-W, 1.0)]
         for y in (-tc, tc):
             m.prism("Frame", bolster, "y", y - .18, y + .18)
             m.cyl("Steel", (0, y, self.c.truck.centre_plate), (0, y, .70), .19, 24)
             for s in (-1, 1):
                 x = s * self.c.truck.side_bearing
                 m.box("Frame", (x - .08, y - .1, .705), (x + .08, y + .1, .78))
-        crossbearer = [(-S, .98), (-.34, .80), (.34, .80), (S, .98), (S, 1.0), (-S, 1.0)]
+        crossbearer = [(-W, .98), (-.34, .80), (.34, .80), (W, .98), (W, 1.0), (-W, 1.0)]
         for y in (-4.05, -1.95, 1.95, 4.05):
             m.prism("Frame", crossbearer, "y", y - .05, y + .05)
 
@@ -171,7 +173,7 @@ class Boxcar(Car):
         Y = lambda yv: s * yv  # along the side as you face it, left negative
         # Side sill, and the side plate along the top.
         m.box("Body", (s * (S - .002), -E, .96), (s * (S + .04), E, 1.12))
-        m.box("Body", (s * (S - .002), -E - .01, c.eave - .04), (s * (S + .055), E + .01, c.eave + .03))
+        m.box("Body", (s * (S - .002), -E - .01, c.eave - .04), (s * (S + .05), E + .01, c.eave + .03))  # inside the roof's edge
         # Posts: the door posts flat, the corners wrapped round, the rest hat sections standing out.
         for e in (-1, 1):
             m.box("Body", (s * S, e * D, c.sill + .02), (s * (S + .04), e * (D + .12), c.eave - .04))

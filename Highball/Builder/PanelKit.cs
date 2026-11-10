@@ -143,14 +143,14 @@ public static class Kit
         var x = at.X;
         if (lamp is { } color)
         {
-            Canvas.Lamp(draw, new float2(x + S(3f), at.Y + S(6f)), S(3f), color);
+            Canvas.Lamp(draw, new float2(x + S(3f), at.Y + S(7f)), S(3f), color);
             x += S(14f);
         }
 
-        Canvas.Spaced(draw, Bold, S(10.5f), new float2(x, at.Y), Text, title.ToUpperInvariant(), 0.2f);
+        Canvas.Spaced(draw, Bold, S(12.5f), new float2(x, at.Y), Text, title.ToUpperInvariant(), 0.2f);
         if (note is not null)
-            Canvas.Text(draw, Mono, S(11.5f), new float2(at.X + Width, at.Y - S(1f)), TextDim, note, Align.Right);
-        ImGui.Dummy(new float2(Width, S(18f)));
+            Canvas.Text(draw, Mono, S(13.5f), new float2(at.X + Width, at.Y - S(1f)), TextDim, note, Align.Right);
+        ImGui.Dummy(new float2(Width, S(21f)));
     }
 
     public static void EndCard()
@@ -176,20 +176,20 @@ public static class Kit
     public static void Caption(string text)
     {
         var at = ImGui.GetCursorScreenPos();
-        Canvas.Spaced(Draw, Medium, S(10f), at, Label, text.ToUpperInvariant(), 0.18f);
-        ImGui.Dummy(new float2(Width, S(13f)));
+        Canvas.Spaced(Draw, Medium, S(12f), at, Label, text.ToUpperInvariant(), 0.18f);
+        ImGui.Dummy(new float2(Width, S(16f)));
     }
 
     /// A line or more of plain words, wrapped to the width.
     public static void Note(string text, Rgba? color = null)
     {
         var draw = Draw;
-        var size = S(12.5f);
+        var size = S(14.5f);
         foreach (var line in Canvas.Wrap(text, Regular, size, Width))
         {
             var at = ImGui.GetCursorScreenPos();
             Canvas.Text(draw, Regular, size, at, color ?? TextDim, line);
-            ImGui.Dummy(new float2(Width, S(16f)));
+            ImGui.Dummy(new float2(Width, S(19f)));
         }
     }
 
@@ -198,12 +198,12 @@ public static class Kit
     {
         var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
-        Canvas.Lamp(draw, at + new float2(S(4f), S(8f)), S(3f), color);
-        var size = S(13f);
+        Canvas.Lamp(draw, at + new float2(S(4f), S(9f)), S(3f), color);
+        var size = S(15f);
         var lines = Canvas.Wrap(text, Medium, size, Width - S(16f));
         for (var i = 0; i < lines.Count; i++)
-            Canvas.Text(draw, Medium, size, at + new float2(S(16f), i * S(17f)), Rgba.Mix(Text, color, 0.35f), lines[i]);
-        ImGui.Dummy(new float2(Width, MathF.Max(1, lines.Count) * S(17f)));
+            Canvas.Text(draw, Medium, size, at + new float2(S(16f), i * S(19f)), Rgba.Mix(Text, color, 0.35f), lines[i]);
+        ImGui.Dummy(new float2(Width, MathF.Max(1, lines.Count) * S(19f)));
     }
 
     /// Readings in a grid: captions over Mono values, columns across.
@@ -212,16 +212,19 @@ public static class Kit
         var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
         var width = Width / columns;
-        var rowHeight = big ? S(40f) : S(32f);
+        var rowHeight = big ? S(44f) : S(37f);
         var rows = (stats.Length + columns - 1) / columns;
         for (var i = 0; i < stats.Length; i++)
         {
             var cell = at + new float2(i % columns * width, i / columns * rowHeight);
             var stat = stats[i];
-            Canvas.Spaced(draw, Medium, S(9.5f), cell, Label, stat.Label.ToUpperInvariant(), 0.18f);
+            var label = stat.Label.ToUpperInvariant();
+            while (label.Length > 1 && Canvas.SpacedWidth(Medium, S(11.5f), label, 0.18f) > width - S(8f))
+                label = label[..^2] + "…";
+            Canvas.Spaced(draw, Medium, S(11.5f), cell, Label, label, 0.18f);
             var font = big ? Bold : Mono;
-            var size = big ? S(18f) : S(13f);
-            Canvas.Text(draw, font, size, cell + new float2(0f, S(13f)), stat.Color ?? Text, Ellipsize(stat.Value, font, size, width - S(8f)));
+            var size = big ? S(20f) : S(15f);
+            Canvas.Text(draw, font, size, cell + new float2(0f, S(15f)), stat.Color ?? Text, Ellipsize(stat.Value, font, size, width - S(8f)));
         }
 
         ImGui.Dummy(new float2(Width, rows * rowHeight));
@@ -237,7 +240,7 @@ public static class Kit
     public static bool Button(string id, string label, out bool held, float width = 0f, ButtonKind kind = ButtonKind.Secondary, bool enabled = true, Rgba? tint = null)
     {
         var at = ImGui.GetCursorScreenPos();
-        var size = new float2(width > 0f ? width : Width, S(28f));
+        var size = new float2(width > 0f ? width : Width, S(31f));
         var clicked = Cell(id, label, at, size, kind == ButtonKind.Primary, enabled, tint, out held);
         ImGui.SetCursorScreenPos(at);
         ImGui.Dummy(size);
@@ -252,25 +255,25 @@ public static class Kit
         var at = ImGui.GetCursorScreenPos();
         var hit = -1;
         for (var i = 0; i < labels.Length; i++)
-            if (Cell($"{id}.{i}", labels[i], at + new float2(i * (width + gap), 0f), new float2(width, S(28f)), false, enabled.IsEmpty || enabled[i], null, out _))
+            if (Cell($"{id}.{i}", labels[i], at + new float2(i * (width + gap), 0f), new float2(width, S(31f)), false, enabled.IsEmpty || enabled[i], null, out _))
                 hit = i;
         ImGui.SetCursorScreenPos(at);
-        ImGui.Dummy(new float2(Width, S(28f)));
+        ImGui.Dummy(new float2(Width, S(31f)));
         return hit;
     }
 
-    /// One of several, the picked one lit. Returns the one picked.
-    public static int Segmented(string id, ReadOnlySpan<string> labels, int current, bool enabled = true)
+    /// One of several, the picked one lit. Returns the one picked. Across the width, or as wide as asked.
+    public static int Segmented(string id, ReadOnlySpan<string> labels, int current, bool enabled = true, float across = 0f)
     {
         var gap = S(3f);
-        var width = (Width - gap * (labels.Length - 1)) / labels.Length;
+        var width = ((across > 0f ? across : Width) - gap * (labels.Length - 1)) / labels.Length;
         var at = ImGui.GetCursorScreenPos();
         var picked = current;
         for (var i = 0; i < labels.Length; i++)
-            if (Cell($"{id}.{i}", labels[i], at + new float2(i * (width + gap), 0f), new float2(width, S(26f)), i == current, enabled, null, out _))
+            if (Cell($"{id}.{i}", labels[i], at + new float2(i * (width + gap), 0f), new float2(width, S(29f)), i == current, enabled, null, out _))
                 picked = i;
         ImGui.SetCursorScreenPos(at);
-        ImGui.Dummy(new float2(Width, S(26f)));
+        ImGui.Dummy(new float2(Width, S(29f)));
         return picked;
     }
 
@@ -280,9 +283,9 @@ public static class Kit
     {
         var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
-        var size = S(13f);
+        var size = S(15f);
         var text = Canvas.TextSize(Medium, size, label);
-        var box = S(14f);
+        var box = S(15f);
         var whole = new float2(box + S(8f) + text.X, MathF.Max(box, text.Y));
         var clicked = ImGui.InvisibleButton(id, whole) && enabled;
         var hover = ImGui.IsItemHovered() && enabled;
@@ -309,13 +312,51 @@ public static class Kit
         return clicked;
     }
 
-    /// A segmented gauge with its reading over it.
-    public static void Gauge(float value, string text, Rgba color)
+    /// A slider over 0 to 1 across the width, dragged with the pointer (a click jumps to it). Returns true when the value
+    /// changed; released is true on the frame it's let go, for saving once a drag rather than every frame of it.
+    public static bool Slider(string id, ref float value, out bool released, bool enabled = true)
+    {
+        var draw = Draw;
+        var at = ImGui.GetCursorScreenPos();
+        var size = new float2(Width, S(22f));
+        ImGui.InvisibleButton(id, size);
+        var active = ImGui.IsItemActive() && enabled;
+        released = ImGui.IsItemDeactivated() && enabled;
+        var hover = ImGui.IsItemHovered() && enabled;
+
+        var pad = S(7f);
+        var left = at.X + pad;
+        var span = MathF.Max(size.X - pad * 2f, 1f);
+        var was = value;
+        if (active)
+            value = Math.Clamp((ImGui.GetIO().MousePos.X - left) / span, 0f, 1f);
+        value = Math.Clamp(value, 0f, 1f);
+
+        var lit = Tween.Float(id, "lit", active || hover ? 1f : 0f, 0.12f);
+        var alpha = enabled ? 1f : 0.4f;
+        var midY = at.Y + size.Y * 0.5f;
+        var knobX = left + span * value;
+        var track = S(2f);
+        draw.AddRectFilled(new float2(left, midY - track), new float2(left + span, midY + track), StrokeStrong.Fade(alpha));
+        if (enabled)
+            draw.AddRectFilled(new float2(left, midY - track), new float2(knobX, midY + track), Accent.WithAlpha(0.85f).Fade(alpha));
+        var knob = new float2(S(4.5f) + lit * S(1f), S(8f));
+        draw.AddRectFilled(new float2(knobX - knob.X, midY - knob.Y), new float2(knobX + knob.X, midY + knob.Y),
+            (enabled ? Rgba.Mix(Text, Accent, 0.35f + 0.65f * lit) : TextFaint).Fade(alpha));
+
+        if (hover)
+            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+        if (released)
+            Sfx.Tick();
+        return active && value != was;
+    }
+
+    /// A segmented gauge; its readings go beside or below it, never over it.
+    public static void Gauge(float value, Rgba color)
     {
         var at = ImGui.GetCursorScreenPos();
         var max = at + new float2(Width, S(18f));
         Canvas.SegmentBar(Draw, at, max, value, color.WithAlpha(0.75f), 30);
-        Canvas.Text(Draw, Mono, S(12f), new float2(at.X + S(6f), at.Y + S(1.5f)), Text, text);
         ImGui.Dummy(new float2(Width, S(18f)));
     }
 
@@ -324,7 +365,7 @@ public static class Kit
     {
         var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
-        var size = new float2(width, S(28f));
+        var size = new float2(width, S(31f));
         var clicked = ImGui.InvisibleButton(id, size);
         var hover = ImGui.IsItemHovered();
         var lit = Tween.Float(id, "lit", picked ? 1f : hover ? 0.5f : 0f, 0.15f);
@@ -332,10 +373,10 @@ public static class Kit
             draw.AddRectFilled(at, at + size, Accent.WithAlpha(0.14f * lit));
         if (picked)
             draw.AddRectFilled(at, new float2(at.X + S(3f), at.Y + size.Y), Accent);
-        Canvas.Text(draw, Mono, S(12f), at + new float2(S(12f), S(7f)), TextFaint, number);
-        Canvas.Text(draw, picked ? Bold : Medium, S(13.5f), at + new float2(S(40f), S(5.5f)), picked ? Text : TextDim, Ellipsize(title, Medium, S(13.5f), width - S(120f)));
-        var tagWidth = Canvas.SpacedWidth(Medium, S(9.5f), right, 0.16f);
-        Canvas.Spaced(draw, Medium, S(9.5f), new float2(at.X + width - S(10f) - tagWidth, at.Y + S(9f)), TextFaint, right, 0.16f);
+        Canvas.Text(draw, Mono, S(14f), at + new float2(S(12f), S(7.5f)), TextFaint, number);
+        Canvas.Text(draw, picked ? Bold : Medium, S(15.5f), at + new float2(S(44f), S(6f)), picked ? Text : TextDim, Ellipsize(title, Medium, S(15.5f), width - S(130f)));
+        var tagWidth = Canvas.SpacedWidth(Medium, S(11.5f), right, 0.16f);
+        Canvas.Spaced(draw, Medium, S(11.5f), new float2(at.X + width - S(10f) - tagWidth, at.Y + S(9.5f)), TextFaint, right, 0.16f);
         if (hover)
             ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
         if (clicked)
@@ -374,11 +415,18 @@ public static class Kit
         }
 
         var text = label.ToUpperInvariant();
-        var fontSize = S(10.5f);
-        var width = Canvas.SpacedWidth(Bold, fontSize, text, 0.12f);
-        if (width > size.X - S(6f))
-            (text, width) = (Ellipsize(text, Bold, fontSize, size.X - S(10f)), Canvas.SpacedWidth(Bold, fontSize, Ellipsize(text, Bold, fontSize, size.X - S(10f)), 0.12f));
-        Canvas.Spaced(draw, Bold, fontSize, new float2((min.X + max.X - width) * 0.5f, (min.Y + max.Y) * 0.5f - S(6.5f)), ink, text, 0.12f);
+        // A label too long for its cell keeps some room either side: it's drawn closer set, then a size smaller, and only
+        // then cut short.
+        var room = size.X - S(16f);
+        var (fontSize, tracking) = (S(12.5f), 0.12f);
+        var width = Canvas.SpacedWidth(Bold, fontSize, text, tracking);
+        if (width > room)
+            (tracking, width) = (0.04f, Canvas.SpacedWidth(Bold, fontSize, text, 0.04f));
+        if (width > room)
+            (fontSize, width) = (S(11f), Canvas.SpacedWidth(Bold, S(11f), text, tracking));
+        if (width > room)
+            (text, width) = (Ellipsize(text, Bold, fontSize, room), Canvas.SpacedWidth(Bold, fontSize, Ellipsize(text, Bold, fontSize, room), tracking));
+        Canvas.Spaced(draw, Bold, fontSize, new float2((min.X + max.X - width) * 0.5f, (min.Y + max.Y) * 0.5f - fontSize * 0.6f), ink, text, tracking);
         if (hovered)
             ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
         if (clicked)

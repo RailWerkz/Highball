@@ -33,19 +33,20 @@ public sealed unsafe class Vegetation : IDisposable
     private const int UploadsPerFrame = 6;
 
     /// The tree models, with bark and leaves as two pieces drawn at the same place.
-    private const string TreeFile = "Vegetation/low_poly_vegetation_for_games_1k.glb";
-    private static readonly (string Bark, string Leaves)[] TreeNodes =
-    [
-        ("1_bark-1_0", "1_pngaaa.com-3905963_0"),
-        ("2_bark-1.001_0", "2_pngaaa.com-3905963.001_0"),
-        ("5_bark-2_0", "5_pngaaa.com-2004453_0"),
-        ("12_bark-4_0", "12_pngaaa.com-2004453.001_0"),
-    ];
+    /// The plants' models: Shapespark's low-poly exterior plants kit (each plant a node, its trunk and branches each a material).
+    private const string KitFile = "Vegetation/shapespark_low_poly_exterior_plants_kit.glb";
+    /// The kit's trees used, big and small of each of its three. Each loads as its trunk (the first material) and its branches.
+    private static readonly string[] TreeNodes = ["Tree-01-1_0", "Tree-01-3_2", "Tree-02-2_5", "Tree-02-4_7", "Tree-03-1_8", "Tree-03-3_10"];
+
+    /// The kit's bush the scrub's drawn with.
+    private const string ShrubNode = "Bush-03_15";
 
     private sealed class Kind
     {
         public Mesh? Mesh;
         public TextureBinding? Textures;
+        /// A model's materials, each drawn with its own textures (the kit's plants); null: Mesh whole with Textures.
+        public List<RenderModel.Part>? Parts;
         public float Wind;
         public float SoftNormal;
         public float Fade;
@@ -53,19 +54,22 @@ public sealed unsafe class Vegetation : IDisposable
         public float Cutout;
         public int LastCascade;
         public float3 Shift;
-        /// Drawn instead of Mesh into the last shadow cascade (past 250 m, where a texel's most of a metre): a solid shape the
-        /// size of the thing. Null draws Mesh there.
+        /// Drawn instead of Mesh into the far shadow cascades (from FarCasterFrom out, past 250 m, where a texel is most of a
+        /// metre): a solid shape the size of the thing. Null draws Mesh there.
         public Mesh? FarCaster;
-        /// Left out of the last cascade, its partner's FarCaster standing for it (a tree's bark, inside its canopy's).
+        /// Left out of the far cascades, its partner's FarCaster standing for it (a tree's bark, inside its canopy's).
         public bool NoFarCaster;
     }
+
+    /// The first shadow cascade things are drawn into as their FarCaster.
+    private const int FarCasterFrom = 3;
 
     private const int Grass = 0;
     private const int Pebble = 1;
     private const int Shrub = 2;
     private const int Boulder = 3;
     private const int FirstTree = 4;
-    private const int KindCount = FirstTree + 8;
+    private const int KindCount = FirstTree + 12;
 
     /// Exactly what plant.vert's push constants hold.
     [StructLayout(LayoutKind.Sequential)]
@@ -102,6 +106,14 @@ public sealed unsafe class Vegetation : IDisposable
         public required float Low;
         public required float High;
         public required int Total;
+
+        /// Made this frame: its buffer's copy goes in at the top of the next (Buffers.UploadLater), and Update runs after
+        /// this frame's went in, so until then it holds whatever was last in that memory. What it replaced draws meanwhile.
+        public bool Fresh = true;
+        public Cell? Replaced;
+
+        /// What to draw for this cell this frame, if anything.
+        public Cell? Drawn => Fresh ? Replaced : this;
     }
 
     private readonly Kind[] _kinds = new Kind[KindCount];
@@ -170,7 +182,7 @@ public sealed unsafe class Vegetation : IDisposable
         if (!Enabled)
             return;
 
-        if (_treesWanted && !_treesLoaded)
+        if (!_treesLoaded)
             LoadTrees();
 
         // Other ground starts the cells again. New lines or edited ground only mark what they touched, which draws as it was until
@@ -206,6 +218,17 @@ public sealed unsafe class Vegetation : IDisposable
             _terrainEpoch = terrain.Epoch;
         }
 
+        // Last frame's cells have their data now; what they stood in for can go.
+        foreach (var cell in _cells.Values)
+        {
+            if (!cell.Fresh)
+                continue;
+            cell.Fresh = false;
+            if (cell.Replaced is { } old)
+                Release(old);
+            cell.Replaced = null;
+        }
+
         for (var n = 0; n < UploadsPerFrame && _built.TryDequeue(out var built); n++)
         {
             _inFlight.Remove(built.Key);
@@ -214,12 +237,18 @@ public sealed unsafe class Vegetation : IDisposable
 
             if (_stale.TryGetValue(built.Key, out var marked) && marked <= built.Stamp)
                 _stale.Remove(built.Key);
+            Cell? stand = null;
             if (_cells.Remove(built.Key, out var replaced))
-                Release(replaced);
+            {
+                // (Rebuilt twice in a frame: the one never drawn goes, the one on screen stays standing in.)
+                stand = replaced.Fresh ? replaced.Replaced : replaced;
+                if (replaced.Fresh)
+                    Release(replaced, keepReplaced: true);
+            }
 
             var buffer = Buffers.UploadLater(
                 MemoryMarshal.AsBytes(built.Instances.Length > 0 ? built.Instances.AsSpan() : new PlantInstance[1].AsSpan()), VkBufferUsageFlags.VertexBufferBit, "vegetation.cell");
-            _cells[built.Key] = new Cell { Key = built.Key, Buffer = buffer, Starts = built.Starts, Low = built.Low, High = built.High, Total = built.Instances.Length };
+            _cells[built.Key] = new Cell { Key = built.Key, Buffer = buffer, Starts = built.Starts, Low = built.Low, High = built.High, Total = built.Instances.Length, Replaced = stand };
             Instances += built.Instances.Length;
         }
 
@@ -318,11 +347,15 @@ public sealed unsafe class Vegetation : IDisposable
         }
     }
 
-    private void Release(Cell cell)
+    /// Lets a cell's buffer go once the GPU's done with it, and what it was standing in for unless that's kept.
+    private void Release(Cell cell, bool keepReplaced = false)
     {
         Instances -= cell.Total;
         var buffer = cell.Buffer;
         Gpu.Defer(buffer.Dispose);
+        if (!keepReplaced && cell.Replaced is { } old)
+            Release(old);
+        cell.Replaced = null;
     }
 
     private void ClearCells()
@@ -342,12 +375,22 @@ public sealed unsafe class Vegetation : IDisposable
             return grid;
 
         foreach (var line in lines.Lines)
-        {
-            var clear = Math.Max(line.Formation, 2f);
-            var spread = (int)Math.Ceiling((clear + TracksideReach) / NearCell);
             for (var i = 0; i + 1 < line.X.Length; i++)
+                Segment(line.X[i], line.Z[i], line.X[i + 1], line.Z[i + 1], Math.Max(line.Formation, 2f));
+
+        // A grade crossing's pad, end to end, as wide as its road and shoulders.
+        foreach (var pad in lines.Pads)
+        {
+            var ((ax, az), (bx, bz)) = (pad.Start, pad.End);
+            Segment(ax, az, bx, bz, pad.Half + 1.5f);
+        }
+
+        return grid;
+
+        void Segment(double ax, double az, double bx, double bz, float clear)
+        {
+            var spread = (int)Math.Ceiling((clear + TracksideReach) / NearCell);
             {
-                var (ax, az, bx, bz) = (line.X[i], line.Z[i], line.X[i + 1], line.Z[i + 1]);
                 var length = Math.Sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az));
                 var steps = Math.Max(1, (int)Math.Ceiling(length / (NearCell * 0.5)));
                 (int, int)? last = null;
@@ -372,8 +415,6 @@ public sealed unsafe class Vegetation : IDisposable
                 }
             }
         }
-
-        return grid;
     }
 
     private const float TracksideReach = 12f;
@@ -542,7 +583,7 @@ public sealed unsafe class Vegetation : IDisposable
             // Spaced as scrub is: every few metres in shrubland, thinner on bare ground, none on the track's shoulders.
             Place(Shrub, 3u, 1800,
                 (cover, ground, patches, clear, _) => (ground.X * (0.3f + cover.W * 1.2f) + ground.Y * 0.3f) * MathEx.SmoothStep(0.15f, 0.6f, patches) * MathEx.SmoothStep(0.5f, 3f, clear),
-                (pick, cover, _, _) => (0.6f + 1.0f * pick, new float3(cover.X * 1.5f + 0.09f, cover.Y * 1.7f + 0.10f, cover.Z * 1.4f + 0.06f) * (0.75f + 0.45f * pick)), 1f, 0.05f, 0.72f);
+                (pick, _, _, _) => (0.6f + 1.0f * pick, new float3(0.55f + 0.2f * pick, 0.62f + 0.2f * pick, 0.5f + 0.15f * pick)), 1f, 0.05f, 0.72f);
 
             Place(Boulder, 4u, 60,
                 (_, ground, patches, clear, _) => (ground.Y * 0.5f + ground.X * 0.1f) * MathEx.SmoothStep(0.45f, 0.8f, patches) * MathEx.SmoothStep(1f, 4f, clear),
@@ -556,7 +597,7 @@ public sealed unsafe class Vegetation : IDisposable
             for (var t = 0; t < TreeNodes.Length; t++)
             {
                 var which = t;
-                Place(FirstTree + which * 2, 10u + (uint)which, 80,
+                Place(FirstTree + which * 2, 10u + (uint)which, 320 / TreeNodes.Length,
                     (cover, _, patches, clear, _) => MathEx.SmoothStep(0.35f, 0.75f, cover.W) * 0.8f * (0.3f + patches) * MathEx.SmoothStep(2f, 6f, clear),
                     (pick, _, _, _) => (0.8f + 0.7f * pick, new float3(0.85f + 0.3f * pick, 0.85f + 0.25f * pick, 0.8f + 0.2f * pick)), 3f, 0.02f, 0.7f);
             }
@@ -586,23 +627,33 @@ public sealed unsafe class Vegetation : IDisposable
     private void LoadTrees()
     {
         _treesLoaded = true;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         for (var i = 0; i < TreeNodes.Length; i++)
         {
-            var bark = Own(new RenderModel(Model.Load(TreeFile, nodeName: TreeNodes[i].Bark)));
-            var leaves = Own(new RenderModel(Model.Load(TreeFile, nodeName: TreeNodes[i].Leaves)));
-            var min = bark.Mesh.BoundsMin;
-            var max = bark.Mesh.BoundsMax;
+            // Trunk and branches share one mesh; each kind draws its own materials of it.
+            var tree = Own(new RenderModel(Model.Load(KitFile, nodeName: TreeNodes[i])));
+            var (min, max) = (tree.Mesh.BoundsMin, tree.Mesh.BoundsMax);
             var shift = new float3(-(min.X + max.X) * 0.5f, -min.Y, -(min.Z + max.Z) * 0.5f);
 
             var (b, l) = (_kinds[FirstTree + i * 2], _kinds[FirstTree + i * 2 + 1]);
-            (b.Mesh, b.Textures, b.Shift) = (bark.Mesh, bark.Parts[0].Textures, shift);
-            (l.Mesh, l.Textures, l.Shift) = (leaves.Mesh, leaves.Parts[0].Textures, shift);
-            l.FarCaster = Own(CanopyMesh(leaves.Mesh.BoundsMin, leaves.Mesh.BoundsMax));
+            (b.Mesh, b.Parts, b.Textures, b.Shift) = (tree.Mesh, [tree.Parts[0]], tree.Parts[0].Textures, shift);
+            var leaves = Merged(tree.Parts.Skip(1));
+            (l.Mesh, l.Parts, l.Textures, l.Shift) = (tree.Mesh, [leaves], leaves.Textures, shift);
+            // (The canopy starts a quarter of the way up: the trunk below it is bare.)
+            l.FarCaster = Own(CanopyMesh(new float3(min.X, min.Y + (max.Y - min.Y) * 0.25f, min.Z), max));
             b.NoFarCaster = true;
 
             // A hundredth of its height at the top in the strongest gust, trunk and leaves together.
             b.Wind = l.Wind = 0.01f / MathF.Max(max.Y - min.Y, 1f);
         }
+
+        var bush = Own(new RenderModel(Model.Load(KitFile, nodeName: ShrubNode)));
+        var (bmin, bmax) = (bush.Mesh.BoundsMin, bush.Mesh.BoundsMax);
+        var shrub = _kinds[Shrub];
+        var twigs = Merged(bush.Parts);
+        (shrub.Mesh, shrub.Parts, shrub.Textures) = (bush.Mesh, [twigs], twigs.Textures);
+        shrub.Shift = new float3(-(bmin.X + bmax.X) * 0.5f, -bmin.Y, -(bmin.Z + bmax.Z) * 0.5f);
+        RailWerkz.Core.Logging.Log.Info($"Vegetation: {TreeNodes.Length} trees and a bush loaded from the plants kit in {watch.ElapsedMilliseconds} ms");
     }
 
     // --- Drawing. ---
@@ -634,8 +685,10 @@ public sealed unsafe class Vegetation : IDisposable
                 continue;
 
             var bound = false;
-            foreach (var cell in _cells.Values)
+            foreach (var entry in _cells.Values)
             {
+                if (entry.Drawn is not { } cell)
+                    continue;
                 var count = cell.Starts[k + 1] - cell.Starts[k];
                 if (count == 0)
                     continue;
@@ -653,7 +706,7 @@ public sealed unsafe class Vegetation : IDisposable
                 if (showing == 0)
                     continue;
 
-                if (!bound)
+                if (!bound && (kind.Parts is null || kind.Parts.Count == 1))
                 {
                     kind.Textures!.Bind(cmd, layout);
                     bound = true;
@@ -664,7 +717,7 @@ public sealed unsafe class Vegetation : IDisposable
                 push.Shift = new float4(kind.Shift, (float)camera.Y);
                 push.Wind = new float4(WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size), phases.X, phases.Y);
                 cmd.PushConstants(layout, Stages, ByteSize.Zero, push);
-                kind.Mesh.DrawInstanced(cmd, cell.Buffer, showing, cell.Starts[k]);
+                DrawPlants(cmd, layout, kind, kind.Mesh, cell.Buffer, showing, cell.Starts[k]);
                 DrawnInstances += showing;
             }
         }
@@ -678,7 +731,7 @@ public sealed unsafe class Vegetation : IDisposable
 
         var push = new Push { Matrix = light };
         var phases = WindPhases();
-        var last = cascade == SunShadows.Cascades - 1;
+        var last = cascade >= FarCasterFrom;
         for (var k = 0; k < KindCount; k++)
         {
             var kind = _kinds[k];
@@ -689,8 +742,10 @@ public sealed unsafe class Vegetation : IDisposable
             var mesh = standIn ? kind.FarCaster! : kind.Mesh;
 
             var bound = false;
-            foreach (var cell in _cells.Values)
+            foreach (var entry in _cells.Values)
             {
+                if (entry.Drawn is not { } cell)
+                    continue;
                 var count = cell.Starts[k + 1] - cell.Starts[k];
                 if (count == 0)
                     continue;
@@ -706,7 +761,7 @@ public sealed unsafe class Vegetation : IDisposable
                 if (showing == 0)
                     continue;
 
-                if (!bound)
+                if (!bound && (standIn || kind.Parts is null || kind.Parts.Count == 1))
                 {
                     kind.Textures!.Bind(cmd, layout);
                     bound = true;
@@ -717,8 +772,43 @@ public sealed unsafe class Vegetation : IDisposable
                 push.Shift = new float4(kind.Shift, (float)camera.Y);
                 push.Wind = new float4(WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size), phases.X, phases.Y);
                 cmd.PushConstants(layout, Stages, ByteSize.Zero, push);
-                mesh.DrawInstanced(cmd, cell.Buffer, showing, cell.Starts[k]);
+                if (standIn)
+                    mesh.DrawInstanced(cmd, cell.Buffer, showing, cell.Starts[k]);
+                else
+                    DrawPlants(cmd, layout, kind, mesh, cell.Buffer, showing, cell.Starts[k]);
             }
+        }
+    }
+
+    /// A model's materials (in a row in its index buffer) as one, drawn with the first's textures: the kit's branches and
+    /// twigs are all cards of leaves alike, and one draw for them all is a fifth of the cost of one each.
+    private static RenderModel.Part Merged(IEnumerable<RenderModel.Part> parts)
+    {
+        var list = parts.OrderBy(p => p.FirstIndex).ToList();
+        var end = list.Max(p => p.FirstIndex + p.IndexCount);
+        return list[0] with { IndexCount = end - list[0].FirstIndex };
+    }
+
+    /// A kind's instances: its whole mesh, its one material of it (its textures already bound), or each of its materials with
+    /// its own textures.
+    private static void DrawPlants(CommandBuffer cmd, VkPipelineLayout layout, Kind kind, Mesh mesh, BufferEx buffer, int count, int first)
+    {
+        if (kind.Parts is null)
+        {
+            mesh.DrawInstanced(cmd, buffer, count, first);
+            return;
+        }
+
+        if (kind.Parts.Count == 1)
+        {
+            mesh.DrawRangeInstanced(cmd, buffer, kind.Parts[0].FirstIndex, kind.Parts[0].IndexCount, count, first);
+            return;
+        }
+
+        foreach (var part in kind.Parts)
+        {
+            part.Textures.Bind(cmd, layout);
+            mesh.DrawRangeInstanced(cmd, buffer, part.FirstIndex, part.IndexCount, count, first);
         }
     }
 

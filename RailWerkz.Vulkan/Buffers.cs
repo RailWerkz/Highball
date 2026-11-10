@@ -1,14 +1,17 @@
 using Brutal;
+using Brutal.VulkanApi.Vma;
 
 namespace RailWerkz.Vulkan;
 
 /// Buffer creation and uploads through a staging buffer.
 public static class Buffers
 {
+    /// PreferGpu: device-local, for data only the GPU touches. PreferCpu: host-visible and coherent, for staging
+    /// uploads and reading results back. Either way the memory comes out of Gpu.Allocator.
     public static BufferEx Create(long size, VkBufferUsageFlags usage, MemoryPreference memory, string name)
     {
         var host = memory == MemoryPreference.PreferCpu;
-        return Gpu.Device.CreateBuffer(new BufferEx.CreateInfo
+        return Gpu.Allocator.CreateBuffer(new BufferEx.CreateInfo
         {
             Name = name,
             BufferSize = ByteSize.Of(Math.Max(size, 16L)),
@@ -17,6 +20,16 @@ public static class Buffers
             AllocPreference = memory,
             AllocRequiredProperties = host ? VkMemoryPropertyFlags.HostVisibleBit | VkMemoryPropertyFlags.HostCoherentBit : VkMemoryPropertyFlags.DeviceLocalBit,
         });
+    }
+
+    /// Makes what the GPU wrote into a host-visible buffer visible to the CPU before reading it back. Goes through
+    /// VMA because the buffer sits at an offset inside a shared block, which MappedMemory.Invalidate does not know.
+    public static void Invalidate(BufferEx buffer)
+    {
+        var allocation = new VmaAllocation(buffer.BufferAllocationInfo.AllocationInfo.AllocHandle);
+        var result = Gpu.Allocator.InvalidateAllocation(allocation, ByteSize.Zero, ByteSize.Of((long)VK.WHOLE_SIZE));
+        if (result != VkResult.Success)
+            throw new InvalidOperationException($"Vulkan: invalidating {buffer.VkBuffer} failed ({result})");
     }
 
     /// A host-visible buffer holding these bytes, for copying from.

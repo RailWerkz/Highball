@@ -137,7 +137,9 @@ public static class AudioEngine
     /// Loads a WAV that's played as an attack, a sustain and a release (a horn): it plays from the top into the stretch
     /// between loopStart seconds and endLength seconds before its end, and loops that while it's held. Its release is
     /// registered as name + ".end", for ReleaseSustained. False (and a warning) if it can't.
-    public static bool LoadSustained(string name, string relativePath, float loopStart, float endLength, bool mono = false)
+    /// brighten: decibels to turn up what's above 1.5 kHz by, and drive how hard it's then pushed into a soft limiter
+    /// (Sound.Brighten), for recordings that came out dull and quiet.
+    public static bool LoadSustained(string name, string relativePath, float loopStart, float endLength, bool mono = false, float brighten = 0f, float drive = 0f)
     {
         if (!Available)
             return false;
@@ -147,6 +149,8 @@ public static class AudioEngine
             var sound = Wav.Load(ContentPath.Audio(relativePath));
             if (mono)
                 sound = sound.ToMono();
+            if (brighten > 0f || drive > 0f)
+                sound = sound.Brighten(brighten, 1500f, drive);
             var (main, end, a, b) = SplitSustained(sound, loopStart, endLength);
             var loaded = Upload(main);
             // AL_SOFT_loop_points: once playing gets to b it goes back to a. Set before any source uses the buffer.

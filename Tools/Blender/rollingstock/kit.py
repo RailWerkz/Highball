@@ -79,6 +79,13 @@ _font_cache = {}
 
 
 def _font(kind):
+    # A font loaded for an earlier car is gone once the scene's been reset for the next: load it again.
+    cached = _font_cache.get(kind)
+    if cached is not None:
+        try:
+            cached.name
+        except ReferenceError:
+            del _font_cache[kind]
     if kind not in _font_cache:
         _font_cache[kind] = None
         for name in FONTS[kind]:

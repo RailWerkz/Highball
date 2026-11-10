@@ -64,7 +64,7 @@ public sealed unsafe class Texture2D : IDisposable
         var texture = new Texture2D(width, height, mips);
         var format = srgb ? VkFormat.R8G8B8A8SRGB : VkFormat.R8G8B8A8UNorm;
 
-        texture._image = Gpu.Device.CreateImage(new ImageEx.CreateInfo
+        texture._image = Gpu.Allocator.CreateImage(new ImageEx.CreateInfo
         {
             Name = name,
             ImageType = VkImageType._2D,
@@ -127,7 +127,7 @@ public sealed unsafe class Texture2D : IDisposable
         var extent = dds.ImageExtent(first);
         var mips = (int)dds.Levels - first;
         var texture = new Texture2D(extent.X, extent.Y, mips);
-        texture._image = Gpu.Device.CreateImage(new ImageEx.CreateInfo
+        texture._image = Gpu.Allocator.CreateImage(new ImageEx.CreateInfo
         {
             Name = Path.GetFileName(path),
             ImageType = VkImageType._2D,

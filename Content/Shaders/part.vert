@@ -38,4 +38,8 @@ void main()
     vModelNormal = inNormal;
     // Pulled a fraction towards the camera like the rest of the track (see line.vert).
     gl_Position = pc.viewProjection * vec4(relative * 0.9985, 1.0);
+    // Past camera.w the whole tie's left out (the ballast paints it there), here rather than by discarding in part.frag, which
+    // would cost every pixel it draws its early depth test.
+    if (length(inPlace.xyz + pc.offset.xyz) > pc.camera.w)
+        gl_Position = vec4(0.0, 0.0, 0.0, -1.0);
 }

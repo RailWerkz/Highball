@@ -6,7 +6,7 @@ using RailWerkz.UI;
 
 namespace Highball.Builder;
 
-public enum PlaceMode { Signal, HandThrow, GradeCrossing, Diamond, Track, Bridge, RemoveBridge, Pole }
+public enum PlaceMode { Signal, HandThrow, GradeCrossing, Diamond, Track, Bridge, RemoveBridge, Pole, EditBridge }
 
 /// Placing what stands on or beside the track. A signal snaps beside the nearest track, on the side clicked, facing trains
 /// running on that side. A hand throw goes on the nearest switch in place of its power machine. A grade crossing snaps onto the
@@ -29,6 +29,9 @@ public sealed class PlaceTool
 
     /// The object picked, and whether it's in hand.
     public long? Selected;
+
+    /// The object under the pointer, which a click would pick: the marker rings it in place of where a new one would go.
+    public PlacedObject? Hovered;
 
     /// The palette of track pieces, the one in hand, the track spacing its double-track pieces are built to, and how it's
     /// turned where it isn't lined up with a track.
@@ -334,7 +337,13 @@ public sealed class PlaceTool
                 }
             }
 
-        if (Snapped is { } snapped && project(snapped.X, snapped.Z) is { } marker)
+        if (Hovered is { } hovered)
+        {
+            var (hx, hz) = place(hovered);
+            if (project(hx, hz) is { } ringed)
+                draw.AddCircle(ringed, 9f * scale, Style.Caution, 16, 2f * scale);
+        }
+        else if (Snapped is { } snapped && project(snapped.X, snapped.Z) is { } marker)
         {
             draw.AddCircle(marker, 7f * scale, color, 16, 2f * scale);
             if (Note is { } note)

@@ -106,7 +106,7 @@ def uncoupling_lever(m: Kit, handle_x, rod_x, end, e, z, rod_z, reach):
                      (rod_x, y(reach), rod_z)], .012, .05, 8)
     for f in (.2, .65):
         bx = handle_x + (rod_x - handle_x) * f
-        m.box("Brake", (bx - .025, y(0), z - .02), (bx + .025, y(.11), z + .02))
+        m.box("Brake", (bx - .025, y(.003), z - .02), (bx + .025, y(.11), z + .02))  # just off the sill's face
 
 
 def reflector(m: Kit, origin, u, v, w=.45, h=.1):

@@ -93,7 +93,7 @@ public sealed unsafe class RenderTarget : IDisposable
 
     private bool Multisampled => _builtSamples != VkSampleCountFlags._1Bit;
 
-    private ImageEx Image(VkFormat format, VkImageUsageFlags usage, string name, VkSampleCountFlags samples) => Gpu.Device.CreateImage(new ImageEx.CreateInfo
+    private ImageEx Image(VkFormat format, VkImageUsageFlags usage, string name, VkSampleCountFlags samples) => Gpu.Allocator.CreateImage(new ImageEx.CreateInfo
     {
         Name = name,
         ImageType = VkImageType._2D,

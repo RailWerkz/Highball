@@ -1,4 +1,7 @@
 #version 450
+// Depth is tested before shading: nothing here discards (part.vert leaves out what's too far), so ties hidden behind a bed or
+// another tie are never shaded.
+layout(early_fragment_tests) in;
 #include "atmosphere.glsl"
 #include "lighting.glsl"
 #include "shadows.glsl"
@@ -60,8 +63,6 @@ vec3 mapped(vec3 n, vec3 position, vec2 uv)
 void main()
 {
     float dist = length(vRelative);
-    if (dist > pc.camera.w)
-        discard;
 
     vec3 view = vRelative / max(dist, 1e-3);
     vec3 n = normalize(vNormal);

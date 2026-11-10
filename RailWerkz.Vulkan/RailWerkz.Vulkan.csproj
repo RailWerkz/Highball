@@ -9,6 +9,7 @@
     <ItemGroup>
         <PackageReference Include="Ahwoo.Brutal.Vulkan" />
         <PackageReference Include="Ahwoo.Brutal.Vulkan.Abstractions" />
+        <PackageReference Include="Ahwoo.Brutal.Vulkan.Vma" />
         <PackageReference Include="Ahwoo.Brutal.Stb" />
         <PackageReference Include="Ahwoo.Brutal.Gltf" />
     </ItemGroup>

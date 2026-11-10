@@ -33,6 +33,10 @@ public struct TieInstance(float4 positionRandom, float4 forward)
     public static readonly VertexAttribute[] Layout = [new(3, 4, 0), new(4, 4, 16)];
 }
 
+/// A signal's lamps, as flags: any of them may be lit at once.
+[Flags]
+public enum SignalLamps { None = 0, Red = 1, Yellow = 2, Green = 4 }
+
 /// The materials line.frag knows.
 public enum LineMaterial { Ballast, Rail, Asphalt, Gravel, Concrete, Painted, Steel }
 
@@ -50,6 +54,13 @@ public sealed partial class NetworkMeshes : IDisposable
     public float NearRadius { get; set; } = 1000f;
     /// Out to here ties are the full model and have their plates; past it, a decimated tie and no plates.
     public float DetailRadius { get; set; } = 120f;
+
+    /// How far the full tie plate model's drawn; past it, the plain block (_plateFar) out to TieReach.
+    public float PlateDetail { get; set; } = 120f;
+
+    /// How far tie models are drawn at all; past it the ballast paints them (line.frag's TieReach, which must match). As far as
+    /// the track's own detail reaches (NearRadius): the chunks that hold the ties go no further.
+    public const float TieReach = 1000f;
     public float FarRadius { get; set; } = 6000f;
     private const int MaxUploadsPerFrame = 4;
 
@@ -120,6 +131,8 @@ public sealed partial class NetworkMeshes : IDisposable
     private readonly Model _tie;
     private readonly Model _tieFar;
     private readonly Model _plate;
+    /// The tie plate past PlateDetail: a plain block the size of the full one (12 triangles, not 180).
+    private readonly Mesh _plateFar;
     private readonly Texture2D _ballast;
     private readonly TrackTextures _trackTextures = new();
     private readonly TextureBinding _tieTexture;
@@ -153,10 +166,49 @@ public sealed partial class NetworkMeshes : IDisposable
     /// The stretches of each road (by line) that crossings' decks take the place of, along it.
     private Dictionary<int, List<(float From, float To)>> _crossingGaps = [];
 
+    /// The stretches of each track (by line) under crossings' panels, along it, where it lays no ties.
+    private Dictionary<int, List<(float From, float To)>> _crossingCovers = [];
+
+    /// Through a crossover (two switches on side-by-side tracks joined by one track between them), long timbers span both
+    /// tracks the whole way from one switch to the other, as they're laid: on one track (Spans, by line: its distances, the
+    /// other track, and which side of it that is) its ties reach on under the other, and the other track's own ties and the
+    /// crossover's are left out there (Skips, by line).
+    private readonly Dictionary<int, List<(float From, float To, Leg Other, int Across)>> _crossoverSpans = [];
+    private readonly Dictionary<int, List<(float From, float To)>> _crossoverSkips = [];
+
     private sealed record PlacedAt(PlacedObject Object, double X, double Z, float Y, CrossingDeck? Deck);
 
     /// The paints line.frag knows, by the name a placed model's parts use.
-    private static readonly string[] Paints = ["Black", "White", "Galv", "Yellow", "Red", "Green", "Concrete", "Wood", "Ballast"];
+    private static readonly string[] Paints = ["Black", "White", "Galv", "Yellow", "Red", "Green", "Concrete", "Wood", "Ballast", "LensRed", "LensYellow", "LensGreen"];
+
+    /// How far on from a lens's paint the same lens lit is (line.frag, LitLensPaint).
+    private const int LitLens = 3;
+
+    /// Which of a signal's lamps are lit, by signal: set by hand in the Route Builder for now, as there are no signalling rules to
+    /// set them yet, and not saved. A signal not in here stands at stop (red alone). Read by the chunk builders on worker threads.
+    private readonly ConcurrentDictionary<long, SignalLamps> _lamps = new();
+
+    /// A signal's lamps, top to bottom on the head: green, yellow, red.
+    public static readonly (SignalLamps Lamp, string Part, string Paint, float Height, float3 Light)[] Lamps =
+    [
+        (SignalLamps.Green, "Fixed_LensGreen", "LensGreen", 5.15f, new float3(0.13f, 2.3f, 1.05f)),
+        (SignalLamps.Yellow, "Fixed_LensYellow", "LensYellow", 4.75f, new float3(3f, 1.4f, 0.1f)),
+        (SignalLamps.Red, "Fixed_LensRed", "LensRed", 4.35f, new float3(3f, 0.12f, 0.05f)),
+    ];
+
+    public SignalLamps LampsOf(long signal) => _lamps.GetValueOrDefault(signal, App.DevTools.Lamps ?? SignalLamps.Red);
+
+    /// Lights a signal's lamps (any of them, all, or none), and builds its chunk again to show it.
+    public void SetLamps(PlacedObject signal, SignalLamps lamps)
+    {
+        if (LampsOf(signal.Id) == lamps || _objectProjection is null)
+            return;
+        _lamps[signal.Id] = lamps;
+        var p = _objectProjection.Forward(new GeoPoint(signal.Lat, signal.Lon));
+        var key = KeyAt(p.East, -p.North);
+        _stale.Add((key, false));
+        _stale.Add((key, true));
+    }
     private readonly Dictionary<long, float> _position = [];
     private readonly Dictionary<long, float> _target = [];
     private readonly HashSet<ChunkKey> _nearKeys = [];
@@ -176,6 +228,7 @@ public sealed partial class NetworkMeshes : IDisposable
         _tie = Model.Load("Track/tie.glb");
         _tieFar = Model.Load("Track/tie_far.glb");
         _plate = Model.Load("Track/plate.glb");
+        _plateFar = BlockMesh(_plate.Mesh.BoundsMin, _plate.Mesh.BoundsMax);
         _ballast = Texture2D.Solid(new byte4(128, 128, 128, 255));
         _tieTexture = new TextureBinding(_tie.Surfaces[0].Texture ?? (_fallback = Texture2D.Solid(new byte4(40, 32, 26, 255))));
         _plateTexture = new TextureBinding(_plate.Surfaces[0].Texture ?? (_fallback ??= Texture2D.Solid(new byte4(60, 36, 24, 255))));
@@ -187,6 +240,8 @@ public sealed partial class NetworkMeshes : IDisposable
             _objectModels[PlacedKind.Signal] = Model.LoadParts("Track/signal.glb");
             _objectModels[PlacedKind.HandThrow] = Model.LoadParts("Track/hand_throw.glb");
             _objectModels[PlacedKind.GradeCrossing] = Model.LoadParts("Track/crossing_mast.glb");
+            if (File.Exists(RailWerkz.Core.IO.ContentPath.Model("Track/bridge_kit.glb")))
+                _bridgeKit = Model.LoadParts("Track/bridge_kit.glb");
         }
         catch (Exception e)
         {
@@ -244,6 +299,8 @@ public sealed partial class NetworkMeshes : IDisposable
             _switches.Remove(node);
         }
 
+        FindCrossovers();
+
         _runs.Clear();
         foreach (var line in _lines.Lines)
         {
@@ -267,6 +324,8 @@ public sealed partial class NetworkMeshes : IDisposable
             if (run is { } last)
                 AddRun(runKey, last);
         }
+
+        FindBridges();
     }
 
     /// Takes rebuilt lines in: the chunks over the given areas (world metres) are built again, the rest kept, and
@@ -304,6 +363,7 @@ public sealed partial class NetworkMeshes : IDisposable
     public void SetObjects(IReadOnlyList<PlacedObject> objects, IEnumerable<(double X, double Z)> changed, RouteProjection projection)
     {
         var gaps = new Dictionary<int, List<(float From, float To)>>();
+        var covers = new Dictionary<int, List<(float From, float To)>>();
         (_objects, _objectProjection) = (objects, projection);
         _objectsByChunk.Clear();
         _handThrows.Clear();
@@ -329,9 +389,17 @@ public sealed partial class NetworkMeshes : IDisposable
                 ofLine.Add((gap.From, gap.To));
                 ofLine.Sort();
             }
+
+            foreach (var (line, from, to) in deck?.Covered ?? [])
+            {
+                if (!covers.TryGetValue(line, out var ofLine))
+                    covers[line] = ofLine = [];
+                ofLine.Add((from, to));
+            }
         }
 
         _crossingGaps = gaps;
+        _crossingCovers = covers;
         foreach (var sw in _switches.Values)
             sw.BuiltAt = -1f;
         foreach (var (x, z) in changed)
@@ -628,14 +696,31 @@ public sealed partial class NetworkMeshes : IDisposable
     /// first..last, flat-shaded across and smooth along. material(edge) picks each edge's material; value(edge, u, y)
     /// its Data.w.
     private static void Sweep(Builder builder, NetworkLine line, int first, int last, (float U, float Y)[] section, Func<int, float> code,
-        Func<int, float, float, float> value, float offset = 0f, float rise = 0f, bool smooth = false) =>
-        Sweep(builder, line, Enumerable.Range(first, last - first + 1).ToList(), section, code, value, offset, rise, smooth);
+        Func<int, float, float, float> value, float offset = 0f, float rise = 0f, bool smooth = false, bool capped = false) =>
+        Sweep(builder, line, Enumerable.Range(first, last - first + 1).ToList(), section, code, value, offset, rise, smooth, capped);
 
     /// As above, with rings at only these points.
     private static void Sweep(Builder builder, NetworkLine line, List<int> points, (float U, float Y)[] section, Func<int, float> code,
-        Func<int, float, float, float> value, float offset = 0f, float rise = 0f, bool smooth = false)
+        Func<int, float, float, float> value, float offset = 0f, float rise = 0f, bool smooth = false, bool capped = false)
     {
         var edges = section.Length - 1;
+        // A closed section (its last corner its first) closed off at each end too, where asked.
+        if (capped && points.Count >= 2 && section.Length >= 4 && section[0] == section[^1])
+        {
+            foreach (var (p, outward) in (ReadOnlySpan<(int, float)>)[(points[0], -1f), (points[^1], 1f)])
+            {
+                var (center, right) = Frame(line, p, builder.Origin);
+                var forward = new float3(right.Z, 0f, -right.X) * outward;
+                var corners = section[..^1];
+                var first = (uint)builder.Vertices.Count;
+                foreach (var (u, y) in corners)
+                    builder.Add(center + right * (offset + u) + new float3(0f, rise + y, 0f), forward, new float4(offset + u, line.S[p] % Wrap, code(0), value(0, u, y)));
+                // (Both ways round: a cap is seen from outside whichever way the section was drawn.)
+                foreach (var (a, b, c) in Ears(corners))
+                    builder.Indices.AddRange([first + (uint)a, first + (uint)b, first + (uint)c, first + (uint)a, first + (uint)c, first + (uint)b]);
+            }
+        }
+
         var start = (uint)builder.Vertices.Count;
         foreach (var p in points)
         {
@@ -664,6 +749,55 @@ public sealed partial class NetworkMeshes : IDisposable
                 builder.Quad(a, a + 1, a + ring, a + ring + 1);
             }
         }
+    }
+
+    /// A simple outline cut into triangles, by its corners' indices (ear clipping).
+    private static List<(int A, int B, int C)> Ears((float U, float Y)[] outline)
+    {
+        var left = Enumerable.Range(0, outline.Length).ToList();
+        var area = 0f;
+        for (var i = 0; i < outline.Length; i++)
+        {
+            var (a, b) = (outline[i], outline[(i + 1) % outline.Length]);
+            area += a.U * b.Y - b.U * a.Y;
+        }
+
+        var turn = MathF.Sign(area);
+        static float Cross((float U, float Y) a, (float U, float Y) b, (float U, float Y) c) => (b.U - a.U) * (c.Y - a.Y) - (b.Y - a.Y) * (c.U - a.U);
+        var triangles = new List<(int, int, int)>();
+        var guard = outline.Length * outline.Length;
+        while (left.Count > 3 && guard-- > 0)
+        {
+            for (var k = 0; k < left.Count; k++)
+            {
+                var (ia, ib, ic) = (left[(k + left.Count - 1) % left.Count], left[k], left[(k + 1) % left.Count]);
+                var (a, b, c) = (outline[ia], outline[ib], outline[ic]);
+                if (Cross(a, b, c) * turn <= 1e-6f)
+                    continue;
+                var inside = false;
+                foreach (var j in left)
+                {
+                    if (j == ia || j == ib || j == ic)
+                        continue;
+                    var q = outline[j];
+                    if (Cross(a, b, q) * turn > 0f && Cross(b, c, q) * turn > 0f && Cross(c, a, q) * turn > 0f)
+                    {
+                        inside = true;
+                        break;
+                    }
+                }
+
+                if (inside)
+                    continue;
+                triangles.Add((ia, ib, ic));
+                left.RemoveAt(k);
+                break;
+            }
+        }
+
+        if (left.Count == 3)
+            triangles.Add((left[0], left[1], left[2]));
+        return triangles;
     }
 
     /// The normals at the ends of a cross-section's edge, each halfway to its neighbour's, so a curved section shades as a curve.
@@ -722,16 +856,21 @@ public sealed partial class NetworkMeshes : IDisposable
                     FarRail(builder, lines, line, first, last, structure == Structure.Bridge);
                 else if (line.Mark && structure != Structure.Bridge)
                     Mark(builder, lines, line, first, last);
+                else if (line.Mark)
+                    // A guide over a bridge: its strip of gravel along the deck (the bridge itself is its whole structure's, below).
+                    Sweep(builder, line, first, last, [(-line.Width * 0.5f, 0.07f), (line.Width * 0.5f, 0.07f)], _ => Code(LineMaterial.Gravel), (_, _, _) => -1f);
                 else
                     Road(builder, lines, line, first, last, structure == Structure.Bridge);
-
-                if (structure == Structure.Bridge)
-                {
-                    BridgeSteel(builder, line, first, last);
-                    Piers(builder, line, first, last);
-                }
             }
         }
+
+        if (_bridgesByChunk.TryGetValue(key, out var bridges))
+            foreach (var bridge in bridges)
+                BuildBridge(builder, bridge);
+
+        if (_turnoutsByChunk.TryGetValue(key, out var turnouts))
+            foreach (var turnout in turnouts)
+                SwitchBed(builder, turnout, lines.Turnouts);
 
         var (indices, fades) = builder.Sorted();
         return new Built(key, false, [.. builder.Vertices], indices, fades, [], [], [], []);
@@ -807,7 +946,9 @@ public sealed partial class NetworkMeshes : IDisposable
             // Through a turnout the normal route's bed widens out to the reverse route's far side. The reverse route lays its own
             // bed all the same, just under it where they overlap, so whatever the turnouts around do there's always ballast
             // under the track.
-            var zones = line.TurnoutZones.Where(z => z.Ballast.To > z.Ballast.From).ToList();
+            // (A switch with a surface of its own takes its routes' beds over instead: see SwitchBed.)
+            var zones = line.TurnoutZones.Where(z => z.Ballast.To > z.Ballast.From && !SwitchBedOf(z.Turnout).Ok).ToList();
+            var cuts = SwitchBedCuts(line);
             var widen = zones.Where(z => z.Normal).ToList();
             var under = zones.Where(z => !z.Normal).Select(z => z.Ballast).ToList();
             var depth = 0.003f * (1 + line.Index % 5);
@@ -826,9 +967,25 @@ public sealed partial class NetworkMeshes : IDisposable
             foreach (var (from, to) in under)
                 at.AddRange((float[])[from - 0.5f, from, to, to + 0.5f]);
 
+            foreach (var (from, to) in cuts)
+                at.AddRange((float[])[from, to]);
+
+            // The bed in pieces, broken where a switch's surface takes over.
+            bool Cut(float a, float b) => cuts.Any(c => a < c.To - 1e-3f && b > c.From + 1e-3f);
+            var kept = at.Where(s => s >= line.S[first] && s <= line.S[last] && !cuts.Any(c => s > c.From + 1e-3f && s < c.To - 1e-3f)).Order().Distinct().ToList();
+            var pieces = new List<List<float>>();
+            for (var i = 0; i < kept.Count; i++)
+            {
+                if (i == 0 || Cut(kept[i - 1], kept[i]))
+                    pieces.Add([]);
+                pieces[^1].Add(kept[i]);
+            }
+
+            foreach (var piece in pieces)
+            {
             var start = (uint)builder.Vertices.Count;
             var rings = 0;
-            foreach (var s in at.Where(s => s >= line.S[first] && s <= line.S[last]).Order().Distinct())
+            foreach (var s in piece)
             {
                 var (left, right) = (0f, 0f);
                 foreach (var zone in widen)
@@ -876,6 +1033,7 @@ public sealed partial class NetworkMeshes : IDisposable
                     var q = start + (uint)r * ring + (uint)e * 2;
                     builder.Quad(q, q + 1, q + ring, q + ring + 1);
                 }
+            }
             }
 
             // Where the track stops, the bed's own section's turned round its end, so the cap's the same shape, shade and fade as the bed.
@@ -937,15 +1095,15 @@ public sealed partial class NetworkMeshes : IDisposable
             return;
         }
 
-        // A ballasted concrete deck, held in by a curb each side. Its steel's in BridgeSteel.
+        // Its ballast on a concrete slab as wide as its share of the bridge's deck (the bridge's edges, railings and the deck between
+        // tracks are its whole structure's, NetworkMeshes.BridgeGroups.cs), closed off at each end.
         var concrete = Code(LineMaterial.Concrete);
-        var (edge, _, top) = DeckOf(line);
+        var slab = BridgePlanner.DeckHalf(line);
         (float, float)[] section =
         [
-            (-edge, -0.25f), (-edge, top), (-w - 0.55f, top), (-w - 0.55f, 0.05f), (-w, h), (w, h), (w + 0.55f, 0.05f),
-            (w + 0.55f, top), (edge, top), (edge, -0.25f), (-edge, -0.25f),
+            (-slab, -0.25f), (-slab, 0.05f), (-w - 0.55f, 0.05f), (-w, h), (w, h), (w + 0.55f, 0.05f), (slab, 0.05f), (slab, -0.25f), (-slab, -0.25f),
         ];
-        Sweep(builder, line, first, last, section, e => e is 3 or 4 or 5 ? ballast : concrete, (_, _, _) => railOffset);
+        Sweep(builder, line, first, last, section, e => e is 2 or 3 or 4 ? ballast : concrete, (_, _, _) => railOffset, capped: true);
     }
 
     /// How near a mark's middle built track has to run for the mark to go, in metres: less than tracks side by side are apart.
@@ -1110,7 +1268,7 @@ public sealed partial class NetworkMeshes : IDisposable
                 continue;
             var change = (other.Line.Width - line.Width) * 0.25f;
             // Long enough to read as a road widening, and it never reaches past the road's middle.
-            var reach = MathF.Min(MathF.Max(30f, MathF.Abs(change) * 16f), length * 0.5f);
+            var reach = MathF.Min(MathF.Max(60f, MathF.Abs(change) * 30f), length * 0.5f);
             ends.Add((line.S[point], reach, change));
         }
 
@@ -1424,7 +1582,9 @@ public sealed partial class NetworkMeshes : IDisposable
                     }
 
                     if (!line.Embedded)
-                        Ties(ties, plates, line, first, last, o, railOffset, builder.Origin, track);
+                        Ties(ties, plates, line, first, last, o, railOffset, builder.Origin, track,
+                            [.. _crossingCovers.GetValueOrDefault(line.Index) ?? [], .. _crossoverSkips.GetValueOrDefault(line.Index) ?? []],
+                            _crossoverSpans.GetValueOrDefault(line.Index));
                 }
             }
         }
@@ -1559,8 +1719,15 @@ public sealed partial class NetworkMeshes : IDisposable
         var side = t.Side;
         var gauge = 2f * (h - RailHeadHalf);
         var (fn, fr) = (t.FrogNormal, t.FrogReverse);
+        // How far apart the routes' centrelines are at a point on either: measured there, square to the other route, so the
+        // wing rail beside each point rail always stands a flangeway off it (a distance along one route scaled to the other's
+        // drifts on a curved diverging route, and the gap closes).
         float SpreadOn(float s) => t.SpreadAt(s);
-        float SpreadOff(float s) => t.SpreadAt(s * fn / fr);
+        float SpreadOff(float s)
+        {
+            var (x, z, _, _, _, _, _) = t.Reverse.At(s);
+            return Turnout.Offset(t.Normal, x, z) is { } at ? MathF.Max(0f, at.Offset * side) : t.SpreadAt(s * fn / fr);
+        }
         float Wing(float spread, float past) => MathF.Max(0f, spread - gauge + Turnout.Flangeway) + 0.03f * MathF.Pow(MathF.Max(0f, past - 1f) / 0.5f, 2f);
 
         SweepRings(builder, LegRings(t.Normal, t.BladeLength, fn + 1.5f, 0.5f, builder.Origin,
@@ -1715,7 +1882,12 @@ public sealed partial class NetworkMeshes : IDisposable
         if (o.Kind != PlacedKind.GradeCrossing)
         {
             foreach (var (name, part) in parts)
-                Upright(builder, part, at, face, PaintOf(name), 0f);
+            {
+                var paint = PaintOf(name);
+                if (o.Kind == PlacedKind.Signal && Array.FindIndex(Lamps, l => l.Part == name) is var lamp and >= 0 && LampsOf(o.Id).HasFlag(Lamps[lamp].Lamp))
+                    paint = Code(LineMaterial.Painted, Array.IndexOf(Paints, Lamps[lamp].Paint) + LitLens);
+                Upright(builder, part, at, face, paint, 0f);
+            }
             return;
         }
 
@@ -1726,7 +1898,7 @@ public sealed partial class NetworkMeshes : IDisposable
         {
             var mast = new float3((float)(mx - builder.Origin.X), y, (float)(mz - builder.Origin.Z));
             foreach (var (name, part) in parts)
-                Upright(builder, part, mast, toward, PaintOf(name), 0f);
+                Upright(builder, part, mast, toward, PaintOf(name), o.Turn * MathF.PI / 180f);
         }
     }
 
@@ -1738,7 +1910,9 @@ public sealed partial class NetworkMeshes : IDisposable
         var surface = Code(LineMaterial.Asphalt);
         foreach (var q in deck.Quads)
         {
-            if (deck.Road is not { } road)
+            if (q.Paint >= 0f)
+                Face(builder, [from + q.A, from + q.B, from + q.C, from + q.D], from + q.Inside, q.Paint, 0f);
+            else if (deck.Road is not { } road)
                 Face(builder, [from + q.A, from + q.B, from + q.C, from + q.D], from + q.Inside, surface, 0f);
             else if (q.Shoulder)
                 Face(builder, [from + q.A, from + q.B, from + q.C, from + q.D], from + q.Inside, Code(LineMaterial.Gravel), 0f);
@@ -1878,8 +2052,52 @@ public sealed partial class NetworkMeshes : IDisposable
         return !t.Normal.Line.TieCuts.Any(c => along >= c.From && along <= c.To) && TieZone(t.Normal.Line, along, depth + 1) is { Normal: true } carrier && carrier.Turnout == t;
     }
 
+    /// Crossovers: pairs of switches whose diverging routes are the same track, on normal routes running side by side
+    /// within a couple of track spacings. The one with the lower node carries the timbers.
+    private void FindCrossovers()
+    {
+        _crossoverSpans.Clear();
+        _crossoverSkips.Clear();
+        void Skip(NetworkLine line, float a, float b)
+        {
+            if (!_crossoverSkips.TryGetValue(line.Index, out var list))
+                _crossoverSkips[line.Index] = list = [];
+            list.Add((MathF.Min(a, b), MathF.Max(a, b)));
+        }
+
+        var turnouts = _lines.Turnouts;
+        var switchNodes = turnouts.Select(t => t.Node).ToHashSet();
+        foreach (var a in turnouts)
+            foreach (var b in turnouts)
+            {
+                if (a.Node >= b.Node || a.Reverse.Line != b.Reverse.Line || a.Normal.Line == b.Normal.Line)
+                    continue;
+                // Facing each other along the crossover, on tracks running the same way close by.
+                var (ha, hb) = (Turnout.Heading(a.Normal), Turnout.Heading(b.Normal));
+                if (ha.X * hb.X + ha.Z * hb.Z > -0.98f)
+                    continue;
+                if (Turnout.Offset(a.Normal, b.X, b.Z) is not { } bOnA || Turnout.Offset(b.Normal, a.X, a.Z) is not { } aOnB)
+                    continue;
+                var apart = MathF.Abs(bOnA.Offset);
+                if (apart < 2.5f || apart > 2.2f * NetworkLine.TrackSpacing || bOnA.S < 5f || aOnB.S < 5f)
+                    continue;
+                // The crossover between them must be just that: the two switch points on the one line, nothing between.
+                var (sa, sb) = (a.Reverse.LineS(0f), b.Reverse.LineS(0f));
+                var line = a.Reverse.Line;
+                if (line.Nodes.Any(n => n.Node != a.Node && n.Node != b.Node && switchNodes.Contains(n.Node) && line.S[n.Point] > MathF.Min(sa, sb) + 0.5f && line.S[n.Point] < MathF.Max(sa, sb) - 0.5f))
+                    continue;
+
+                var (from, to) = (a.Normal.LineS(0f), a.Normal.LineS(bOnA.S));
+                if (!_crossoverSpans.TryGetValue(a.Normal.Line.Index, out var spans))
+                    _crossoverSpans[a.Normal.Line.Index] = spans = [];
+                spans.Add((MathF.Min(from, to), MathF.Max(from, to), b.Normal, a.Side * a.Normal.Direction));
+                Skip(b.Normal.Line, b.Normal.LineS(0f), b.Normal.LineS(aOnB.S));
+                Skip(line, sa, sb);
+            }
+    }
+
     private static void Ties(List<TieInstance> ties, List<TieInstance> plates, NetworkLine line, int first, int last, float offset, float railOffset,
-        float3 origin, int track)
+        float3 origin, int track, List<(float From, float To)>? covered = null, List<(float From, float To, Leg Other, int Across)>? spans = null)
     {
         var s = MathF.Ceiling(line.S[first] / TieSpacing) * TieSpacing;
         for (var p = first; p < last; p++)
@@ -1908,13 +2126,23 @@ public sealed partial class NetworkMeshes : IDisposable
                 // Through a turnout: the normal route's ties are long timbers reaching under the reverse route too,
                 // with its plates; the reverse route lays none of its own.
                 var zone = TieZone(line, s);
-                if (zone is { Normal: false } || line.TieCuts.Any(c => s >= c.From && s <= c.To))
+                if (zone is { Normal: false } || line.TieCuts.Any(c => s >= c.From && s <= c.To) || (covered?.Any(c => s >= c.From && s <= c.To) ?? false))
                 {
                     s += TieSpacing;
                     continue;
                 }
 
-                if (zone?.Turnout is { } timbered)
+                if (spans?.FirstOrDefault(c => s >= c.From && s <= c.To) is { Other.Line: not null } span &&
+                    Turnout.Offset(span.Other, line.X[p] + (line.X[p + 1] - line.X[p]) * t, line.Z[p] + (line.Z[p + 1] - line.Z[p]) * t) is { } other)
+                {
+                    // A crossover's timber, out under the other track's rails too.
+                    var spread = MathF.Abs(other.Offset);
+                    var across = right * span.Across;
+                    ties.Add(new TieInstance(new float4(position + across * (spread * 0.5f), random), new float4(forward, (TieLength + spread) / TieLength)));
+                    foreach (var u in (ReadOnlySpan<float>)[spread - railOffset, spread + railOffset])
+                        plates.Add(new TieInstance(new float4(seat + across * u, random), new float4(u > spread ? forward * span.Across : -forward * span.Across, 0f)));
+                }
+                else if (zone?.Turnout is { } timbered)
                 {
                     var spread = timbered.SpreadAt(MathF.Abs(s - timbered.Normal.Start));
                     var across = right * (timbered.Side * timbered.Normal.Direction);
@@ -2003,11 +2231,14 @@ public sealed partial class NetworkMeshes : IDisposable
     private const int LastThinCascade = 1;
 
     /// Draws the lines' shapes into a shadow cascade, with a pipeline bound that takes just their positions.
-    public void DrawLineCasters(CommandBuffer cmd, double cx, double cy, double cz, int cascade, Func<float3, float, bool> reaches, Action<float3> push)
+    /// thinOnly: the track's own cascade (SunShadows.TrackReach), which takes the rails and the rest of the near meshes but not the
+    /// beds and roads of the far ones.
+    public void DrawLineCasters(CommandBuffer cmd, double cx, double cy, double cz, int cascade, Func<float3, float, bool> reaches, Action<float3> push,
+        bool thinOnly = false)
     {
         foreach (var (key, near) in _drawList)
         {
-            if (near && cascade > LastThinCascade)
+            if ((near && cascade > LastThinCascade) || (thinOnly && !near))
                 continue;
 
             var chunk = _chunks[key];
@@ -2038,14 +2269,16 @@ public sealed partial class NetworkMeshes : IDisposable
     }
 
     /// Draws the ties and, close by, the plates into a shadow cascade, cell by cell, with the part caster pipeline bound.
-    public void DrawPartCasters(CommandBuffer cmd, double cx, double cy, double cz, int cascade, Func<float3, float, bool> reaches, Action<float3> push)
+    /// coarse: the track's own cascade, which reaches far enough that the plates go in as plain blocks.
+    public void DrawPartCasters(CommandBuffer cmd, double cx, double cy, double cz, int cascade, Func<float3, float, bool> reaches, Action<float3> push,
+        bool coarse = false)
     {
         if (cascade > LastThinCascade)
             return;
 
         DrawCellCasters(cmd, cx, cy, cz, reaches, push, c => (c.Ties, c.TieCells), _tieFar.Mesh);
         if (cascade == 0)
-            DrawCellCasters(cmd, cx, cy, cz, reaches, push, c => (c.Plates, c.PlateCells), _plate.Mesh);
+            DrawCellCasters(cmd, cx, cy, cz, reaches, push, c => (c.Plates, c.PlateCells), coarse ? _plateFar : _plate.Mesh);
     }
 
     private void DrawCellCasters(CommandBuffer cmd, double cx, double cy, double cz, Func<float3, float, bool> reaches, Action<float3> push, Func<Chunk, (BufferEx, int[])> instances, Mesh mesh)
@@ -2092,15 +2325,52 @@ public sealed partial class NetworkMeshes : IDisposable
         }
     }
 
-    /// Where the signals placed on the route stand, and the way each faces (degrees from +X towards +Z).
-    public IEnumerable<(double X, float Y, double Z, double Heading)> Signals()
+    /// Where the signals placed on the route stand, the way each faces (degrees from +X towards +Z), and which lamps it has lit.
+    /// Where each kind of light pole's lamp is in its model: the middle of its lens part's underside (Fixed_White).
+    private readonly Dictionary<PlacedKind, float3> _lampOffsets = [];
+
+    private float3? LampOffset(PlacedKind kind)
+    {
+        if (_lampOffsets.TryGetValue(kind, out var known))
+            return known;
+        if (!_objectModels.TryGetValue(kind, out var parts) || !parts.TryGetValue("Fixed_White", out var lens) || lens.Vertices.Length == 0)
+            return null;
+        var (min, max) = (new float3(float.MaxValue), new float3(float.MinValue));
+        foreach (var v in lens.Vertices)
+        {
+            min = new float3(MathF.Min(min.X, v.Position.X), MathF.Min(min.Y, v.Position.Y), MathF.Min(min.Z, v.Position.Z));
+            max = new float3(MathF.Max(max.X, v.Position.X), MathF.Max(max.Y, v.Position.Y), MathF.Max(max.Z, v.Position.Z));
+        }
+
+        var offset = new float3((min.X + max.X) * 0.5f, min.Y - 0.02f, (min.Z + max.Z) * 0.5f);
+        _lampOffsets[kind] = offset;
+        return offset;
+    }
+
+    /// Every placed light pole's lamp in the world, turned as its pole's placed (as PlacedModel turns the model).
+    public IEnumerable<(double X, double Y, double Z, PlacedKind Kind)> LightPoleLamps()
+    {
+        foreach (var list in _objectsByChunk.Values)
+            foreach (var placed in list)
+            {
+                if (!placed.Object.Kind.IsLightPole() || LampOffset(placed.Object.Kind) is not { } lamp)
+                    continue;
+                var angle = placed.Object.Heading * Math.PI / 180.0;
+                var (fx, fz) = (Math.Cos(angle), Math.Sin(angle));
+                // Model x runs along right (face turned a quarter), z along face.
+                var (rx, rz) = (fz, -fx);
+                yield return (placed.X + rx * lamp.X + fx * lamp.Z, placed.Y + lamp.Y, placed.Z + rz * lamp.X + fz * lamp.Z, placed.Object.Kind);
+            }
+    }
+
+    public IEnumerable<(double X, float Y, double Z, double Heading, SignalLamps Lamps)> Signals()
     {
         foreach (var list in _objectsByChunk.Values)
         {
             foreach (var placed in list)
             {
                 if (placed.Object.Kind == PlacedKind.Signal)
-                    yield return (placed.X, placed.Y, placed.Z, placed.Object.Heading);
+                    yield return (placed.X, placed.Y, placed.Z, placed.Object.Heading, LampsOf(placed.Object.Id));
             }
         }
     }
@@ -2113,21 +2383,21 @@ public sealed partial class NetworkMeshes : IDisposable
         _trackTextures.BindLines(cmd, layout);
     }
 
-    /// Draws the ties and tie plates with the part pipeline bound: the full models out to DetailRadius, decimated ties
-    /// past it, cell by cell.
+    /// Draws the ties and tie plates with the part pipeline bound, cell by cell: the full tie and its plates out to
+    /// DetailRadius, then the plain tie out to TieReach, past which the ballast paints them.
     public void DrawParts(CommandBuffer cmd, VkPipelineLayout layout, double cx, double cy, double cz, ViewCone view, Action<float3> push)
     {
         _tieTexture.Bind(cmd, layout);
         _trackTextures.BindTies(cmd, layout);
-        DrawInstances(cmd, cx, cy, cz, view, push, c => (c.Ties, c.TieCells), detail => detail ? _tie.Mesh : _tieFar.Mesh);
+        DrawInstances(cmd, cx, cy, cz, view, push, c => (c.Ties, c.TieCells), d => d < DetailRadius ? _tie.Mesh : _tieFar.Mesh);
         _plateTexture.Bind(cmd, layout);
         _trackTextures.BindPlates(cmd, layout);
-        DrawInstances(cmd, cx, cy, cz, view, push, c => (c.Plates, c.PlateCells), detail => detail ? _plate.Mesh : null);
+        DrawInstances(cmd, cx, cy, cz, view, push, c => (c.Plates, c.PlateCells), d => d < PlateDetail ? _plate.Mesh : _plateFar);
         _trackTextures.BindNone(cmd, layout);
     }
 
     private void DrawInstances(CommandBuffer cmd, double cx, double cy, double cz, ViewCone view, Action<float3> push, Func<Chunk, (BufferEx, int[])> instances,
-        Func<bool, Mesh?> meshFor)
+        Func<double, Mesh?> meshFor)
     {
         foreach (var (key, near) in _drawList)
         {
@@ -2159,7 +2429,7 @@ public sealed partial class NetworkMeshes : IDisposable
                     var dz = Math.Max(0.0, Math.Max(z0 - cz, cz - (z0 + CellSize)));
                     var distance = Math.Sqrt(dx * dx + dz * dz);
                     var centre = new float3((float)(x0 + CellSize * 0.5f - cx), height, (float)(z0 + CellSize * 0.5f - cz));
-                    mesh = distance < NearRadius && view.Sees(centre, radius) ? meshFor(distance < DetailRadius) : null;
+                    mesh = distance < TieReach && view.Sees(centre, radius) ? meshFor(distance) : null;
                 }
 
                 if (mesh == runMesh)
@@ -2179,6 +2449,31 @@ public sealed partial class NetworkMeshes : IDisposable
                 runStart = c;
             }
         }
+    }
+
+    /// A plain block filling a box (model space), its faces each mapped over the whole texture.
+    private static Mesh BlockMesh(float3 min, float3 max)
+    {
+        var vertices = new List<Vertex>();
+        var indices = new List<uint>();
+        void Face(float3 a, float3 b, float3 c, float3 d, float3 n)
+        {
+            var first = (uint)vertices.Count;
+            vertices.Add(new Vertex(a, n, new float2(0f, 1f)));
+            vertices.Add(new Vertex(b, n, new float2(1f, 1f)));
+            vertices.Add(new Vertex(c, n, new float2(1f, 0f)));
+            vertices.Add(new Vertex(d, n, new float2(0f, 0f)));
+            indices.AddRange([first, first + 1, first + 2, first, first + 2, first + 3]);
+        }
+
+        var (l, h) = (min, max);
+        Face(new(l.X, h.Y, h.Z), new(h.X, h.Y, h.Z), new(h.X, h.Y, l.Z), new(l.X, h.Y, l.Z), new(0f, 1f, 0f));
+        Face(new(l.X, l.Y, h.Z), new(h.X, l.Y, h.Z), new(h.X, h.Y, h.Z), new(l.X, h.Y, h.Z), new(0f, 0f, 1f));
+        Face(new(h.X, l.Y, l.Z), new(l.X, l.Y, l.Z), new(l.X, h.Y, l.Z), new(h.X, h.Y, l.Z), new(0f, 0f, -1f));
+        Face(new(h.X, l.Y, h.Z), new(h.X, l.Y, l.Z), new(h.X, h.Y, l.Z), new(h.X, h.Y, h.Z), new(1f, 0f, 0f));
+        Face(new(l.X, l.Y, l.Z), new(l.X, l.Y, h.Z), new(l.X, h.Y, h.Z), new(l.X, h.Y, l.Z), new(-1f, 0f, 0f));
+        Face(new(l.X, l.Y, l.Z), new(h.X, l.Y, l.Z), new(h.X, l.Y, h.Z), new(l.X, l.Y, h.Z), new(0f, -1f, 0f));
+        return Mesh.Create(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(vertices), System.Runtime.InteropServices.CollectionsMarshal.AsSpan(indices));
     }
 
     private static void Release(BufferEx buffer)
@@ -2205,6 +2500,7 @@ public sealed partial class NetworkMeshes : IDisposable
         _tie.Dispose();
         _tieFar.Dispose();
         _plate.Dispose();
+        _plateFar.Dispose();
         _ballast.Dispose();
         _trackTextures.Dispose();
         _fallback?.Dispose();

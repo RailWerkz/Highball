@@ -74,7 +74,7 @@ public sealed class OpenRouteScreen : MenuScreen
         for (var i = 0; i < _routes.Count; i++)
         {
             var route = _routes[i];
-            Menu.Add(new MenuItem { Label = route.Name.ToUpperInvariant(), OnSelect = () => HighballApp.Instance.Replace(new BuilderScreen(route)), SeparatorAfter = i == _routes.Count - 1 });
+            Menu.Add(new MenuItem { Label = route.Name.ToUpperInvariant(), Detail = Path.GetFullPath(route.Folder), OnSelect = () => HighballApp.Instance.Replace(new BuilderScreen(route)), SeparatorAfter = i == _routes.Count - 1 });
         }
 
         if (_routes.Count == 0)

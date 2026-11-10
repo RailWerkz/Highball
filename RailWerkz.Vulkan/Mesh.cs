@@ -156,6 +156,20 @@ public sealed class Mesh : IDisposable
         cmd.DrawIndexed(count, 1, 0, 0, 0);
     }
 
+    /// Draws a range of the index buffer (a submesh) once for each of count instances, their data read from instances
+    /// (binding 1) starting at first.
+    public void DrawRangeInstanced(CommandBuffer cmd, BufferEx instances, int firstIndex, int indexCount, int count, int first = 0)
+    {
+        if (count <= 0 || indexCount <= 0)
+            return;
+
+        Bind(cmd);
+        cmd.BindVertexBuffer(1, instances.VkBuffer, ByteSize.Zero);
+        DrawCalls++;
+        Triangles += indexCount / 3 * count;
+        cmd.DrawIndexed(indexCount, count, firstIndex, 0, first);
+    }
+
     /// Draws this mesh once for each of count instances, their data read from instances (binding 1) starting at first.
     public void DrawInstanced(CommandBuffer cmd, BufferEx instances, int count, int first = 0)
     {

@@ -11,6 +11,38 @@ public sealed class Sound(short[] samples, int channels, int sampleRate)
     public float Duration => Samples.Length / (float)(Channels * SampleRate);
 
     /// The same folded down to one channel (the channels averaged), for placing in the world: OpenAL only places mono.
+    /// The sound with everything above corner Hz turned up by gainDb (a first-order high shelf), then driven driveDb into a soft
+    /// limiter (tanh), so it's louder without its peaks clipping: for recordings made from far off, whose bite has gone, and that
+    /// already peak at full scale.
+    public Sound Brighten(float gainDb, float corner, float driveDb = 0f)
+    {
+        var ch = Channels;
+        var frames = Samples.Length / ch;
+        var k = MathF.Pow(10f, gainDb / 20f) - 1f;
+        // A one-pole low-pass at corner; the rest is the part above it, added back k times over.
+        var a = MathF.Exp(-2f * MathF.PI * corner / SampleRate);
+        var output = new float[Samples.Length];
+        var peak = 0f;
+        for (var c = 0; c < ch; c++)
+        {
+            var low = 0f;
+            for (var f = 0; f < frames; f++)
+            {
+                var x = Samples[f * ch + c] / 32768f;
+                low = (1f - a) * x + a * low;
+                var y = x + (x - low) * k;
+                output[f * ch + c] = y;
+                peak = MathF.Max(peak, MathF.Abs(y));
+            }
+        }
+
+        var drive = MathF.Pow(10f, driveDb / 20f) / MathF.Max(peak, 1e-6f);
+        var result = new short[Samples.Length];
+        for (var i = 0; i < output.Length; i++)
+            result[i] = (short)Math.Clamp(MathF.Tanh(output[i] * drive) * 0.98f * 32768f, -32768f, 32767f);
+        return new Sound(result, ch, SampleRate);
+    }
+
     public Sound ToMono()
     {
         if (Channels == 1)

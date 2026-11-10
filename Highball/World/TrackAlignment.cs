@@ -246,8 +246,9 @@ public static class TrackAlignment
 
     /// A path of points fitted to straights and curves, for laying along a guide: its pieces, and its tightest curve. If
     /// it can't be (Fitted false), the path as it is.
-    public static (List<TrackPiece> Pieces, double Radius, bool Fitted) FitPath(IReadOnlyList<(double X, double Z)> path)
+    public static (List<TrackPiece> Pieces, double Radius, bool Fitted) FitPath(IReadOnlyList<(double X, double Z)> path, IReadOnlyList<float>? tolerances = null)
     {
+        var tried = tolerances ?? Tolerances;
         var xs = new List<double> { path[0].X };
         var zs = new List<double> { path[0].Z };
         for (var i = 0; i + 1 < path.Count; i++)
@@ -277,11 +278,62 @@ public static class TrackAlignment
             Structures = new Structure[x.Length - 1], Nodes = [], MappedX = x, MappedZ = z,
         };
 
-        foreach (var tolerance in Tolerances)
-            if (Fit(line, 0, x.Length - 1, tolerance, [], []) is { } fit)
-                return (fit.Pieces, fit.Pieces.Where(p => Math.Abs(p.Curvature) > 1e-9).Select(p => 1.0 / Math.Abs(p.Curvature)).DefaultIfEmpty(double.MaxValue).Min(), true);
+        static double Tightest(IEnumerable<TrackPiece> pieces) =>
+            pieces.Where(p => p.Fitted && Math.Abs(p.Curvature) > 1e-9).Select(p => 1.0 / Math.Abs(p.Curvature)).DefaultIfEmpty(double.MaxValue).Min();
 
-        return (Alignment.FromPoints(x, z).Pieces, double.MaxValue, false);
+        foreach (var tolerance in tried)
+            if (Fit(line, 0, x.Length - 1, tolerance, [], []) is { } fit)
+                return (fit.Pieces, Tightest(fit.Pieces), true);
+
+        // Too long or winding to fit whole (as a long guide usually is): fitted in stretches, each cut where the path runs
+        // straightest near its middle, so the stretches meet on a near straight and their ends (which stay put) line up.
+        // Only a stretch too short to cut again that still won't fit keeps the path as it is.
+        var pieces = new List<TrackPiece>();
+        var whole = true;
+        void Stretch(int from, int to, int depth)
+        {
+            foreach (var tolerance in tried)
+                if (Fit(line, from, to, tolerance, [], []) is { } part)
+                {
+                    pieces.AddRange(part.Pieces);
+                    return;
+                }
+
+            if (depth >= PathSplits || to - from < 2 * PathStretch)
+            {
+                pieces.AddRange(Alignment.FromPoints(x[from..(to + 1)], z[from..(to + 1)]).Pieces);
+                whole = false;
+                return;
+            }
+
+            var cut = Straightest(x, z, from + (to - from) * 3 / 10, from + (to - from) * 7 / 10);
+            Stretch(from, cut, depth + 1);
+            Stretch(cut, to, depth + 1);
+        }
+
+        Stretch(0, x.Length - 1, 0);
+        return (pieces, Tightest(pieces), whole);
+    }
+
+    /// How many times a path is cut in two before a stretch is left as it is, and the fewest points (2 m apart) a stretch keeps.
+    private const int PathSplits = 7;
+    private const int PathStretch = 40;
+
+    /// The point between two where the path turns least over the 20 m either side of it.
+    private static int Straightest(double[] x, double[] z, int from, int to)
+    {
+        const int reach = 10;
+        var (best, least) = (from + (to - from) / 2, double.MaxValue);
+        for (var p = Math.Max(from, reach); p <= Math.Min(to, x.Length - 1 - reach); p++)
+        {
+            var a = Math.Atan2(z[p] - z[p - reach], x[p] - x[p - reach]);
+            var b = Math.Atan2(z[p + reach] - z[p], x[p + reach] - x[p]);
+            var turn = Math.Abs(Math.IEEERemainder(b - a, 2.0 * Math.PI));
+            if (turn < least)
+                (best, least) = (p, turn);
+        }
+
+        return best;
     }
 
     /// Where the stretch strays from a straight by more than the tolerance: its ends, and the points it's cut at.

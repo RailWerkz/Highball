@@ -2,6 +2,7 @@
 using System.Runtime.InteropServices;
 using Brutal;
 using Brutal.Pointers;
+using Brutal.VulkanApi.Vma;
 using RailWerkz.Core.Logging;
 
 namespace RailWerkz.Vulkan;
@@ -19,6 +20,9 @@ public static unsafe class Gpu
     public static Instance Instance { get; private set; } = null!;
     public static PhysicalDevice PhysicalDevice { get; private set; } = null!;
     public static DeviceEx Device { get; private set; } = null!;
+    /// Where every buffer and image gets its memory: VMA, which carves them out of a few large blocks instead of
+    /// a separate device allocation each. Made with the device and destroyed just before it.
+    public static VmaAllocator Allocator { get; private set; } = null!;
     public static Queue Queue { get; private set; } = null!;
     public static int QueueFamily { get; private set; }
 
@@ -228,6 +232,7 @@ public static unsafe class Gpu
         var features = new VkPhysicalDeviceFeatures2 { Next = &v12 };
         features.Features.SamplerAnisotropy = supported.SamplerAnisotropy;
         features.Features.FillModeNonSolid = supported.FillModeNonSolid; // wireframe views
+        features.Features.ShaderClipDistance = supported.ShaderClipDistance; // track cut off at a distance, exactly, without a discard
 
         var priority = 1f;
         var queue = new VkDeviceQueueCreateInfo { QueueFamilyIndex = QueueFamily, QueueCount = 1, QueuePriorities = &priority };
@@ -237,6 +242,14 @@ public static unsafe class Gpu
             Extensions = extensions,
             QueueCreateInfos = new ReadOnlySpan<VkDeviceQueueCreateInfo>(&queue, 1),
             Next = new Ptr(&features),
+        });
+
+        Allocator = Device.CreateVmaAllocator(new VmaAllocatorCreateInfo
+        {
+            Flags = VmaAllocatorCreateFlags.BufferDeviceAddressBit, // the device enables bufferDeviceAddress above
+            PhysicalDevice = PhysicalDevice.Handle,
+            Device = Device.Handle,
+            VulkanApiVersion = Api13,
         });
 
         Queue = Device.GetQueue(QueueFamily, 0);
@@ -554,11 +567,9 @@ public static unsafe class Gpu
     {
         Device.WaitForFence(fence, -1);
         var pixels = new byte[Extent.X * Extent.Y * 4];
+        Buffers.Invalidate(buffer);
         using (var mapped = buffer.Map())
-        {
-            mapped.Invalidate();
             mapped.AsSpan()[..pixels.Length].CopyTo(pixels);
-        }
 
         buffer.Dispose();
 
@@ -641,6 +652,22 @@ public static unsafe class Gpu
             retired.Release();
     }
 
+    /// Last thing before the device goes. Anything still allocated here was never disposed, so it gets named in the
+    /// log rather than freed behind its owner's back.
+    private static void DestroyAllocator()
+    {
+        if (Allocator is null)
+            return;
+
+        Allocator.CalculateStatistics(out var stats);
+        var leaked = stats.Total.Statistics;
+        if (leaked.AllocationCount > 0)
+            Log.Warn($"Vulkan: {leaked.AllocationCount} allocations ({leaked.AllocationBytes.Bytes} bytes) still alive at shutdown");
+
+        Device.DestroyVmaAllocator(Allocator);
+        Allocator = null!;
+    }
+
     public static void Shutdown()
     {
         if (Device is null)
@@ -669,6 +696,7 @@ public static unsafe class Gpu
         Device.DestroySwapchainKHR(_swapchain, Device.VkAllocator);
         Device.DestroyRenderPass(PresentPass, Device.VkAllocator);
         Device.DestroyCommandPool(_oneShotPool, Device.VkAllocator);
+        DestroyAllocator();
         Device.Dispose();
 
         Instance.DestroySurfaceKHR(_surface, null);

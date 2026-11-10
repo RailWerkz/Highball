@@ -22,7 +22,7 @@ public sealed unsafe class StorageImage : IDisposable
         MipLevels = mipmaps ? VulkanHelpers.MaxMipLevels(width, Math.Max(height, depth)) : 1;
         var is3D = depth > 1;
 
-        _image = Gpu.Device.CreateImage(new ImageEx.CreateInfo
+        _image = Gpu.Allocator.CreateImage(new ImageEx.CreateInfo
         {
             Name = name,
             ImageType = is3D ? VkImageType._3D : VkImageType._2D,

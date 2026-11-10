@@ -15,7 +15,8 @@ public readonly record struct LayPoint(double X, double Z, long? Node = null, (l
 
 /// A way to lay along with others. From: the point of the first way it branches off, sharing its control point there.
 /// Shared: its points that are another way's in the same lay, by that way's place in the list (an earlier one) and its point there.
-public sealed record PlannedWay(List<LayPoint> Points, int? From = null, IReadOnlyList<(int Point, int Way, int Other)>? Shared = null);
+public sealed record PlannedWay(List<LayPoint> Points, int? From = null, IReadOnlyList<(int Point, int Way, int Other)>? Shared = null,
+    IReadOnlyDictionary<string, string>? Tags = null);
 
 /// Track editing in the editors, on the route's network: OpenStreetMap's rail ways, whose nodes are the control
 /// points. Moving a node moves every way through it (so junctions stay joined); new track is a new way, joined to
@@ -24,7 +25,7 @@ public sealed record PlannedWay(List<LayPoint> Points, int? From = null, IReadOn
 public sealed class TrackEditor
 {
     private const float PickPixels = 14f;
-    private const double JoinGap = 50.0;     // the furthest apart two selected track ends can be and still be joined
+    private const double JoinGap = 500.0;    // the furthest apart two selected track ends can be and still be joined
     private const double SimplifyTolerance = 0.25;
 
     private readonly RouteInfo _route;
@@ -147,6 +148,22 @@ public sealed class TrackEditor
         }
 
         return best;
+    }
+
+    /// A new control point in a track, on its segment'th segment at (x, z) (as SegmentAt finds it): the track keeps its
+    /// shape, with one more point to pull it by. node: the new point.
+    public NetworkEdit? InsertPoint(long wayId, int segment, double x, double z, out long node)
+    {
+        node = 0;
+        if (!_network.Ways.TryGetValue(wayId, out var way) || segment < 0 || segment + 1 >= way.Nodes.Length)
+            return null;
+        node = _network.NewId();
+        var geo = Geo(x, z);
+        var (nodes, lat, lon) = (way.Nodes.ToList(), way.Lat.ToList(), way.Lon.ToList());
+        nodes.Insert(segment + 1, node);
+        lat.Insert(segment + 1, geo.Lat);
+        lon.Insert(segment + 1, geo.Lon);
+        return Commit([(way.Id, way, Copy(way, [.. nodes], [.. lat], [.. lon]))], takesNewBed: false);
     }
 
     /// The rail segment nearest a point on the ground (world metres) within the given distance, and the nearest point
@@ -622,6 +639,12 @@ public sealed class TrackEditor
                 ? new Dictionary<string, string> { ["railway"] = "rail", ["service"] = "yard", [RouteNetwork.ExactTag] = "yes", [RouteNetwork.EditedTag] = "yes" }
                 : new Dictionary<string, string> { ["railway"] = "rail", ["usage"] = "main", [RouteNetwork.EditedTag] = "yes" },
         };
+        // With no class in hand, drawn track takes the class of the track it leaves (or joins): a siding drawn off a
+        // yard track is yard, not main.
+        if (NewClass is { } chosen)
+            track = WithClass(track, chosen);
+        else if (!exact && (ClassAt(laid[0]) ?? ClassAt(laid[^1])) is { } joined && joined != RailClass.Main)
+            track = WithClass(track, joined);
         changes[id] = (null, track);
         return Commit([.. changes.Select(c => (c.Key, c.Value.Before, c.Value.After))]);
     }
@@ -690,11 +713,11 @@ public sealed class TrackEditor
             made.Add((nodes, lat, lon));
             laid?.Add(nodes);
             var id = _network.NewId();
-            changes[id] = (null, new NetworkWay
-            {
-                Id = id, Rail = true, Class = (int)RailClass.Yard, Nodes = nodes, Lat = lat, Lon = lon,
-                Tags = new Dictionary<string, string> { ["railway"] = "rail", ["service"] = "yard", [RouteNetwork.ExactTag] = "yes", [RouteNetwork.EditedTag] = "yes" },
-            });
+            var tags = new Dictionary<string, string> { ["railway"] = "rail", ["service"] = "yard", [RouteNetwork.ExactTag] = "yes", [RouteNetwork.EditedTag] = "yes" };
+            foreach (var (key, value) in planned.Tags ?? new Dictionary<string, string>())
+                tags[key] = value;
+            var yard = new NetworkWay { Id = id, Rail = true, Class = (int)RailClass.Yard, Nodes = nodes, Lat = lat, Lon = lon, Tags = tags };
+            changes[id] = (null, NewClass is { } chosen ? WithClass(yard, chosen) : yard);
         }
 
         return Commit([.. changes.Select(c => (c.Key, c.Value.Before, c.Value.After))]);
@@ -947,6 +970,63 @@ public sealed class TrackEditor
             way.Tags[RouteNetwork.BedTag] = bed;
         if (height is { } metres)
             way.Tags[RouteNetwork.BedHeightTag] = metres.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// What class new track's laid as; null: as the tool would have it (drawn track: the class of the track it leaves,
+    /// else main; track along a guide: yard).
+    public RailClass? NewClass;
+
+    /// The classes track can be given by hand. Transit and narrow gauge change the rails themselves, so they're left to the map.
+    public static readonly RailClass[] Settable = [RailClass.Main, RailClass.Branch, RailClass.Industrial, RailClass.Yard, RailClass.Disused];
+
+    /// The class of the rail way a laid point is on, if it's on one.
+    private RailClass? ClassAt(LayPoint point)
+    {
+        if (point.Split is { } split && _network.Ways.TryGetValue(split.Way, out var on))
+            return (RailClass)on.Class;
+        if (point.Node is { } node && _network.Ways.Values.FirstOrDefault(w => w.Rail && Array.IndexOf(w.Nodes, node) >= 0) is { } through)
+            return (RailClass)through.Class;
+        return null;
+    }
+
+    /// The rail ways touching these control points given a class.
+    public NetworkEdit? SetClass(IReadOnlySet<long> nodes, RailClass cls) =>
+        SetClass(_network.Ways.Values.Where(w => w.Rail && w.Nodes.Any(nodes.Contains)).Select(w => w.Id), cls);
+
+    public NetworkEdit? SetClass(IEnumerable<long> ways, RailClass cls)
+    {
+        var changes = new List<(long, NetworkWay?, NetworkWay?)>();
+        foreach (var id in ways.Distinct().ToList())
+        {
+            var way = _network.Ways[id];
+            if (way.Rail && (RailClass)way.Class != cls)
+                changes.Add((id, way, WithClass(way, cls)));
+        }
+
+        return Commit(changes, takesNewBed: false);
+    }
+
+    /// A rail way as another class: its tags made to say so, as the map would (RouteNetwork.Rail reads them back the same).
+    private static NetworkWay WithClass(NetworkWay way, RailClass cls)
+    {
+        var tags = new Dictionary<string, string>(way.Tags) { [RouteNetwork.EditedTag] = "yes" };
+        tags.Remove("usage");
+        tags.Remove("service");
+        tags["railway"] = cls == RailClass.Disused ? "disused" : way.Tags.GetValueOrDefault("railway") == "preserved" ? "preserved" : "rail";
+        switch (cls)
+        {
+            case RailClass.Main:
+                tags["usage"] = "main";
+                break;
+            case RailClass.Industrial:
+                tags["usage"] = "industrial";
+                break;
+            case RailClass.Yard:
+                tags["service"] = "yard";
+                break;
+        }
+
+        return new NetworkWay { Id = way.Id, Rail = true, Class = (int)cls, Nodes = way.Nodes, Lat = way.Lat, Lon = way.Lon, Tags = tags };
     }
 
     private NetworkEdit? Commit(List<(long Id, NetworkWay? Before, NetworkWay? After)> changes, bool takesNewBed = true)

@@ -15,6 +15,8 @@ public sealed class MenuItem
     public Func<float>? Meter { get; init; }
     public Func<bool>? Enabled { get; init; }
     public bool SeparatorAfter { get; init; }
+    /// Hero only: a line of small text to the right of the anchor, such as where the item lives on disk.
+    public string? Detail { get; init; }
 
     /// Changing the value plays no tick (the change makes its own sound).
     public bool Silent { get; init; }
@@ -282,6 +284,12 @@ public sealed class Menu
             var labelSize = Canvas.TextSize(Bold, S(22f), item.Label);
             var x = anchor - (1f - enter) * S(40f);
             Canvas.Text(draw, Bold, S(22f), new float2(x, y + (height - labelSize.Y) * 0.5f), color.Fade(enter), item.Label, Align.Right);
+            if (item.Detail is { Length: > 0 } detail)
+            {
+                var detailSize = Canvas.TextSize(Mono, S(13f), detail);
+                Canvas.Text(draw, Mono, S(13f), new float2(anchor + S(40f) - (1f - enter) * S(40f), y + (height - detailSize.Y) * 0.5f),
+                    (selected ? Style.Text : TextFaint).Fade(enter), detail);
+            }
 
             y += height;
 

@@ -19,6 +19,12 @@ public sealed unsafe class SunShadows : IDisposable
     /// How far each cascade reaches along the view, in metres. Past the last there are no shadows.
     private static readonly float[] Reach = [15f, 60f, 250f, 1500f];
 
+    /// The track's own cascade, a fifth layer after the four: only the thin parts of the track (rails, ties, plates, switch
+    /// blades), out to TrackReach, so their shadows on the ballast carry on past the second cascade without the others drawing
+    /// them coarser or blurring everything else. The ballast and ground aren't in it, so nothing reading it shadows itself.
+    public const float TrackReach = 120f;
+    private const int TrackLayer = Cascades;
+
     /// How far towards the sun casters are looked for, so a far ridge can still shade the camera's valley.
     private const float TowardsSun = 5000f;
 
@@ -29,12 +35,14 @@ public sealed unsafe class SunShadows : IDisposable
         public float4x4 Cascade1;
         public float4x4 Cascade2;
         public float4x4 Cascade3;
+        public float4x4 Track;
         public float4 Splits;
         public float4 Forward; // w: 1 when there are shadows to read
         public float4 Texels;  // each cascade's texel, in metres
         public float4 Horizon; // xy: the horizon map's middle relative to the camera; z: 1 / its width; w: 1 when there is one
         public float4 Lights;
         public float4 Weather;
+        public float4 TrackShadow; // x: the track cascade's texel, in metres; y: how far it reaches (0: none)
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -56,7 +64,7 @@ public sealed unsafe class SunShadows : IDisposable
 
     private static VkDescriptorSetLayout _setLayout;
 
-    private ShadowMap _map = new(Quality.ShadowSize, Cascades);
+    private ShadowMap _map = new(Quality.ShadowSize, Cascades + 1);
     private Texture2D? _horizon0;
     private Texture2D? _horizon1;
     private readonly BufferEx _uniforms;
@@ -209,13 +217,13 @@ public sealed unsafe class SunShadows : IDisposable
         cmd.BindDescriptorSets(VkPipelineBindPoint.Graphics, layout, 2, [_set], []);
 
     /// Draws the cascades and updates what shadows.glsl reads. Outside any render pass, before the world.
-    public void Render(CommandBuffer cmd, Camera camera, float aspect, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation = null, NetworkMeshes? network = null, YardLights? yards = null)
+    public void Render(CommandBuffer cmd, Camera camera, float aspect, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation = null, NetworkMeshes? network = null)
     {
         // The Quality setting's changed: the old map's freed once the frames using it are done.
         if (_map.Size != Quality.ShadowSize)
         {
             var old = _map;
-            _map = new ShadowMap(Quality.ShadowSize, Cascades);
+            _map = new ShadowMap(Quality.ShadowSize, Cascades + 1);
             Gpu.Defer(old.Dispose);
             MakeSet(_horizon0!, _horizon1!);
         }
@@ -243,6 +251,8 @@ public sealed unsafe class SunShadows : IDisposable
         {
             var far = Reach[c];
             var (centre, radius) = Slice(camera, aspect, near, far);
+            // What this cascade is read for: its own slice, and the last tenth of the one before, where the two blend.
+            var seenFrom = c == 0 ? 0f : near * 0.9f;
             near = far;
             var texel = radius * 2f / _map.Size;
             texels[c] = texel;
@@ -255,7 +265,23 @@ public sealed unsafe class SunShadows : IDisposable
             {
                 _map.BeginLayer(cmd, c);
                 if (active)
-                    DrawCasters(cmd, camera, c, centre, right, up, sun, radius, terrain, models, vegetation, network, yards);
+                    DrawCasters(cmd, camera, aspect, c, centre, right, up, sun, radius, seenFrom, far, terrain, models, vegetation, network, _matrices[c]);
+                _map.EndLayer(cmd);
+            }
+        }
+
+        // The track's cascade: the view out to TrackReach, with the thin parts of the track alone.
+        {
+            var (centre, radius) = Slice(camera, aspect, camera.Near, TrackReach);
+            var texel = radius * 2f / _map.Size;
+            centre += right * Snap(centre, right, camera, texel) + up * Snap(centre, up, camera, texel);
+            uniforms.Track = Matrix(centre, right, up, sun, radius);
+            uniforms.TrackShadow = new float4(texel, active && network is not null ? TrackReach : 0f, 0f, 0f);
+            using (Profiler.Sample("Track cascade", cmd))
+            {
+                _map.BeginLayer(cmd, TrackLayer);
+                if (active && network is not null)
+                    DrawCasters(cmd, camera, aspect, TrackLayer, centre, right, up, sun, radius, 0f, TrackReach, null, null, null, network, uniforms.Track);
                 _map.EndLayer(cmd);
             }
         }
@@ -305,17 +331,55 @@ public sealed unsafe class SunShadows : IDisposable
         return new float4x4(m);
     }
 
-    private void DrawCasters(CommandBuffer cmd, Camera camera, int cascade, float3 centre, float3 right, float3 up, float3 sun, float radius,
-        Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation, NetworkMeshes? network, YardLights? yards)
+    /// How far below a caster's foot its shadow is followed (ground lower than it: a cutting, a bank), and the tallest anything
+    /// but the ground stands (a yard mast): a caster's sphere may be as wide as a patch of trees, but its shadow only reaches as
+    /// far as its height throws it. (The terrain's own shadows aren't culled this way: a ridge can shade a valley kilometres off.)
+    private const float ShadowSlack = 20f;
+    private const float TallestCaster = 30f;
+
+    private void DrawCasters(CommandBuffer cmd, Camera camera, float aspect, int cascade, float3 centre, float3 right, float3 up, float3 sun, float radius,
+        float seenFrom, float seenTo, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation, NetworkMeshes? network, float4x4 light)
     {
         // Could something this size at this place shade anything in the cascade? Anywhere towards the sun can.
-        bool Reaches(float3 relative, float size)
+        bool InCascade(float3 relative, float size)
         {
             var d = relative - centre;
             return MathF.Abs(MathEx.Dot(d, right)) <= radius + size && MathF.Abs(MathEx.Dot(d, up)) <= radius + size && MathEx.Dot(d, sun) >= -radius - size;
         }
 
-        var light = _matrices[cascade];
+        // The part of the view this cascade's read for: the camera's frustum between seenFrom and seenTo along it, as planes
+        // (normal, offset) that a point is outside of where Dot(normal, p) + offset > 0.
+        var (forward, cr, cu) = (camera.Forward, camera.Right, camera.Up);
+        var tanY = MathF.Tan(camera.FieldOfView * 0.5f);
+        var tanX = tanY * aspect;
+        (float3 N, float D)[] planesArray =
+        [
+            (MathEx.Normalize(cr - forward * tanX), 0f),
+            (MathEx.Normalize(-cr - forward * tanX), 0f),
+            (MathEx.Normalize(cu - forward * tanY), 0f),
+            (MathEx.Normalize(-cu - forward * tanY), 0f),
+            (-forward, seenFrom),
+            (forward, -seenTo),
+        ];
+        var lift = MathF.Max(sun.Y, 0.08f);
+        var edge = radius * 2f / _map.Size * 4f;
+
+        // Can its shadow fall anywhere this cascade's read for? Its sphere, swept away from the sun as far as a shadow from
+        // its height could reach, must touch that part of the view: everything behind or beside the camera whose shadow
+        // falls away from the view is left out.
+        bool Reaches(float3 relative, float size)
+        {
+            if (!InCascade(relative, size))
+                return false;
+            var r = size + edge;
+            var end = relative - sun * MathF.Min((MathF.Min(2f * size, TallestCaster) + ShadowSlack) / lift, TowardsSun);
+            foreach (var (n, d) in planesArray)
+                if (MathEx.Dot(n, relative) + d > r && MathEx.Dot(n, end) + d > r)
+                    return false;
+            return true;
+        }
+
+        var trackOnly = cascade == TrackLayer;
 
         if (vegetation is not null)
         {
@@ -331,12 +395,11 @@ public sealed unsafe class SunShadows : IDisposable
                 cmd.PushConstants(_layout, Stages, ByteSize.Zero, push);
             }
 
+            // (The track's cascade draws as the nearest does, everything thin, but nothing that isn't.)
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, _line);
-            network.DrawLineCasters(cmd, camera.X, camera.Y, camera.Z, cascade, Reaches, Place);
+            network.DrawLineCasters(cmd, camera.X, camera.Y, camera.Z, trackOnly ? 0 : cascade, Reaches, Place, thinOnly: trackOnly);
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, _part);
-            network.DrawPartCasters(cmd, camera.X, camera.Y, camera.Z, cascade, Reaches, Place);
-            if (cascade <= 2)
-                yards?.DrawCasters(cmd, camera, Reaches, Place);
+            network.DrawPartCasters(cmd, camera.X, camera.Y, camera.Z, trackOnly ? 0 : cascade, Reaches, Place, coarse: trackOnly);
         }
 
         if (models is not null)
@@ -363,7 +426,7 @@ public sealed unsafe class SunShadows : IDisposable
         if (terrain is not null)
         {
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, _terrain);
-            terrain.DrawCasters(cmd, camera.X, camera.Y, camera.Z, Reaches, offset =>
+            terrain.DrawCasters(cmd, camera.X, camera.Y, camera.Z, InCascade, offset =>
             {
                 var push = new TerrainPush { Light = light, Offset = new float4(offset, 0f) };
                 cmd.PushConstants(_layout, Stages, ByteSize.Zero, push);

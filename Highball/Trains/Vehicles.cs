@@ -56,9 +56,24 @@ public sealed class Livery
     public required string Id { get; init; }
     public required string Name { get; init; }
 
-    /// Under Content/Models.
+    /// Under Content/Models: as it looks empty, or carrying nothing in particular.
     public required string Model { get; init; }
+
+    /// Its model carrying each of the vehicle's cargoes, by cargo id (Content/Models paths); none for a vehicle whose
+    /// look doesn't change with what it carries.
+    public IReadOnlyDictionary<string, string> Loads { get; init; } = new Dictionary<string, string>();
+
+    /// Livery ids it was saved under before, and the cargo each meant (null for none): from when a paint came once for
+    /// every load, so older consists still find it.
+    public IReadOnlyDictionary<string, string?> Was { get; init; } = new Dictionary<string, string?>();
+
+    /// The model to draw: with that cargo once it carries anything, else empty.
+    public string ModelFor(string? cargo, double fill) =>
+        fill > 0.0 && cargo is not null && Loads.TryGetValue(cargo, out var loaded) ? loaded : Model;
 }
+
+/// Something a vehicle can be seen carrying (a well car's containers, single or double stacked): picked once it's loaded.
+public sealed record Cargo(string Id, string Name);
 
 /// How a locomotive's prime mover sounds, from vehicle.json's "engineSound": two loops recorded at idle and at full
 /// throttle (paths under Content/Audio), crossfaded and pitched between as the revs follow the throttle, and an exhaust
@@ -92,6 +107,20 @@ public sealed class EngineSoundDef
 
     /// The dynamic brake's grid blowers, looped while it's on.
     public string? DynamicFan { get; init; }
+}
+
+/// What a locomotive carries to run: fuel, lubricating oil and cooling water (litres) and sand (cubic metres), full.
+public sealed record LocoSupplies(double FuelL, double OilL, double WaterL, double SandM3)
+{
+    /// Kilograms a litre (diesel, lube oil, water) and a cubic metre (dry sand).
+    public const double FuelDensity = 0.85, OilDensity = 0.88, WaterDensity = 1.0, SandDensity = 1600.0;
+
+    /// What they weigh at these amounts.
+    public static double MassOf(double fuel, double oil, double water, double sand) =>
+        fuel * FuelDensity + oil * OilDensity + water * WaterDensity + sand * SandDensity;
+
+    /// What they weigh, full.
+    public double FullMass => MassOf(FuelL, OilL, WaterL, SandM3);
 }
 
 /// One kind of vehicle, as its vehicle.json describes it: everything about it that doesn't change from one car to the next.
@@ -128,9 +157,23 @@ public sealed class VehicleDef
     public int Axles { get; init; } = 4;
     public double WheelDiameter { get; init; } = 0.914;
 
-    /// Empty, and as loaded to its rated capacity (the same for a locomotive).
+    /// Empty, and as loaded to its rated capacity (the same for a locomotive: its working order, wet, supplies full).
     public required double MassEmpty { get; init; }
     public double MassLoaded { get; init; }
+
+    /// A locomotive's fuel, oil, water and sand, full; null for anything without them.
+    public LocoSupplies? Supplies { get; init; }
+
+    /// Dry: a locomotive with its fuel, oil, water and sand all gone (wet less its supplies, full, unless the file says).
+    public double MassDry { get; init; }
+
+    /// What a locomotive's wheels grip the rail with on clean, dry rail, unsanded and standing: the share of its weight
+    /// it can pull with before they slip. Sand adds to it; it falls off with speed.
+    public double Adhesion { get; init; } = 0.30;
+
+    /// AC traction: its wheel slip control holds it right at the edge of slipping and catches a slip at once. DC's lets
+    /// a slip run on and takes the power off harder to stop it.
+    public bool AcTraction { get; init; }
 
     /// At the rail, for a locomotive; zero for anything that can't pull.
     public double Power { get; init; }
@@ -142,6 +185,9 @@ public sealed class VehicleDef
     public double MaxSpeed { get; init; }
 
     public IReadOnlyList<Livery> Liveries { get; init; } = [];
+
+    /// What it can be seen carrying, the first picked unless another is; empty for a vehicle that looks the same loaded.
+    public IReadOnlyList<Cargo> Cargoes { get; init; } = [];
 
     /// How its engine sounds; null for a vehicle without one (or a locomotive not given one yet).
     public EngineSoundDef? EngineSound { get; init; }
@@ -167,7 +213,26 @@ public sealed class VehicleDef
 
     public double Mass(bool loaded) => loaded && CanLoad ? MassLoaded : MassEmpty;
 
-    public Livery? FindLivery(string? id) => Liveries.FirstOrDefault(l => l.Id == id) ?? Liveries.FirstOrDefault();
+    /// Loaded to this share of its rated load, 0 to 1: empty plus that much of what a full load adds.
+    public double Mass(double fill) => CanLoad ? MassEmpty + (MassLoaded - MassEmpty) * Math.Clamp(fill, 0.0, 1.0) : MassEmpty;
+
+    public Livery? FindLivery(string? id) => Liveries.FirstOrDefault(l => l.Id == id)
+        ?? (id is null ? null : Liveries.FirstOrDefault(l => l.Was.ContainsKey(id)))
+        ?? Liveries.FirstOrDefault();
+
+    /// The cargo a car carries: the one it names if this vehicle has it, else the one its old livery id meant, else the
+    /// first; null for a vehicle without cargoes.
+    public string? CargoFor(string? liveryId, string? cargo)
+    {
+        if (Cargoes.Count == 0)
+            return null;
+        if (cargo is not null && Cargoes.Any(c => c.Id == cargo))
+            return cargo;
+        if (liveryId is not null && Liveries.FirstOrDefault(l => l.Was.ContainsKey(liveryId)) is { } old && old.Was[liveryId] is { } meant
+            && Cargoes.Any(c => c.Id == meant))
+            return meant;
+        return Cargoes[0].Id;
+    }
 
     /// The same vehicle with these lamps, horn and bell.
     public VehicleDef WithFixtures(IReadOnlyList<VehicleLamp> lamps, float3? horn, float3? bell) => new()
@@ -176,7 +241,8 @@ public sealed class VehicleDef
         TruckCentres = TruckCentres, FrontOverhangGiven = FrontOverhangGiven, Axles = Axles, WheelDiameter = WheelDiameter,
         MassEmpty = MassEmpty, MassLoaded = MassLoaded, Power = Power, StartingTractiveEffort = StartingTractiveEffort,
         ContinuousTractiveEffort = ContinuousTractiveEffort, DynamicBrakeEffort = DynamicBrakeEffort, MaxSpeed = MaxSpeed,
-        Liveries = Liveries, EngineSound = EngineSound, Lamps = lamps, Horn = horn, Bell = bell,
+        Liveries = Liveries, Cargoes = Cargoes, EngineSound = EngineSound, Lamps = lamps, Horn = horn, Bell = bell,
+        Supplies = Supplies, MassDry = MassDry, Adhesion = Adhesion, AcTraction = AcTraction,
     };
 }
 
@@ -245,7 +311,7 @@ public static class VehicleCatalog
                     continue;
                 }
 
-                var missing = def.Liveries.Where(l => !File.Exists(ContentPath.Model(l.Model))).Select(l => l.Model).ToList();
+                var missing = def.Liveries.SelectMany(l => l.Loads.Values.Prepend(l.Model)).Where(m => !File.Exists(ContentPath.Model(m))).ToList();
                 foreach (var model in missing)
                     Log.Warn($"Vehicles: {def.Id}'s model {model} isn't there");
                 found.Add(def);
@@ -381,8 +447,15 @@ public static class VehicleCatalog
         public double ContinuousTractiveEffortKn { get; set; }
         public double DynamicBrakeEffortKn { get; set; }
         public double MaxSpeedKmh { get; set; }
+        public double MassDryKg { get; set; }
+        public SuppliesFile? Supplies { get; set; }
+        public double Adhesion { get; set; }
+        public string? Traction { get; set; }
         public List<LiveryFile> Liveries { get; set; } = [];
+        public List<CargoFile> Loads { get; set; } = [];
         public EngineSoundDef? EngineSound { get; set; }
+
+        private LocoSupplies? SuppliesOf() => Supplies is { } s && s.FuelL + s.OilL + s.WaterL + s.SandM3 > 0.0 ? new LocoSupplies(s.FuelL, s.OilL, s.WaterL, s.SandM3) : null;
 
         public VehicleDef ToDef(double nose)
         {
@@ -415,11 +488,29 @@ public static class VehicleCatalog
                 ContinuousTractiveEffort = ContinuousTractiveEffortKn * 1000.0,
                 DynamicBrakeEffort = DynamicBrakeEffortKn * 1000.0,
                 MaxSpeed = MaxSpeedKmh / 3.6,
+                Supplies = SuppliesOf(),
+                MassDry = MassDryKg > 0.0 ? MassDryKg : MassEmptyKg - (SuppliesOf()?.FullMass ?? 0.0),
+                Adhesion = Adhesion > 0.0 ? Adhesion : 0.30,
+                AcTraction = string.Equals(Traction, "AC", StringComparison.OrdinalIgnoreCase),
                 Liveries = Liveries.Where(l => !string.IsNullOrWhiteSpace(l.Id) && !string.IsNullOrWhiteSpace(l.Model))
-                    .Select(l => new Livery { Id = l.Id!, Name = l.Name ?? l.Id!, Model = l.Model! }).ToList(),
+                    .Select(l => new Livery
+                    {
+                        Id = l.Id!, Name = l.Name ?? l.Id!, Model = l.Model!,
+                        Loads = (l.Loads ?? []).Where(p => !string.IsNullOrWhiteSpace(p.Value)).ToDictionary(p => p.Key, p => p.Value),
+                        Was = l.Was ?? [],
+                    }).ToList(),
+                Cargoes = Loads.Where(c => !string.IsNullOrWhiteSpace(c.Id)).Select(c => new Cargo(c.Id!, c.Name ?? c.Id!)).ToList(),
                 EngineSound = EngineSound is { Idle.Length: > 0, Run.Length: > 0 } ? EngineSound : null,
             };
         }
+    }
+
+    private sealed class SuppliesFile
+    {
+        public double FuelL { get; set; }
+        public double OilL { get; set; }
+        public double WaterL { get; set; }
+        public double SandM3 { get; set; }
     }
 
     private sealed class LiveryFile
@@ -427,5 +518,13 @@ public static class VehicleCatalog
         public string? Id { get; set; }
         public string? Name { get; set; }
         public string? Model { get; set; }
+        public Dictionary<string, string>? Loads { get; set; }
+        public Dictionary<string, string?>? Was { get; set; }
+    }
+
+    private sealed class CargoFile
+    {
+        public string? Id { get; set; }
+        public string? Name { get; set; }
     }
 }

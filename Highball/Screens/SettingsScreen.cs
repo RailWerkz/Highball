@@ -90,7 +90,8 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
             .Add(new MenuItem { Label = "Units", Value = () => s.Units == UnitSystem.Metric ? "METRIC" : "IMPERIAL", OnChange = _ => s.Units = s.Units == UnitSystem.Metric ? UnitSystem.Imperial : UnitSystem.Metric })
             .Add(new MenuItem { Label = "Assisted braking", Value = () => OnOff(s.AssistedBraking), OnChange = _ => s.AssistedBraking = !s.AssistedBraking })
             .Add(new MenuItem { Label = "Mouse sensitivity", Value = () => $"{s.Sensitivity:0.0}x", Meter = () => (s.Sensitivity - 0.2f) / 2.8f, OnChange = d => s.Sensitivity = MathF.Round(Math.Clamp(s.Sensitivity + d * 0.1f, 0.2f, 3f), 1) })
-            .Add(new MenuItem { Label = "Invert look", Value = () => OnOff(s.InvertY), OnChange = _ => s.InvertY = !s.InvertY });
+            .Add(new MenuItem { Label = "Invert look", Value = () => OnOff(s.InvertY), OnChange = _ => s.InvertY = !s.InvertY })
+            .Add(new MenuItem { Label = "Developer tools", Value = () => OnOff(s.DeveloperTools), OnChange = _ => s.DeveloperTools = !s.DeveloperTools });
 
         _tabs = [("DISPLAY", display), ("GRAPHICS", graphics), ("LIGHTING", lighting), ("AUDIO", audio), ("SIMULATION", simulation)];
     }

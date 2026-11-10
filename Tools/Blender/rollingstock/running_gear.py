@@ -82,7 +82,7 @@ def truck(t: TruckSpec):
     for e in (-1, 1):
         m.prism("Truck", [(-.55, cp - .26), (.55, cp - .26), (.35, cp - .03), (-.35, cp - .03)], "y", e * .22, e * .235)
     # The centre bowl and the side bearings.
-    m.lathe("Steel", (0, 0, cp - .04), (0, 0, 1), [(0, .26), (.04, .26), (.04, .2), (.025, .2), (.025, .004), (0, .004)], 32)
+    m.lathe("Steel", (0, 0, cp - .04), (0, 0, 1), [(0, .26), (.042, .26), (.042, .2), (.025, .2), (.025, .004), (0, .004)], 32)  # rim just proud of the bolster
     for s in (-1, 1):
         x = s * t.side_bearing
         m.box("Steel", (x - .075, -.1, cp - .01), (x + .075, .1, cp + .04), .006)
@@ -101,7 +101,7 @@ def truck(t: TruckSpec):
             for k in range(6, -1, -1):
                 ang = math.radians(-24 + 48 * k / 6)
                 pts.append((e * a - e * (r + .05) * math.cos(ang), r + (r + .05) * math.sin(ang)))
-            h0, h1 = span(s * .70, s * .82)
+            h0, h1 = span(s * .705, s * .815)  # narrower than the head, and inside the rim's face at .82
             m.prism("Dark", pts, "x", h0, h1)
             m.box("Brake", (s * .70, y - e * .02, r - .1), (s * .82, e * a - e * (r + .04), r + .1))
         m.box("Brake", (.13, y - .02, r - .2), (.18, y + .02, r + .14))
@@ -113,7 +113,7 @@ def wheelset(t: TruckSpec):
     """Two wheels pressed on an axle 1.36 m back to back, with the bearings on the journals."""
     m = Kit()
     r, j = t.wheel_r, t.journal
-    m.cyl("Steel", (-(j + .1), 0, 0), (j + .1, 0, 0), .085, 24)
+    m.cyl("Steel", (-(j + .098), 0, 0), (j + .098, 0, 0), .085, 24)  # its ends inside the bearings', not level with them
     m.cyl("Steel", (-.62, 0, 0), (.62, 0, 0), .095, 24)
     for s in (-1, 1):
         web = [(.62, .095), (.62, .15), (.67, .2), (.695, r - .1), (.69, r - .055), (.80, r - .055), (.785, r - .1), (.745, .2), (.79, .15), (.79, .095)]
@@ -122,7 +122,7 @@ def wheelset(t: TruckSpec):
         m.lathe("Tread", (0, 0, 0), (s, 0, 0), rim, 64)
         # The bearing: cup, seals and the end cap with its three bolts, so that it's seen to turn.
         m.lathe("Bearing", (0, 0, 0), (s, 0, 0), [(j - .11, .09), (j - .11, .1), (j - .09, .112), (j + .08, .112), (j + .1, .1), (j + .1, .09)], 28)
-        m.lathe("Steel", (0, 0, 0), (s, 0, 0), [(j + .1, .004), (j + .1, .09), (j + .125, .085), (j + .13, .004)], 24)
+        m.lathe("Steel", (0, 0, 0), (s, 0, 0), [(j + .102, .004), (j + .102, .09), (j + .125, .085), (j + .13, .004)], 24)  # off the cup's end
         for k in range(3):
             ang = 2 * math.pi * k / 3
             y, z = .05 * math.cos(ang), .05 * math.sin(ang)

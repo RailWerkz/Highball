@@ -23,7 +23,7 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
     private readonly LightingPanel _lighting;
     private readonly Camera _camera = new();
     private readonly List<ModelDraw> _draws = [];
-    private readonly Dictionary<string, RenderModel?> _models = [];
+    private readonly Dictionary<string, VehicleModel?> _models = [];
     private DisplayTrack? _track;
 
     private Consist _consist;
@@ -54,6 +54,14 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
     private bool _orbiting;
     private double _touchedAt = -10.0;
     private string? _framedFor;
+
+    /// What the camera orbits: moved with WASD (across, relative to the view) and Q/E (down, up), and glided to the car
+    /// picked in the list.
+    private float3 _target = new(0f, 2f, 0f);
+    private float? _glideZ;
+
+    /// Where each car of the consist stands on the display track (its middle between the trucks, along z), the front at +z.
+    private readonly List<float> _carZ = [];
 
     public override WorldView View => WorldView.World;
 
@@ -107,6 +115,21 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
 
     /// Called by the Open list: the consist to show once it closes.
     internal void Open(Consist consist) => _opened = consist;
+
+    /// Called once a saved consist's file is gone. If it's the one being edited, start afresh rather than save it back.
+    internal void Deleted(string path, string name)
+    {
+        if (_opened?.SavedAt is { } openedAt && SamePath(openedAt, path))
+            _opened = null;
+        if (_consist.SavedAt is not { } at || !SamePath(at, path))
+            return;
+
+        StartFresh();
+        Notify($"Deleted {name}");
+    }
+
+    private static bool SamePath(string a, string b) =>
+        string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
 
     // --- Editing. Every change goes through Change, so it can be undone. ---
 
@@ -208,7 +231,7 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
     {
         if (index < 0 || index >= _consist.Cars.Count || _consist.Cars[index].Def is not { CanLoad: true })
             return;
-        Change(cars => cars[index] = cars[index] with { Loaded = !cars[index].Loaded });
+        Change(cars => cars[index] = cars[index].WithFill(cars[index].Fill > 0.0 ? 0.0 : 1.0));
         Sfx.Tick();
     }
 
@@ -218,9 +241,9 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
         if (index < 0 || index >= _consist.Cars.Count || _consist.Cars[index].Def is not { Liveries.Count: > 1 } def)
             return;
         var car = _consist.Cars[index];
-        var at = Math.Max(0, def.Liveries.ToList().FindIndex(l => l.Id == car.Livery));
+        var at = Math.Max(0, def.Liveries.ToList().FindIndex(l => l.Id == def.FindLivery(car.Livery)?.Id));
         var next = def.Liveries[(at + 1) % def.Liveries.Count].Id;
-        Change(cars => cars[index] = cars[index] with { Livery = next });
+        Change(cars => cars[index] = cars[index].Settled() with { Livery = next });
         Sfx.Tick();
     }
 
@@ -237,7 +260,36 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
     {
         _selected = index;
         _previewRow = index >= 0;
+        // The view glides along to the car picked.
+        LayOut();
+        if (index >= 0 && index < _carZ.Count)
+            _glideZ = _carZ[index];
     }
+
+    /// Each car's place along the track, coupler to coupler, the whole consist centred on the origin. Returns its length.
+    private float LayOut()
+    {
+        _carZ.Clear();
+        var total = (float)_consist.Cars.Sum(c => c.Def?.Length ?? 0.0);
+        var front = total * 0.5f;
+        foreach (var car in _consist.Cars)
+        {
+            if (car.Def is not { } def)
+            {
+                _carZ.Add(front);
+                continue;
+            }
+
+            var leading = (float)(car.Reversed ? def.RearOverhang : def.FrontOverhang);
+            _carZ.Add(front - leading - (float)def.Centres * 0.5f);
+            front -= (float)def.Length;
+        }
+
+        return total;
+    }
+
+    /// Whether the whole consist is on show (it has anything in it), rather than the catalog's vehicle alone.
+    private bool ShowingConsist => _consist.Cars.Count > 0;
 
     private void Pick(VehicleDef def)
     {
@@ -265,13 +317,19 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
     private void New()
     {
         SaveIfChanged();
+        StartFresh();
+        Notify("New consist");
+    }
+
+    private void StartFresh()
+    {
         _consist = new Consist { Name = UnusedName() };
         _dirty = false;
+        _editingName = false;
         _undo.Clear();
         _redo.Clear();
         _selected = -1;
         _previewRow = false;
-        Notify("New consist");
     }
 
     private static string UnusedName()
@@ -302,10 +360,50 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
         UpdateCamera(dt);
 
         _draws.Clear();
-        if (_track is not null)
-            _draws.AddRange(_track.Draws);
-        if (Shown() is { } shown && ModelFor(shown.Livery) is { } model)
-            _draws.Add(new ModelDraw(model, default, Yaw: shown.Reversed ? MathF.PI : 0f));
+        var length = LayOut();
+        // The track's laid long enough for the whole consist, with room to walk round either end.
+        var wanted = MathF.Max(80f, MathF.Ceiling((length * 0.5f + 60f) / 100f) * 100f);
+        if (_track is null || _track.HalfLength < length * 0.5f + 30f || _track.HalfLength > wanted * 2f)
+        {
+            _track?.Dispose();
+            _track = new DisplayTrack(wanted);
+        }
+
+        _track.DrawsNear(_draws, _target.Z, MathF.Min(120f + _distance * 0.5f, 400f));
+        if (ShowingConsist)
+        {
+            for (var i = 0; i < _consist.Cars.Count; i++)
+            {
+                var car = _consist.Cars[i];
+                if (car.Def is not { } def || ModelFor(car.ModelPath) is not { } carModel)
+                    continue;
+                var yaw = car.Reversed ? MathF.PI : 0f;
+                var at = new float3(0f, 0f, _carZ[i]);
+                if (carModel.Trucks is { } carTrucks)
+                {
+                    var sag = (float)Suspension.Sag(def, car.Fill);
+                    _draws.Add(new ModelDraw(carTrucks, at, Yaw: yaw));
+                    _draws.Add(new ModelDraw(carModel.Body, at + new float3(0f, -sag, 0f), Yaw: yaw));
+                }
+                else
+                    _draws.Add(new ModelDraw(carModel.Body, at, Yaw: yaw));
+            }
+        }
+        else if (Shown() is { } shown && ModelFor(ShownModel(shown)) is { } model)
+        {
+            // The body settles on its springs under its load; the trucks stay on the rail.
+            var yaw = shown.Reversed ? MathF.PI : 0f;
+            if (model.Trucks is { } trucks)
+            {
+                var sag = (float)Suspension.Sag(shown.Def, shown.Car?.Fill ?? 0.0);
+                _draws.Add(new ModelDraw(trucks, default, Yaw: yaw));
+                _draws.Add(new ModelDraw(model.Body, new float3(0f, -sag, 0f), Yaw: yaw));
+            }
+            else
+            {
+                _draws.Add(new ModelDraw(model.Body, default, Yaw: yaw));
+            }
+        }
     }
 
     private void HandleKeys()
@@ -409,37 +507,87 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
         return null;
     }
 
+    /// The model of what's shown: a row's carrying its cargo once loaded, the catalog's empty.
+    private static string? ShownModel((VehicleDef Def, Livery? Livery, bool Reversed, ConsistCar? Car) shown) =>
+        shown.Car?.ModelPath ?? shown.Livery?.Model;
+
     /// Loaded the first time it's shown; null if it can't be.
-    private RenderModel? ModelFor(Livery? livery)
+    private VehicleModel? ModelFor(string? path)
     {
-        if (livery is null)
+        if (path is null)
             return null;
-        if (_models.TryGetValue(livery.Model, out var model))
+        if (_models.TryGetValue(path, out var model))
             return model;
 
         try
         {
-            model = new RenderModel(Model.Load(livery.Model));
+            model = VehicleModel.Load(path);
         }
         catch (Exception e)
         {
-            Log.Warn($"Consist editor: model {livery.Model} unreadable ({e.Message})");
+            Log.Warn($"Consist editor: model {path} unreadable ({e.Message})");
             model = null;
         }
 
-        return _models[livery.Model] = model;
+        return _models[path] = model;
+    }
+
+    /// What the selected car is seen carrying once it's loaded.
+    private void SetCargo(int index, string cargo)
+    {
+        if (index < 0 || index >= _consist.Cars.Count || _consist.Cars[index].CargoId == cargo)
+            return;
+        Change(cars => cars[index] = cars[index].Settled() with { Cargo = cargo });
+        _previewRow = true;
+        Sfx.Tick();
     }
 
     private void UpdateCamera(float dt)
     {
         var shown = Shown();
-        var length = (float)(shown?.Def.Length ?? 20.0);
+        var length = ShowingConsist ? (float)_consist.Cars.Sum(c => c.Def?.Length ?? 0.0) : (float)(shown?.Def.Length ?? 20.0);
 
-        // A new vehicle is framed afresh; the same one keeps where it was looked at from.
-        if (shown?.Def.Id != _framedFor)
+        // The consist framed when it first comes on show (or a vehicle alone, as it's picked); after that the view stays
+        // where it's put.
+        var framing = ShowingConsist ? "consist:" + _consist.Name : shown?.Def.Id;
+        if (framing != _framedFor)
         {
-            _framedFor = shown?.Def.Id;
-            _distance = Math.Clamp(length * 1.35f, 8f, 120f);
+            _framedFor = framing;
+            _distance = Math.Clamp(length * (ShowingConsist ? 0.7f : 1.35f), 8f, 900f);
+            _target = new float3(0f, 2f, 0f);
+            _glideZ = null;
+        }
+
+        // WASD moves what's orbited across the ground, as the view faces; Q and E lower and raise it. Faster the further
+        // out the view is, and with Shift.
+        var keys = !Keyboard.KeysBlocked && !ImGui.GetIO().KeyCtrl && !_editingName;
+        if (keys)
+        {
+            var (sy, cy) = MathF.SinCos(_yaw);
+            var (forward, right) = (new float3(sy, 0f, -cy), new float3(cy, 0f, sy));
+            var move = default(float3);
+            if (Input.Key(GlfwKey.W)) move += forward;
+            if (Input.Key(GlfwKey.S)) move -= forward;
+            if (Input.Key(GlfwKey.D)) move += right;
+            if (Input.Key(GlfwKey.A)) move -= right;
+            if (Input.Key(GlfwKey.E)) move += new float3(0f, 1f, 0f);
+            if (Input.Key(GlfwKey.Q)) move -= new float3(0f, 1f, 0f);
+            if (move.X != 0f || move.Y != 0f || move.Z != 0f)
+            {
+                var speed = MathF.Max(6f, _distance * 0.9f) * (ImGui.GetIO().KeyShift ? 3f : 1f);
+                _target += move * (speed * dt);
+                _target = new float3(_target.X, Math.Clamp(_target.Y, 0.3f, 60f), Math.Clamp(_target.Z, -(_track?.HalfLength ?? 80f), _track?.HalfLength ?? 80f));
+                _touchedAt = Tween.Now;
+                _glideZ = null;
+            }
+        }
+
+        if (_glideZ is { } glide)
+        {
+            var z = _target.Z + (glide - _target.Z) * MathF.Min(1f, dt * 6f);
+            _target = new float3(_target.X + (0f - _target.X) * MathF.Min(1f, dt * 6f), _target.Y, z);
+            if (MathF.Abs(glide - z) < 0.05f)
+                _glideZ = null;
         }
 
         var mouse = ImGui.GetIO().MousePos;
@@ -458,7 +606,7 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
 
         if (overStage && Input.Scroll != 0f)
         {
-            _distance = Math.Clamp(_distance * MathF.Pow(0.9f, Input.Scroll), 4f, 150f);
+            _distance = Math.Clamp(_distance * MathF.Pow(0.9f, Input.Scroll), 4f, 1200f);
             _touchedAt = Tween.Now;
         }
 
@@ -466,7 +614,7 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
         if (Tween.Now - _touchedAt > 4.0 && !Tween.ReduceMotion)
             _yaw += dt * 0.12f;
 
-        var target = new float3(0f, 2.0f, 0f);
+        var target = _target;
         var highest = MathF.Asin(Math.Clamp((target.Y - DisplayTrack.GroundY - 0.3f) / _distance, 0f, 1f));
         _pitch = Math.Clamp(_pitch, -1.45f, highest);
         _camera.Yaw = _yaw;

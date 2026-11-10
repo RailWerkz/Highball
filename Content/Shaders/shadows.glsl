@@ -5,12 +5,14 @@
 layout(set = 2, binding = 0) uniform ShadowUniforms
 {
     mat4 cascades[4];
+    mat4 trackCascade; // the thin parts of the track alone, out to trackShadow.y (SunShadows.TrackReach)
     vec4 splits;  // how far each cascade reaches along the view
     vec4 forward; // the view's direction; w: 1 when there are shadows to read
     vec4 texels;  // each cascade's texel, in metres
     vec4 horizon; // xy: the horizon map's middle relative to the camera; z: 1 / its width; w: 1 when there is one
     vec4 lights;  // the lamps' grid: cells per pixel across and down; slices per log of a distance; w: 1 when there are lamps
     vec4 weather; // x: how wet; y: how much snow lies
+    vec4 trackShadow; // x: the track cascade's texel, in metres; y: how far it reaches (0: none)
 } shadow;
 
 layout(set = 2, binding = 1) uniform sampler2DArrayShadow shadowMap;
@@ -18,12 +20,11 @@ layout(set = 2, binding = 1) uniform sampler2DArrayShadow shadowMap;
 layout(set = 2, binding = 2) uniform sampler2D horizonMap0;
 layout(set = 2, binding = 3) uniform sampler2D horizonMap1;
 
-// How lit a point is in one cascade, 0 to 1: nine filtered taps, for an edge a couple of texels soft.
-float shadowInCascade(int cascade, vec3 relative, vec3 n, float nl)
+// How lit a point is in a shadow layer, 0 to 1: nine filtered taps, for an edge a couple of texels soft. lift: how far off the
+// surface along its normal it's looked up, so a surface doesn't shadow itself.
+float shadowInLayer(int layer, mat4 cascade, vec3 relative, vec3 n, float lift)
 {
-    // Off the surface along its normal, more when the sun grazes it, so it doesn't shadow itself.
-    vec3 lifted = relative + n * shadow.texels[cascade] * (1.0 + 2.0 * (1.0 - nl));
-    vec4 p = shadow.cascades[cascade] * vec4(lifted, 1.0);
+    vec4 p = cascade * vec4(relative + n * lift, 1.0);
     // The world's viewport is flipped so +y is up, and these were drawn the same way.
     vec2 uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
 
@@ -32,11 +33,19 @@ float shadowInCascade(int cascade, vec3 relative, vec3 n, float nl)
     for (int y = -1; y <= 1; y++)
     {
         for (int x = -1; x <= 1; x++)
-            lit += texture(shadowMap, vec4(uv + vec2(x, y) * step, float(cascade), p.z));
+            lit += texture(shadowMap, vec4(uv + vec2(x, y) * step, float(layer), p.z));
     }
 
     return lit / 9.0;
 }
+
+float shadowInCascade(int cascade, vec3 relative, vec3 n, float nl)
+{
+    // Off the surface along its normal, more when the sun grazes it.
+    return shadowInLayer(cascade, shadow.cascades[cascade], relative, n, shadow.texels[cascade] * (1.0 + 2.0 * (1.0 - nl)));
+}
+
+float cascadeShadow(vec3 relative, vec3 n, float nl, float depth);
 
 // How much of the sun reaches a point past what's on the ground. Cascades blend over the last tenth of their reach, and the
 // last fades out.
@@ -50,6 +59,22 @@ float groundShadow(vec3 relative, vec3 n, vec3 sun)
         return 1.0; // already facing away: no direct light for a shadow to take
 
     float depth = dot(relative, shadow.forward.xyz);
+
+    // The track's own cascade, for the rails' and ties' shadows out past the second: only the track's thin parts are in it, so
+    // the ballast and ground reading it can't shadow themselves, and it's looked up barely off the surface.
+    float track = 1.0;
+    float trackReach = shadow.trackShadow.y;
+    if (depth < trackReach)
+    {
+        float t = shadowInLayer(4, shadow.trackCascade, relative, n, shadow.trackShadow.x * 0.5);
+        track = mix(t, 1.0, smoothstep(trackReach * 0.85, trackReach, depth));
+    }
+
+    return min(track, cascadeShadow(relative, n, nl, depth));
+}
+
+float cascadeShadow(vec3 relative, vec3 n, float nl, float depth)
+{
     for (int c = 0; c < 4; c++)
     {
         float reach = shadow.splits[c];

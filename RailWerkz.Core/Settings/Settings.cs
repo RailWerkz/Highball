@@ -86,6 +86,10 @@ public sealed class Settings
     public UnitSystem Units { get; set; } = UnitSystem.Imperial;
     public bool AssistedBraking { get; set; }
 
+    // Developer
+    /// The Route Builder's Developer menu (debug windows, the lighting test scene).
+    public bool DeveloperTools { get; set; }
+
     // Multiplayer
     public string LastHost { get; set; } = "127.0.0.1";
     public int Port { get; set; } = 27960;
