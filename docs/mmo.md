@@ -254,11 +254,22 @@ In order. Each step ends with something to test.
      out of any), and the map shows every built tile in its region's colour, unset ones outlined.
    - Saved straight away to `Regions.json` in the world's folder, tile to region.
 
-5. **Export.**
-   - Client pack per region: tiles plus visible track.
-   - Server data: track graph with heights baked in, switches, signals.
+5. **Done: export, first version.** File > Export for Players and Servers in the editor (or `--export` with
+   `--route`) saves, then writes `Export/WORLD/`:
+   - `REGION.hbpack` per region (`Unassigned.hbpack` for tiles in none; `World.hbpack` when no regions are set): the
+     tiles, Brotli-compressed with heights as residuals from a neighbour prediction and sculpting baked in, then the
+     route's track files kept whole, then an index with a hash per tile and file (`PackFile`).
+   - `World.hbserver` and `REGION.hbserver`: the rail graph with rail-top heights baked in, switches and signals, so a
+     server needs no terrain (`RailGraphFile`). A region keeps the edges whose middle is in its tiles.
+   - `manifest.json`: version, and every pack's and tile's hash.
+   - Then reads everything back and checks it: heights within 0.05 m, cover and track files exact, and the world graph
+     the same edge for edge.
+   - Plymouth: 178 tiles, 49.2 MB as built, 38.5 MB packed (about 216 KB a tile, still 2 m everywhere); server track
+     476 KB for 25 km.
+   - Still to come: visible track per tile (packs carry the network whole for now), mixed-resolution terrain, and a
+     test of a region border that cuts through track (Plymouth's laid track all fell in one region in every split
+     tried).
 
-   *Done when* exporting Plymouth gives both, and they read back.
 6. **Simulation out of the UI.**
    - The train world moves out of `TrainPanel`, and switch state out of `NetworkMeshes`.
    - Both go into a simulation project with no rendering, which the game and a server both reference.

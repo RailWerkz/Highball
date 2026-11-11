@@ -18,6 +18,7 @@ namespace Highball.App;
 ///   --tab NAME                                      with --menu settings, open on that tab: display, graphics, lighting, audio, simulation
 ///   --consist NAME                                  open that saved consist in the Consist Editor
 ///   --route NAME                                    open that route in the Route Builder (made if there isn't one)
+///   --export                                        with --route, export it for players and servers once its track is laid
 ///   --migrate-zone NAME                             move a route made before zones onto its UTM zone's grid (the old
 ///                                                   folder is kept as NAME.prezone)
 ///   --select LAT LON N                              with --route, pick N x N tiles there and build them
@@ -115,6 +116,15 @@ public static class DevTools
 
     private static string? _route;
     private static string? _migrateZone;
+    private static bool _exportPending;
+
+    /// With --export: true once, for the editor to export as soon as its rail graph is built.
+    public static bool TakeExport()
+    {
+        var pending = _exportPending;
+        _exportPending = false;
+        return pending;
+    }
     private static string? _consist;
     private static bool _view;
     private static bool _view2D;
@@ -267,6 +277,9 @@ public static class DevTools
                     break;
                 case "--route" when i + 1 < args.Length:
                     _route = args[++i];
+                    break;
+                case "--export":
+                    _exportPending = true;
                     break;
                 case "--migrate-zone" when i + 1 < args.Length:
                     _migrateZone = args[++i];

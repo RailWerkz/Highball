@@ -344,7 +344,7 @@ public sealed partial class RailGraph
         }
     }
 
-    private void Classify(RailVertex vertex)
+    internal void Classify(RailVertex vertex)
     {
         var ends = vertex.Ends;
         vertex.Onward.Clear();

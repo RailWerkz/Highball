@@ -30,3 +30,6 @@ Content/Models/Vegetation/low_poly_vegetation_for_games_4k.glb
 
 # Terrain textures nothing loads
 Content/Textures/Terrain/Modifiers/
+
+# Exported packs and server track, made from the routes
+Export/

@@ -2607,6 +2607,8 @@ public sealed partial class EditorView : IDisposable
         _trains.Use(_railGraph);
         RestoreStock();
         RelinkSignals(lines);
+        if (DevTools.TakeExport())
+            Export();
         if (DevTools.RailGraphReport)
             Log.Info(Trains.RailGraphCheck.Report(_railGraph, lines));
     }
@@ -3402,6 +3404,39 @@ public sealed partial class EditorView : IDisposable
         var source = _terrain?.Source;
         if (ImGui.MenuItem("Save", "Ctrl+S", false, source is not null && (source.Unsaved || source.Network.Unsaved)))
             Save(source!);
+        ImGui.Separator();
+        if (ImGui.MenuItem("Export for Players and Servers", "", false, _railGraph is not null && _export is not { IsCompleted: false } && _route.Zone is not null))
+            Export();
+        if (_exportStatus is { } status)
+            ImGui.MenuItem(status, "", false, false);
+    }
+
+    private Task? _export;
+    private volatile string? _exportStatus;
+
+    /// Saves, then writes the client packs and server track (WorldExport) in the background, from the rail graph as it
+    /// stands.
+    private void Export()
+    {
+        if (_terrain?.Source is not { } source || _railGraph is not { } graph)
+            return;
+        if (source.Unsaved || source.Network.Unsaved)
+            Save(source);
+        var objects = source.Objects.ToList();
+        _exportStatus = "Exporting...";
+        _export = Task.Run(() =>
+        {
+            try
+            {
+                var result = Routes.WorldExport.Run(_route, graph, objects, s => _exportStatus = s);
+                _exportStatus = result.Lines.Any(l => l.StartsWith("PROBLEM")) ? "Exported, with problems: see the log" : $"Exported to {result.Folder}";
+            }
+            catch (Exception e)
+            {
+                Log.Error($"Export: {e}");
+                _exportStatus = $"Export failed: {e.Message}";
+            }
+        });
     }
 
     public void MenuEdit()
