@@ -60,6 +60,20 @@ public sealed class PlannerView : IDisposable
     private bool _dragRect;
     private readonly HashSet<TileId> _painted = [];
 
+    /// Regions mode: a drag puts the built tiles it passes over in the region picked (with Ctrl, takes them out of any),
+    /// and the map shows every built tile by its region.
+    private bool _regionMode;
+    private Region _paintRegion = Region.Midwest;
+    private RouteRegions _regions;
+
+    private static readonly Dictionary<Region, Rgba> RegionColors = new()
+    {
+        [Region.West] = Rgba.Hex(0xE8705A),
+        [Region.Midwest] = Rgba.Hex(0x5FBF6E),
+        [Region.South] = Rgba.Hex(0xE0B341),
+        [Region.Northeast] = Rgba.Hex(0x9A86F2),
+    };
+
     /// Along Track mode: a drag marks an area, and once OpenStreetMap says where the rail runs in it, selects the tiles the
     /// track passes through and those within the padding of them, each kind with its own heights.
     private bool _trackMode;
@@ -92,6 +106,7 @@ public sealed class PlannerView : IDisposable
         _notify = notify;
         _network = RouteNetwork.Load(route);
         _built = route.BuiltTiles();
+        _regions = RouteRegions.Load(route);
         ReadBuiltSources(_built);
         _layouts = World.TrackLayouts.LoadMarkers(route);
 
@@ -409,7 +424,9 @@ public sealed class PlannerView : IDisposable
     }
 
     public (string Key, string Action)[] Hints =>
-        [_trackMode ? ("LMB", "Pick track in area") : ("LMB", "Add tiles"), ("SHIFT+LMB", "Add area"), ("CTRL+LMB", "Remove tiles"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("TAB", "2D Editor"), ("ESC", "Exit")];
+        _regionMode
+            ? [("LMB", $"Paint {_paintRegion}"), ("SHIFT+LMB", "Paint area"), ("CTRL+LMB", "Clear region"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("TAB", "2D Editor"), ("ESC", "Exit")]
+            : [_trackMode ? ("LMB", "Pick track in area") : ("LMB", "Add tiles"), ("SHIFT+LMB", "Add area"), ("CTRL+LMB", "Remove tiles"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("TAB", "2D Editor"), ("ESC", "Exit")];
 
     public string Attribution => MapTiles.Attribution;
 
@@ -458,6 +475,17 @@ public sealed class PlannerView : IDisposable
         HeightRow("Standard", StandardColor, false, _selected.Count - _lidar.Count, _built.Count - _builtLidar.Count);
         if (Kit.Button("lidaralong", "Lidar Along Track", 0f, ButtonKind.Secondary, _selected.Count > 0 && !_generator.Running))
             FindTrack();
+        Kit.EndCard();
+
+        Kit.BeginCard("Regions", $"{_built.Count(t => _regions.Of(t) is null)} unset");
+        _regionMode = ToolPanel.Mode("regionmode", ["Off", "Paint"], _regionMode ? 1 : 0, 2) == 1;
+        foreach (var region in Enum.GetValues<Region>())
+            if (ToolPanel.Item($"region{region}", null, region.ToString(), $"{_built.Count(t => _regions.Of(t) == region)} TILES", _regionMode && _paintRegion == region, swatch: RegionColors[region]))
+            {
+                _paintRegion = region;
+                _regionMode = true;
+            }
+
         Kit.EndCard();
 
         Kit.BeginCard("Build", $"{_selected.Count} selected");
@@ -635,6 +663,12 @@ public sealed class PlannerView : IDisposable
 
     private void DrawTiles(ImDrawListPtr draw)
     {
+        if (_regionMode)
+        {
+            DrawRegions(draw);
+            return;
+        }
+
         foreach (var t in _built)
         {
             var color = _builtLidar.Contains(t) ? LidarColor : StandardColor;
@@ -661,6 +695,24 @@ public sealed class PlannerView : IDisposable
             Area(draw, DragBounds(), Rgba.White);
         else if (_trackAreaBounds is { } waiting && _trackArea is not null)
             Area(draw, waiting, Rgba.White.WithAlpha(0.6f));
+    }
+
+    /// Every built tile in its region's colour (unset ones outlined only), with the drag in the colour it paints.
+    private void DrawRegions(ImDrawListPtr draw)
+    {
+        var preview = _dragging ? DragTiles() : [];
+        foreach (var t in _built)
+        {
+            if (preview.Contains(t))
+            {
+                var paint = _dragMode == DragMode.Remove ? Stop : RegionColors[_paintRegion];
+                Quad(draw, t, paint.WithAlpha(0.45f), paint.WithAlpha(0.95f));
+            }
+            else if (_regions.Of(t) is { } region)
+                Quad(draw, t, RegionColors[region].WithAlpha(0.3f), RegionColors[region].WithAlpha(0.7f));
+            else
+                Quad(draw, t, Rgba.White.WithAlpha(0.04f), Rgba.White.WithAlpha(0.45f));
+        }
     }
 
     private void Area(ImDrawListPtr draw, (int I0, int J0, int I1, int J1) b, Rgba color)
@@ -733,6 +785,12 @@ public sealed class PlannerView : IDisposable
                 return;
             }
 
+            if (_regionMode && _built.Count == 0)
+            {
+                _notify("Build some tiles first");
+                return;
+            }
+
             if (_route.Grid is null)
             {
                 _route.SetOrigin(_map.ToGeo(mouse));
@@ -740,7 +798,7 @@ public sealed class PlannerView : IDisposable
             }
 
             _dragMode = ImGui.GetIO().KeyCtrl ? DragMode.Remove : DragMode.Add;
-            _dragTrack = _trackMode && _dragMode == DragMode.Add;
+            _dragTrack = _trackMode && !_regionMode && _dragMode == DragMode.Add;
             _dragRect = ImGui.GetIO().KeyShift || _dragTrack;
             _dragFrom = _dragTo = TileUnder(mouse);
             _painted.Clear();
@@ -759,7 +817,13 @@ public sealed class PlannerView : IDisposable
             return;
 
         var rect = DragTiles();
-        if (_dragTrack)
+        if (_regionMode)
+        {
+            var tiles = rect.Where(_built.Contains).ToList();
+            _regions.Set(tiles, _dragMode == DragMode.Remove ? null : _paintRegion);
+            _regions.Save(_route);
+        }
+        else if (_dragTrack)
         {
             if (_generator.Running)
                 _notify("Wait for the build to finish");

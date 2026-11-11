@@ -248,7 +248,12 @@ In order. Each step ends with something to test.
      trains it governs. Set when placed or moved, and filled in or fixed up from where the signal stands when the
      editor opens or an edit takes a node out.
 
-4. **Region painting in the Planner.** Mark tiles as West, Midwest, South or Northeast, saved with the world.
+4. **Done: region painting in the Planner.**
+   - A Regions card in the Planner: Off or Paint, and West, Midwest, South and Northeast with how many tiles each has.
+   - In Paint, a drag puts the built tiles it passes over in the region picked (Shift: a rectangle; Ctrl: take them
+     out of any), and the map shows every built tile in its region's colour, unset ones outlined.
+   - Saved straight away to `Regions.json` in the world's folder, tile to region.
+
 5. **Export.**
    - Client pack per region: tiles plus visible track.
    - Server data: track graph with heights baked in, switches, signals.
