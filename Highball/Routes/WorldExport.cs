@@ -14,7 +14,8 @@ namespace Highball.Routes;
 ///   REGION.hbserver  a region's track for a self-hosted server: the rail graph with heights baked in, and signals
 ///   World.hbserver   the whole world's, for the company server
 ///   manifest.json    the version, and every pack's and tile's hash, for patches
-/// Then reads every file back and checks it against what was written.
+/// Then reads every file back and checks it against what was written, and if it's right installs the packs in
+/// Content/Packs/WORLD/ for Single Player.
 public static class WorldExport
 {
     /// The route files the client lays the track out from, as the editor does, kept whole in every pack.
@@ -109,7 +110,20 @@ public static class WorldExport
         File.WriteAllText(Path.Combine(folder, "manifest.json"), JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }));
 
         progress?.Invoke("Checking what was written");
-        lines.AddRange(Check(route, folder, graph));
+        var check = Check(route, folder, graph);
+        lines.AddRange(check);
+
+        // Installed for Single Player to find, once it's checked out.
+        if (!check.Any(l => l.StartsWith("PROBLEM")))
+        {
+            var install = Path.Combine(PackSource.Root, route.Id);
+            Directory.CreateDirectory(install);
+            foreach (var old in Directory.GetFiles(install, "*.hbpack"))
+                File.Delete(old);
+            foreach (var pack in Directory.GetFiles(folder, "*.hbpack").Append(Path.Combine(folder, "manifest.json")))
+                File.Copy(pack, Path.Combine(install, Path.GetFileName(pack)), true);
+            lines.Add($"Installed in {install}");
+        }
         lines.Insert(0, $"Exported {route.Name} v{route.Version} to {folder} in {watch.Elapsed.TotalSeconds:0} s: tiles {rawBytes / 1048576.0:0.0} MB as built, {packBytes / 1048576.0:0.0} MB packed");
         foreach (var line in lines)
             Log.Info($"Export: {line}");

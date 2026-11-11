@@ -253,6 +253,9 @@ public sealed partial class TerrainSource
     /// Writes every changed tile's height offsets and land cover.
     public void SaveEdits()
     {
+        // Played from a pack: nothing's kept.
+        if (_route.Pack is not null)
+            return;
         if (TrackEdits.Unsaved)
             TrackEdits.Save(_route);
         foreach (var tile in _tiles.Values)

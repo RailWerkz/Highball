@@ -115,7 +115,7 @@ public sealed class PlannerView : IDisposable
         {
             try
             {
-                var info = RouteTile.LoadInfo(route.TileFolder(_built.First()));
+                var info = route.LoadTileInfo(_built.First());
                 _roadLevel = Math.Max(0, Array.FindIndex(Detail.RoadLevels, l => l.Name == info.Roads));
                 _railLevel = Math.Max(0, Array.FindIndex(Detail.RailLevels, l => l.Name == info.Rails));
             }
@@ -176,7 +176,7 @@ public sealed class PlannerView : IDisposable
         {
             try
             {
-                if (RouteTile.LoadInfo(_route.TileFolder(tile)).HeightSource.Contains("USGS"))
+                if (_route.LoadTileInfo(tile).HeightSource.Contains("USGS"))
                     _builtLidar.Add(tile);
                 else
                     _builtLidar.Remove(tile);

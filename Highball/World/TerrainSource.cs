@@ -101,10 +101,10 @@ public sealed partial class TerrainSource
             try
             {
                 var folder = route.TileFolder(ids[i]);
-                var data = RouteTile.Load(folder);
+                var data = route.LoadTile(ids[i]);
                 lines.SampleGround(ids[i], data.Heights, data.Meta.Samples);
                 if (lines.LinesIn(ids[i]).Count == 0)
-                    tiles[i] = MakeTile(ids[i], data.Heights, data.Cover, data.Meta.Samples, LoadEdits(folder, data.Meta.Samples));
+                    tiles[i] = MakeTile(ids[i], data.Heights, data.Cover, data.Meta.Samples, (route.Pack is null ? LoadEdits(folder, data.Meta.Samples) : null));
             }
             catch (Exception e)
             {
@@ -123,9 +123,9 @@ public sealed partial class TerrainSource
             try
             {
                 var folder = route.TileFolder(ids[i]);
-                var data = RouteTile.Load(folder);
+                var data = route.LoadTile(ids[i]);
                 lines.Conform(ids[i], data.Heights, data.Meta.Samples);
-                tiles[i] = MakeTile(ids[i], data.Heights, data.Cover, data.Meta.Samples, LoadEdits(folder, data.Meta.Samples));
+                tiles[i] = MakeTile(ids[i], data.Heights, data.Cover, data.Meta.Samples, (route.Pack is null ? LoadEdits(folder, data.Meta.Samples) : null));
                 lines.DrapeMarks(ids[i], data.Heights, data.Meta.Samples);
             }
             catch (Exception e)
@@ -205,14 +205,14 @@ public sealed partial class TerrainSource
             tile.Used = _clock;
             if (tile.Full is null && tile.Loading is null)
             {
-                var folder = _route.TileFolder(tile.Id);
+                var route = _route;
                 var samples = Samples;
                 tile.Loading = Task.Run(() =>
                 {
                     try
                     {
                         using var counted = Background.Begin("Tile loads");
-                        var heights = RouteTile.Load(folder).Heights;
+                        var heights = route.LoadTile(tile.Id).Heights;
                         Lines?.Conform(tile.Id, heights, samples);
                         ApplyEdits(heights, tile.Edits);
                         _loaded.Enqueue((tile, heights));

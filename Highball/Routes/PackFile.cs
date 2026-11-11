@@ -170,9 +170,12 @@ public static class PackFile
         return data;
     }
 
-    public static Tile ReadTile(Stream file, Header header, TileEntry entry)
+    public static Tile ReadTile(Stream file, Header header, TileEntry entry) => DecodeTile(header, entry, ReadBlob(file, entry.Offset, entry.Length));
+
+    /// A tile from its bytes as stored (read with ReadBlob), so the reading can be done under a lock and this outside it.
+    public static Tile DecodeTile(Header header, TileEntry entry, byte[] blob)
     {
-        using var brotli = new BrotliStream(new MemoryStream(ReadBlob(file, entry.Offset, entry.Length)), CompressionMode.Decompress);
+        using var brotli = new BrotliStream(new MemoryStream(blob), CompressionMode.Decompress);
         using var r = new BinaryReader(brotli);
         var (min, max, source) = (r.ReadSingle(), r.ReadSingle(), r.ReadString());
         var samples = header.Samples;

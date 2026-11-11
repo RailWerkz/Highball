@@ -26,7 +26,29 @@ public sealed class RouteInfo
     public string Id { get; private set; } = "";
 
     [JsonIgnore]
-    public string Folder => Path.Combine(Root, Id);
+    public string Folder => _folder ?? Path.Combine(Root, Id);
+
+    private string? _folder;
+
+    /// The installed pack it's played from (its tiles read from there), or null for a route being built.
+    [JsonIgnore]
+    public PackSource? Pack { get; private set; }
+
+    /// A pack's route: its manifest and track files in folder (where they've been unpacked), its tiles in the pack.
+    public static RouteInfo FromPack(string folder, string id, PackSource pack)
+    {
+        var route = JsonSerializer.Deserialize<RouteInfo>(File.ReadAllText(Path.Combine(folder, "Route.json")), Options)
+                    ?? throw new InvalidDataException($"{folder}: no Route.json");
+        route.Id = id;
+        route._folder = folder;
+        route.Pack = pack;
+        return route;
+    }
+
+    /// One built tile: from the pack if it's played from one, else from its folder.
+    public RouteTile LoadTile(TileId tile) => Pack?.Load(tile) ?? RouteTile.Load(TileFolder(tile));
+
+    public RouteTile.Info LoadTileInfo(TileId tile) => Pack?.LoadInfo(tile) ?? RouteTile.LoadInfo(TileFolder(tile));
 
     [JsonIgnore]
     public RouteProjection? Projection => Grid is null ? null : _projection ??= Zone is { } zone ? new RouteProjection(zone) : new RouteProjection(new GeoPoint(Origin.Latitude, Origin.Longitude));
@@ -65,6 +87,8 @@ public sealed class RouteInfo
     /// The tiles built so far.
     public HashSet<TileId> BuiltTiles()
     {
+        if (Pack is not null)
+            return Pack.Built();
         var tiles = new HashSet<TileId>();
         var root = Path.Combine(Folder, "Tiles");
         if (!Directory.Exists(root))

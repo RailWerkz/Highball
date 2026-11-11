@@ -18,6 +18,8 @@ namespace Highball.App;
 ///   --tab NAME                                      with --menu settings, open on that tab: display, graphics, lighting, audio, simulation
 ///   --consist NAME                                  open that saved consist in the Consist Editor
 ///   --route NAME                                    open that route in the Route Builder (made if there isn't one)
+///   --pack WORLD/REGION                             drive that installed pack, as Single Player does (with --train, --camera,
+///                                                   --shot)
 ///   --export                                        with --route, export it for players and servers once its track is laid
 ///   --migrate-zone NAME                             move a route made before zones onto its UTM zone's grid (the old
 ///                                                   folder is kept as NAME.prezone)
@@ -117,6 +119,7 @@ public static class DevTools
     private static string? _route;
     private static string? _migrateZone;
     private static bool _exportPending;
+    private static string? _pack;
 
     /// With --export: true once, for the editor to export as soon as its rail graph is built.
     public static bool TakeExport()
@@ -277,6 +280,9 @@ public static class DevTools
                     break;
                 case "--route" when i + 1 < args.Length:
                     _route = args[++i];
+                    break;
+                case "--pack" when i + 1 < args.Length:
+                    _pack = args[++i];
                     break;
                 case "--export":
                     _exportPending = true;
@@ -481,6 +487,16 @@ public static class DevTools
             if (consist is null)
                 Log.Warn($"--consist: no saved consist called {consistName}");
             app.Push(new ConsistEditorScreen(consist));
+        }
+
+        if (_pack is { } packName)
+        {
+            _pack = null;
+            var found = Routes.PackSource.Installed().FirstOrDefault(p => $"{p.World}/{p.Region}".Equals(packName, StringComparison.OrdinalIgnoreCase));
+            if (found.Path is null)
+                Log.Warn($"--pack: no installed pack {packName}");
+            else
+                app.Push(Builder.BuilderScreen.Play(Routes.PackSource.Open(found.Path)));
         }
 
         if (_route is { } name)

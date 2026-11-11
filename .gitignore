@@ -33,3 +33,5 @@ Content/Textures/Terrain/Modifiers/
 
 # Exported packs and server track, made from the routes
 Export/
+# Installed packs, made by the export
+Content/Packs/

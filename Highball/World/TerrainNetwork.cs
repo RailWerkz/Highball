@@ -33,7 +33,7 @@ public sealed partial class TerrainSource
             lines.SetCrossings(crossings, _route.Projection!);
             Parallel.ForEach(lines.AdoptGround(previous), id =>
             {
-                var data = RouteTile.Load(_route.TileFolder(id));
+                var data = _route.LoadTile(id);
                 lines.SampleGround(id, data.Heights, samples);
             });
             lines.FinishProfiles();
@@ -85,7 +85,7 @@ public sealed partial class TerrainSource
             var heights = new ConcurrentDictionary<TileId, float[]>();
             Parallel.ForEach(tiles, id =>
             {
-                var reshaped = RouteTile.Load(_route.TileFolder(id)).Heights;
+                var reshaped = _route.LoadTile(id).Heights;
                 lines.Conform(id, reshaped, samples);
                 ApplyEdits(reshaped, _tiles[id].Edits);
                 lines.DrapeMarks(id, reshaped, samples);

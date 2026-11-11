@@ -283,7 +283,20 @@ In order. Each step ends with something to test.
    - Checked in the editor: saved stock put back, a locomotive starting up and pulling, a train uncoupled and drawing
      apart.
 
-7. **The game runs from packs.** Driving loads tiles from the installed pack, ahead along the track.
+7. **Done: the game runs from packs, first version.**
+   - The export installs the packs in `Content/Packs/WORLD/` once they check out (`Content/Packs/` is ignored).
+   - Single Player lists the installed packs by world name (and region), and opens one to drive.
+   - `PackSource` opens a pack: tiles are read from it as they're needed (full heights near the camera and ahead of
+     it, as from a route folder), and its track files are unpacked into a cache folder (`%APPDATA%/Highball/PackCache`)
+     that stands in for the route's folder, so the track is laid out as the editor does it. Anything written while
+     playing lands in that cache.
+   - Driving uses the editor's 3D view in a playing mode: straight into 3D, no Planner, Esc leaves, sculpting isn't
+     kept. `--pack WORLD/REGION` opens one the same way.
+   - Checked with `Content/Routes/World` hidden: Plymouth opened from the pack alone (8.6 s, against 6.7 s from the
+     folder) and a locomotive placed and driven.
+   - Still to come: a driving screen of its own (the editor's tool strip still shows, its edits just aren't kept),
+     stock left on the track when a pack's made, and a version check against the manifest.
+
 8. **Server.**
    - A headless server on the simulation project and `Session`, loading only the server data.
    - Host and Join wired up.
