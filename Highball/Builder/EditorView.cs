@@ -315,7 +315,7 @@ public sealed partial class EditorView : IDisposable
             }
 
             _terrain = new Terrain(_opening.Result);
-            _network = new NetworkMeshes(_opening.Result);
+            _network = new NetworkMeshes(_opening.Result) { Switches = _switches };
             _network.SetObjects(_opening.Result.Objects, [], _route.Projection!);
             if (DevTools.AuditFile is { } auditFile)
             {
@@ -2595,14 +2595,17 @@ public sealed partial class EditorView : IDisposable
         Log.Info($"Signals: {edits.Count} linked to their track again");
     }
 
+    /// Which way every switch is set: kept across the track being laid out again, for the trains and the blades both.
+    private readonly Trains.SwitchStates _switches = new();
+
     private void RefreshRailGraph()
     {
         if (_terrain!.Source.Lines is not { } lines || _network is not { } network || ReferenceEquals(lines, _railGraphFor))
             return;
         _railGraphFor = lines;
-        _railGraph = Trains.RailGraph.Build(lines);
-        _railGraph.Reversed = network.Reversed;
-        _trains.SetSwitch = network.Set;
+        _railGraph = RailGraphBuilder.Build(lines);
+        _railGraph.Reversed = _switches.Reversed;
+        _trains.Railway.Switches = _switches;
         _trains.Ground = (x, z) => _terrain!.Source.HeightAt(x, z);
         _trains.Use(_railGraph);
         RestoreStock();

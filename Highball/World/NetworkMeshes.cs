@@ -210,7 +210,8 @@ public sealed partial class NetworkMeshes : IDisposable
         _stale.Add((key, true));
     }
     private readonly Dictionary<long, float> _position = [];
-    private readonly Dictionary<long, float> _target = [];
+    /// Which way each switch is set (the simulation's); the blades swing over to match.
+    public Trains.SwitchStates Switches { get; set; } = new();
     private readonly HashSet<ChunkKey> _nearKeys = [];
     private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
     private double _lastUpdate;
@@ -514,22 +515,23 @@ public sealed partial class NetworkMeshes : IDisposable
             .MinBy(t => (t.X - x) * (t.X - x) + (t.Z - z) * (t.Z - z));
         if (nearest is null)
             return null;
-        _target[nearest.Node] = _target.GetValueOrDefault(nearest.Node) > 0.5f ? 0f : 1f;
+        Switches.Throw(nearest.Node);
         return nearest;
     }
 
     /// Sets a switch for one route, its blades swinging over if they're not there already: a train running through it
     /// trailing forces them over.
-    public void Set(long node, bool reversed) => _target[node] = reversed ? 1f : 0f;
+    public void Set(long node, bool reversed) => Switches.Set(node, reversed);
 
     /// Whether a switch is set (or going) for its reverse route.
-    public bool Reversed(long node) => _target.GetValueOrDefault(node) > 0.5f;
+    public bool Reversed(long node) => Switches.Reversed(node);
 
     /// Moves every moving switch's blades on, and makes the blades of the switches in near chunks that need it.
     private void Swing(float dt)
     {
-        foreach (var (node, target) in _target)
+        foreach (var (node, reversed) in Switches.All)
         {
+            var target = reversed ? 1f : 0f;
             var position = _position.GetValueOrDefault(node);
             if (position != target)
                 _position[node] = target > position ? MathF.Min(target, position + dt / ThrowTime) : MathF.Max(target, position - dt / ThrowTime);

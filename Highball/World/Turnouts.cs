@@ -95,9 +95,9 @@ public sealed class Turnout
     public required float TimberEnd { get; init; }
 
     /// The standard sizes: frog numbers and their lead curves' radii (US practice), as modelled in Tools/Blender/turnouts.py.
-    public static readonly (int Number, float Radius)[] Sizes = [(6, 80f), (7, 112f), (8, 145f), (10, 237f), (15, 500f), (20, 890f)];
+    public static readonly (int Number, float Radius)[] Sizes = Trains.TurnoutSizes.Sizes;
 
-    public static float RadiusOf(int number) => Sizes.First(s => s.Number == number).Radius;
+    public static float RadiusOf(int number) => Trains.TurnoutSizes.RadiusOf(number);
 
     /// A size's frog, from the point of switch: where the routes' centrelines are two rail spacings apart.
     public static float FrogOf(int number) => MathF.Sqrt(4f * RadiusOf(number) * RailOffset);

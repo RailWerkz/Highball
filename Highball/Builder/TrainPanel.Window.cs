@@ -184,8 +184,7 @@ public sealed partial class TrainPanel
 
         if (_focus is not { } cut || !ReferenceEquals(cut.Train, train) || train.Turned() is not { } turned)
             return;
-        Hook(turned);
-        cut.Train = turned;
+        Railway.Swap(cut, turned);
         cut.Pose.Clear();
         cut.Previous.Clear();
         cut.Rolls.Clear();

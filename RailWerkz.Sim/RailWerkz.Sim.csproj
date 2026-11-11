@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <!-- The railway as it runs, with no window, drawing, input or sound: trains and their physics, the rail graph,
+         switches, and the stock on the track (Railway). The game and a server both run it. -->
+    <PropertyGroup>
+        <RootNamespace>Highball.Trains</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="../RailWerkz.Core/RailWerkz.Core.csproj" />
+    </ItemGroup>
+</Project>

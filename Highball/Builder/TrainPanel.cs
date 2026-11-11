@@ -19,30 +19,48 @@ namespace Highball.Builder;
 public sealed partial class TrainPanel : IDisposable
 {
     /// The most vehicles there can be on the track at once.
-    public const int MaxVehicles = 10000;
+    public const int MaxVehicles = Railway.MaxVehicles;
 
     /// Run together faster than this (mph, closing) and both cuts are taken off: there's no crash yet to show.
-    public const double CoupleSpeed = 15.0;
+    public const double CoupleSpeed = Railway.CoupleSpeed;
 
-    /// An uncoupled cut drawn this far (metres) from the rest of its train becomes a cut of its own.
-    private const double SplitGap = 3.0;
+    /// The stock on the track and what happens between it: this window drives it and draws it.
+    public readonly Railway Railway = new();
 
     /// A cut on the track, with what it takes to draw it smoothly from one frame to the next.
-    private sealed class Cut
+    private sealed class Cut(Train train) : Railway.Cut(train)
     {
-        public required Train Train;
         /// The consist it was made from, to keep the vehicles' names and loads in (null once cuts have been joined).
         public Consist? From;
         public readonly List<((double X, double Y, double Z) Front, (double X, double Y, double Z) Rear)> Pose = [];
         public readonly List<(float4 Rotation, double3 At, float4 BodyRotation, double3 BodyAt)> Previous = [];
         public readonly List<Suspension.Roll> Rolls = [];
-        /// Seconds it's stood still: a cut left standing a while isn't stepped, until something touches it.
-        public double Still;
-        public bool Asleep => Still > 3.0;
     }
 
-    private readonly List<Cut> _cuts = [];
-    private Cut? _focus, _controlled;
+    private List<Cut> _cuts => [.. Railway.Cuts.Cast<Cut>()];
+    private Cut? _focus;
+
+    private Cut? _controlled
+    {
+        get => (Cut?)Railway.Controlled;
+        set => Railway.Controlled = value;
+    }
+
+    public TrainPanel()
+    {
+        Railway.NewCut = (train, from) => new Cut(train) { From = (from as Cut)?.From };
+        Railway.Notice += what => _notice = what;
+        Railway.Removed += cut =>
+        {
+            if (ReferenceEquals(_focus, cut))
+                Focus(_cuts.LastOrDefault());
+        };
+        Railway.Replaced += (old, now) =>
+        {
+            if (ReferenceEquals(_focus, old) || _focus is null || !Railway.Cuts.Contains(_focus))
+                Focus((Cut)now);
+        };
+    }
 
     private readonly Dictionary<string, VehicleModel?> _models = [];
     private readonly List<ModelDraw> _draws = [];
@@ -133,33 +151,15 @@ public sealed partial class TrainPanel : IDisposable
     /// The cars, to draw.
     public IReadOnlyList<ModelDraw> Draws => _draws;
 
-    /// Sets a switch for one route (the editor's meshes own how the switches lie).
-    public Action<long, bool>? SetSwitch { get; set; }
-
     /// The track has a new graph (it changed): the train is put back on it where it was.
     public void Use(RailGraph graph)
     {
         _graph = graph;
-        var lost = 0;
-        foreach (var cut in _cuts.ToList())
-            if (!cut.Train.MoveTo(graph))
-            {
-                Remove(cut);
-                lost++;
-            }
-        if (lost > 0)
-            _notice = lost == 1 ? "The track under a cut changed: it was taken off" : $"The track under {lost} cuts changed: they were taken off";
+        Railway.Use(graph);
     }
 
     /// Takes a cut off the track.
-    private void Remove(Cut cut)
-    {
-        _cuts.Remove(cut);
-        if (ReferenceEquals(_controlled, cut))
-            _controlled = null;
-        if (ReferenceEquals(_focus, cut))
-            Focus(_cuts.LastOrDefault());
-    }
+    private void Remove(Cut cut) => Railway.Remove(cut);
 
     /// Takes control of the looked-at cut, giving up whichever's driven now (its brakes set as it's left). False, with a
     /// notice, if it has no locomotive.
@@ -190,22 +190,6 @@ public sealed partial class TrainPanel : IDisposable
         _controlled = null;
         Sounds.Stop();
         _hornButton = false;
-    }
-
-    /// Hooks a cut's train up to tell the crew what happens and to force switches it runs through.
-    private void Hook(Train train)
-    {
-        train.Happened = what =>
-        {
-            Log.Info($"Train {train.Name}: {what}");
-            _notice = what;
-        };
-        train.RunThrough = node =>
-        {
-            Log.Info($"Train {train.Name}: ran through switch {node}, set against it");
-            _notice = "Ran through a switch set against the train: it's been forced over";
-            SetSwitch?.Invoke(node, !train.Graph.Reversed(node));
-        };
     }
 
     /// Puts the picked consist on the track nearest (x, z), its front there, facing as near (fx, fz) as the track allows.
@@ -249,149 +233,19 @@ public sealed partial class TrainPanel : IDisposable
             return;
         }
 
-        if (Overlapping(train) is { } there)
+        if (Railway.Add(train, null, out var refused) is not Cut cut)
         {
-            _notice = $"There's already stock there ({there.Train.Name})";
+            _notice = refused;
             return;
         }
 
-        Hook(train);
         // Names and loads go back into the consist it came from only if that's a saved one.
-        var cut = new Cut { Train = train, From = fromLibrary ? _consists.FirstOrDefault(c => c.Name == consist.Name) ?? consist : null };
-        _cuts.Add(cut);
+        cut.From = fromLibrary ? _consists.FirstOrDefault(c => c.Name == consist.Name) ?? consist : null;
         Focus(cut);
         // The first engine put down is driven; after that, control's taken from the window.
         if (_controlled is null && train.Cars.Any(c => c.Def.Kind == VehicleKind.Locomotive))
             _controlled = cut;
         _notice = null;
-    }
-
-    /// A cut already standing where a train would be put: any of its trucks within a car's width of the new one's.
-    private Cut? Overlapping(Train train)
-    {
-        foreach (var cut in _cuts)
-        {
-            if (!ReferenceEquals(cut.Train.Graph, train.Graph))
-                continue;
-            foreach (var a in train.Cars)
-                foreach (var b in cut.Train.Cars)
-                    foreach (var p in (ReadOnlySpan<(double X, double Y, double Z)>)[a.FrontAt, a.RearAt])
-                        foreach (var q in (ReadOnlySpan<(double X, double Y, double Z)>)[b.FrontAt, b.RearAt])
-                            if ((p.X - q.X) * (p.X - q.X) + (p.Z - q.Z) * (p.Z - q.Z) < 2.0 * 2.0 && Math.Abs(p.Y - q.Y) < 3.0)
-                                return cut;
-        }
-
-        return null;
-    }
-
-    // --- Cuts meeting, and cuts drawing apart. ---
-
-    /// Each end of a cut: where its coupler is, which way it faces out, and how fast it's moving out that way.
-    private static ((double X, double Y, double Z) At, (double X, double Z) Out, double Speed) End(Train train, bool front)
-    {
-        var at = front ? train.Head : train.Cars[^1].Rear;
-        var (fx, fz) = train.Graph.FacingOf(at);
-        return front
-            ? (train.Graph.PositionOf(at), (fx, fz), train.Body.Velocity[0])
-            : (train.Graph.PositionOf(at), (-fx, -fz), -train.Body.Velocity[^1]);
-    }
-
-    /// Cuts whose ends have met: coupled into one train under CoupleSpeed, both taken off above it.
-    private void Contacts(double dt)
-    {
-        for (var i = 0; i < _cuts.Count; i++)
-        {
-            for (var j = i + 1; j < _cuts.Count; j++)
-            {
-                var (a, b) = (_cuts[i], _cuts[j]);
-                if (!ReferenceEquals(a.Train.Graph, b.Train.Graph) || (a.Asleep && b.Asleep))
-                    continue;
-                foreach (var frontA in (ReadOnlySpan<bool>)[true, false])
-                {
-                    foreach (var frontB in (ReadOnlySpan<bool>)[true, false])
-                    {
-                        var ea = End(a.Train, frontA);
-                        var eb = End(b.Train, frontB);
-                        // Facing each other on the same track, near enough to have met this frame at the speed they're closing.
-                        if (ea.Out.X * eb.Out.X + ea.Out.Z * eb.Out.Z > -0.7)
-                            continue;
-                        var closing = ea.Speed + eb.Speed;
-                        var (dx, dy, dz) = (ea.At.X - eb.At.X, ea.At.Y - eb.At.Y, ea.At.Z - eb.At.Z);
-                        var apart = Math.Sqrt(dx * dx + dy * dy + dz * dz);
-                        if (apart > 0.35 + Math.Max(0.0, closing) * dt * 1.5 || closing < -0.05)
-                            continue;
-
-                        var mph = Math.Abs(closing) * 2.2369363;
-                        if (mph > CoupleSpeed)
-                        {
-                            Log.Info($"Trains: {a.Train.Name} and {b.Train.Name} met at {mph:0.0} mph: both taken off");
-                            _notice = $"{a.Train.Name} and {b.Train.Name} ran together at {mph:0} mph (over {CoupleSpeed:0}): both were taken off";
-                            Remove(a);
-                            Remove(b);
-                            return;
-                        }
-
-                        Couple(a, frontA, b, frontB, mph);
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Two cuts that met, as one: the driven one (or else the first) keeps the controls and stays the right way round.
-    private void Couple(Cut a, bool frontA, Cut b, bool frontB, double mph)
-    {
-        // The driven cut (or else the first) leads, so its engine's brake valve and controls work the train: turned end for
-        // end if it met at its front, so it meets the other at its rear; the other turned as needed to meet it at its front.
-        if (ReferenceEquals(b, _controlled))
-            (a, frontA, b, frontB) = (b, frontB, a, frontA);
-        var joined = Trains.Train.Join(a.Train, frontA, b.Train, !frontB, -0.02);
-        if (joined is null)
-            return;
-
-        Hook(joined);
-        var cut = new Cut { Train = joined };
-        var wasControlled = ReferenceEquals(a, _controlled) || ReferenceEquals(b, _controlled);
-        var wasFocus = ReferenceEquals(a, _focus) || ReferenceEquals(b, _focus);
-        _cuts.Remove(a);
-        _cuts.Remove(b);
-        _cuts.Add(cut);
-        if (wasControlled)
-            _controlled = cut;
-        if (wasFocus || _focus is null || !_cuts.Contains(_focus))
-            Focus(cut);
-        Log.Info($"Trains: coupled into {joined.Name}, {joined.Cars.Count} vehicles, at {mph:0.0} mph");
-        _notice = mph > 4.0
-            ? $"Coupled hard, at {mph:0.0} mph: keep it under 4. Join the air hose to cut the brakes in"
-            : "Coupled: join the air hose and open the angle cocks to cut the brakes in";
-    }
-
-    /// Uncoupled cuts drawn far enough from the rest of their train become cuts of their own.
-    private void Splits()
-    {
-        for (var i = 0; i < _cuts.Count; i++)
-        {
-            var cut = _cuts[i];
-            var body = cut.Train.Body;
-            for (var link = 0; link < body.Coupled.Length; link++)
-            {
-                if (body.Coupled[link] || body.Gap(link) < SplitGap || cut.Train.Split(link) is not var (front, rear))
-                    continue;
-                Hook(front);
-                Hook(rear);
-                Log.Info($"Trains: {cut.Train.Name} drew apart into {front.Cars.Count} and {rear.Cars.Count} vehicles");
-                var (f, r) = (new Cut { Train = front, From = cut.From }, new Cut { Train = rear, From = cut.From });
-                _cuts[i] = f;
-                _cuts.Add(r);
-                // The driven engine's half stays driven.
-                if (ReferenceEquals(_controlled, cut))
-                    _controlled = cut.Train.Body.Brakes.Control <= link ? f : r;
-                if (ReferenceEquals(_focus, cut))
-                    Focus(ReferenceEquals(_controlled, r) ? r : f);
-                break;
-            }
-        }
     }
 
     /// Picks the vehicle under the pointer, opening this window on it; clicking where there's none lets go of it. True
@@ -594,18 +448,7 @@ public sealed partial class TrainPanel : IDisposable
     {
         var step = Paced(dt);
         // Every cut's stepped, but one left standing a while sleeps until it's driven, looked at or run into.
-        foreach (var cut in _cuts)
-        {
-            var awake = ReferenceEquals(cut, _controlled) || ReferenceEquals(cut, _focus) || !cut.Asleep;
-            if (!awake)
-                continue;
-            cut.Train.Update(step);
-            var moving = cut.Train.Body.Velocity.Any(v => Math.Abs(v) > 1e-4);
-            cut.Still = moving ? 0.0 : cut.Still + step;
-        }
-
-        Splits();
-        Contacts(step);
+        Railway.Step(step, _focus);
         Graphs.Record(Train, dt);
         _draws.Clear();
         _placed.Clear();

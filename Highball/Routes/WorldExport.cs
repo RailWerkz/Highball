@@ -88,10 +88,11 @@ public static class WorldExport
         // Server data: the whole world, and each region's own share.
         progress?.Invoke("Writing server track");
         var servers = new List<object>();
+        var signals = objects.Where(o => o.Kind == PlacedKind.Signal).Select(o => new RailGraphFile.Signal(o.Id, o.Node, o.Toward, o.Lat, o.Lon, o.Heading)).ToList();
         void Server(string name, Func<RailEdge, bool>? keep)
         {
             var path = Path.Combine(folder, name + ".hbserver");
-            RailGraphFile.Write(path, zone, name, graph, objects, keep);
+            RailGraphFile.Write(path, zone, name, graph, signals, keep);
             var read = RailGraphFile.Read(path);
             servers.Add(new { name, file = Path.GetFileName(path), bytes = new FileInfo(path).Length, edges = read.Graph.Edges.Count, switches = read.Graph.Switches.Count, km = Math.Round(read.Graph.TotalLength / 1000.0, 3) });
             lines.Add($"{name}.hbserver: {read.Graph.Edges.Count} edges, {read.Graph.Switches.Count} switches, {read.Graph.TotalLength / 1000.0:0.00} km, {read.Signals.Count} signals, {new FileInfo(path).Length / 1024.0:0} KB");

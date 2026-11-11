@@ -270,9 +270,19 @@ In order. Each step ends with something to test.
      test of a region border that cuts through track (Plymouth's laid track all fell in one region in every split
      tried).
 
-6. **Simulation out of the UI.**
-   - The train world moves out of `TrainPanel`, and switch state out of `NetworkMeshes`.
-   - Both go into a simulation project with no rendering, which the game and a server both reference.
+6. **Done: simulation out of the UI.** A new project, `RailWerkz.Sim`, with no window, drawing, input or sound (it
+   builds on its own, referencing only `RailWerkz.Core`):
+   - `Railway`: every cut on the track, stepping them, coupling and cuts taken off when they meet too hard, splits,
+     switches forced when run through, and saving and putting stock back. Lifted out of `Builder/TrainPanel`, which
+     now drives it and draws it.
+   - `SwitchStates`: which way each switch is set. Lifted out of `World/NetworkMeshes`, which now swings the blades to
+     match it. Kept across the track being laid out again.
+   - Moved in: the trains and their physics, `RailGraph`, `RailGraphFile`, `TrackPiece`, `TurnoutSizes`, `PlacedCut`,
+     `UnitText`. Building the graph from the editor's lines stays in the game (`World/RailGraphBuilder`).
+   - Namespaces are unchanged (`Highball.Trains`, `TrackPiece` still `Highball.World`) to keep the move small.
+   - Checked in the editor: saved stock put back, a locomotive starting up and pulling, a train uncoupled and drawing
+     apart.
+
 7. **The game runs from packs.** Driving loads tiles from the installed pack, ahead along the track.
 8. **Server.**
    - A headless server on the simulation project and `Session`, loading only the server data.

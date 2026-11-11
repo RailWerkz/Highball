@@ -18,7 +18,7 @@ public static class RailGraphFile
     public sealed record Contents(int Zone, string Name, RailGraph Graph, List<Signal> Signals);
 
     /// Writes the edges that keep says to (all if null), renumbered, with the vertices and switches they need.
-    public static void Write(string path, int zone, string name, RailGraph graph, IEnumerable<PlacedObject> objects, Func<RailEdge, bool>? keep = null)
+    public static void Write(string path, int zone, string name, RailGraph graph, IEnumerable<Signal> all, Func<RailEdge, bool>? keep = null)
     {
         var edges = graph.Edges.Where(e => keep?.Invoke(e) ?? true).ToList();
         var edgeIndex = edges.Select((e, i) => (e.Index, i)).ToDictionary(p => p.Index, p => p.i);
@@ -88,7 +88,7 @@ public static class RailGraphFile
         }
 
         var nodes = vertices.Select(v => graph.Vertices[v].Node).Where(n => n != 0).ToHashSet();
-        var signals = objects.Where(o => o.Kind == PlacedKind.Signal && (keep is null || (o.Node is { } n && nodes.Contains(n)) || (o.Toward is { } t && nodes.Contains(t)))).ToList();
+        var signals = all.Where(o => keep is null || (o.Node is { } n && nodes.Contains(n)) || (o.Toward is { } t && nodes.Contains(t))).ToList();
         w.Write(signals.Count);
         foreach (var s in signals)
         {
