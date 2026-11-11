@@ -54,7 +54,16 @@ public sealed class BuilderScreen : Screen, IWorldScreen
     }
 
     /// Driving an installed pack (Single Player): straight into the 3D view, no Planner, nothing kept.
-    public static BuilderScreen Play(PackSource pack) => new(pack.Route);
+    public static BuilderScreen Play(PackSource pack, Multiplayer.NetPlay? net = null)
+    {
+        var screen = new BuilderScreen(pack.Route) { _net = net };
+        if (net is not null)
+            net.Notice += screen.Notify;
+        return screen;
+    }
+
+    /// The multiplayer session, when playing one.
+    private Multiplayer.NetPlay? _net;
 
     /// Played from a pack rather than built.
     public bool Playing => _route.Pack is not null;
@@ -72,6 +81,7 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         _planner.Dispose();
         World.MaterialsWindow.Instance.Dispose();
         _route.Pack?.Dispose();
+        _net?.Dispose();
     }
 
     /// A short notice on the right of the footer.
@@ -112,7 +122,7 @@ public sealed class BuilderScreen : Screen, IWorldScreen
             var centre = _planner.Centre();
             if (_editor is null)
             {
-                _editor = new EditorView(_route, centre);
+                _editor = new EditorView(_route, centre) { Net = _net };
                 _editorBuild = _planner.BuildVersion;
             }
             else if (_mode == Mode.Planner && centre is { } point)

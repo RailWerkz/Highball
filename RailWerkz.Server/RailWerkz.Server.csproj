@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <!-- The world server: hosts a session over RakNet, loads only a world's or region's server track (.hbserver, no
+         terrain), and keeps what every player shares. Runs headless (dotnet run - - PATH.hbserver [PORT]) or inside the
+         game when a player hosts. -->
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <RootNamespace>RailWerkz.Server</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="../RailWerkz.Core/RailWerkz.Core.csproj" />
+        <ProjectReference Include="../RailWerkz.Network/RailWerkz.Network.csproj" />
+        <ProjectReference Include="../RailWerkz.Sim/RailWerkz.Sim.csproj" />
+    </ItemGroup>
+</Project>

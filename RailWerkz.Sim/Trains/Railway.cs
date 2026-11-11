@@ -26,6 +26,9 @@ public class Railway
         public double Still;
 
         public bool Asleep => Still > 3.0;
+
+        /// Another player's, shown where they say it is: never stepped, coupled to or saved here.
+        public bool Remote { get; internal set; }
     }
 
     private readonly List<Cut> _cuts = [];
@@ -101,6 +104,15 @@ public class Railway
         return cut;
     }
 
+    /// Another player's train, put on the track to be shown where they say it is (see Train.Mirror).
+    public Cut AddRemote(Train train)
+    {
+        var cut = NewCut(train, null);
+        cut.Remote = true;
+        _cuts.Add(cut);
+        return cut;
+    }
+
     /// A cut's train swapped for another made from it (turned end for end, say).
     public void Swap(Cut cut, Train train)
     {
@@ -149,7 +161,7 @@ public class Railway
     {
         foreach (var cut in _cuts)
         {
-            if (!ReferenceEquals(cut, Controlled) && !ReferenceEquals(cut, awake) && cut.Asleep)
+            if (cut.Remote || (!ReferenceEquals(cut, Controlled) && !ReferenceEquals(cut, awake) && cut.Asleep))
                 continue;
             cut.Train.Update(dt);
             var moving = cut.Train.Body.Velocity.Any(v => Math.Abs(v) > 1e-4);
@@ -180,7 +192,7 @@ public class Railway
             for (var j = i + 1; j < _cuts.Count; j++)
             {
                 var (a, b) = (_cuts[i], _cuts[j]);
-                if (!ReferenceEquals(a.Train.Graph, b.Train.Graph) || (a.Asleep && b.Asleep))
+                if (a.Remote || b.Remote || !ReferenceEquals(a.Train.Graph, b.Train.Graph) || (a.Asleep && b.Asleep))
                     continue;
                 foreach (var frontA in (ReadOnlySpan<bool>)[true, false])
                 {
@@ -248,6 +260,8 @@ public class Railway
         for (var i = 0; i < _cuts.Count; i++)
         {
             var cut = _cuts[i];
+            if (cut.Remote)
+                continue;
             var body = cut.Train.Body;
             for (var link = 0; link < body.Coupled.Length; link++)
             {
@@ -274,7 +288,7 @@ public class Railway
     public List<PlacedCut> Snapshot(Func<double, double, (double Lat, double Lon)> toGeo)
     {
         var list = new List<PlacedCut>(_cuts.Count);
-        foreach (var cut in _cuts)
+        foreach (var cut in _cuts.Where(c => !c.Remote))
         {
             var train = cut.Train;
             var (x, _, z) = train.Graph.PositionOf(train.Head);

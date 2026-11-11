@@ -297,10 +297,25 @@ In order. Each step ends with something to test.
    - Still to come: a driving screen of its own (the editor's tool strip still shows, its edits just aren't kept),
      stock left on the track when a pack's made, and a version check against the manifest.
 
-8. **Server.**
-   - A headless server on the simulation project and `Session`, loading only the server data.
-   - Host and Join wired up.
-
-   *Done when* two clients see each other's trains on Plymouth.
+8. **Done: server and Host/Join, first version.**
+   - `RailWerkz.Server`: a world server that loads only the server track (`.hbserver`, no terrain). Runs headless
+     (`dotnet run --project RailWerkz.Server -- PATH.hbserver [PORT] [WORLD]`) or inside the game when a player hosts.
+   - `Protocol`: Hello, Welcome (player number, world and region to open, track checksum), Ready (the player's own
+     checksum once its pack's laid out; refused if it differs), CutAdded, CutState (front, coupler slack and car
+     speeds, 20 a second), CutRemoved, Switch.
+   - The server keeps what everyone shares, switches and every cut's latest state, so a player joining late sees it
+     all, and takes a player's cuts off when they leave.
+   - In the game (`Multiplayer/NetPlay`): Multiplayer > Host a session (an installed world with its server track) or
+     Join session (the address and port set there). Joining opens the world and region the server says, if it's
+     installed. This player's cuts are sent; other players' are shown where they say (`Railway.AddRemote`,
+     `Train.Mirror`), carried on at their last speed between updates. Another driver's train can't be driven or taken
+     off. `--host WORLD/REGION` and `--join ADDRESS` do the same for testing.
+   - The export installs the `.hbserver` files beside the packs.
+   - `RailGraph.Checksum` is FNV-1a, the same in every process, so players and the server can compare tracks.
+   - Checked: a headless server with two game windows, and a game hosting with a second joining. Both times the
+     second player saw the first's locomotive moving and speeding up.
+   - **First version: each player's game runs its own trains and the server passes their states on.** Running every
+     train on the server (the `Railway` in `RailWerkz.Sim`), so trains can couple and collide across players and AI
+     can run, is next. Not tested yet: switches thrown by one player showing for another, and a player leaving.
 
 Later: smaller terrain (the size target), the owner overlay, crossing zone borders, signalling logic.

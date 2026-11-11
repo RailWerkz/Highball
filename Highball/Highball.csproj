@@ -13,6 +13,7 @@
         <ProjectReference Include="../RailWerkz.Vulkan/RailWerkz.Vulkan.csproj" />
         <ProjectReference Include="../RailWerkz.Network/RailWerkz.Network.csproj" />
         <ProjectReference Include="../RailWerkz.Sim/RailWerkz.Sim.csproj" />
+        <ProjectReference Include="../RailWerkz.Server/RailWerkz.Server.csproj" />
         <ProjectReference Include="../RailWerkz.UI/RailWerkz.UI.csproj" />
     </ItemGroup>
     <ItemGroup>

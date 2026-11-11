@@ -58,6 +58,8 @@ public sealed class NetWriter
         return this;
     }
 
+    public NetWriter I64(long value) => U64((ulong)value);
+
     public NetWriter F32(float value)
     {
         BinaryPrimitives.WriteSingleLittleEndian(Take(4), value);
@@ -75,6 +77,15 @@ public sealed class NetWriter
         var count = Math.Min(bytes.Length, 255);
         U8((byte)count);
         bytes.AsSpan(0, count).CopyTo(Take(count));
+        return this;
+    }
+
+    /// A string of any length (Str keeps to 255 bytes): its length as four bytes, then its UTF-8.
+    public NetWriter LongStr(string value)
+    {
+        var bytes = Encoding.UTF8.GetBytes(value);
+        I32(bytes.Length);
+        bytes.CopyTo(Take(bytes.Length));
         return this;
     }
 
@@ -129,6 +140,8 @@ public ref struct NetReader(ReadOnlySpan<byte> data)
         return s.Length == 8 ? BinaryPrimitives.ReadUInt64LittleEndian(s) : 0;
     }
 
+    public long I64() => (long)U64();
+
     public float F32()
     {
         var s = Take(4);
@@ -142,6 +155,15 @@ public ref struct NetReader(ReadOnlySpan<byte> data)
     public string Str()
     {
         var count = U8();
+        var s = Take(count);
+        return s.Length == count ? Encoding.UTF8.GetString(s) : string.Empty;
+    }
+
+    public string LongStr()
+    {
+        var count = I32();
+        if (count < 0 || count > _data.Length)
+            return string.Empty;
         var s = Take(count);
         return s.Length == count ? Encoding.UTF8.GetString(s) : string.Empty;
     }

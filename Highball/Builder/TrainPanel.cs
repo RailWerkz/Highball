@@ -158,8 +158,20 @@ public sealed partial class TrainPanel : IDisposable
         Railway.Use(graph);
     }
 
-    /// Takes a cut off the track.
-    private void Remove(Cut cut) => Railway.Remove(cut);
+    /// Takes a cut off the track (not another driver's).
+    private void Remove(Cut cut)
+    {
+        if (cut.Remote)
+        {
+            _notice = "That's another driver's train";
+            return;
+        }
+
+        Railway.Remove(cut);
+    }
+
+    /// A notice for the crew from outside the window (multiplayer).
+    public void Notify(string text) => _notice = text;
 
     /// Takes control of the looked-at cut, giving up whichever's driven now (its brakes set as it's left). False, with a
     /// notice, if it has no locomotive.
@@ -167,6 +179,12 @@ public sealed partial class TrainPanel : IDisposable
     {
         if (_focus is not { } cut)
             return false;
+        if (cut.Remote)
+        {
+            _notice = "That's another driver's train";
+            return false;
+        }
+
         if (!cut.Train.Cars.Any(c => c.Def.Kind == VehicleKind.Locomotive))
         {
             _notice = "There's no locomotive in this cut to take control of";
@@ -940,8 +958,10 @@ public sealed partial class TrainPanel : IDisposable
     public void Clear()
     {
         Release();
-        _cuts.Clear();
-        Focus(null);
+        // Only this player's: another driver's cut is theirs to take off.
+        foreach (var cut in _cuts.Where(c => !c.Remote))
+            Railway.Remove(cut);
+        Focus(_cuts.LastOrDefault());
     }
 
     public void Dispose()

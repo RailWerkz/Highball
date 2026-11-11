@@ -118,9 +118,9 @@ public static class WorldExport
         {
             var install = Path.Combine(PackSource.Root, route.Id);
             Directory.CreateDirectory(install);
-            foreach (var old in Directory.GetFiles(install, "*.hbpack"))
+            foreach (var old in Directory.GetFiles(install, "*.hbpack").Concat(Directory.GetFiles(install, "*.hbserver")))
                 File.Delete(old);
-            foreach (var pack in Directory.GetFiles(folder, "*.hbpack").Append(Path.Combine(folder, "manifest.json")))
+            foreach (var pack in Directory.GetFiles(folder, "*.hbpack").Concat(Directory.GetFiles(folder, "*.hbserver")).Append(Path.Combine(folder, "manifest.json")))
                 File.Copy(pack, Path.Combine(install, Path.GetFileName(pack)), true);
             lines.Add($"Installed in {install}");
         }

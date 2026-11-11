@@ -18,6 +18,8 @@ namespace Highball.App;
 ///   --tab NAME                                      with --menu settings, open on that tab: display, graphics, lighting, audio, simulation
 ///   --consist NAME                                  open that saved consist in the Consist Editor
 ///   --route NAME                                    open that route in the Route Builder (made if there isn't one)
+///   --host WORLD/REGION                             host a session of that installed pack on the port in Settings, and play it
+///   --join ADDRESS                                  join a session at ADDRESS on the port in Settings
 ///   --pack WORLD/REGION                             drive that installed pack, as Single Player does (with --train, --camera,
 ///                                                   --shot)
 ///   --export                                        with --route, export it for players and servers once its track is laid
@@ -120,6 +122,8 @@ public static class DevTools
     private static string? _migrateZone;
     private static bool _exportPending;
     private static string? _pack;
+    private static string? _host;
+    private static string? _join;
 
     /// With --export: true once, for the editor to export as soon as its rail graph is built.
     public static bool TakeExport()
@@ -280,6 +284,12 @@ public static class DevTools
                     break;
                 case "--route" when i + 1 < args.Length:
                     _route = args[++i];
+                    break;
+                case "--host" when i + 1 < args.Length:
+                    _host = args[++i];
+                    break;
+                case "--join" when i + 1 < args.Length:
+                    _join = args[++i];
                     break;
                 case "--pack" when i + 1 < args.Length:
                     _pack = args[++i];
@@ -487,6 +497,25 @@ public static class DevTools
             if (consist is null)
                 Log.Warn($"--consist: no saved consist called {consistName}");
             app.Push(new ConsistEditorScreen(consist));
+        }
+
+        if (_host is { } hostName)
+        {
+            _host = null;
+            var found = Routes.PackSource.Installed().FirstOrDefault(p => $"{p.World}/{p.Region}".Equals(hostName, StringComparison.OrdinalIgnoreCase));
+            if (found.Path is null)
+                Log.Warn($"--host: no installed pack {hostName}");
+            else
+                {
+                var net = Multiplayer.NetPlay.Host(HostScreen.ServerFile(found.Path), found.World, Settings.Current.Port, Settings.Current.DriverName);
+                app.Push(new ConnectingScreen(() => net));
+            }
+        }
+
+        if (_join is { } address)
+        {
+            _join = null;
+            app.Push(new ConnectingScreen(() => Multiplayer.NetPlay.Join(address, Settings.Current.Port, Settings.Current.DriverName)));
         }
 
         if (_pack is { } packName)

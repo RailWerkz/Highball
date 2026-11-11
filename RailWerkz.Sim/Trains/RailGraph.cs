@@ -181,6 +181,32 @@ public sealed partial class RailGraph
     /// The edge leaving a line's point one way along it (+1 up its points), if there's one.
     public EdgeEnd? EndOf(int line, int point, int direction) => _legs.TryGetValue((line, point, direction), out var end) ? end : null;
 
+    /// A number that's the same for two graphs only if they're the same track: every edge's ends and length (to the
+    /// millimetre) and every vertex's node, in order. Players and a server compare it to know they agree on edge numbers.
+    public int Checksum()
+    {
+        // FNV-1a: the same in every process (HashCode isn't).
+        var hash = 14695981039346656037UL;
+        void Add(long value)
+        {
+            for (var i = 0; i < 8; i++, value >>= 8)
+                hash = (hash ^ (byte)value) * 1099511628211UL;
+        }
+
+        Add(Vertices.Count);
+        Add(Edges.Count);
+        foreach (var v in Vertices)
+            Add(v.Node);
+        foreach (var e in Edges)
+        {
+            Add(e.From);
+            Add(e.To);
+            Add((long)Math.Round(e.Length * 1000.0));
+        }
+
+        return (int)(hash ^ (hash >> 32));
+    }
+
     /// Ties the edge leaving a line's point one way along it to that point, for the builder to find switches' legs by.
     public void AddLeg(int line, int point, int direction, EdgeEnd end) => _legs[(line, point, direction)] = end;
 

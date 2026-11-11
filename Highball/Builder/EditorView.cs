@@ -2595,6 +2595,12 @@ public sealed partial class EditorView : IDisposable
         Log.Info($"Signals: {edits.Count} linked to their track again");
     }
 
+    /// The multiplayer session this view's part of, if it is (see BuilderScreen.Play).
+    public Multiplayer.NetPlay? Net { get; set; }
+
+    /// Tells the crew something (shown in the train window).
+    public void Notify(string text) => _trains.Notify(text);
+
     /// Which way every switch is set: kept across the track being laid out again, for the trains and the blades both.
     private readonly Trains.SwitchStates _switches = new();
 
@@ -2610,6 +2616,7 @@ public sealed partial class EditorView : IDisposable
         _trains.Use(_railGraph);
         RestoreStock();
         RelinkSignals(lines);
+        Net?.Attach(_trains.Railway, _switches, _railGraph);
         if (DevTools.TakeExport())
             Export();
         if (DevTools.RailGraphReport)
@@ -2688,6 +2695,7 @@ public sealed partial class EditorView : IDisposable
             _trains.SelectAt(Input.MousePosition, Project, new double3(_camera.X, _camera.Y, _camera.Z));
 
         _trains.Update(dt);
+        Net?.Update(dt);
         var (bx, by, bz) = _trains.FollowBy(ref _followed);
         _camera.X += bx;
         _camera.Y += by;

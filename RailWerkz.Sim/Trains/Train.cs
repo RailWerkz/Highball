@@ -411,6 +411,18 @@ public sealed class Train
 
     /// Puts each car behind the front, walking back along the rail: its overhangs and truck centres, and between one car
     /// and the next whatever its coupling's stretched (or bunched, less). False, with how much track was missing, if it ran out.
+    /// Puts the train where another copy of it says it is (another player's, over the network): its front, the slack
+    /// in each coupler, and each car's speed. Not stepped here; the copy that's driven does that.
+    public bool Mirror(TrackPosition head, ReadOnlySpan<float> extension, ReadOnlySpan<float> velocity)
+    {
+        for (var i = 0; i < extension.Length && i < Body.Extension.Length; i++)
+            Body.Extension[i] = extension[i];
+        for (var i = 0; i < velocity.Length && i < Body.Velocity.Length; i++)
+            Body.Velocity[i] = velocity[i];
+        _memory.Clear();
+        return TryPlace(head, out _);
+    }
+
     private bool TryPlace(TrackPosition head, out double missing)
     {
         _memory.Begin();

@@ -23,8 +23,8 @@ public sealed class MultiplayerScreen : MenuScreen
         Menu.Add(new MenuItem { Label = "Driver name", Value = () => Shown(Field.Name, s.DriverName), OnSelect = () => BeginEdit(Field.Name, s.DriverName) })
             .Add(new MenuItem { Label = "Host address", Value = () => Shown(Field.Address, s.LastHost), OnSelect = () => BeginEdit(Field.Address, s.LastHost) })
             .Add(new MenuItem { Label = "Port", Value = () => s.Port.ToString(), OnChange = d => s.Port = Math.Clamp(s.Port + d, 1024, 65535), SeparatorAfter = true })
-            .Add(new MenuItem { Label = "Host a session", OnSelect = () => Notify("Not available yet.") })
-            .Add(new MenuItem { Label = "Join session", OnSelect = () => Notify("Not available yet."), SeparatorAfter = true })
+            .Add(new MenuItem { Label = "Host a session", OnSelect = () => App.HighballApp.Instance.Push(new HostScreen()) })
+            .Add(new MenuItem { Label = "Join session", OnSelect = () => { Settings.Save(); App.HighballApp.Instance.Push(new ConnectingScreen(() => Multiplayer.NetPlay.Join(s.LastHost, s.Port, s.DriverName))); }, SeparatorAfter = true })
             .Add(new MenuItem { Label = "Back", OnSelect = Back });
     }
 
