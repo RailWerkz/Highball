@@ -8,7 +8,7 @@ using RailWerkz.Vulkan;
 namespace Highball.App;
 
 /// Command-line helpers for development and testing:
-///   --menu SCREEN                                   open a menu after the splash: single, multi, builder, openroute, consists, settings,
+///   --menu SCREEN                                   open a menu after the splash: single, multi, builder, consists, settings,
 ///                                                   credits, lighting (the lighting test scene)
 ///   --lighting PRESET [MODEL]                       with --menu lighting, start at noon, golden or night, with the model
 ///                                                   black (the game's SD40-2) or source (the old SD40's source file, with PBR maps)
@@ -18,6 +18,8 @@ namespace Highball.App;
 ///   --tab NAME                                      with --menu settings, open on that tab: display, graphics, lighting, audio, simulation
 ///   --consist NAME                                  open that saved consist in the Consist Editor
 ///   --route NAME                                    open that route in the Route Builder (made if there isn't one)
+///   --migrate-zone NAME                             move a route made before zones onto its UTM zone's grid (the old
+///                                                   folder is kept as NAME.prezone)
 ///   --select LAT LON N                              with --route, pick N x N tiles there and build them
 ///   --trackbuild                                    with --select, build lidar only where track runs, standard elsewhere
 ///   --view                                          with --route, open its built terrain in 3D
@@ -112,6 +114,7 @@ public static class DevTools
     public static (double Lat, double Lon, double Zoom)? Look { get; set; }
 
     private static string? _route;
+    private static string? _migrateZone;
     private static string? _consist;
     private static bool _view;
     private static bool _view2D;
@@ -264,6 +267,9 @@ public static class DevTools
                     break;
                 case "--route" when i + 1 < args.Length:
                     _route = args[++i];
+                    break;
+                case "--migrate-zone" when i + 1 < args.Length:
+                    _migrateZone = args[++i];
                     break;
                 case "--select" when i + 3 < args.Length:
                     var culture = System.Globalization.CultureInfo.InvariantCulture;
@@ -424,6 +430,19 @@ public static class DevTools
     /// Called by the main menu as it first opens: jumps to the menu asked for on the command line.
     public static void OnMainMenu(HighballApp app)
     {
+        if (_migrateZone is { } migrate)
+        {
+            _migrateZone = null;
+            try
+            {
+                Routes.ZoneMigration.Run(migrate);
+            }
+            catch (Exception e)
+            {
+                Log.Error($"--migrate-zone {migrate}: {e}");
+            }
+        }
+
         var menu = _menu;
         _menu = null;
 
@@ -431,8 +450,7 @@ public static class DevTools
         {
             "single" => new SinglePlayerScreen(),
             "multi" => new MultiplayerScreen(),
-            "builder" => new RouteBuilderScreen(),
-            "openroute" => new OpenRouteScreen(),
+            "builder" => RouteBuilder.Open(),
             "consists" or "consist" => new ConsistEditorScreen(),
             "settings" or "options" => new SettingsScreen(),
             "credits" => new CreditsScreen(),

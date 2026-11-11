@@ -177,7 +177,8 @@ public sealed partial class EditorView : IDisposable
     {
         _route = route;
         _start = start;
-        Lighting = new LightingPanel(_renderer, route.Origin.Latitude, route.Origin.Longitude);
+        var place = new GeoPoint(route.Origin.Latitude, route.Origin.Longitude);
+        Lighting = new LightingPanel(_renderer, place.Lat, place.Lon, route.Projection?.GridNorth(place) ?? 0.0);
         _opening = TerrainSource.Open(route);
         if (DevTools.Clean)
             _overlay = TrackOverlay.Off;

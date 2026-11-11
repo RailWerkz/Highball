@@ -12,6 +12,8 @@ public sealed class LightingPanel
     private readonly WorldRenderer _renderer;
     private readonly double _latitude;
     private readonly double _longitude;
+    /// How far true north is turned from the world's north (-z), degrees clockwise: the sun, moon and stars turn with it.
+    private readonly double _gridNorth;
     private (string Sky, int Version, int Year, int Month, int Day, float Hour, float Overcast) _applied = ("", -1, 0, 0, 0, 0f, 0f);
 
     private string _skySetting = Settings.Current.Skybox;
@@ -22,11 +24,12 @@ public sealed class LightingPanel
     public static readonly (string Id, string Label)[] Presets = [("dawn", "Dawn"), ("noon", "Noon"), ("golden", "Golden hour"), ("dusk", "Dusk"), ("night", "Night")];
 
     /// Barstow, for a scene with no route of its own.
-    public LightingPanel(WorldRenderer renderer, double latitude = 34.9, double longitude = -117.09)
+    public LightingPanel(WorldRenderer renderer, double latitude = 34.9, double longitude = -117.09, double gridNorth = 0.0)
     {
         _renderer = renderer;
         _latitude = latitude;
         _longitude = longitude;
+        _gridNorth = gridNorth;
 
         if (DevTools.CloudCoverage is { } coverage)
         {
@@ -101,6 +104,29 @@ public sealed class LightingPanel
         return SunPosition.At(_latitude, _longitude, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour);
     }
 
+    /// The moon from true east and south to the world's, turned by _gridNorth.
+    private MoonPosition ToGrid(MoonPosition moon)
+    {
+        var (sin, cos) = Math.SinCos(_gridNorth * Math.PI / 180.0);
+        var (east, north) = ((double)moon.East, -(double)moon.South);
+        return new MoonPosition((float)(east * cos + north * sin), moon.Up, (float)-(north * cos - east * sin));
+    }
+
+    /// The star turn's east and south columns swapped for the world's east and south, turned by _gridNorth.
+    private float[] ToGrid(float[] turn)
+    {
+        var (sin, cos) = MathF.SinCos((float)(_gridNorth * Math.PI / 180.0));
+        var result = (float[])turn.Clone();
+        for (var k = 0; k < 3; k++)
+        {
+            var (east, south) = (turn[k], turn[6 + k]);
+            result[k] = east * cos - south * sin;
+            result[6 + k] = east * sin + south * cos;
+        }
+
+        return result;
+    }
+
     /// Moves the clock to a time of the current day, by name: dawn, noon, golden, dusk or night.
     public void Preset(string name) => Settings.Current.SkyHour = (float)PresetHour(name, _latitude, _longitude);
 
@@ -145,9 +171,9 @@ public sealed class LightingPanel
             if (key != _applied)
             {
                 var sun = Sun();
-                sky.SetSun(sun.Elevation, sun.Azimuth,
-                    MoonPosition.At(_latitude, _longitude, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour),
-                    MoonPosition.StarTurn(_latitude, _longitude, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour),
+                sky.SetSun(sun.Elevation, (float)(sun.Azimuth + _gridNorth),
+                    ToGrid(MoonPosition.At(_latitude, _longitude, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour)),
+                    ToGrid(MoonPosition.StarTurn(_latitude, _longitude, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour)),
                     overcast);
                 _applied = key;
             }

@@ -29,7 +29,10 @@ public sealed class RouteInfo
     public string Folder => Path.Combine(Root, Id);
 
     [JsonIgnore]
-    public RouteProjection? Projection => Grid is null ? null : _projection ??= new RouteProjection(new GeoPoint(Origin.Latitude, Origin.Longitude));
+    public RouteProjection? Projection => Grid is null ? null : _projection ??= Zone is { } zone ? new RouteProjection(zone) : new RouteProjection(new GeoPoint(Origin.Latitude, Origin.Longitude));
+
+    /// The UTM zone the tiles are laid out on; null for a route made before zones, laid out around its own origin.
+    public int? Zone { get; set; }
 
     private RouteProjection? _projection;
 
@@ -51,6 +54,7 @@ public sealed class RouteInfo
             return;
 
         Origin = new LatLon { Latitude = Math.Round(origin.Lat, 6), Longitude = Math.Round(origin.Lon, 6) };
+        Zone = RouteProjection.ZoneOf(origin.Lon);
         Grid = new RouteGrid();
         _projection = null;
         Save();
@@ -93,6 +97,28 @@ public sealed class RouteInfo
         route.Save();
         Log.Info($"Route {route.Name} created in {route.Folder}");
         return route;
+    }
+
+    /// The folder of the one world the Route Builder edits.
+    public const string WorldId = "World";
+
+    /// The one world the Route Builder edits: Content/Routes/World, made the first time it's asked for.
+    public static RouteInfo World()
+    {
+        var manifest = Path.Combine(Root, WorldId, "Route.json");
+        if (File.Exists(manifest))
+        {
+            var world = JsonSerializer.Deserialize<RouteInfo>(File.ReadAllText(manifest), Options) ?? throw new InvalidDataException($"{manifest} is empty");
+            world.Id = WorldId;
+            if (world.Name.Length == 0)
+                world.Name = "North America";
+            return world;
+        }
+
+        var created = new RouteInfo { Name = "North America", Author = RailWerkz.Core.Settings.Settings.Current.DriverName, Version = "0.0.1", Id = WorldId };
+        created.Save();
+        Log.Info($"World created in {created.Folder}");
+        return created;
     }
 
     /// Every route under Content/Routes with a readable manifest, by name.

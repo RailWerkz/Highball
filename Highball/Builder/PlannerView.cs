@@ -114,7 +114,7 @@ public sealed class PlannerView : IDisposable
         {
             var middle = _built.Count > 0
                 ? new RoutePoint(_built.Average(t => t.I + 0.5) * route.Grid!.TileSize, _built.Average(t => t.J + 0.5) * route.Grid.TileSize)
-                : new RoutePoint(0, 0);
+                : projection.Forward(new GeoPoint(route.Origin.Latitude, route.Origin.Longitude));
             _map.LookAt(projection.Inverse(middle), 12.0);
         }
         else

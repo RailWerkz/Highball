@@ -9,11 +9,47 @@ public readonly record struct RoutePoint(double East, double North)
     public static RoutePoint operator +(RoutePoint a, RoutePoint b) => new(a.East + b.East, a.North + b.North);
 }
 
-/// One Transverse Mercator projection per route, centred on its origin (Krüger's series on WGS84, good to well under a
-/// millimetre within a few hundred kilometres of the central meridian). Every tile of a route is laid out on this one
-/// plane, which is what lets areas built at different times meet exactly. The 3D world uses x = east, z = -north.
+/// A Transverse Mercator projection (Krüger's series on WGS84, good to well under a millimetre within a few hundred
+/// kilometres of the central meridian). Every tile of a route is laid out on this one plane, which is what lets areas
+/// built at different times meet exactly. The 3D world uses x = east, z = -north.
+///
+/// Two kinds: a UTM zone (the world: 6 degrees wide, central meridian at x = 0, ZoneNorth metres north of the equator at
+/// z = 0, so the same place always lands on the same metres and the same tiles), or the older one centred on a route's
+/// own origin, kept so routes made before zones still open.
 public sealed class RouteProjection
 {
+    /// Where z = 0 is in a zone: metres north of the equator (about 36 degrees north). Keeps the lower 48 within about
+    /// 1,400 km of it, so positions stay small enough for the shaders' floats.
+    public const double ZoneNorth = 4_000_000.0;
+
+    /// The UTM zone, 1 to 60; 0 for a projection centred on a route's origin.
+    public int Zone { get; }
+
+    /// The UTM zone a longitude falls in (no Norway or Svalbard exceptions: North America has none).
+    public static int ZoneOf(double longitude) => Math.Clamp((int)Math.Floor((longitude + 180.0) / 6.0) + 1, 1, 60);
+
+    /// A zone's central meridian, in degrees.
+    public static double CentralMeridian(int zone) => zone * 6.0 - 183.0;
+
+    public RouteProjection(int zone)
+    {
+        if (zone is < 1 or > 60)
+            throw new ArgumentOutOfRangeException(nameof(zone), zone, "UTM zones run 1 to 60");
+        Zone = zone;
+        _lon0 = CentralMeridian(zone) * Deg;
+        _north0 = ZoneNorth;
+        Origin = new GeoPoint(0.0, CentralMeridian(zone));
+    }
+
+    /// How far true north is turned from the plane's north at a place: degrees clockwise. A bearing from true north
+    /// (the sun's, a compass's) is this much more on the plane.
+    public double GridNorth(GeoPoint p)
+    {
+        var a = Forward(p);
+        var b = Forward(p with { Lat = p.Lat + 0.001 });
+        return Math.Atan2(b.East - a.East, b.North - a.North) / Deg;
+    }
+
     private const double A = 6378137.0;
     private const double F = 1.0 / 298.257223563;
     private static readonly double N = F / (2.0 - F);
