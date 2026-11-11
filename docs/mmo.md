@@ -237,12 +237,17 @@ In order. Each step ends with something to test.
      properly.
    - Left for crossing zone borders: tile IDs with the zone in them, the hand-copied tile maths, rebasing when crossing.
 
-3. **Stable IDs.**
-   - Fix `NewId()` reuse with a saved counter.
-   - IDs for track that survive solving and tile cuts.
-   - Signals linked to the track they protect.
+3. **Done: stable IDs.**
+   - Track's stable IDs are its way and node IDs: hand-laid ways and nodes (negative), and OpenStreetMap ones kept by
+     tagging them edited. Lines and graph edges are worked out again on every fit, so the export names edges by the
+     nodes at their ends.
+   - `RouteNetwork.NewId()` no longer hands out an ID again: the lowest one handed out is saved in `Ids.json`. For a
+     world saved before that, it also starts below every ID that `Switches.json`, `SwitchCurves.json` and placed
+     objects name.
+   - Signals link to track: `Node` and `Toward` on the signal are the nodes it stands between, in the direction of the
+     trains it governs. Set when placed or moved, and filled in or fixed up from where the signal stands when the
+     editor opens or an edit takes a node out.
 
-   *Done when* save, reload and building more never shifts an ID.
 4. **Region painting in the Planner.** Mark tiles as West, Midwest, South or Northeast, saved with the world.
 5. **Export.**
    - Client pack per region: tiles plus visible track.

@@ -928,7 +928,7 @@ public sealed partial class EditorView : IDisposable
         switch (_place.Mode)
         {
             case PlaceMode.Signal when PlaceTool.SignalAt(lines, x, z) is { } signal:
-                PlacedChange(null, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading));
+                PlacedChange(null, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, signal.Node) with { Toward = signal.Toward });
                 break;
             case PlaceMode.HandThrow when PlaceTool.SwitchAt(lines, x, z) is { } turnout:
                 if (source.Objects.FirstOrDefault(o => o.Node == turnout.Node) is { } already)
@@ -1140,7 +1140,7 @@ public sealed partial class EditorView : IDisposable
                     PlacedChange(o, Placed(o.Kind, pole.X, pole.Z, pole.Heading, id: o.Id) with { Run = o.Run });
                 break;
             case PlacedKind.Signal when PlaceTool.SignalAt(lines, x, z) is { } signal:
-                PlacedChange(o, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, id: o.Id));
+                PlacedChange(o, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, signal.Node, id: o.Id) with { Toward = signal.Toward });
                 break;
             case PlacedKind.GradeCrossing when PlaceTool.CrossingAt(lines, x, z) is { } crossing:
                 PlacedChange(o, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, o.Opposite, id: o.Id) with { Turn = o.Turn, Style = o.Style });
@@ -2563,6 +2563,38 @@ public sealed partial class EditorView : IDisposable
 
     /// The trains' rail graph, built again whenever the lines change (at first, and after an edit), with the train put
     /// back on it. With --railgraph, checked and logged too.
+    /// Signals whose track nodes are missing, or no longer on one line together (an edit took one out), linked again
+    /// from where they stand. Not an undo step: it only catches the links up with the track.
+    private void RelinkSignals(NetworkLines lines)
+    {
+        var linesOf = new Dictionary<long, List<int>>();
+        foreach (var line in lines.Lines)
+            if (line.Rail)
+                foreach (var (node, _) in line.Nodes)
+                {
+                    if (!linesOf.TryGetValue(node, out var list))
+                        linesOf[node] = list = [];
+                    list.Add(line.Index);
+                }
+
+        bool Together(long a, long b) => a != b && linesOf.TryGetValue(a, out var la) && linesOf.TryGetValue(b, out var lb) && la.Intersect(lb).Any();
+
+        var edits = new List<PlacedEdit>();
+        foreach (var o in _terrain!.Source.Objects)
+        {
+            if (o.Kind != PlacedKind.Signal || (o is { Node: { } n, Toward: { } t } && Together(n, t)))
+                continue;
+            var (x, z) = PlacedAtWorld(o);
+            if (PlaceTool.SignalAt(lines, x, z) is { } signal && (signal.Node != o.Node || signal.Toward != o.Toward))
+                edits.Add(new PlacedEdit(o, o with { Node = signal.Node, Toward = signal.Toward }));
+        }
+
+        if (edits.Count == 0)
+            return;
+        ApplyPlaced(edits);
+        Log.Info($"Signals: {edits.Count} linked to their track again");
+    }
+
     private void RefreshRailGraph()
     {
         if (_terrain!.Source.Lines is not { } lines || _network is not { } network || ReferenceEquals(lines, _railGraphFor))
@@ -2574,6 +2606,7 @@ public sealed partial class EditorView : IDisposable
         _trains.Ground = (x, z) => _terrain!.Source.HeightAt(x, z);
         _trains.Use(_railGraph);
         RestoreStock();
+        RelinkSignals(lines);
         if (DevTools.RailGraphReport)
             Log.Info(Trains.RailGraphCheck.Report(_railGraph, lines));
     }

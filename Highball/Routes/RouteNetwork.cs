@@ -183,15 +183,50 @@ public sealed class RouteNetwork
         Unsaved = true;
     }
 
-    /// An id for a new way or node, below every one in use (OpenStreetMap's are all positive).
+    /// An id for a new way or node, below every one in use or ever handed out (OpenStreetMap's are all positive). The
+    /// lowest handed out is saved (Ids.json), so an id taken out never comes back to attach whatever still names it (a
+    /// switch's size, a hand throw) to new track.
     public long NewId()
     {
         var lowest = Math.Min(0L, Ways.Count > 0 ? Math.Min(Ways.Keys.Min(), Ways.Values.Min(w => w.Nodes.Length > 0 ? w.Nodes.Min() : 0L)) : 0L);
         _nextId = Math.Min(_nextId, lowest - 1);
+        Unsaved = true;
         return _nextId--;
     }
 
     private long _nextId = -1;
+
+    private static string IdsIn(RouteInfo route) => Path.Combine(route.Folder, "Ids.json");
+
+    private sealed class Ids
+    {
+        public long Next { get; set; } = -1;
+    }
+
+    /// The lowest id named anywhere the network's ids are kept by other files, for a route saved before Ids.json.
+    private static long LowestReferenced(RouteInfo route)
+    {
+        var lowest = 0L;
+        foreach (var name in new[] { "Switches.json", "SwitchCurves.json" })
+        {
+            var path = Path.Combine(route.Folder, name);
+            if (!File.Exists(path))
+                continue;
+            try
+            {
+                foreach (var key in JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(path))?.Keys ?? Enumerable.Empty<string>())
+                    if (long.TryParse(key, out var id))
+                        lowest = Math.Min(lowest, id);
+            }
+            catch (JsonException)
+            {
+            }
+        }
+
+        foreach (var o in World.RouteObjects.Load(route))
+            lowest = Math.Min(lowest, Math.Min(o.Node ?? 0L, o.Toward ?? 0L));
+        return lowest;
+    }
 
     public void Save(RouteInfo route)
     {
@@ -201,6 +236,7 @@ public sealed class RouteNetwork
             JsonSerializer.Serialize(gzip, Ways.Values.ToList());
         using (var nodes = new GZipStream(File.Create(NodesIn(route)), CompressionLevel.SmallestSize))
             JsonSerializer.Serialize(nodes, Nodes.Values.ToList());
+        File.WriteAllText(IdsIn(route), JsonSerializer.Serialize(new Ids { Next = _nextId }));
         Unsaved = false;
     }
 
@@ -219,6 +255,8 @@ public sealed class RouteNetwork
             network.Merge([], JsonSerializer.Deserialize<List<NetworkNode>>(nodes) ?? []);
         }
 
+        var saved = File.Exists(IdsIn(route)) ? JsonSerializer.Deserialize<Ids>(File.ReadAllText(IdsIn(route)))?.Next : null;
+        network._nextId = Math.Min(saved ?? -1L, LowestReferenced(route) - 1);
         return network;
     }
 }

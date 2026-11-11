@@ -130,8 +130,10 @@ public sealed class PlaceTool
         return (x, z, rx, rz);
     }
 
-    /// A signal at a click: beside the track on that side, facing trains coming along it with it on their right.
-    public static (double X, double Z, double Heading)? SignalAt(NetworkLines lines, double x, double z)
+    /// A signal at a click: beside the track on that side, facing trains coming along it with it on their right. Node
+    /// and Toward: the track nodes it stands between, the one those trains pass first and the one they're heading for
+    /// (null where the line runs out of nodes, at the edge of what's built).
+    public static (double X, double Z, double Heading, long? Node, long? Toward)? SignalAt(NetworkLines lines, double x, double z)
     {
         if (NearestRail(lines, x, z, SnapReach) is not { } on)
             return null;
@@ -141,7 +143,31 @@ public sealed class PlaceTool
         // On the track's right (+1) the trains it faces run with the line's direction; it faces back along it.
         var (fx, fz) = (rz, -rx);
         var heading = Math.Atan2(-fz * side, -fx * side) * 180.0 / Math.PI;
-        return (px + rx * side * SignalOff, pz + rz * side * SignalOff, heading);
+        var (behind, ahead) = NodesAround(on.Line, on.S);
+        var (node, toward) = side > 0 ? (behind, ahead) : (ahead, behind);
+        return (px + rx * side * SignalOff, pz + rz * side * SignalOff, heading, node, toward);
+    }
+
+    /// Ids at or past this size are made up while the track's being fitted, again on every fit: not ones to keep.
+    private const long MadeUp = 1_000_000_000L;
+
+    /// The nearest kept nodes on a line before and after a distance along it.
+    public static (long? Before, long? After) NodesAround(NetworkLine line, float s)
+    {
+        long? before = null, after = null;
+        foreach (var (node, point) in line.Nodes)
+        {
+            if (Math.Abs(node) >= MadeUp)
+                continue;
+            if (line.S[point] <= s)
+                before = node;
+            else
+            {
+                after ??= node;
+            }
+        }
+
+        return (before, after);
     }
 
     /// A grade crossing at a click: on the track, along the road that crosses it there if there is one.
