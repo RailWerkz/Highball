@@ -18,6 +18,9 @@ public sealed partial class NetworkLines
         _ => 7.0,
     };
 
+    /// The furthest smoothing may take a road off its mapped way, metres.
+    private const double StrayMost = 1.5;
+
     /// The spread of the light pass after the carriageways are moved.
     private const double FinalSmoothing = 5.0;
 
@@ -144,7 +147,19 @@ public sealed partial class NetworkLines
                 }
             }
 
+            // Never much further off its mapped way than StrayMost (wider roads a little more): where the average would take it further
+            // (a tight hook at the end of a short ramp) the move is eased off towards that, smoothly, and the rest of the run keeps its
+            // full smoothing.
+            var most = Math.Max(StrayMost, chain.Max(c => runs[c.Run].Line.Width) * 0.15);
             var smooth = Smoothed(xs, zs, spread);
+            if (smooth is not null)
+                for (var i = 0; i < xs.Count; i++)
+                {
+                    var (dx, dz) = (smooth[i].X - xs[i], smooth[i].Z - zs[i]);
+                    var keep = 1.0 / Math.Sqrt(1.0 + (dx * dx + dz * dz) / (most * most));
+                    smooth[i] = (xs[i] + dx * keep, zs[i] + dz * keep);
+                }
+
             if (smooth is null)
                 return;
             for (var i = 1; i + 1 < refs.Count; i++)
@@ -207,14 +222,33 @@ public sealed partial class NetworkLines
         var weights = new double[reach + 1];
         for (var j = 0; j <= reach; j++)
             weights[j] = Math.Exp(-0.5 * j * j / (sigma * sigma));
+        // Past each end the heading carries on as it was turning there (the run reflected about its end's heading, found by a straight
+        // line fitted over its first stretch), so an end in a curve stays in the curve and points the way it did: cut off instead,
+        // the average there leans on the far side only, turning the end off its way, and putting it back bends the whole run.
+        double EndHeading(bool atStart)
+        {
+            var count = Math.Clamp((int)Math.Round(sigma), 2, Math.Max(2, n / 3));
+            var (sx, sy, sxx, sxy) = (0.0, 0.0, 0.0, 0.0);
+            for (var j = 0; j < count; j++)
+            {
+                var h = heading[atStart ? j : n - 1 - j];
+                (sx, sy, sxx, sxy) = (sx + j, sy + h, sxx + j * j, sxy + j * h);
+            }
+
+            var slope = (count * sxy - sx * sy) / Math.Max(count * sxx - sx * sx, 1e-9);
+            return (sy - slope * sx) / count - slope * 0.5;
+        }
+
+        var (h0, h1) = (EndHeading(true), EndHeading(false));
+        double HeadingAt(int j) => j < 0 ? 2.0 * h0 - heading[Math.Min(-j - 1, n - 1)] : j >= n ? 2.0 * h1 - heading[Math.Max(2 * n - 1 - j, 0)] : heading[j];
         var smooth = new double[n];
         for (var k = 0; k < n; k++)
         {
             var (sum, total) = (0.0, 0.0);
-            for (var j = Math.Max(0, k - reach); j <= Math.Min(n - 1, k + reach); j++)
+            for (var j = k - reach; j <= k + reach; j++)
             {
                 var w = weights[Math.Abs(j - k)];
-                sum += w * heading[j];
+                sum += w * HeadingAt(j);
                 total += w;
             }
 

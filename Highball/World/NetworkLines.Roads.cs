@@ -12,6 +12,8 @@ public sealed partial class NetworkLines
     /// their median is evened out over, and how far from a junction (or the pair's end) it eases back to as mapped.
     private const float MinMedian = 0.6f;
     private const float PairReach = 60f;
+    /// How far along a carriageway its sideways moves are evened out, each way.
+    private const float MoveSmooth = 25f;
     private const float MedianSmooth = 150f;
     private const float PairEase = 60f;
     private const float MedianEven = 2f;
@@ -280,6 +282,8 @@ public sealed partial class NetworkLines
         var toward = new (double X, double Z)[count];
         var need = new float[count];
         var paired = new bool[count];
+        var partner = new NetworkLine?[count];
+        var side = new int[count];
         var any = false;
         for (var p = 0; p < count; p++)
         {
@@ -312,13 +316,27 @@ public sealed partial class NetworkLines
                     var d = Math.Sqrt(away);
                     if (d < 1e-3)
                         continue;
+                    // Square across, not past the other's end: there it isn't alongside, and moving towards it would pull points along
+                    // the road (bunching them up and leaving a gap) rather than across it.
+                    var across = ex * -fz + ez * fx;
+                    if (Math.Abs(across) < d * 0.9)
+                        continue;
                     best = away;
-                    (apart[p], toward[p], need[p], paired[p]) = ((float)d, (ex / d, ez / d), road.Width * 0.5f + other.Width * 0.5f + MinMedian, true);
+                    var sign = Math.Sign(across);
+                    (apart[p], toward[p], need[p], paired[p], partner[p], side[p]) = ((float)Math.Abs(across), (-fz * sign, fx * sign), road.Width * 0.5f + other.Width * 0.5f + MinMedian, true, other, sign);
                     }
                 }
 
             any |= paired[p];
         }
+
+        // A road found on both sides of another crosses it (a ramp bridging over the far carriageway): the two aren't a pair at all.
+        var crossed = Enumerable.Range(0, count).Where(p => paired[p]).GroupBy(p => partner[p]!).Where(g => g.Select(p => side[p]).Distinct().Count() > 1).Select(g => g.Key).ToHashSet();
+        if (crossed.Count > 0)
+            for (var p = 0; p < count; p++)
+                if (paired[p] && crossed.Contains(partner[p]!))
+                    paired[p] = false;
+        any = paired.Any(b => b);
 
         if (!any)
             return null;
@@ -385,14 +403,27 @@ public sealed partial class NetworkLines
             return t * t * (3f - 2f * t);
         }
 
+        // Half the difference each: away from the other where they're too close, towards it where they're further than the median.
+        var moves = new double[count];
+        for (var p = 0; p < count; p++)
+            if (paired[p])
+                moves[p] = ((apart[p] - even[p]) * Ease(from[p], PairEase) + (even[p] - target[p]) * Ease(from[p], OverlapEase)) * 0.5;
+
+        // Evened out along the road, so where the nearest other carriageway changes (one way of it ending, the next beginning) the
+        // road doesn't step sideways: a sideways move is only ever a gentle one.
         var shift = new (double X, double Z)[count];
         for (var p = 0; p < count; p++)
         {
             if (!paired[p])
                 continue;
-            // Half the difference each: away from the other where they're too close, towards it where they're further than the median.
-            var move = ((apart[p] - even[p]) * Ease(from[p], PairEase) + (even[p] - target[p]) * Ease(from[p], OverlapEase)) * 0.5;
+            var (sum, weights) = (0.0, 0.0);
+            for (var q = p; q >= 0 && road.S[p] - road.S[q] < MoveSmooth; q--)
+                (sum, weights) = (sum + moves[q] * (MoveSmooth - (road.S[p] - road.S[q])), weights + MoveSmooth - (road.S[p] - road.S[q]));
+            for (var q = p + 1; q < count && road.S[q] - road.S[p] < MoveSmooth; q++)
+                (sum, weights) = (sum + moves[q] * (MoveSmooth - (road.S[q] - road.S[p])), weights + MoveSmooth - (road.S[q] - road.S[p]));
+            var move = sum / Math.Max(weights, 1e-9);
             shift[p] = (toward[p].X * move, toward[p].Z * move);
+
         }
 
         return shift;

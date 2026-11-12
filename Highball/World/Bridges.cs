@@ -77,6 +77,11 @@ public sealed class BridgeGroup
     public float Left => Members.Min(m => m.Offset - m.Half);
     public float Right => Members.Max(m => m.Offset + m.Half);
 
+    /// Whether its deck carries straight on at each end into another line's bridge (lanes merging or parting on the deck, a slip road
+    /// leaving it): no abutment there, but a pier under the joint.
+    public bool StartJoined { get; set; }
+    public bool EndJoined { get; set; }
+
     /// What runs underneath, found when the bridge is.
     public List<BridgeUnder> Under { get; } = [];
 
@@ -172,6 +177,34 @@ public static class BridgePlanner
             });
         }
 
+        // Which ends carry on into another line's bridge: a member's end at a node where some other line, not in the group, is bridged
+        // on one side or the other of that node.
+        var atNode = new Dictionary<long, List<(NetworkLine Line, int Point)>>();
+        foreach (var line in lines.Lines.Where(l => !l.Mark))
+            foreach (var (node, point) in line.Nodes)
+            {
+                if (!atNode.TryGetValue(node, out var list))
+                    atNode[node] = list = [];
+                list.Add((line, point));
+            }
+
+        static bool Bridged(NetworkLine line, int point) =>
+            (point > 0 && line.Structures[point - 1] == Structure.Bridge) || (point < line.Structures.Length && line.Structures[point] == Structure.Bridge);
+        foreach (var group in groups)
+        {
+            var carried = group.Members.Select(m => m.Line).ToHashSet();
+            bool Joined(NetworkLine line, int point) =>
+                line.Nodes.Where(n => n.Point == point).Any(n => atNode.TryGetValue(n.Node, out var others) && others.Any(o => !carried.Contains(o.Line) && Bridged(o.Line, o.Point)));
+            // Each member's end nearer the reference's start, or its end.
+            var (rx, rz) = (group.Reference.X[group.First], group.Reference.Z[group.First]);
+            bool Side(bool start) => group.Members.Any(m =>
+            {
+                var nearFirst = Math.Pow(m.Line.X[m.First] - rx, 2) + Math.Pow(m.Line.Z[m.First] - rz, 2) < Math.Pow(m.Line.X[m.Last] - rx, 2) + Math.Pow(m.Line.Z[m.Last] - rz, 2);
+                return Joined(m.Line, nearFirst == start ? m.First : m.Last);
+            });
+            (group.StartJoined, group.EndJoined) = (Side(true), Side(false));
+        }
+
         foreach (var group in groups)
             FindUnder(group, lines);
         return groups;
@@ -219,6 +252,15 @@ public static class BridgePlanner
         }
     }
 
+    /// The lowest the reference line's deck comes.
+    private static float MinDeckOf(BridgeGroup group)
+    {
+        var low = float.MaxValue;
+        for (var p = group.First; p <= group.Last; p++)
+            low = MathF.Min(low, group.Reference.Y[p]);
+        return low;
+    }
+
     /// What runs under a bridge: every grounded road or track whose middle line crosses the reference's over the bridge.
     private static void FindUnder(BridgeGroup group, NetworkLines lines)
     {
@@ -234,7 +276,10 @@ public static class BridgePlanner
                 continue;
             for (var i = 0; i + 1 < line.Count; i++)
             {
-                if (line.Structures[i] != Structure.Ground)
+                // On the ground, or a deck below this one (a pier mustn't come down through it either).
+                if (line.Structures[i] == Structure.Tunnel)
+                    continue;
+                if (line.Structures[i] == Structure.Bridge && MathF.Max(line.Y[i], line.Y[i + 1]) > MinDeckOf(group) - 3f)
                     continue;
                 var (ax, az, bx, bz) = (line.X[i], line.Z[i], line.X[i + 1], line.Z[i + 1]);
                 for (var p = group.First; p < group.Last; p++)

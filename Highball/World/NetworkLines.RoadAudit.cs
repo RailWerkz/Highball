@@ -44,6 +44,20 @@ public sealed partial class NetworkLines
                 return line.Y[i - 1] + (line.Y[i] - line.Y[i - 1]) * Math.Clamp(t, 0f, 1f);
             }
 
+            // Torn: points laid 2 m or so apart pulled far apart somewhere (a line shoved along itself), which shows as a kink.
+            // (Against the spacing of its neighbours, either side: some lines are laid sparser all along.)
+            var (gap, gapAt) = (0f, 0);
+            for (var p = 1; p < line.Count; p++)
+            {
+                var step = line.S[p] - line.S[p - 1];
+                var around = Enumerable.Range(p - 5, 11).Where(q => q >= 1 && q < line.Count && q != p).Select(q => line.S[q] - line.S[q - 1]).Order().ToList();
+                if (around.Count > 0 && step > 4f && step > 2.5f * around[around.Count / 2] && step - 2.5f * around[around.Count / 2] > gap)
+                    (gap, gapAt) = (step - 2.5f * around[around.Count / 2], p);
+            }
+
+            if (gap > 0f)
+                Add("points torn apart", line, gapAt, line.S[gapAt] - line.S[gapAt - 1]);
+
             // Grades, over 10 m, and how sharply they change.
             var (worstGrade, gradeAt, worstKink, kinkAt) = (0f, 0, 0f, 0);
             for (var p = 0; p < line.Count; p++)
@@ -157,7 +171,7 @@ public sealed partial class NetworkLines
                     var joined = other.Nodes.Any(n => shared.Contains(n.Node));
                     for (var i = 0; i + 1 < other.Count; i++)
                     {
-                        if (other.Structures[i] != Structure.Ground)
+                        if (other.Structures[i] == Structure.Tunnel)
                             continue;
                         for (var q = first; q < last && !joined; q++)
                         {
@@ -165,6 +179,9 @@ public sealed partial class NetworkLines
                                 continue;
                             var mine = line.Y[q] + (line.Y[q + 1] - line.Y[q]) * hit.T;
                             var theirs = other.Y[i] + (other.Y[i + 1] - other.Y[i]) * (float)OtherT(other, i, line, q);
+                            // Of two decks, only the upper's headroom over the lower counts.
+                            if (other.Structures[i] == Structure.Bridge && theirs > mine)
+                                continue;
                             var room = mine - depth - theirs;
                             if (room < (other.Rail ? RailHeadroom : RoadHeadroom) - 0.5f)
                                 Add("too little headroom under a bridge", line, q, room);

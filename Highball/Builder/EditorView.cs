@@ -2172,7 +2172,7 @@ public sealed partial class EditorView : IDisposable
                 Log.Info($"Road {road.Index}: class {(RoadClass)road.Class}, {road.Count} points, nodes at {string.Join(",", road.Nodes.Select(n => $"{n.Point}{(lines.IsJunction(n.Node) ? "J" : "")}"))}");
                 for (var i = 0; i < road.Count; i++)
                     if (MathF.Abs(road.S[i] - road.S[at]) < 60f)
-                        Log.Info(string.Create(CultureInfo.InvariantCulture, $"  {i} s {road.S[i]:0.0} ground {road.Ground[i]:0.00} y {road.Y[i]:0.00} {(i < road.Structures.Length ? road.Structures[i] : Structure.Ground)}"));
+                        Log.Info(string.Create(CultureInfo.InvariantCulture, $"  {i} s {road.S[i]:0.0} x {road.X[i]:0.00} z {road.Z[i]:0.00} shift {(road.Shift.Length > i ? road.Shift[i] : 0f):0.00} ground {road.Ground[i]:0.00} y {road.Y[i]:0.00} {(i < road.Structures.Length ? road.Structures[i] : Structure.Ground)}"));
                 break;
             }
 

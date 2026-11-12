@@ -40,7 +40,7 @@ internal struct StableHash
 public sealed partial class NetworkLines
 {
     /// Bumped when the file's layout changes; an older file is solved again.
-    private const int SolvedVersion = 23;
+    private const int SolvedVersion = 25;
 
     private static string SolvedPath(RouteInfo route) => Path.Combine(route.Folder, "Track.bin.gz");
 
@@ -133,6 +133,10 @@ public sealed partial class NetworkLines
             Numbers(w, line.Z);
             Numbers(w, line.S);
             Numbers(w, line.Structures);
+            // Each segment's level in an interchange (OpenStreetMap's layer), as many as there are segments.
+            var layers = new int[Math.Max(line.Count - 1, 0)];
+            Array.Copy(line.Layers, layers, Math.Min(line.Layers.Length, layers.Length));
+            Numbers(w, layers);
             w.Write(line.Nodes.Count);
             foreach (var (node, point) in line.Nodes)
             {
@@ -285,6 +289,7 @@ public sealed partial class NetworkLines
         var z = Numbers<double>(r, count);
         var s = Numbers<float>(r, count);
         var structures = Numbers<Structure>(r, Math.Max(count - 1, 0));
+        var layers = Numbers<int>(r, Math.Max(count - 1, 0));
         var nodes = new List<(long Node, int Point)>();
         for (var n = r.ReadInt32(); n > 0; n--)
         {
@@ -294,7 +299,7 @@ public sealed partial class NetworkLines
 
         var line = new NetworkLine
         {
-            Index = index, Rail = rail, Class = kind, X = x, Z = z, Y = new float[count], Ground = new float[count], Key = key, S = s, Structures = structures, Nodes = nodes,
+            Index = index, Rail = rail, Class = kind, X = x, Z = z, Y = new float[count], Ground = new float[count], Key = key, S = s, Structures = structures, Layers = layers, Nodes = nodes,
             Tracks = r.ReadInt32(), Gauge = r.ReadSingle(), Disused = r.ReadBoolean(), Embedded = r.ReadBoolean(), Exact = r.ReadBoolean(), Mark = r.ReadBoolean(),
             Width = r.ReadSingle(), Lanes = r.ReadInt32(), Oneway = r.ReadBoolean(), Unpaved = r.ReadBoolean(), Formation = r.ReadSingle(),
             Bed = (TrackBed)r.ReadInt32(), BedHeight = r.ReadSingle(),

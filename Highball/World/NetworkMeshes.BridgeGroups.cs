@@ -212,6 +212,15 @@ public sealed partial class NetworkMeshes
         // Each end: the deck closed with a plate, a post at each railing's end, and the abutment.
         foreach (var (s, inward) in new[] { (line.S[first], 1f), (line.S[last], -1f) })
         {
+            // Where the deck carries on into another line's bridge, a pier under the joint, and no end.
+            if (inward > 0f ? group.StartJoined : group.EndJoined)
+            {
+                var joint = Math.Clamp(s - group.From + inward * 0.6f, 0f, group.Length);
+                var (ax, az) = BridgePlanner.Direction(group, joint, t => AcrossAt(group, t));
+                Pier(builder, group, new BridgePier(joint, ax, az), edit.Style != PierStyle.Auto ? edit.Style : group.Rail ? PierStyle.Wall : PierStyle.Columns, left, right, depth, girders);
+                continue;
+            }
+
             var (center, r) = FrameAt(line, s, builder.Origin);
             var forward = new float3(r.Z, 0f, -r.X);
             Post(center, r, forward);

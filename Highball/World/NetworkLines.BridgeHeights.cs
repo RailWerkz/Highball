@@ -69,7 +69,8 @@ public sealed partial class NetworkLines
                             if (other.Structures[i] != Structure.Ground)
                             {
                                 var (myLayer, theirLayer) = (LayerOf(line, q), LayerOf(other, i));
-                                if (theirLayer > myLayer || (theirLayer == myLayer && theirs > mine - 2f))
+                                // (Same level: the higher one is on top; dead level, the later line.)
+                                if (theirLayer > myLayer || (theirLayer == myLayer && (theirs > mine + 0.01f || (MathF.Abs(theirs - mine) <= 0.01f && other.Index > line.Index))))
                                     continue;
                             }
                             var headroom = other.Rail ? RailHeadroom : RoadHeadroom;
