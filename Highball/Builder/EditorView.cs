@@ -2212,6 +2212,31 @@ public sealed partial class EditorView : IDisposable
                 break;
             }
 
+            case "bridgegroup":
+            {
+                // bridgegroup,LAT,LON: the bridge nearest there: its reference, members (offset, half) and reach across.
+                var (cx, cz) = At(1);
+                if (_network?.BridgeAt(cx, cz, 30.0) is { } g)
+                    Log.Info(string.Create(CultureInfo.InvariantCulture, $"Bridge group {g.Key}: reference {g.Reference.Index}, left {g.Left:0.0} right {g.Right:0.0}, members {string.Join("; ", g.Members.Select(m => $"{m.Line.Index} off {m.Offset:0.0} half {m.Half:0.0}"))}, covered {string.Join(",", (g.Covered ?? []).Select(c => $"{c.From:0.0}..{c.To:0.0}"))}"));
+                break;
+            }
+
+            case "bridgeends":
+            {
+                // bridgeends,LAT,LON,RADIUS: each bridge end near there: its line, kind, run, floor, what it stands beside.
+                var (cx, cz) = At(1);
+                var radius = Number(3);
+                foreach (var l in lines.Lines.Where(l => l.Structures.Contains(Structure.Bridge)))
+                    foreach (var e in lines.BridgeEndsOf(l))
+                        if (Math.Pow(l.X[e.Point] - cx, 2) + Math.Pow(l.Z[e.Point] - cz, 2) < radius * radius)
+                        {
+                            var g = _route.Projection!.Inverse(new RoutePoint(l.X[e.Point], -l.Z[e.Point]));
+                            Log.Info(string.Create(CultureInfo.InvariantCulture, $"Bridge end: line {l.Index} point {e.Point} ({(e.Start ? "start" : "end")}) at {g.Lat:0.000000},{g.Lon:0.000000}: {e.Kind}, run {e.Run:0.0} m, floor {e.Floor:0.0}, deck {l.Y[e.Point]:0.0}, wing {e.Wing:0.0}, beside {(e.Under is { } u ? u.Index.ToString() : "-")} at {e.UnderS:0} side {e.Side}"));
+                        }
+
+                break;
+            }
+
             case "roadaudit":
             {
                 // roadaudit: every road measured (NetworkLines.AuditRoads), the counts and the worst places logged.

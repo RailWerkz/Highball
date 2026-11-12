@@ -2062,8 +2062,10 @@ public sealed partial class NetworkLines
                         var d = (float)Math.Sqrt(ex * ex + ez * ez) * _spacing;
                         var sample = z * samples + x;
 
-                        // (Not where a track's formation lies nearer: that's the track's ground.)
-                        if (d > line.Formation || d >= under[sample] || d > claimed[sample] + 1f)
+                        // (Not where a track's formation lies nearer: that's the track's ground. But a road's own paving, and a
+                        // little past it, is always its own: another road's bank nearer by doesn't bury it.)
+                        var paving = d <= PavedHalf(line, p) + PavingKept && (near[sample].Line < 0 || near[sample].D > _lines[near[sample].Line].Formation);
+                        if (d > line.Formation || d >= under[sample] || (d > claimed[sample] + 1f && !paving))
                             continue;
                         under[sample] = d;
                         heights[sample] = line.Y[p] + (line.Y[p + 1] - line.Y[p]) * (float)t - RoadClearance;
@@ -2131,6 +2133,7 @@ public sealed partial class NetworkLines
 
         ConformPads(heights, samples, gx0, gz0, near);
 
+        TrenchWalls(list, heights, samples, gx0, gz0);
         foreach (var index in list)
             if (Array.IndexOf(_lines[index].Structures, Structure.Bridge) >= 0)
                 ClearBridges(index, heights, samples, gx0, gz0);
@@ -2143,7 +2146,10 @@ public sealed partial class NetworkLines
     {
         var line = _lines[index];
         var (half, depth) = line.Rail ? (line.BallastHalfTop + 0.9f, 1.8f) : (line.Width * 0.5f + 0.4f, 1.4f);
-        var r = (half + BridgeClearReach) / _spacing;
+        var ends = BridgeEndsOf(line);
+        // (Out far enough for a slope end's corners, which run off its sides at SpillRun to one for the deck's height.)
+        var corner = ends.Where(e => e.Kind == BridgeEndKind.Slope).Select(e => (line.Y[e.Point] - e.Floor) * SpillRun + 3f).DefaultIfEmpty(0f).Max();
+        var r = (half + MathF.Max(BridgeClearReach, corner)) / _spacing;
         for (var from = 0; from < line.Structures.Length; from++)
         {
             if (line.Structures[from] != Structure.Bridge)
@@ -2153,6 +2159,9 @@ public sealed partial class NetworkLines
                 to++;
 
             var (start, end) = (line.S[from], line.S[to + 1]);
+            var bank = BridgeBank;
+            var startEnd = ends.FirstOrDefault(e => e.Point == from && e.Start);
+            var endEnd = ends.FirstOrDefault(e => e.Point == to + 1 && !e.Start);
             for (var p = from; p <= to; p++)
             {
                 var (ax, az, bx, bz) = (line.X[p] / _spacing - gx0, line.Z[p] / _spacing - gz0, line.X[p + 1] / _spacing - gx0, line.Z[p + 1] / _spacing - gz0);
@@ -2167,11 +2176,36 @@ public sealed partial class NetworkLines
                         var (ex, ez) = (ax + dx * t - x, az + dz * t - z);
                         var d = (float)Math.Sqrt(ex * ex + ez * ez) * _spacing;
                         var s = line.S[p] + (line.S[p + 1] - line.S[p]) * (float)t;
-                        var ease = Math.Clamp((MathF.Min(s - start, end - s) - BridgeBank) / BridgeEndEase, 0f, 1f);
                         var y = line.Y[p] + (line.Y[p + 1] - line.Y[p]) * (float)t;
+                        var sample = z * samples + x;
+                        // The nearer end, and how far into the gap from it.
+                        var (near, into) = s - start <= end - s ? (startEnd, s - start) : (endEnd, end - s);
+                        var ease = near.Kind == BridgeEndKind.Joined ? 1f : Math.Clamp((into - bank) / BridgeEndEase, 0f, 1f);
                         var limit = y - (depth + BridgeClearance) * ease + MathF.Max(0f, d - half) * CutSlope;
-                        if (heights[z * samples + x] > limit)
-                            heights[z * samples + x] = limit;
+                        if (near.Kind == BridgeEndKind.Slope && into <= near.Run + half + (line.Y[near.Point] - near.Floor) * SpillRun * 2f)
+                        {
+                            // The paved slope (see SlopeAt): under the deck, cut to the slab's underside, so the slab lies on it as a
+                            // slab. Beyond its sides the same plane carries on for SlopeCarriesOn, cutting a hillside down to it (as the
+                            // cutting the road below runs in would be), then rises to the ground at the cut slope; where the ground is
+                            // lower, it falls away from the plane at the fill slope.
+                            var (wx, wz) = (x * (double)_spacing + gx0 * (double)_spacing, z * (double)_spacing + gz0 * (double)_spacing);
+                            var off = near.FromUnder(wx, wz) - near.Under!.Formation - UnderShoulder;
+                            // (From the edge of the road's own flat ground: the shoulder short of the toe is at the road's level.)
+                            if (off > -UnderShoulder)
+                            {
+                                var plane = SlopeAt(line, near, wx, wz) - (line.Rail || off <= 0f ? 0f : SlabDepth);
+                                // (Flat the whole deck across: a railway deck reaches well past its ballast, for a walkway either side.)
+                                var across = MathF.Max(0f, d - half - (line.Rail ? 2.5f : 0.5f));
+                                if (across <= 0f)
+                                    heights[sample] = plane;
+                                else
+                                    heights[sample] = MathF.Min(MathF.Max(heights[sample], plane - across * FillSlope), MathF.Min(limit, plane + MathF.Max(0f, across - SlopeCarriesOn) * CutSlope));
+                                continue;
+                            }
+                        }
+
+                        if (heights[sample] > limit)
+                            heights[sample] = limit;
                     }
             }
 
@@ -2179,7 +2213,15 @@ public sealed partial class NetworkLines
         }
     }
 
+    /// How far past a road's paving its own ground is kept at its own height, whatever else is near.
+    public const float PavingKept = 1.2f;
+
+    /// Half a road's paved width at a point, its surface's shift out to one side and all.
+    public static float PavedHalf(NetworkLine line, int point) => line.Width * 0.5f + (point < line.Shift.Length ? MathF.Abs(line.Shift[point]) : 0f);
+
     private const float BridgeClearance = 0.3f;
+    /// How far past a deck's side a slope end's plane carries on before the ground may rise from it.
+    private const float SlopeCarriesOn = 4f;
     private const float BridgeClearReach = 8f;
     private const float BridgeEndEase = 3f;
     /// How far under each end of a deck the bank stays as it is: past the abutment, whose seat's there, before the ground's cut away.

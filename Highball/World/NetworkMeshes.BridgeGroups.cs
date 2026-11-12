@@ -153,7 +153,7 @@ public sealed partial class NetworkMeshes
         }
 
         // The deck between and beside what it carries (each carries its own surface, but for a guide's strip): a slab, its top just under theirs.
-        var covered = group.Members.Where(m => !m.Line.Mark).Select(m => (From: m.Offset - m.Half, To: m.Offset + m.Half)).OrderBy(c => c.From).ToList();
+        var covered = (group.Covered ?? group.Members.Where(m => !m.Line.Mark).Select(m => (From: m.Offset - m.Half, To: m.Offset + m.Half)).ToList()).OrderBy(c => c.From).ToList();
         var gaps = new List<(float From, float To)>();
         var at = left;
         foreach (var (from, to) in covered)
@@ -168,10 +168,23 @@ public sealed partial class NetworkMeshes
         foreach (var (from, to) in gaps)
             Sweep(builder, line, first, last, [(from, deckBottom), (from, surface), (to, surface), (to, deckBottom), (from, deckBottom)], _ => concrete, (_, _, _) => 0f, capped: true);
 
-        // Railings along the outer edges only.
-        foreach (var u in (float[])[left + 0.08f, right - 0.08f])
-            foreach (var height in (float[])[0.4f, 0.72f, RailingHeight])
-                Sweep(builder, line, first, last, Tube(u, edge + height, 0.04f), _ => galvanised, (_, _, _) => 0f);
+        // Along the outer edges only: on a railway, railings; on a road, a concrete parapet with a rail along its top.
+        var road = !group.Rail;
+        if (road)
+        {
+            Sweep(builder, line, first, last,
+                [(left, deckBottom - 0.15f), (left, edge + ParapetHeight), (left + 0.25f, edge + ParapetHeight), (left + 0.3f, edge + 0.25f), (left + 0.45f, edge), (left + 0.45f, deckBottom), (left, deckBottom - 0.15f)],
+                _ => concrete, (_, _, _) => 0f, capped: true);
+            Sweep(builder, line, first, last,
+                [(right - 0.45f, deckBottom), (right - 0.45f, edge), (right - 0.3f, edge + 0.25f), (right - 0.25f, edge + ParapetHeight), (right, edge + ParapetHeight), (right, deckBottom - 0.15f), (right - 0.45f, deckBottom)],
+                _ => concrete, (_, _, _) => 0f, capped: true);
+            foreach (var u in (float[])[left + 0.12f, right - 0.12f])
+                Sweep(builder, line, first, last, Tube(u, edge + ParapetHeight + ParapetRail, 0.045f), _ => galvanised, (_, _, _) => 0f);
+        }
+        else
+            foreach (var u in (float[])[left + 0.08f, right - 0.08f])
+                foreach (var height in (float[])[0.4f, 0.72f, RailingHeight])
+                    Sweep(builder, line, first, last, Tube(u, edge + height, 0.04f), _ => galvanised, (_, _, _) => 0f);
 
         void Along(float gap, Action<float3, float3, float3> place)
         {
@@ -186,8 +199,12 @@ public sealed partial class NetworkMeshes
         var steelData = new float4(0f, 0f, steel, 0f);
         void Post(float3 center, float3 r, float3 forward)
         {
-            foreach (var u in (float[])[left + 0.08f, right - 0.08f])
-                Solid(builder, center + r * u, r * 0.05f, forward * 0.05f, center.Y + edge, center.Y + edge + RailingHeight + 0.05f, bright);
+            if (road)
+                foreach (var u in (float[])[left + 0.12f, right - 0.12f])
+                    Solid(builder, center + r * u, r * 0.035f, forward * 0.05f, center.Y + edge + ParapetHeight, center.Y + edge + ParapetHeight + ParapetRail + 0.04f, bright);
+            else
+                foreach (var u in (float[])[left + 0.08f, right - 0.08f])
+                    Solid(builder, center + r * u, r * 0.05f, forward * 0.05f, center.Y + edge, center.Y + edge + RailingHeight + 0.05f, bright);
         }
 
         Along(RailPostGap, Post);
@@ -226,7 +243,8 @@ public sealed partial class NetworkMeshes
             Post(center, r, forward);
             Solid(builder, center + r * ((left + right) * 0.5f), r * ((right - left) * 0.5f), forward * 0.04f, center.Y + deckBottom, center.Y + surface - 0.02f, concreteData);
             var start = inward > 0f;
-            Abutment(builder, group, s, inward, left, right, depth, edge, start ? edit.StartWing : edit.EndWing, start ? edit.StartFlare : edit.EndFlare);
+            Abutment(builder, group, s, inward, left, right, depth, edge, start ? edit.StartWing : edit.EndWing, start ? edit.StartFlare : edit.EndFlare,
+                _lines.BridgeEndAt(line, start ? first : last));
         }
 
         // The piers.
@@ -302,38 +320,308 @@ public sealed partial class NetworkMeshes
         }
     }
 
-    /// An abutment under one end of the deck: a seat for the beams, a wall behind them up to the deck, and a retaining wall out from
-    /// each side holding the bank back, as long as asked (or as the bank needs) and flared back from square as asked, its top falling
-    /// from the deck's edge to the ground.
-    private void Abutment(Builder builder, BridgeGroup group, float s, float inward, float left, float right, float depth, float edge, float? wing, float flare)
+    /// A road bridge's parapet: how high it stands over the deck's edge, and its rail over that.
+    private const float ParapetHeight = 0.85f;
+    private const float ParapetRail = 0.3f;
+
+    /// An abutment under one end of the deck, as the end's kind has it (see BridgeEndKind).
+    /// Wall: a full-height wall from below what runs underneath up to the beams' seat, a back wall over that up to the deck, and wing
+    /// walls in line with its face out each side, their tops falling with the bank behind them to the ground.
+    /// Slope: a seat beam at the top of the bank, a back wall up to the deck, and the slope under the deck paved down to its toe.
+    /// Bank (or no kind worked out): a seat and wall down to the ground there, and short wings flared as asked.
+    private void Abutment(Builder builder, BridgeGroup group, float s, float inward, float left, float right, float depth, float edge, float? wing, float flare, BridgeEnd? end)
     {
         var line = group.Reference;
         var (center, r) = FrameAt(line, s, builder.Origin);
         // Into the gap, from this end.
         var forward = new float3(r.Z, 0f, -r.X) * inward;
         var world = (X: center.X + builder.Origin.X, Z: center.Z + builder.Origin.Z);
-        var ground = MathF.Min(_source.HeightAt(world.X, world.Z), _source.HeightAt(world.X + forward.X * 4f, world.Z + forward.Z * 4f));
         var top = center.Y - depth;
-        ground = MathF.Min(ground, top - 0.5f);
         var middle = center + r * ((left + right) * 0.5f);
         var half = (right - left) * 0.5f + 0.1f;
         var data = new float4(0f, 0f, Code(LineMaterial.Concrete), 0f);
-        Solid(builder, middle + forward * 0.6f, r * half, forward * 0.9f, ground - 1.5f, top, data);
-        Solid(builder, middle - forward * 0.35f, r * half, forward * 0.35f, ground - 1.5f, center.Y - 0.05f, data);
+        var settled = center.Y + (group.Rail ? 0f : RoadRise) + 0.1f;
+        var kind = end?.Kind ?? BridgeEndKind.Bank;
 
-        var reach = wing ?? (group.Rail
+        // The back wall, up to the deck, behind the beams' ends.
+        void BackWall(float bottom) => Solid(builder, middle - forward * 0.35f, r * half, forward * 0.35f, bottom, center.Y - 0.05f, data);
+
+        if (kind is BridgeEndKind.Wall or BridgeEndKind.Slope)
+        {
+            // The seat: a beam across under the beams' ends, and the back wall up to the deck behind them.
+            var seatBottom = top - 1.4f;
+            Solid(builder, middle + forward * 0.55f, r * half, forward * 0.55f, seatBottom, top, data);
+            BackWall(seatBottom);
+            // (A railway's slope is left as levelled earth, unpaved.)
+            if (kind == BridgeEndKind.Wall)
+                RetainingWall(builder, group, end!.Value, data);
+            else if (!group.Rail)
+                Paving(builder, group, middle, r, forward, half + 0.4f, 1.1f, end!.Value, data);
+            return;
+        }
+
+        var ground = MathF.Min(_source.HeightAt(world.X, world.Z), _source.HeightAt(world.X + forward.X * 4f, world.Z + forward.Z * 4f));
+        ground = MathF.Min(ground, top - 0.5f);
+        Solid(builder, middle + forward * 0.6f, r * half, forward * 0.9f, ground - 1.5f, top, data);
+        BackWall(ground - 1.5f);
+
+        var length = wing ?? (group.Rail
             ? MathF.Max(line.BallastHalfTop + MathF.Max(0.35f, line.BedHeight * NetworkLine.BallastSlope * NetworkLine.BedRun) + NetworkLine.BedFade - (right - left) * 0.5f, 1f) + 1f
             : Math.Clamp((center.Y - ground) * 1.2f, 1.5f, 6f));
-        var settled = center.Y + (group.Rail ? 0f : RoadRise) + 0.1f;
         var turn = Math.Clamp(flare, -45f, 80f) * MathF.PI / 180f;
         foreach (var side in (float[])[-1f, 1f])
         {
             var a = middle - forward * 0.1f + r * (side * half);
             // Out to the side, turned back into the bank by the flare.
             var outward = r * (side * MathF.Cos(turn)) - forward * MathF.Sin(turn);
-            var b = a + outward * reach;
+            var b = a + outward * length;
             var low = MathF.Min(ground, _source.HeightAt(b.X + builder.Origin.X, b.Z + builder.Origin.Z)) - 1.5f;
             Wing(builder, a, b, 0.4f, low, center.Y + edge, settled, data);
+        }
+    }
+
+    private const float WallOff = NetworkLines.WallOff;
+    private const float WallThick = NetworkLines.WallThick;
+    private const float WallStep = 2f;
+    private const float WallMost = NetworkLines.WallMost;
+    /// How far behind a wall's back the bank it holds is looked at (more than the terrain's sample spacing and a half).
+    private const float WallLooks = 3.5f;
+    /// How far past a deck's end a wall still rises to its seat (the wedge a skewed crossing leaves).
+    private const float WallWedge = 25f;
+
+    /// A wall end's wall: along the edge of what runs underneath, its face WallOff past its formation, under the deck up to the seat
+    /// and out either side as a retaining wall, its top following the bank behind it until the bank's come down to the road (or
+    /// halfway to the next bridge's wall along the same side, so two don't stand in each other).
+    private void RetainingWall(Builder builder, BridgeGroup group, BridgeEnd end, float4 data)
+    {
+        var under = end.Under!;
+        var origin = builder.Origin;
+        var deck = group.Reference;
+        var depth = BridgePlanner.DeckDepth(deck);
+        var (left, right) = DeckAcross(group, EditOf(group));
+        var endY = deck.Y[end.Point];
+
+        // The deck's underside over a place, if it's over it.
+        float? DeckOver(double x, double z)
+        {
+            var (best, at, y) = (double.MaxValue, 0.0, 0f);
+            for (var p = group.First; p < group.Last; p++)
+            {
+                var (ax, az, dx, dz) = (deck.X[p], deck.Z[p], deck.X[p + 1] - deck.X[p], deck.Z[p + 1] - deck.Z[p]);
+                var t = Math.Clamp(((x - ax) * dx + (z - az) * dz) / Math.Max(dx * dx + dz * dz, 1e-9), 0.0, 1.0);
+                var (ex, ez) = (ax + dx * t - x, az + dz * t - z);
+                if (ex * ex + ez * ez < best)
+                {
+                    // (Across to the deck's right: the right of (dx, dz) is (-dz, dx).)
+                    var length = Math.Max(Math.Sqrt(dx * dx + dz * dz), 1e-6);
+                    (best, at, y) = (ex * ex + ez * ez, ((x - ax) * -dz + (z - az) * dx) / length, deck.Y[p] + (deck.Y[p + 1] - deck.Y[p]) * (float)t);
+                }
+            }
+
+            // (Past the deck's end too, within its width: on a skew, the wedge between the square end and the wall along the road is the
+            // abutment's, up to the seat.)
+            return at >= left - 0.3 && at <= right + 0.3 && best < Math.Pow(Math.Max(-left, right) + WallWedge, 2) ? y - depth : null;
+        }
+
+        // As far each way as halfway to the next wall on this side of the same road.
+        var (lowest, highest) = (end.UnderS - WallMost, end.UnderS + WallMost);
+        foreach (var other in _bridges)
+        {
+            if (other == group)
+                continue;
+            foreach (var point in (int[])[other.First, other.Last])
+                if (_lines.BridgeEndAt(other.Reference, point) is { Kind: BridgeEndKind.Wall } e && e.Under == under && e.Side == end.Side)
+                {
+                    if (e.UnderS < end.UnderS)
+                        lowest = MathF.Max(lowest, (e.UnderS + end.UnderS) * 0.5f);
+                    else if (e.UnderS > end.UnderS)
+                        highest = MathF.Min(highest, (e.UnderS + end.UnderS) * 0.5f);
+                }
+        }
+
+        float? lastCovered = null;
+        (float3 Face, float3 Back, float Top, float Bottom)? At(float s, out bool stop, out bool covered)
+        {
+            stop = false;
+            covered = false;
+            var i = Array.BinarySearch(under.S, s);
+            i = Math.Clamp(i >= 0 ? i : ~i - 1, 0, under.Count - 2);
+            var t = Math.Clamp((s - under.S[i]) / MathF.Max(under.S[i + 1] - under.S[i], 1e-4f), 0f, 1f);
+            var (x, z) = (under.X[i] + (under.X[i + 1] - under.X[i]) * t, under.Z[i] + (under.Z[i + 1] - under.Z[i]) * t);
+            var floor = under.Y[i] + (under.Y[i + 1] - under.Y[i]) * t;
+            var (dx, dz) = ((float)(under.X[i + 1] - under.X[i]), (float)(under.Z[i + 1] - under.Z[i]));
+            var length = MathF.Max(MathF.Sqrt(dx * dx + dz * dz), 1e-5f);
+            var (rx, rz) = (-dz / length * end.Side, dx / length * end.Side);
+            var off = (under.Rail ? under.Formation : NetworkLines.PavedHalf(under, i)) + WallOff;
+            var face = (X: x + rx * off, Z: z + rz * off);
+            // (Its body covers the strip let down behind it: its back where the ground's left as it is.)
+            var body = _lines.WallBody;
+            var back = (X: face.X + rx * body, Z: face.Z + rz * body);
+            float top;
+            if (DeckOver(face.X, face.Z) is { } underside)
+            {
+                (top, covered) = (underside, true);
+                lastCovered = s;
+            }
+            else
+            {
+                // (Past the deck, the approach's bank falls away at the slope's run: a cutting's own high ground beyond is left as it is.)
+                var beyond = MathF.Abs(s - (lastCovered ?? end.UnderS));
+                var bank = endY + 0.3f - beyond / NetworkLines.SpillRun;
+                // (The highest of the ground just behind it: the terrain's triangles from the road up to that cross the wall's plane no
+                // higher, so the wall hides them, and the bank meets its top.)
+                var behind = float.MinValue;
+                for (var look = 0.3f; look <= WallLooks; look += 0.8f)
+                    behind = MathF.Max(behind, _source.HeightAt(back.X + rx * look, back.Z + rz * look));
+                top = MathF.Min(behind + 0.15f, bank);
+                if (top < floor + 0.6f)
+                {
+                    stop = true;
+                    top = floor + 0.6f;
+                }
+            }
+
+            return (new float3((float)(face.X - origin.X), 0f, (float)(face.Z - origin.Z)), new float3((float)(back.X - origin.X), 0f, (float)(back.Z - origin.Z)), top, floor - 1.2f);
+        }
+
+        var points = new List<(float3 Face, float3 Back, float Top, float Bottom)>();
+        foreach (var way in (int[])[-1, 1])
+        {
+            lastCovered = null;
+            var run = new List<(float3, float3, float, float)>();
+            for (var k = way < 0 ? 0 : 1; k * WallStep <= WallMost; k++)
+            {
+                var s = end.UnderS + way * k * WallStep;
+                if (s < 0f || s > under.S[^1])
+                    break;
+                if (At(s, out var stop, out var covered) is not { } place)
+                    break;
+                // (Past halfway to the next wall only while still under its own deck.)
+                if ((s < lowest || s > highest) && !covered)
+                    break;
+                run.Add(place);
+                if (stop)
+                    break;
+            }
+
+            if (way < 0)
+                run.Reverse();
+            points.AddRange(run);
+        }
+
+        if (points.Count < 2)
+            return;
+        // Its top evened out along it (the ground behind is only as smooth as the terrain's samples), never under where it was.
+        var tops = points.Select(p => p.Top).ToArray();
+        for (var k = 1; k + 1 < points.Count; k++)
+            points[k] = points[k] with { Top = MathF.Max(tops[k], (tops[k - 1] + tops[k] * 2f + tops[k + 1]) * 0.25f) };
+        var up = new float3(0f, 1f, 0f);
+        for (var k = 0; k + 1 < points.Count; k++)
+        {
+            var (f0, b0, t0, d0) = points[k];
+            var (f1, b1, t1, d1) = points[k + 1];
+            var outward = MathEx.Normalize(f0 - b0);
+            var along = MathEx.Normalize(f1 - f0);
+            void Quad(float3 p, float3 q, float pBottom, float qBottom, float pTop, float qTop, float3 normal)
+            {
+                var v0 = builder.Add(p with { Y = pBottom }, normal, data);
+                var v1 = builder.Add(q with { Y = qBottom }, normal, data);
+                var v2 = builder.Add(p with { Y = pTop }, normal, data);
+                var v3 = builder.Add(q with { Y = qTop }, normal, data);
+                builder.Indices.AddRange([v0, v1, v2, v1, v3, v2, v0, v2, v1, v1, v2, v3]);
+            }
+
+            Quad(f0, f1, d0, d1, t0, t1, outward);
+            Quad(b0, b1, d0, d1, t0, t1, outward * -1f);
+            // The top.
+            var a0 = builder.Add(f0 with { Y = t0 }, up, data);
+            var a1 = builder.Add(f1 with { Y = t1 }, up, data);
+            var a2 = builder.Add(b0 with { Y = t0 }, up, data);
+            var a3 = builder.Add(b1 with { Y = t1 }, up, data);
+            builder.Indices.AddRange([a0, a1, a2, a1, a3, a2, a0, a2, a1, a1, a2, a3]);
+            if (k == 0)
+                Quad(f0, b0, d0, d0, t0, t0, along * -1f);
+            if (k + 2 == points.Count)
+                Quad(f1, b1, d1, d1, t1, t1, along);
+        }
+    }
+
+    /// The paving on a slope under a deck's end: a concrete slab SlabDepth thick across the deck's width (half either side of its middle),
+    /// from so far into the gap down to its toe a shoulder's width off what's underneath, where a low kerb runs along it. Its top is the
+    /// slope's own plane (SlopeAt), flat, with the bank cut out under it to fit, and its edges show.
+    private void Paving(Builder builder, BridgeGroup group, float3 middle, float3 r, float3 forward, float half, float from, BridgeEnd end, float4 data)
+    {
+        var origin = builder.Origin;
+        var line = group.Reference;
+        var limit = end.Under!.Formation + NetworkLines.UnderShoulderOf;
+        float Off(float3 p) => end.FromUnder(p.X + origin.X, p.Z + origin.Z) - limit;
+        float Top(float3 p) => _lines.SlopeAt(line, end, p.X + origin.X, p.Z + origin.Z);
+
+        // Each column across: from the seat down to its toe.
+        var columns = Math.Max(2, (int)MathF.Ceiling(half));
+        var toes = new float[columns + 1];
+        for (var j = 0; j <= columns; j++)
+        {
+            var bottom = middle + r * (-half + half * 2f * j / columns);
+            var (o0, o1) = (Off(bottom + forward * from), Off(bottom + forward * (from + 1f)));
+            // (Off falls as it goes into the gap: to nothing at the toe.)
+            toes[j] = o0 - o1 > 1e-3f ? from + o0 / (o0 - o1) : from;
+        }
+
+        if (toes.Max() - from < 1f)
+            return;
+        // (Rows half a metre apart, so the fold where the slope meets the level top under the seat stays sharp.)
+        var rows = Math.Max(2, (int)MathF.Ceiling((toes.Max() - from) * 2f));
+        var grid = new float3[rows + 1, columns + 1];
+        for (var i = 0; i <= rows; i++)
+            for (var j = 0; j <= columns; j++)
+            {
+                var into = from + MathF.Max(toes[j] - from, 0f) * i / rows;
+                var p = middle + r * (-half + half * 2f * j / columns) + forward * into;
+                grid[i, j] = p with { Y = Top(p) };
+            }
+
+        var start = (uint)builder.Vertices.Count;
+        for (var i = 0; i <= rows; i++)
+            for (var j = 0; j <= columns; j++)
+            {
+                var (i0, i1, j0, j1) = (Math.Max(i - 1, 0), Math.Min(i + 1, rows), Math.Max(j - 1, 0), Math.Min(j + 1, columns));
+                var (u, v) = (grid[i, j1] - grid[i, j0], grid[i1, j] - grid[i0, j]);
+                var normal = MathEx.Normalize(new float3(u.Y * v.Z - u.Z * v.Y, u.Z * v.X - u.X * v.Z, u.X * v.Y - u.Y * v.X));
+                if (normal.Y < 0f)
+                    normal *= -1f;
+                builder.Add(grid[i, j], normal, data);
+            }
+
+        var stride = (uint)(columns + 1);
+        for (var i = 0; i < rows; i++)
+            for (var j = 0; j < columns; j++)
+            {
+                var a = start + (uint)i * stride + (uint)j;
+                var c = a + stride;
+                // (Both ways round: seen from above whichever way the frame turns.)
+                builder.Indices.AddRange([a, a + 1, c, a + 1, c + 1, c, a, c, a + 1, a + 1, c, c + 1]);
+            }
+
+        // Its two side edges, down through the slab and a little into the bank.
+        const float below = NetworkLines.SlabDepth + 0.2f;
+        foreach (var (j, side) in (ReadOnlySpan<(int, float)>)[(0, -1f), (columns, 1f)])
+            for (var i = 0; i < rows; i++)
+            {
+                var (p, q) = (grid[i, j], grid[i + 1, j]);
+                var normal = r * side;
+                var v0 = builder.Add(p, normal, data);
+                var v1 = builder.Add(q, normal, data);
+                var v2 = builder.Add(p - new float3(0f, below, 0f), normal, data);
+                var v3 = builder.Add(q - new float3(0f, below, 0f), normal, data);
+                builder.Indices.AddRange([v0, v1, v2, v1, v3, v2, v0, v2, v1, v1, v2, v3]);
+            }
+
+        // The kerb along the toe.
+        for (var j = 0; j < columns; j++)
+        {
+            var (p, q) = (grid[rows, j], grid[rows, j + 1]);
+            Wing(builder, p, q, 0.3f, MathF.Min(p.Y, q.Y) - below, p.Y + 0.12f, q.Y + 0.12f, data);
         }
     }
 

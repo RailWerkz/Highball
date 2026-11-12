@@ -7,14 +7,84 @@ namespace Highball.World;
 /// junction or the line's end. Done once the lines are shaped, before the profiles, so the deck, the ramps and the ground follow.
 public sealed partial class NetworkLines
 {
-    private const float BridgeStretch = 15f;
+    /// The furthest a bridge is lengthened at each end: enough for a road crossed at a skew (which a deck crosses the width of over a
+    /// long way), short of carrying a bridge on over what only runs alongside it.
+    private const float BridgeStretch = 60f;
+    /// The flattest crossing that still counts as under a bridge (sine of the angle), rather than alongside it.
+    private const float SquareEnough = 0.26f; // (Crossing gives no less than 0.25, about 15 degrees: anything flatter is alongside.)
 
     /// Bridges found side by side over the same gap (each line's bridged stretch, by distance along it), for their decks to be levelled.
     private readonly List<(NetworkLine A, float A0, float A1, NetworkLine B, float B0, float B1)> _sideBySide = [];
     private const float BridgeClear = 1.5f;
 
+    /// How near a guide's bridged middle line a track has to run to take its bridge.
+    private const double GuideBridgeReach = 3.0;
+
+    /// Track laid where there should be a bridge, but laid as plain track, gets one: wherever it runs along a guide's bridge (the
+    /// mapped railway it was laid over), and wherever track laid by hand crosses a highway on the ground with no crossing mapped (no
+    /// train crosses a freeway at grade). The bridge is then lengthened and lifted as any other.
+    private void BridgeTracks(Dictionary<long, int> uses)
+    {
+        var guides = _lines.Where(l => l.Mark && l.Structures.Contains(Structure.Bridge)).ToList();
+        var highways = _lines.Where(l => !l.Rail && !l.Mark && (Routes.RoadClass)l.Class == Routes.RoadClass.Highway).ToList();
+        var bridged = 0;
+        foreach (var track in _lines.Where(l => l.Rail && !l.Mark && l.Count >= 2))
+        {
+            var shared = track.Nodes.Select(n => n.Node).ToHashSet();
+            var changed = false;
+            for (var p = 0; p + 1 < track.Count; p++)
+            {
+                if (track.Structures[p] != Structure.Ground)
+                    continue;
+                var (mx, mz) = ((track.X[p] + track.X[p + 1]) * 0.5, (track.Z[p] + track.Z[p + 1]) * 0.5);
+                var over = false;
+                foreach (var guide in guides)
+                {
+                    if (guide.MaxX < mx - GuideBridgeReach || guide.MinX > mx + GuideBridgeReach || guide.MaxZ < mz - GuideBridgeReach || guide.MinZ > mz + GuideBridgeReach)
+                        continue;
+                    for (var q = 0; q + 1 < guide.Count && !over; q++)
+                    {
+                        if (guide.Structures[q] != Structure.Bridge)
+                            continue;
+                        var (dx, dz) = (guide.X[q + 1] - guide.X[q], guide.Z[q + 1] - guide.Z[q]);
+                        var t = Math.Clamp(((mx - guide.X[q]) * dx + (mz - guide.Z[q]) * dz) / Math.Max(dx * dx + dz * dz, 1e-9), 0.0, 1.0);
+                        over = Math.Pow(guide.X[q] + dx * t - mx, 2) + Math.Pow(guide.Z[q] + dz * t - mz, 2) < GuideBridgeReach * GuideBridgeReach;
+                    }
+
+                    if (over)
+                        break;
+                }
+
+                if (!over && track.Exact)
+                    foreach (var road in highways)
+                    {
+                        if (road.MaxX < Math.Min(track.X[p], track.X[p + 1]) || road.MinX > Math.Max(track.X[p], track.X[p + 1]) ||
+                            road.MaxZ < Math.Min(track.Z[p], track.Z[p + 1]) || road.MinZ > Math.Max(track.Z[p], track.Z[p + 1]) || road.Nodes.Any(n => shared.Contains(n.Node)))
+                            continue;
+                        for (var i = 0; i + 1 < road.Count && !over; i++)
+                            over = road.Structures[i] == Structure.Ground && Crossing(road, i, track, p) is not null;
+                        if (over)
+                            break;
+                    }
+
+                if (over)
+                {
+                    track.Structures[p] = Structure.Bridge;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+                bridged++;
+        }
+
+        if (bridged > 0)
+            RailWerkz.Core.Logging.Log.Info($"Bridges: {bridged} tracks given the bridges they were laid over");
+    }
+
     private void StretchBridges(Dictionary<long, int> uses)
     {
+        BridgeTracks(uses);
         var lines = _lines.Where(l => !l.Mark && l.Count >= 2).ToList();
         var stretched = 0;
         var most = 0f;
@@ -61,7 +131,7 @@ public sealed partial class NetworkLines
                         for (var q = q0; q < q1; q++)
                         {
                             // Only what crosses square enough to be under it, not a road running alongside.
-                            if (Crossing(other, i, line, q) is not { } hit || hit.Sine < 0.5f)
+                            if (Crossing(other, i, line, q) is not { } hit || hit.Sine < SquareEnough)
                                 continue;
                             var s = line.S[q] + (line.S[q + 1] - line.S[q]) * hit.T;
                             var reach = (other.Formation + BridgeClear) / hit.Sine + deckHalf * hit.Cosine / hit.Sine;

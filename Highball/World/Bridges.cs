@@ -74,13 +74,24 @@ public sealed class BridgeGroup
     public float Length => To - From;
 
     /// The deck's reach across, from the reference's middle line (negative: to its left), before any room's added.
-    public float Left => Members.Min(m => m.Offset - m.Half);
-    public float Right => Members.Max(m => m.Offset + m.Half);
+    public float Left => Spread?.Left ?? Members.Min(m => m.Offset - m.Half);
+    public float Right => Spread?.Right ?? Members.Max(m => m.Offset + m.Half);
+
+    /// How far across it its members reach anywhere along it, measured point by point (members that splay apart, as a U-turn's two
+    /// ways over one deck do, reach further than their middles' offsets say), and the stretches across that each covers all the way
+    /// along.
+    public (float Left, float Right)? Spread { get; set; }
+    public List<(float From, float To)>? Covered { get; set; }
 
     /// Whether its deck carries straight on at each end into another line's bridge (lanes merging or parting on the deck, a slip road
     /// leaving it): no abutment there, but a pier under the joint.
     public bool StartJoined { get; set; }
     public bool EndJoined { get; set; }
+
+    /// How far in from each end no pier may stand (metres along it): over a paved slope, which the seat at its top carries the deck
+    /// across, or before a wall.
+    public float StartClear { get; set; }
+    public float EndClear { get; set; }
 
     /// What runs underneath, found when the bridge is.
     public List<BridgeUnder> Under { get; } = [];
@@ -92,6 +103,9 @@ public sealed class BridgeGroup
 /// Finding the route's bridges and placing their piers.
 public static class BridgePlanner
 {
+    /// How far past a paved slope's toe (or a wall) a pier keeps.
+    private const float PierOffSlope = 1f;
+
     /// The longest span between supports a deck can have.
     public static float MaxSpan(DeckKind deck) => deck == DeckKind.Concrete ? 30f : 40f;
 
@@ -146,6 +160,9 @@ public static class BridgePlanner
                 var along = Math.Abs(dx * a.Fx + dz * a.Fz);
                 if (across <= a.Half + b.Half + 4.0 && along <= (a.Length + b.Length) * 0.5 && SideBySide(a.Line, a.First, a.Last, b.Line, b.First, b.Last, a.Half + b.Half + 4.0))
                     parent[Root(i)] = Root(j);
+                // Decks that overlap anywhere, going much the same way at much the same height, can only be one deck.
+                else if (!a.Line.Mark && !b.Line.Mark && Math.Abs(a.Fx * b.Fx + a.Fz * b.Fz) >= 0.8 && Overlap(a.Line, a.First, a.Last, b.Line, b.First, b.Last, a.Half + b.Half))
+                    parent[Root(i)] = Root(j);
             }
 
         var groups = new List<BridgeGroup>();
@@ -169,12 +186,36 @@ public static class BridgePlanner
                     : (long)Math.Round(reference.Mx) * 1_000_003L + (long)Math.Round(reference.Mz);
             }
 
-            groups.Add(new BridgeGroup
+            var group = new BridgeGroup
             {
                 Key = key, Reference = reference.Line, First = reference.First, Last = reference.Last,
                 Members = [.. members.Select(m => (m.Line, m.First, m.Last, (float)((m.Mx - reference.Mx) * rx + (m.Mz - reference.Mz) * rz), m.Half))],
                 Rail = members.Any(m => m.Line.Rail || m.Line.Mark), X = reference.Mx, Z = reference.Mz,
-            });
+            };
+            if (members.Count > 1)
+            {
+                // Each member's reach across the reference, point by point along it.
+                var (lo, hi) = (float.MaxValue, float.MinValue);
+                var covered = new List<(float From, float To)>();
+                foreach (var m in members)
+                {
+                    var (near, far) = (float.MaxValue, float.MinValue);
+                    for (var p = m.First; p <= m.Last; p++)
+                    {
+                        var across = AcrossOf(reference.Line, m.Line.X[p], m.Line.Z[p]);
+                        (near, far) = (MathF.Min(near, across), MathF.Max(far, across));
+                    }
+
+                    (lo, hi) = (MathF.Min(lo, near - m.Half), MathF.Max(hi, far + m.Half));
+                    if (!m.Line.Mark && far - m.Half < near + m.Half)
+                        covered.Add((far - m.Half, near + m.Half));
+                }
+
+                group.Spread = (lo, hi);
+                group.Covered = covered;
+            }
+
+            groups.Add(group);
         }
 
         // Which ends carry on into another line's bridge: a member's end at a node where some other line, not in the group, is bridged
@@ -203,6 +244,8 @@ public static class BridgePlanner
                 return Joined(m.Line, nearFirst == start ? m.First : m.Last);
             });
             (group.StartJoined, group.EndJoined) = (Side(true), Side(false));
+            static float Kept(BridgeEnd? end) => end is { Kind: BridgeEndKind.Slope or BridgeEndKind.Wall } e ? e.Run + PierOffSlope : 0f;
+            (group.StartClear, group.EndClear) = (Kept(lines.BridgeEndAt(group.Reference, group.First)), Kept(lines.BridgeEndAt(group.Reference, group.Last)));
         }
 
         foreach (var group in groups)
@@ -233,6 +276,38 @@ public static class BridgePlanner
         }
 
         return true;
+    }
+
+    /// Whether two bridged stretches come nearer each other anywhere than reach (their decks overlap).
+    private static bool Overlap(NetworkLine a, int a0, int a1, NetworkLine b, int b0, int b1, double reach)
+    {
+        for (var p = a0; p <= a1; p++)
+            for (var q = b0; q < b1; q++)
+            {
+                var (dx, dz) = (b.X[q + 1] - b.X[q], b.Z[q + 1] - b.Z[q]);
+                var t = Math.Clamp(((a.X[p] - b.X[q]) * dx + (a.Z[p] - b.Z[q]) * dz) / Math.Max(dx * dx + dz * dz, 1e-9), 0.0, 1.0);
+                if (Math.Pow(b.X[q] + dx * t - a.X[p], 2) + Math.Pow(b.Z[q] + dz * t - a.Z[p], 2) < reach * reach)
+                    return true;
+            }
+
+        return false;
+    }
+
+    /// How far a place is across a line (to its right), from the nearest place on it.
+    private static float AcrossOf(NetworkLine line, double x, double z)
+    {
+        var (best, across) = (double.MaxValue, 0.0);
+        for (var q = 0; q + 1 < line.Count; q++)
+        {
+            var (dx, dz) = (line.X[q + 1] - line.X[q], line.Z[q + 1] - line.Z[q]);
+            var length2 = Math.Max(dx * dx + dz * dz, 1e-9);
+            var t = Math.Clamp(((x - line.X[q]) * dx + (z - line.Z[q]) * dz) / length2, 0.0, 1.0);
+            var d = Math.Pow(line.X[q] + dx * t - x, 2) + Math.Pow(line.Z[q] + dz * t - z, 2);
+            if (d < best)
+                (best, across) = (d, ((x - line.X[q]) * -dz + (z - line.Z[q]) * dx) / Math.Sqrt(length2));
+        }
+
+        return (float)across;
     }
 
     /// A guide's bridged points set to the height of the bridge's reference line beside each.
@@ -318,7 +393,7 @@ public static class BridgePlanner
 
         bool Clear(float s)
         {
-            if (s < 3f || s > length - 3f)
+            if (s < MathF.Max(3f, group.StartClear) || s > length - MathF.Max(3f, group.EndClear))
                 return false;
             var (ax, az) = Direction(group, s, across);
             foreach (var under in group.Under)
