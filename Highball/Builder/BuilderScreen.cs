@@ -53,35 +53,11 @@ public sealed class BuilderScreen : Screen, IWorldScreen
             DebugWindows.ShowAll();
     }
 
-    /// Driving an installed pack (Single Player): straight into the 3D view, no Planner, nothing kept.
-    public static BuilderScreen Play(PackSource pack, Multiplayer.NetPlay? net = null)
-    {
-        var screen = new BuilderScreen(pack.Route) { _net = net };
-        if (net is not null)
-            net.Notice += screen.Notify;
-        return screen;
-    }
-
-    /// The multiplayer session, when playing one.
-    private Multiplayer.NetPlay? _net;
-
-    /// Played from a pack rather than built.
-    public bool Playing => _route.Pack is not null;
-
-    public override void Enter()
-    {
-        base.Enter();
-        if (Playing)
-            Show(Mode.Editor3D);
-    }
-
     public override void Exit()
     {
         _editor?.Dispose();
         _planner.Dispose();
         World.MaterialsWindow.Instance.Dispose();
-        _route.Pack?.Dispose();
-        _net?.Dispose();
     }
 
     /// A short notice on the right of the footer.
@@ -99,11 +75,6 @@ public sealed class BuilderScreen : Screen, IWorldScreen
     {
         if (mode == _mode)
             return;
-        if (mode == Mode.Planner && Playing)
-        {
-            Notify("The Planner's in the Route Builder");
-            return;
-        }
 
         if (mode != Mode.Planner)
         {
@@ -122,7 +93,7 @@ public sealed class BuilderScreen : Screen, IWorldScreen
             var centre = _planner.Centre();
             if (_editor is null)
             {
-                _editor = new EditorView(_route, centre) { Net = _net };
+                _editor = new EditorView(_route, centre);
                 _editorBuild = _planner.BuildVersion;
             }
             else if (_mode == Mode.Planner && centre is { } point)
@@ -149,7 +120,7 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         if (!Keyboard.KeysBlocked)
         {
             if (ImGui.IsKeyPressed(ImGuiKey.Tab))
-                Show(_mode switch { Mode.Planner => Mode.Editor2D, Mode.Editor2D => Mode.Editor3D, _ => Playing ? Mode.Editor2D : Mode.Planner });
+                Show(_mode switch { Mode.Planner => Mode.Editor2D, Mode.Editor2D => Mode.Editor3D, _ => Mode.Planner });
             else if (ImGui.IsKeyPressed(ImGuiKey.F1))
                 Show(Mode.Planner);
             else if (ImGui.IsKeyPressed(ImGuiKey.F2))
@@ -158,7 +129,7 @@ public sealed class BuilderScreen : Screen, IWorldScreen
                 Show(Mode.Editor3D);
             else if (ImGui.IsKeyPressed(ImGuiKey.Escape) && !(_mode != Mode.Planner && _editor!.Escape()))
             {
-                if (_mode != Mode.Planner && !Playing)
+                if (_mode != Mode.Planner)
                     Show(Mode.Planner);
                 else
                     _exit = true;

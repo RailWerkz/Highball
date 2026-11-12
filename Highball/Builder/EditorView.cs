@@ -189,8 +189,13 @@ public sealed partial class EditorView : IDisposable
         }
     }
 
+    /// The editor's track overlay, put back when driving's over (the overlay's kept between editor sessions).
+    private TrackOverlay? _overlayBeforeDriving;
+
     public void Dispose()
     {
+        if (_overlayBeforeDriving is { } overlay)
+            _overlay = overlay;
         Save();
         if (_sizePictures is not null)
             foreach (var (texture, reference) in _sizePictures.Values)
@@ -334,13 +339,15 @@ public sealed partial class EditorView : IDisposable
                 _tool = (Tool)Math.Clamp(first - 1, 0, (int)Tool.Place);
             }
             PlaceCamera(_opening.Result);
+            if (Driving)
+                (_overlayBeforeDriving, _overlay) = (_overlay, TrackOverlay.Off);
             if (_topDown)
                 EnterTopDown();
         }
 
         if (_topDown)
             Pan(dt);
-        else
+        else if (!Driving || View != DriveView.Cab || DriveTrain is null)
             Fly(dt);
         using (Profiler.Sample("Editing"))
         {
@@ -578,8 +585,12 @@ public sealed partial class EditorView : IDisposable
         if (IsBrush(_tool))
             _brush = _tool;
 
+        // Driving: only looking (picking vehicles, throwing switches, placing stock from the train window).
+        if (Driving)
+            _tool = Tool.Look;
+
         // (Not while typing in a field: digits there aren't tools.)
-        if (!Keyboard.KeysBlocked)
+        if (!Keyboard.KeysBlocked && !Driving)
         {
             for (var i = 0; i <= (int)Tool.Circuits; i++)
                 if (Input.KeyDown(GlfwKey.Number1 + i))
@@ -2696,11 +2707,119 @@ public sealed partial class EditorView : IDisposable
 
         _trains.Update(dt);
         Net?.Update(dt);
-        var (bx, by, bz) = _trains.FollowBy(ref _followed);
-        _camera.X += bx;
-        _camera.Y += by;
-        _camera.Z += bz;
+        if (Driving && _placeOrbit && View == DriveView.Orbit && DriveTrain is { } orbited)
+            PlaceOrbit(orbited);
+        if (Driving && View == DriveView.Cab && DriveTrain is { } train)
+            CabCamera(train);
+        else
+        {
+            var (bx, by, bz) = _trains.FollowBy(ref _followed);
+            _camera.X += bx;
+            _camera.Y += by;
+            _camera.Z += bz;
+        }
+
         _trains.Hear(_camera, dt);
+    }
+
+    // --- Driving (Single Player and Multiplayer): the train's cameras. ---
+
+    /// The views a driver switches between: from the lead unit's cab, orbiting the lead unit, or flying free.
+    public enum DriveView { Cab, Orbit, Free }
+
+    /// Played rather than built: no editing tools or panel, only looking, the train window and the train's cameras.
+    public bool Driving { get; init; }
+
+    /// The camera: Orbit is the Route Builder's Follow camera (flown as ever, carried along by the train as it's drawn),
+    /// Free is the same without following, Cab sits in the lead unit's cab.
+    public DriveView View
+    {
+        get => _driveView;
+        set
+        {
+            var entering = value == DriveView.Orbit && (_driveView != DriveView.Orbit || !_trains.Follow);
+            _driveView = value;
+            _trains.Follow = value == DriveView.Orbit;
+            if (value != DriveView.Cab)
+                _camera.Zoom = 1f;
+            if (entering)
+                _placeOrbit = true;
+        }
+    }
+
+    private DriveView _driveView = DriveView.Free;
+    private bool _placeOrbit;
+
+    /// The train the cameras are on: the one looked at (which Follow tracks; taking control looks at it), or else the one
+    /// driven.
+    public Trains.Train? DriveTrain => _trains.Train ?? _trains.Controlled;
+
+    /// The train window: placing, building, driving and coupling stock.
+    public TrainPanel TrainWindow => _trains;
+
+    private float _cabYaw, _cabPitch;
+
+    /// The engineer's eye: over the rail tops, back from the lead unit's front end, and right of its middle.
+    private const double CabHeight = 3.9, CabBack = 3.0, CabRight = 0.6;
+
+    /// The lead unit as it's drawn this frame: its cab end's way and the trucks under it.
+    private (double Dx, double Dz, (double X, double Y, double Z) Front, (double X, double Y, double Z) Rear, Trains.TrainCar Car)? Lead(Trains.Train train)
+    {
+        var index = Math.Clamp(train.LeadUnit, 0, train.Cars.Count - 1);
+        if (_trains.Drawn(index) is not { } pose)
+            return null;
+        var car = train.Cars[index];
+        // Whichever end its cab faces.
+        var (front, rear) = train.CabSense < 0 ? (pose.Rear, pose.Front) : (pose.Front, pose.Rear);
+        var (dx, dz) = (front.X - rear.X, front.Z - rear.Z);
+        var flat = Math.Sqrt(dx * dx + dz * dz);
+        return flat < 1e-6 ? null : (dx / flat, dz / flat, front, rear, car);
+    }
+
+    /// Orbit's starting place: behind the lead unit and above it, looking along the train, once on going into Orbit.
+    private void PlaceOrbit(Trains.Train train)
+    {
+        _placeOrbit = false;
+        if (Lead(train) is not var (dx, dz, front, rear, _))
+            return;
+        var (cx, cy, cz) = ((front.X + rear.X) * 0.5, (front.Y + rear.Y) * 0.5, (front.Z + rear.Z) * 0.5);
+        _camera.X = cx - dx * 30.0 - dz * 12.0;
+        _camera.Z = cz - dz * 30.0 + dx * 12.0;
+        _camera.Y = Math.Max(cy + 12.0, _terrain!.Source.HeightAt(_camera.X, _camera.Z) + 2.0);
+        var (tx, ty, tz) = (cx - _camera.X, cy + 2.0 - _camera.Y, cz - _camera.Z);
+        _camera.Yaw = (float)Math.Atan2(tx, -tz);
+        _camera.Pitch = (float)Math.Atan2(ty, Math.Sqrt(tx * tx + tz * tz));
+        _followed = null;
+    }
+
+    /// From the engineer's seat, on the lead unit as it's drawn (so it's as steady as Follow).
+    private void CabCamera(Trains.Train train)
+    {
+        if (Lead(train) is not var (dx, dz, front, rear, car))
+            return;
+        var flat = Math.Sqrt((front.X - rear.X) * (front.X - rear.X) + (front.Z - rear.Z) * (front.Z - rear.Z));
+        var heading = (float)Math.Atan2(dx, -dz);
+        var grade = (float)Math.Atan2(front.Y - rear.Y, flat);
+        // The cab end is the truck's overhang on from it.
+        var overhang = train.CabSense < 0 ? car.TrailingOverhang : car.LeadingOverhang;
+        var end = (X: front.X + dx * overhang, Y: front.Y, Z: front.Z + dz * overhang);
+
+        _looking = Input.Mouse(GlfwMouseButton.Right) && (_looking || !Blocked);
+        if (_looking)
+        {
+            var look = Input.MouseDelta * (0.0025f / _camera.Zoom);
+            _cabYaw = Math.Clamp(_cabYaw + look.X, -2.6f, 2.6f);
+            _cabPitch = Math.Clamp(_cabPitch - look.Y, -1.2f, 1.0f);
+        }
+
+        if (Input.Scroll != 0f && !Blocked)
+            _camera.Zoom = Math.Clamp(_camera.Zoom * MathF.Pow(1.25f, Input.Scroll), 1f, MaxLensZoom);
+        _camera.X = end.X - dx * CabBack - dz * CabRight;
+        _camera.Z = end.Z - dz * CabBack + dx * CabRight;
+        _camera.Y = end.Y + CabHeight;
+        _camera.Yaw = heading + _cabYaw;
+        _camera.Pitch = grade + _cabPitch;
+        _followed = null;
     }
 
     private void EditTrack()
@@ -3586,7 +3705,7 @@ public sealed partial class EditorView : IDisposable
     }
 
     /// Whether the side panel has anything to show.
-    public bool HasPanel => _terrain is null || _tool != Tool.Look || _topDown;
+    public bool HasPanel => !Driving && (_terrain is null || _tool != Tool.Look || _topDown);
 
     /// The track overlay's key and its title, for the footer while it's shown (the Circuits tool draws its own colours
     /// instead). The class key lists only the classes the route has.

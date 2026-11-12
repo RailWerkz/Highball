@@ -318,4 +318,17 @@ In order. Each step ends with something to test.
      train on the server (the `Railway` in `RailWerkz.Sim`), so trains can couple and collide across players and AI
      can run, is next. Not tested yet: switches thrown by one player showing for another, and a player leaving.
 
+9. **Done: a driving screen of its own, first version.** Single Player and Multiplayer open `Screens/DriveScreen`, not
+   the Route Builder: the same world underneath (the editor's 3D view with `Driving` on: no tool strip, panel, editing
+   hotkeys or track overlay), with its own header and footer.
+   - Header: Game menu (Consist, Settings, Leave), the camera views as tabs, the world and the session.
+   - Cameras: F1 cab (the engineer's seat in the lead unit, looking round with the right mouse button), F2 orbit,
+     which is the Route Builder's Follow camera (flown as ever, carried along by the train as it's drawn, so it doesn't
+     shake; it starts behind the lead unit), F3 free. The cab also reads the lead unit as it's drawn. More views on F4
+     and up later.
+   - Footer: the train's name, speed, throttle, reverser and brake pipe; the controls; notices.
+   - The train window (build, place, drive, power, vehicles, coupling) and its air graphs, on C.
+   - Esc: a pause menu (resume, settings, leave).
+   - `--driveview cab|orbit|free` and `--hidewindows` for testing.
+
 Later: smaller terrain (the size target), the owner overlay, crossing zone borders, signalling logic.

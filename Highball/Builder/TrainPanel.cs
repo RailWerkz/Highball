@@ -779,6 +779,15 @@ public sealed partial class TrainPanel : IDisposable
     }
 
     /// Where the camera should move this frame to keep up with the train: how far its front moved.
+    /// Where a car of the looked-at train is drawn this frame (its trucks, between physics steps: what Follow tracks, so
+    /// a camera on it doesn't shake), or where the physics has it if it hasn't been drawn yet.
+    public ((double X, double Y, double Z) Front, (double X, double Y, double Z) Rear)? Drawn(int car)
+    {
+        if (Train is not { } train || car < 0 || car >= train.Cars.Count)
+            return null;
+        return _pose.Count == train.Cars.Count ? _pose[car] : (train.Cars[car].FrontAt, train.Cars[car].RearAt);
+    }
+
     public (double X, double Y, double Z) FollowBy(ref (double X, double Y, double Z)? last)
     {
         if (Train is not { } train || !Follow)

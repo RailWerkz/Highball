@@ -1,5 +1,4 @@
 using Highball.App;
-using Highball.Builder;
 using Highball.Routes;
 using RailWerkz.Core.Logging;
 using RailWerkz.Core.Settings;
@@ -49,7 +48,7 @@ public sealed class SinglePlayerScreen : MenuScreen
         Settings.Save();
         try
         {
-            HighballApp.Instance.Push(BuilderScreen.Play(PackSource.Open(path)));
+            HighballApp.Instance.Push(new DriveScreen(PackSource.Open(path)));
         }
         catch (Exception e)
         {

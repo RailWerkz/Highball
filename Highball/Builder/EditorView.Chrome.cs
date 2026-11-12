@@ -163,7 +163,7 @@ public sealed partial class EditorView
 
     private void ToolStrip()
     {
-        if (_terrain is null)
+        if (_terrain is null || Driving)
             return;
 
         ImGui.SetNextWindowPos(new float2(0f, _headerBottom), ImGuiCond.Always);

@@ -1,5 +1,4 @@
 using Highball.App;
-using Highball.Builder;
 using Highball.Multiplayer;
 using Highball.Routes;
 using RailWerkz.Core.Logging;
@@ -127,7 +126,7 @@ public sealed class ConnectingScreen : MenuScreen
                 try
                 {
                     _done = true;
-                    HighballApp.Instance.Replace(BuilderScreen.Play(PackSource.Open(found.Path), _net));
+                    HighballApp.Instance.Replace(new DriveScreen(PackSource.Open(found.Path), _net));
                 }
                 catch (Exception e)
                 {

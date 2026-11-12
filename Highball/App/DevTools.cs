@@ -20,6 +20,7 @@ namespace Highball.App;
 ///   --route NAME                                    open that route in the Route Builder (made if there isn't one)
 ///   --host WORLD/REGION                             host a session of that installed pack on the port in Settings, and play it
 ///   --join ADDRESS                                  join a session at ADDRESS on the port in Settings
+///   --driveview VIEW                                with --pack, start in that camera: cab, orbit or free
 ///   --pack WORLD/REGION                             drive that installed pack, as Single Player does (with --train, --camera,
 ///                                                   --shot)
 ///   --export                                        with --route, export it for players and servers once its track is laid
@@ -122,6 +123,12 @@ public static class DevTools
     private static string? _migrateZone;
     private static bool _exportPending;
     private static string? _pack;
+
+    /// With --pack: the camera to start in (cab, orbit or free).
+    public static string? DriveView { get; set; }
+
+    /// With --pack: the train window and its graphs closed once a train's on the track (for screenshots of the view).
+    public static bool HideWindows { get; set; }
     private static string? _host;
     private static string? _join;
 
@@ -290,6 +297,12 @@ public static class DevTools
                     break;
                 case "--join" when i + 1 < args.Length:
                     _join = args[++i];
+                    break;
+                case "--hidewindows":
+                    HideWindows = true;
+                    break;
+                case "--driveview" when i + 1 < args.Length:
+                    DriveView = args[++i];
                     break;
                 case "--pack" when i + 1 < args.Length:
                     _pack = args[++i];
@@ -525,7 +538,7 @@ public static class DevTools
             if (found.Path is null)
                 Log.Warn($"--pack: no installed pack {packName}");
             else
-                app.Push(Builder.BuilderScreen.Play(Routes.PackSource.Open(found.Path)));
+                app.Push(new DriveScreen(Routes.PackSource.Open(found.Path)));
         }
 
         if (_route is { } name)
