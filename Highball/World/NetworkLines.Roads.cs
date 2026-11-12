@@ -2,21 +2,12 @@ using Highball.Routes;
 
 namespace Highball.World;
 
-/// Roads laid as roads are built rather than as they're mapped: each road's run between junctions fitted to straights and curves
-/// (as loosely as its class allows, so the jitter in its mapped points goes), and a divided road's two carriageways kept a steady
+/// Roads laid as roads are built rather than as they're mapped: each road smoothed along its whole run between junctions
+/// (NetworkLines.RoadSmoothing.cs, so the jitter in its mapped points goes), and a divided road's two carriageways kept a steady
 /// median apart, never closer than their edges allow. Done to the road lines whenever the lines are made (the saved track is
 /// rails only in what it decides), so the rails can't move for it.
 public sealed partial class NetworkLines
 {
-    /// How far a road may stray from its mapped line before it's cut into another straight or curve, by class: tried loosest
-    /// first. A highway's mapped either side of a wide median and is drawn loosest; a street's tightest.
-    private static float[] RoadTolerances(RoadClass road) => road switch
-    {
-        RoadClass.Highway => [3.0f, 2.0f, 1.25f],
-        RoadClass.Major => [2.0f, 1.25f, 0.75f],
-        _ => [1.5f, 1.0f, 0.6f],
-    };
-
     /// The least median between two carriageways' edges, how far apart their middles may be to count as a pair, how far along
     /// their median is evened out over, and how far from a junction (or the pair's end) it eases back to as mapped.
     private const float MinMedian = 0.6f;
@@ -39,7 +30,7 @@ public sealed partial class NetworkLines
 
         EvenWidths(roads, uses);
         var before = roads.ToDictionary(r => r, r => ((double[])r.X.Clone(), (double[])r.Z.Clone()));
-        Parallel.ForEach(roads, road => FitRoad(road, uses));
+        SmoothRoads(roads, uses);
         double Moved(NetworkLine r) => Enumerable.Range(0, r.Count).Max(p => Math.Sqrt((r.X[p] - before[r].Item1[p]) * (r.X[p] - before[r].Item1[p]) + (r.Z[p] - before[r].Item2[p]) * (r.Z[p] - before[r].Item2[p])));
         var fitted = roads.Select(Moved).ToList();
         var fitMoved = (fitted.Count(m => m > 0.5), fitted.DefaultIfEmpty(0).Max());
@@ -56,6 +47,8 @@ public sealed partial class NetworkLines
 
         SpreadPairs(roads, uses, users);
         KeepCarriagewaysApart(roads, uses, users);
+        // What moving the carriageways and their ends left uneven, smoothed out lightly.
+        SmoothRoads(roads, uses, FinalSmoothing);
         var apart = roads.Select(Moved).ToList();
         RailWerkz.Core.Logging.Log.Info($"Roads: fitting moved {fitMoved.Item1} roads over 0.5 m (most {fitMoved.Item2:0.0} m); {_spreadNodes.Count} carriageway pairs spread at their ends; medians moved {apart.Count(m => m > 0.25)} (most {apart.DefaultIfEmpty(0).Max():0.0} m)");
 
@@ -66,39 +59,8 @@ public sealed partial class NetworkLines
             (road.MinX, road.MaxX, road.MinZ, road.MaxZ) = (road.X.Min(), road.X.Max(), road.Z.Min(), road.Z.Max());
         }
 
+        StretchBridges(uses);
         RailWerkz.Core.Logging.Log.Info($"Roads: {roads.Count} shaped in {watch.ElapsedMilliseconds} ms");
-    }
-
-    /// One road's runs between what stays put (its ends, junctions, and where it goes onto or off a bridge or into a tunnel) each
-    /// fitted to straights and curves; every point moved onto the fit at the same share of the way along.
-    private static void FitRoad(NetworkLine road, Dictionary<long, int> uses)
-    {
-        var breaks = new SortedSet<int> { 0, road.Count - 1 };
-        foreach (var (node, point) in road.Nodes)
-            if (uses.GetValueOrDefault(node) > 1)
-                breaks.Add(point);
-        for (var p = 1; p < road.Structures.Length; p++)
-            if (road.Structures[p] != road.Structures[p - 1])
-                breaks.Add(p);
-
-        var tolerances = RoadTolerances((RoadClass)road.Class);
-        var ends = breaks.ToList();
-        for (var k = 0; k + 1 < ends.Count; k++)
-        {
-            var (a, b) = (ends[k], ends[k + 1]);
-            if (b - a < 3)
-                continue;
-            var path = new List<(double X, double Z)>(b - a + 1);
-            for (var p = a; p <= b; p++)
-                path.Add((road.X[p], road.Z[p]));
-            var fit = TrackAlignment.FitPath(path, tolerances);
-            if (fit.Pieces.Count == 0)
-                continue;
-            var total = Alignment.LengthOf(fit.Pieces);
-            var span = MathF.Max(road.S[b] - road.S[a], 1e-4f);
-            for (var p = a + 1; p < b; p++)
-                (road.X[p], road.Z[p]) = Alignment.Position(fit.Pieces, total * (road.S[p] - road.S[a]) / span);
-        }
     }
 
     /// A divided road's carriageways, each mapped on its own, held a steady median apart: where two one-way roads of a class run
@@ -261,12 +223,21 @@ public sealed partial class NetworkLines
     }
 
     /// A line's end moved so far to the side, the line running straight on from there and easing back onto its way.
+    /// How long a road takes to shift sideways by so much (a lane added or dropped, carriageways parting): as built, 50 to 1 on a
+    /// highway, gentler still the faster the road.
+    private static float TaperLength(NetworkLine line, float by) => (Routes.RoadClass)line.Class switch
+    {
+        Routes.RoadClass.Highway => MathF.Max(120f, MathF.Abs(by) * 55f),
+        Routes.RoadClass.Major => MathF.Max(70f, MathF.Abs(by) * 35f),
+        _ => MathF.Max(40f, MathF.Abs(by) * 20f),
+    };
+
     private static void Spread((NetworkLine Line, int Point) end, (double X, double Z) onward, (double X, double Z) side, float by, Dictionary<long, int> uses)
     {
         var (line, point) = end;
         var (nx, nz) = (line.X[point], line.Z[point]);
         var from = line.S[point];
-        var reach = MathF.Min(MathF.Max(40f, MathF.Abs(by) * 14f), line.S[line.Count - 1] * 0.8f);
+        var reach = MathF.Min(TaperLength(line, by), line.S[line.Count - 1] * 0.8f);
         foreach (var (node, at) in line.Nodes)
             if (at != point && uses.GetValueOrDefault(node) > 1)
                 reach = MathF.Min(reach, MathF.Abs(line.S[at] - from));

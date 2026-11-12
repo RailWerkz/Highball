@@ -200,7 +200,8 @@ public sealed partial class NetworkMeshes
         {
             var (track, other) = (c.Tracks[i], c.Tracks[1 - i]);
             var (from, to) = c.Range[i];
-            var (innerFrom, innerTo) = (MathF.Max(from + Diamonds.Tail - SecondTail, from), MathF.Min(to - Diamonds.Tail + SecondTail, to));
+            var joined = c.Joined[i];
+            var (innerFrom, innerTo) = (joined.From ? from : MathF.Max(from + Diamonds.Tail - SecondTail, from), joined.To ? to : MathF.Min(to - Diamonds.Tail + SecondTail, to));
             var slant = Slant(track, other, c.Middle[i], c.Middle[1 - i]);
             foreach (var side in (int[])[-1, 1])
             {
@@ -213,16 +214,16 @@ public sealed partial class NetworkMeshes
                     SweepAlong(builder, track, inner, s0, s1, cut0 ? slant : 0f, cut1 ? slant : 0f, SecondSection, code);
 
                 // Flaring away at each end.
-                if (innerTo + SecondFlare < to)
+                if (!joined.To && innerTo + SecondFlare < to)
                     SweepAlong(builder, track, inner, innerTo, innerTo + SecondFlare, 0f, 0f, SecondSection, code, -side * 0.07f);
-                if (innerFrom - SecondFlare > from)
+                if (!joined.From && innerFrom - SecondFlare > from)
                     SweepAlong(builder, track, inner - side * 0.07f, innerFrom - SecondFlare, innerFrom, 0f, 0f, SecondSection, code, side * 0.07f);
 
                 SweepAlong(builder, track, off - side * (SecondRail / 2f), innerFrom, innerTo, 0f, 0f, FillerSection, code);
 
                 // The heavy bar along the rail's outer web, either side of the other track's rails.
                 var outer = off + side * 0.034f;
-                foreach (var (s0, s1, cut0, cut1) in PiecesBetween(c, i, outer, from + 0.05f, to - 0.05f, railBands))
+                foreach (var (s0, s1, cut0, cut1) in PiecesBetween(c, i, outer, joined.From ? from : from + 0.05f, joined.To ? to : to - 0.05f, railBands))
                     SweepAlong(builder, track, outer, s0, s1, cut0 ? slant : 0f, cut1 ? slant : 0f, BarSection, code);
 
                 // Bolts through it all, nuts on the far side, a brace on every other one.

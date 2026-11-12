@@ -160,6 +160,44 @@ public sealed class RouteNetwork
         Version++;
     }
 
+    /// Every mapped road (a positive id: from OpenStreetMap, edited or taken out or not) that inArea says is in the area taken out,
+    /// then these put in. Roads drawn by hand (negative ids) stay. Returns how many went and how many came.
+    public (int Removed, int Added) ReplaceRoads(Func<NetworkWay, bool> inArea, IEnumerable<NetworkWay> ways, IEnumerable<NetworkNode>? nodes = null)
+    {
+        var fetched = ways.ToList();
+        var ids = fetched.Select(w => w.Id).ToHashSet();
+        var doomed = Ways.Values.Where(w => w.Id > 0 && !w.Rail && (ids.Contains(w.Id) || (w.Lat.Length > 0 && inArea(w)))).Select(w => w.Id).ToList();
+        foreach (var id in doomed)
+            Ways.Remove(id);
+        foreach (var way in fetched)
+            Ways[way.Id] = way;
+        foreach (var node in nodes ?? [])
+            Nodes[node.Id] = node;
+        Version++;
+        Unsaved = true;
+        return (doomed.Count, fetched.Count);
+    }
+
+    /// Puts ways back as fetched, over any edit to them (or their having been taken out). Returns how many, and how many of
+    /// those had been changed.
+    public (int Restored, int Changed) Restore(IEnumerable<NetworkWay> ways, IEnumerable<NetworkNode>? nodes = null)
+    {
+        var (restored, changed) = (0, 0);
+        foreach (var way in ways)
+        {
+            if (Ways.TryGetValue(way.Id, out var mine) && mine.Tags.ContainsKey(EditedTag))
+                changed++;
+            Ways[way.Id] = way;
+            restored++;
+        }
+
+        foreach (var node in nodes ?? [])
+            Nodes[node.Id] = node;
+        Version++;
+        Unsaved = true;
+        return (restored, changed);
+    }
+
     /// Takes out every way as fetched from OpenStreetMap, keeping those edited or laid by hand.
     public void DropFetched()
     {

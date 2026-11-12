@@ -311,6 +311,24 @@ public sealed class PlannerView : IDisposable
         });
     }
 
+    /// The selected tiles' roads put back as mapped (a bridge taken off by mistake, say); the track and the ground stay as they are.
+    private void RestoreRoads(bool all = false)
+    {
+        if (_route.Grid is null)
+            return;
+
+        _generator.Start(new RouteGenerator.Request
+        {
+            Route = _route,
+            Network = _network,
+            Tiles = all ? [.. _built] : [.. _selected],
+            RoadLevel = _roadLevel,
+            RailLevel = _railLevel,
+            RestoreRoadsOnly = true,
+            EveryRoad = all,
+        });
+    }
+
     /// Every built tile again at the detail now chosen, the roads and rail fetched afresh in place of the old (track
     /// edited by hand stays).
     private void Regenerate()
@@ -502,6 +520,10 @@ public sealed class PlannerView : IDisposable
                 break;
         }
 
+        if (Kit.Button("restoreroads", "Restore Roads (Selected)", 0f, ButtonKind.Secondary, _selected.Count > 0 && !_generator.Running))
+            RestoreRoads();
+        if (Kit.Button("restoreallroads", $"Restore All Roads ({_built.Count})", 0f, ButtonKind.Secondary, _built.Count > 0 && !_generator.Running))
+            RestoreRoads(all: true);
         if (Kit.Button("regenerate", $"Regenerate Built ({_built.Count})", 0f, ButtonKind.Secondary, _built.Count > 0 && !_generator.Running))
             Regenerate();
         if (_generator.Running)

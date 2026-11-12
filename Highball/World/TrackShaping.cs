@@ -254,6 +254,323 @@ public static class TrackShaping
         return Finish(line, result, radius, from, to);
     }
 
+    /// How far past each end of an eased stretch the track beyond is looked at for how sharply it's curving there.
+    private const double EaseLook = 25.0;
+    /// About how long the easement's pieces are: each a short arc, so together they bend smoothly (a spiral, as built). A long
+    /// stretch takes longer ones, so there are never more than EasePieces.
+    private const double EaseStep = 2.0;
+    private const int EasePieces = 150;
+    /// How far off the track as it was the curve may wander for a little smoothness: the bigger, the smoother and the further.
+    public static double EaseHold { get; set; } = 0.5;
+    /// The length at which the curve's sharpness weighs as much as how fast it changes: about how long its spirals run.
+    private const double EaseSpiral = 45.0;
+
+    /// One smooth curve between two handles in place of whatever's there: it leaves the first handle and arrives at the second
+    /// on the track there, at the curvature the track beyond each is running at, and in between its curvature changes as
+    /// gently as it can (spirals into and out of the body of the curve), at whatever length makes it gentlest. Null if no
+    /// curve between them will do.
+    public static Result? Ease(NetworkLine line, int a, int b, Func<int, bool> isJunction)
+    {
+        if (a > b)
+            (a, b) = (b, a);
+        // A junction between them stays where it is, so the curve can't run through one.
+        for (var p = a + 1; p < b; p++)
+            if (isJunction(p))
+                return null;
+        var shape = line.Alignment!;
+        var (ua, ub) = (shape.U[a], shape.U[b]);
+        var length = ub - ua;
+        if (b - a < 1 || length < 5.0)
+            return null;
+
+        // The ends: where they are, the way the track runs through them, and how sharply it curves just beyond each.
+        var total = shape.Length;
+        double Heading(double u) => shape.HeadingAt(Math.Clamp(u, 0.0, total));
+        var start = Alignment.Position(shape.Pieces, ua);
+        var end = Alignment.Position(shape.Pieces, ub);
+        var leave = Heading(ua - 1e-6);
+        var turn = Turned(Heading, ua, ub);
+        var before = Math.Min(EaseLook, ua);
+        var after = Math.Min(EaseLook, total - ub);
+        var curveIn = before > 2.0 ? Turned(Heading, ua - before, ua) / before : 0.0;
+        var curveOut = after > 2.0 ? Turned(Heading, ub, ub + after) / after : 0.0;
+
+        // The track as it is, every metre, for the curve to keep close to.
+        var samples = Math.Max(2, (int)Math.Ceiling(length));
+        var (refX, refZ) = (new double[samples + 1], new double[samples + 1]);
+        for (var k = 0; k <= samples; k++)
+            (refX[k], refZ[k]) = Alignment.Position(shape.Pieces, ua + length * k / samples);
+
+        // The gentlest length is solved for along with the curvature, from a few starting lengths in case one goes astray.
+        var chord = Math.Sqrt((end.X - start.X) * (end.X - start.X) + (end.Z - start.Z) * (end.Z - start.Z));
+        (double L, double E, double[]? K) best = (0.0, double.MaxValue, null);
+        foreach (var from in (double[])[Math.Max(length, chord * 1.001), chord * 1.01, Math.Max(length, chord) * 1.25])
+            if (EaseSolve(start, end, leave, turn, curveIn, curveOut, from, chord, refX, refZ) is { } s && s.Energy < best.E)
+                best = (s.Length, s.Energy, s.Curvature);
+        if (best.K is null)
+            return null;
+
+        // The curve as short arcs, one per step.
+        var curvature = best.K!;
+        var h = best.L / curvature.Length;
+        var pieces = new List<TrackPiece>(curvature.Length);
+        var (x, z, heading) = (start.X, start.Z, leave);
+        var sharpest = 0.0;
+        foreach (var kappa in curvature)
+        {
+            var piece = new TrackPiece(x, z, heading, h, Math.Abs(kappa) < 1e-9 ? 0.0 : kappa, true);
+            pieces.Add(piece);
+            (x, z) = piece.At(h);
+            heading = piece.HeadingAt(h);
+            sharpest = Math.Max(sharpest, Math.Abs(kappa));
+        }
+
+        var result = Copy(shape);
+        result.Splice(a, b, pieces);
+        return Finish(line, result, sharpest < 1e-9 ? double.MaxValue : 1.0 / sharpest, a, b);
+    }
+
+    /// How far the track turns from u0 to u1, counting every bit of it (so a turn past half round counts as one).
+    private static double Turned(Func<double, double> heading, double u0, double u1)
+    {
+        var steps = Math.Max(1, (int)Math.Ceiling((u1 - u0) / 1.0));
+        var (sum, previous) = (0.0, heading(u0 + 1e-6));
+        for (var k = 1; k <= steps; k++)
+        {
+            var next = heading(u0 + (u1 - u0) * k / steps - (k == steps ? 1e-6 : 0.0));
+            sum += Math.IEEERemainder(next - previous, 2.0 * Math.PI);
+            previous = next;
+        }
+
+        return sum;
+    }
+
+    /// The smoothest curve from start (leaving at heading) to end, turning by turn on the way and keeping near the track as it
+    /// was (refX, refZ): its curvature over each of its steps, its length, and what it costs. The cost adds up how fast its
+    /// curvature changes, how sharp it is, and how far it strays (by EaseHold); each step's curvature and the length are the
+    /// unknowns, and the three things the end must come to (its place and heading) are held. Each round works out where the
+    /// curve runs now and how that moves with every unknown, and solves for the cheapest unknowns with the end held (Gauss-Newton).
+    private static (double[] Curvature, double Length, double Energy)? EaseSolve((double X, double Z) start, (double X, double Z) end, double leave, double turn,
+        double curveIn, double curveOut, double length, double chord, double[] refX, double[] refZ)
+    {
+        var n = Math.Clamp((int)Math.Round(length / EaseStep), 8, EasePieces);
+        var kappa = new double[n];
+        for (var k = 0; k < n; k++)
+            kappa[k] = turn / length;
+        var weight = 1.0 / (EaseHold * EaseHold * Math.Pow(EaseSpiral, 4));
+
+        var (px, pz) = (new double[n + 1], new double[n + 1]);
+        var (qx, qz) = (new double[n + 1], new double[n + 1]);
+        (double X, double Z, double Heading) Run(double h, double[] xs, double[] zs)
+        {
+            var (x, z, heading) = (start.X, start.Z, leave);
+            (xs[0], zs[0]) = (x, z);
+            for (var k = 0; k < n; k++)
+            {
+                (x, z) = new TrackPiece(x, z, heading, h, kappa[k], true).At(h);
+                heading += kappa[k] * h;
+                (xs[k + 1], zs[k + 1]) = (x, z);
+            }
+
+            return (x, z, heading);
+        }
+
+        // How far a place is off the old track, to its right, and the old track's right there.
+        (double Off, double Nx, double Nz) Stray(double x, double z)
+        {
+            var (best, off, nx, nz) = (double.MaxValue, 0.0, 0.0, 0.0);
+            for (var j = 0; j + 1 < refX.Length; j++)
+            {
+                var (dx, dz) = (refX[j + 1] - refX[j], refZ[j + 1] - refZ[j]);
+                var span = Math.Max(dx * dx + dz * dz, 1e-12);
+                var t = Math.Clamp(((x - refX[j]) * dx + (z - refZ[j]) * dz) / span, 0.0, 1.0);
+                var (cx, cz) = (refX[j] + dx * t - x, refZ[j] + dz * t - z);
+                var d = cx * cx + cz * cz;
+                if (d >= best)
+                    continue;
+                var unit = Math.Sqrt(span);
+                (best, nx, nz) = (d, -dz / unit, dx / unit);
+                off = (x - refX[j] - dx * t) * nx + (z - refZ[j] - dz * t) * nz;
+            }
+
+            return (off, nx, nz);
+        }
+
+        var size = n + 1;
+        for (var round = 0; round < 40; round++)
+        {
+            var h = length / n;
+            var alpha = h * h / (EaseSpiral * EaseSpiral);
+            var (x, z, heading) = Run(h, px, pz);
+            var (ex, ez, eh) = (x - end.X, z - end.Z, heading - leave - turn);
+            var delta = length * 1e-4;
+            var (lx, lz, lh) = Run((length + delta) / n, qx, qz);
+
+            // The end's place and heading, by each unknown (the length is the last).
+            var jac = new double[3, size];
+            for (var k = 0; k < n; k++)
+            {
+                var (mx, mz) = (x - (px[k] + px[k + 1]) * 0.5, z - (pz[k] + pz[k + 1]) * 0.5);
+                (jac[0, k], jac[1, k], jac[2, k]) = (-mz * h, mx * h, h);
+            }
+
+            (jac[0, n], jac[1, n], jac[2, n]) = ((lx - x) / delta, (lz - z) / delta, (lh - heading) / delta);
+
+            // How far each point between strays, and how that moves with each unknown.
+            var stray = new double[n - 1];
+            var by = new double[n - 1, size];
+            for (var i = 1; i < n; i++)
+            {
+                var (off, nx, nz) = Stray(px[i], pz[i]);
+                stray[i - 1] = off;
+                for (var k = 0; k < i; k++)
+                {
+                    var (mx, mz) = (px[i] - (px[k] + px[k + 1]) * 0.5, pz[i] - (pz[k] + pz[k + 1]) * 0.5);
+                    by[i - 1, k] = (-mz * nx + mx * nz) * h;
+                }
+
+                by[i - 1, n] = ((qx[i] - px[i]) * nx + (qz[i] - pz[i]) * nz) / delta;
+            }
+
+            // The cost as a quadratic in the new unknowns y (half of y'Hy - b'y), from the smoothness (tridiagonal, over h) and the
+            // straying (linearised, times h). With the end held, the system to solve is [H J'; J 0][y; mu] = [b; r].
+            var all = size + 3;
+            var m = new double[all, all + 1];
+            for (var k = 0; k < n; k++)
+            {
+                m[k, k] += (2.0 + alpha) / h;
+                if (k > 0)
+                    m[k, k - 1] -= 1.0 / h;
+                if (k + 1 < n)
+                    m[k, k + 1] -= 1.0 / h;
+            }
+
+            m[0, all] += curveIn / h;
+            m[n - 1, all] += curveOut / h;
+            m[n, n] += 1e-9;
+            m[n, all] += 1e-9 * length;
+            var now = new double[size];
+            Array.Copy(kappa, now, n);
+            now[n] = length;
+            for (var i = 0; i < n - 1; i++)
+            {
+                var target = -stray[i];
+                for (var k = 0; k < size; k++)
+                    target += by[i, k] * now[k];
+                for (var k = 0; k < size; k++)
+                {
+                    if (by[i, k] == 0.0)
+                        continue;
+                    var wk = weight * h * by[i, k];
+                    m[k, all] += wk * target;
+                    for (var q = 0; q < size; q++)
+                        m[k, q] += wk * by[i, q];
+                }
+            }
+
+            for (var r = 0; r < 3; r++)
+            {
+                var held = -(r == 0 ? ex : r == 1 ? ez : eh);
+                for (var k = 0; k < size; k++)
+                {
+                    m[size + r, k] = jac[r, k];
+                    m[k, size + r] = jac[r, k];
+                    held += jac[r, k] * now[k];
+                }
+
+                m[size + r, all] = held;
+            }
+
+            if (Solve(m) is not { } y)
+                return null;
+            var change = 0.0;
+            for (var k = 0; k < n; k++)
+            {
+                change = Math.Max(change, Math.Abs(y[k] - kappa[k]));
+                kappa[k] = y[k];
+            }
+
+            var step = Math.Clamp(y[n] - length, -0.2 * length, 0.2 * length);
+            length = Math.Max(length + step, chord * 0.999);
+            var held3 = Math.Abs(ex) < 1e-4 && Math.Abs(ez) < 1e-4 && Math.Abs(eh) < 1e-7;
+            if (round > 0 && held3 && ((change < 1e-6 && Math.Abs(step) < 1e-3) || round == 39))
+            {
+                var (fx, fz, _) = Run(length / n, px, pz);
+                if (Math.Abs(fx - end.X) > 1e-3 || Math.Abs(fz - end.Z) > 1e-3)
+                    return null;
+                var strayCost = 0.0;
+                for (var i = 1; i < n; i++)
+                    strayCost += Math.Pow(Stray(px[i], pz[i]).Off, 2);
+                return (kappa, length, Energy(kappa, curveIn, curveOut, length / n, alpha) + weight * (length / n) * strayCost);
+            }
+        }
+
+        return null;
+    }
+
+    /// The easement's cost: how fast its curvature changes (from the track's beyond each end, too) and how sharp it is.
+    private static double Energy(double[] kappa, double curveIn, double curveOut, double h, double alpha)
+    {
+        var sum = (kappa[0] - curveIn) * (kappa[0] - curveIn) + (kappa[^1] - curveOut) * (kappa[^1] - curveOut);
+        for (var k = 0; k + 1 < kappa.Length; k++)
+            sum += (kappa[k + 1] - kappa[k]) * (kappa[k + 1] - kappa[k]);
+        foreach (var v in kappa)
+            sum += alpha * v * v;
+        return sum / h;
+    }
+
+    /// x for a symmetric tridiagonal system, middle all diagonal and -1 either side (Thomas's algorithm).
+    private static double[] SolveTridiagonal(int n, double diagonal, double[] rhs)
+    {
+        var c = new double[n];
+        var d = new double[n];
+        var m = diagonal;
+        c[0] = -1.0 / m;
+        d[0] = rhs[0] / m;
+        for (var i = 1; i < n; i++)
+        {
+            m = diagonal + c[i - 1];
+            c[i] = -1.0 / m;
+            d[i] = (rhs[i] + d[i - 1]) / m;
+        }
+
+        var x = new double[n];
+        x[n - 1] = d[n - 1];
+        for (var i = n - 2; i >= 0; i--)
+            x[i] = d[i] - c[i] * x[i + 1];
+        return x;
+    }
+
+    /// x for a small square system, given as its matrix with the right-hand side as a last column (Gaussian elimination).
+    private static double[]? Solve(double[,] m)
+    {
+        var n = m.GetLength(0);
+        for (var col = 0; col < n; col++)
+        {
+            var pivot = col;
+            for (var r = col + 1; r < n; r++)
+                if (Math.Abs(m[r, col]) > Math.Abs(m[pivot, col]))
+                    pivot = r;
+            if (Math.Abs(m[pivot, col]) < 1e-300)
+                return null;
+            for (var c = 0; c <= n; c++)
+                (m[col, c], m[pivot, c]) = (m[pivot, c], m[col, c]);
+            for (var r = 0; r < n; r++)
+            {
+                if (r == col)
+                    continue;
+                var f = m[r, col] / m[col, col];
+                for (var c = col; c <= n; c++)
+                    m[r, c] -= f * m[col, c];
+            }
+        }
+
+        var x = new double[n];
+        for (var r = 0; r < n; r++)
+            x[r] = m[r, n] / m[r, r];
+        return x;
+    }
+
     private static Result Finish(NetworkLine line, Alignment shape, double radius, int from, int to)
     {
         var off = 0.0;

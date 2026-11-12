@@ -692,6 +692,27 @@ public sealed partial class NetworkMeshes : IDisposable
         return (center, new float3(-fz, 0f, fx));
     }
 
+    /// How far either side of a road's point the way it runs there is taken over: a few centimetres' wander between neighbouring
+    /// points, turned into the direction across, would swing a wide road's edges and lines from side to side.
+    private const float RoadFrameReach = 6f;
+
+    /// A road's frame at a point, its direction across taken from RoadFrameReach either side.
+    private static (float3 Center, float3 Right) WideFrame(NetworkLine line, int p, float3 origin)
+    {
+        var (a, b) = (p, p);
+        while (a > 0 && line.S[p] - line.S[a] < RoadFrameReach)
+            a--;
+        while (b < line.Count - 1 && line.S[b] - line.S[p] < RoadFrameReach)
+            b++;
+        if (a == b)
+            return Frame(line, p, origin);
+        var fx = (float)(line.X[b] - line.X[a]);
+        var fz = (float)(line.Z[b] - line.Z[a]);
+        var length = MathF.Max(MathF.Sqrt(fx * fx + fz * fz), 1e-5f);
+        var center = new float3((float)(line.X[p] - origin.X), line.Y[p], (float)(line.Z[p] - origin.Z));
+        return (center, new float3(-fz / length, 0f, fx / length));
+    }
+
     private static float Code(LineMaterial material, int style = 0) => (int)material + 8 * style;
 
     /// Sweeps a cross-section (u across, y up from the formation; listed so the solid is on the right) along points
@@ -1292,7 +1313,9 @@ public sealed partial class NetworkMeshes : IDisposable
     /// A road's frame at a point: at an end that carries on into another road, square to the two of them, so they meet edge to edge.
     private static (float3 Center, float3 Right) RoadFrame(NetworkLines lines, NetworkLine line, int p, float3 origin)
     {
-        var (center, right) = Frame(line, p, origin);
+        var (center, right) = WideFrame(line, p, origin);
+        if (p < line.Shift.Length)
+            center += right * line.Shift[p];
         if ((p != 0 && p != line.Count - 1) || lines.Continuing(line, p) is not { } other)
             return (center, right);
 
@@ -1310,13 +1333,24 @@ public sealed partial class NetworkMeshes : IDisposable
         Func<float, (float U, float Y)[]> section, Func<int, float> code)
     {
         var nominal = line.Width * 0.5f;
+        // Where the edge lines are painted in from each edge (as line.frag lays them out): the markings are laid out for the
+        // nominal width, so where the road's narrower or wider (easing into the next) they're moved and stretched to keep the edge
+        // lines that far in from the real edges, and so carry on unbroken into the next road's.
+        var marks = line.Unpaved ? 0 : (RoadClass)line.Class switch { RoadClass.Highway => 3, RoadClass.Major => 2, RoadClass.Minor => 1, _ => 0 };
+        var (inner, outer) = marks == 3 ? (1.2f, 3.0f) : (0.5f, 0.5f);
+        var leftIn = line.Oneway ? inner : outer;
         var start = (uint)builder.Vertices.Count;
         var edges = 0;
         foreach (var p in points)
         {
             var (center, right) = RoadFrame(lines, line, p, builder.Origin);
             var half = halfAt(p);
-            var scale = nominal / MathF.Max(half, 0.1f);
+            var (scale, shift) = (nominal / MathF.Max(half, 0.1f), 0f);
+            if (marks >= 2 && half - outer - (-half + leftIn) > 0.5f && nominal - outer - (-nominal + leftIn) > 0.5f)
+            {
+                scale = (nominal - outer - (-nominal + leftIn)) / (half - outer - (-half + leftIn));
+                shift = nominal - outer - scale * (half - outer);
+            }
             var ring = section(half);
             edges = ring.Length - 1;
             var v = line.S[p] % Wrap;
@@ -1327,8 +1361,8 @@ public sealed partial class NetworkMeshes : IDisposable
                 var (du, dy) = (u1 - u0, y1 - y0);
                 var len = MathF.Max(MathF.Sqrt(du * du + dy * dy), 1e-6f);
                 var normal = right * (-dy / len) + new float3(0f, du / len, 0f);
-                builder.Add(center + right * u0 + new float3(0f, y0, 0f), normal, new float4(u0 * scale, v, code(e), 0f));
-                builder.Add(center + right * u1 + new float3(0f, y1, 0f), normal, new float4(u1 * scale, v, code(e), 0f));
+                builder.Add(center + right * u0 + new float3(0f, y0, 0f), normal, new float4(u0 * scale + shift, v, code(e), 0f));
+                builder.Add(center + right * u1 + new float3(0f, y1, 0f), normal, new float4(u1 * scale + shift, v, code(e), 0f));
             }
         }
 
@@ -1359,7 +1393,9 @@ public sealed partial class NetworkMeshes : IDisposable
         {
             var (dx, dz) = (line.X[to] - line.X[from], line.Z[to] - line.Z[from]);
             var length = Math.Max(Math.Sqrt(dx * dx + dz * dz), 1e-6);
-            var fits = to - from <= longest && (int)(line.S[to] / Wrap) == (int)(line.S[from] / Wrap);
+            // Where the width's changing, rings close together: the markings are stretched to it ring by ring, and over a long
+            // quad its two triangles would bend them at the diagonal.
+            var fits = to - from <= longest && (int)(line.S[to] / Wrap) == (int)(line.S[from] / Wrap) && MathF.Abs(halfAt(to) - halfAt(from)) <= 0.03f;
             for (var q = from + 1; q < to && fits; q++)
             {
                 var t = (line.S[q] - line.S[from]) / MathF.Max(line.S[to] - line.S[from], 1e-5f);
@@ -1394,6 +1430,8 @@ public sealed partial class NetworkMeshes : IDisposable
         foreach (var (other, p) in ends)
         {
             var (center, right) = Frame(other, p, builder.Origin);
+            if (p < other.Shift.Length)
+                center += right * other.Shift[p];
             var half = other.Width * 0.5f;
             var (near, far) = other.Mark
                 ? (other.Drape[p * NetworkLine.MarkPoints], other.Drape[p * NetworkLine.MarkPoints + NetworkLine.MarkPoints - 1])

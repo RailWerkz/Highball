@@ -74,6 +74,10 @@ public sealed class CrossingAssembly
 
     /// Where each track is at the middle.
     public required float[] Middle { get; init; }
+
+    /// Each track's ends that run on into the next diamond along it (double track crossed): its guard rails and bars carry
+    /// straight on there instead of flaring off.
+    public (bool From, bool To)[] Joined { get; } = new (bool, bool)[2];
 }
 
 /// Finds the diamonds: two tracks crossing at a node with no way from one to the other. Each becomes an assembly built to the
@@ -114,7 +118,59 @@ public static class Diamonds
             result.Add(layout with { Issue = why.Length == 0 ? null : why });
         }
 
+        JoinNeighbours(lines);
         return result;
+    }
+
+    /// How far apart two diamonds' ends along the same track can be and be joined into one run.
+    private const float JoinGap = 3f;
+
+    /// Diamonds close along the same track (one track crossing a double track) run into one another: each one's end there is
+    /// taken to the midpoint between them, so their rails, guard rails and bars meet rather than each flaring off into the other.
+    private static void JoinNeighbours(NetworkLines lines)
+    {
+        var ends = new List<(CrossingAssembly C, int Track, bool To, Leg Leg, float End, float Middle)>();
+        foreach (var c in lines.CrossingAssemblies)
+            for (var i = 0; i < 2; i++)
+            {
+                var (out_, back) = (c.Tracks[i].Out, c.Tracks[i].Back);
+                ends.Add((c, i, true, out_, out_.LineS(c.Range[i].To), out_.LineS(0f)));
+                ends.Add((c, i, false, back, back.LineS(-c.Range[i].From), back.LineS(0f)));
+            }
+
+        for (var a = 0; a < ends.Count; a++)
+            for (var b = a + 1; b < ends.Count; b++)
+            {
+                var (p, q) = (ends[a], ends[b]);
+                if (ReferenceEquals(p.C, q.C) || !ReferenceEquals(p.Leg.Line, q.Leg.Line))
+                    continue;
+                // Facing one another: each end on the side of its middle the other is.
+                var way = MathF.Sign(q.Middle - p.Middle);
+                if (way == 0f || MathF.Sign(p.End - p.Middle) != way || MathF.Sign(q.End - q.Middle) != -way)
+                    continue;
+                var gap = (q.End - p.End) * way;
+                if (gap > JoinGap || gap < -JoinGap)
+                    continue;
+
+                var meet = (p.End + q.End) * 0.5f;
+                foreach (var e in new[] { p, q })
+                {
+                    var local = (meet - e.Leg.Start) * e.Leg.Direction;
+                    if (e.To)
+                    {
+                        e.C.Range[e.Track].To = local;
+                        e.C.Joined[e.Track].To = true;
+                    }
+                    else
+                    {
+                        e.C.Range[e.Track].From = -local;
+                        e.C.Joined[e.Track].From = true;
+                    }
+                }
+
+                foreach (var side in (int[])[-1, 1])
+                    p.Leg.Line.RailCuts.Add((MathF.Min(p.End, q.End), MathF.Max(p.End, q.End), side));
+            }
     }
 
     /// Builds one diamond. Returns "" when built, or why it couldn't be or has a problem (null: not two tracks crossing).

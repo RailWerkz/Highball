@@ -69,6 +69,10 @@ public sealed class NetworkLine
     public int Lanes { get; init; }
     public bool Oneway { get; init; }
     public bool Unpaved { get; init; }
+    /// Per segment: which level of an interchange it's on (OpenStreetMap's layer).
+    public int[] Layers { get; init; } = [];
+    /// At each point, how far the road's surface stands to the right of its line (a fork's extra lanes on one side).
+    public float[] Shift { get; set; } = [];
 
     /// Half the width of the flat ground the line is laid on: the ballast and a walkway, or the road and its shoulders.
     public float Formation { get; set; }
@@ -223,6 +227,9 @@ public sealed partial class NetworkLines
         public readonly List<GeoPoint> Points = [];
         /// Per segment.
         public readonly List<Structure> Structures = [];
+        /// Per segment: its OpenStreetMap layer (which level of an interchange it's on), and the same once resampled.
+        public readonly List<int> Layers = [];
+        public List<int> ResampledLayers = [];
     }
 
     /// The lines for the network's ways on the built tiles: the track as saved with the route, if it was solved from these
@@ -592,13 +599,18 @@ public sealed partial class NetworkLines
             foreach (var (way, reversed) in parts)
             {
                 var structure = StructureOf(way);
+                var layer = int.TryParse(way.Tags.GetValueOrDefault("layer", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out var l)
+                    ? Math.Clamp(l, -5, 9) : structure == Structure.Bridge ? 1 : structure == Structure.Tunnel ? -1 : 0;
                 for (var n = 0; n < way.Nodes.Length; n++)
                 {
                     var k = reversed ? way.Nodes.Length - 1 - n : n;
                     if (n == 0 && chain.Nodes.Count > 0)
                         continue; // the shared node, already added by the previous way
                     if (chain.Nodes.Count > 0)
+                    {
                         chain.Structures.Add(structure);
+                        chain.Layers.Add(layer);
+                    }
                     chain.Nodes.Add(way.Nodes[k]);
                     chain.Points.Add(new GeoPoint(way.Lat[k], way.Lon[k]));
                 }
@@ -648,6 +660,7 @@ public sealed partial class NetworkLines
         var pz = new List<double>();
         var nodeIds = new List<long>();
         var structures = new List<Structure>();
+        var layers = new List<int>();
         for (var i = 0; i < chain.Points.Count; i++)
         {
             var p = projection.Forward(chain.Points[i]);
@@ -655,7 +668,10 @@ public sealed partial class NetworkLines
             if (px.Count > 0 && Math.Abs(px[^1] - p.East) + Math.Abs(pz[^1] + p.North) < 0.05)
                 continue;
             if (px.Count > 0)
+            {
                 structures.Add(chain.Structures[i - 1]);
+                layers.Add(chain.Layers.Count >= i ? chain.Layers[i - 1] : 0);
+            }
             px.Add(p.East);
             pz.Add(-p.North);
             nodeIds.Add(chain.Nodes[i]);
@@ -664,6 +680,8 @@ public sealed partial class NetworkLines
         var xs = new List<double>();
         var zs = new List<double>();
         var segs = new List<Structure>();
+        var segLayers = new List<int>();
+        chain.ResampledLayers = segLayers;
         var nodes = new List<(long, int)>();
         var n = px.Count;
         if (n < 2)
@@ -706,6 +724,7 @@ public sealed partial class NetworkLines
                 xs.Add(c.X);
                 zs.Add(c.Z);
                 segs.Add(structures[i]);
+                segLayers.Add(layers[i]);
             }
         }
 
@@ -876,6 +895,7 @@ public sealed partial class NetworkLines
                 Structures = structures.GetRange(from, count - 1).ToArray(),
                 Nodes = mark ? [] : nodes.Where(n => n.Point >= from && n.Point < to).Select(n => (n.Node, n.Point - from)).ToList(),
                 Mark = mark, Width = width, Lanes = lanes, Oneway = oneway,
+                Layers = chain.ResampledLayers.Count >= to - 1 ? chain.ResampledLayers.GetRange(from, count - 1).ToArray() : new int[count - 1],
                 Unpaved = Tag("highway") == "track" || surface is "unpaved" or "gravel" or "dirt" or "ground" or "compacted" or "fine_gravel" or "grass" or "sand" or "earth",
                 Formation = width * 0.5f + 1.5f,
             };
@@ -948,8 +968,16 @@ public sealed partial class NetworkLines
     /// then every track is smoothed together with the track beside it (RailPoints: tracks side by side in a yard come
     /// out level with each other, a flyover's ramp climbing past them doesn't), held to its class's steepest grade,
     /// and smoothed again so the grade changes over a vertical curve rather than at a point.
+    private void Watch(string stage)
+    {
+        if (!int.TryParse(Environment.GetEnvironmentVariable("HB_WATCH"), out var index) || _lines.FirstOrDefault(l => l.Index == index) is not { } l)
+            return;
+        RailWerkz.Core.Logging.Log.Info($"Watch {index} {stage}: max {l.Y.Max():0.0}, y at mid {l.Y[l.Count / 2]:0.0}");
+    }
+
     public void FinishProfiles()
     {
+
         Parallel.ForEach(_lines, line =>
         {
             Array.Copy(line.Ground, line.Y, line.Count);
@@ -968,13 +996,22 @@ public sealed partial class NetworkLines
             }
             else
             {
+                // A road's ground spikes and steps wherever the terrain does (a cutting's edge, a bank, a lidar seam): the steps
+                // go first (a running median), then it's held to its class's grade and smoothed, more for faster roads.
+                var road = (Routes.RoadClass)line.Class;
                 Bridge(line);
-                Smooth(line, 12f);
-                Smooth(line, 12f);
+                Median(line, RoadMedian(road));
+                LimitGrade(line, RoadGrade(road));
+                Smooth(line, RoadEasing(road));
+                Smooth(line, RoadEasing(road));
+                Bridge(line);
             }
         });
 
+        LiftBridges();
+        Watch("lift");
         SpreadForks();
+        ShiftSurfaces();
 
         var surfaceWatch = System.Diagnostics.Stopwatch.StartNew();
         // Each pass draws tracks close in height closer still; a few make tracks side by side agree to millimetres.
@@ -1003,14 +1040,35 @@ public sealed partial class NetworkLines
             Smooth(line, 15f);
         });
 
+        Watch("surface");
+        // Where lines meet, they're brought to one height, which pulls a deck towards the roads it meets; it's lifted to clear what's
+        // under it again, and the meeting heights worked out again round that, until they agree.
+        for (var round = 0; round < 3; round++)
+        {
+            Junctions();
+            Watch($"junctions {round}");
+            LiftBridges();
+            Watch($"lifted {round}");
+        }
+
         Junctions();
+        // The last word goes to headroom: a deck lifted clear of what's under it, its junctions already all but agreed.
+        LiftBridges();
+        Watch("junctions");
         FindJunctions();
         LetDownBeds();
         LevelRoadsAtRails();
         MakePads();
         LevelRoadsAtPads();
+        Watch("pads");
+        CrestDecks();
 
+        _widestAt.Clear();
+        foreach (var road in _lines.Where(l => !l.Rail && !l.Mark))
+            foreach (var (node, _) in road.Nodes)
+                _widestAt[node] = MathF.Max(_widestAt.GetValueOrDefault(node), road.Width * 0.5f);
         Parallel.ForEach(_lines, line => line.Junction = JunctionDistances(line));
+        Watch("crest");
         Layer();
         Turnouts = Turnout.Find(_lines, Fitted);
         LevelRoutes();
@@ -1158,6 +1216,32 @@ public sealed partial class NetworkLines
                 line.Y[p] = y0 + (y1 - y0) * (line.S[p] - s0) / length;
         }
     }
+
+    /// How far either side a road's ground is taken the median of, and the steepest it's built, by class.
+    private static float RoadMedian(Routes.RoadClass road) => road switch
+    {
+        Routes.RoadClass.Highway => 30f,
+        Routes.RoadClass.Major => 20f,
+        _ => 12f,
+    };
+
+    /// How far either side a road's heights are averaged over, twice, by class: its vertical curves.
+    private static float RoadEasing(Routes.RoadClass road) => road switch
+    {
+        Routes.RoadClass.Highway => 25f,
+        Routes.RoadClass.Major => 16f,
+        Routes.RoadClass.Minor => 12f,
+        _ => 8f,
+    };
+
+    private static float RoadGrade(Routes.RoadClass road) => road switch
+    {
+        Routes.RoadClass.Highway => 0.05f,
+        Routes.RoadClass.Major => 0.07f,
+        Routes.RoadClass.Minor => 0.09f,
+        Routes.RoadClass.Local => 0.12f,
+        _ => 0.15f,
+    };
 
     /// Anything in the ground under a rail line shorter than this is taken for an error in the terrain, not a hill.
     private const float RailMedian = 60f;
@@ -1464,9 +1548,54 @@ public sealed partial class NetworkLines
     /// Where a wide road splits into two narrower ones, as a dual carriageway begins, they're mapped from one point down its middle. Each
     /// is moved over to its own side of the wide road instead, so their outer edges carry on from its edges, leaving it running straight
     /// on from the wide road and easing onto its mapped way.
+    /// The wide roads' surfaces moved off their lines at forks: which line, which end, and by how much to its right there.
+    private readonly List<(NetworkLine Line, int Point, float By)> _surfaceShifts = [];
+
+    /// The way to a line's right at a point (the way it runs, by its points, turned a quarter).
+    private static (double X, double Z) RightAt(NetworkLine line, int p)
+    {
+        var (a, b) = (Math.Max(p - 1, 0), Math.Min(p + 1, line.Count - 1));
+        var (fx, fz) = (line.X[b] - line.X[a], line.Z[b] - line.Z[a]);
+        var length = Math.Max(Math.Sqrt(fx * fx + fz * fz), 1e-9);
+        return (-fz / length, fx / length);
+    }
+
+    /// Each line's surface shift at every point, from its forks' ends: held at the end and eased away over a lane taper, or
+    /// between the two ends' when both have one.
+    private void ShiftSurfaces()
+    {
+        foreach (var group in _surfaceShifts.GroupBy(f => f.Line))
+        {
+            var line = group.Key;
+            var shift = new float[line.Count];
+            var at = group.ToDictionary(f => f.Point, f => f.By);
+            var length = line.S[^1];
+            for (var p = 0; p < line.Count; p++)
+            {
+                if (at.TryGetValue(0, out var v0) && at.TryGetValue(line.Count - 1, out var v1))
+                {
+                    var t = line.S[p] / MathF.Max(length, 1e-3f);
+                    shift[p] = v0 + (v1 - v0) * t * t * (3f - 2f * t);
+                    continue;
+                }
+
+                foreach (var (point, by) in at)
+                {
+                    var reach = MathF.Min(TaperLength(line, by), length);
+                    var t = Math.Clamp(1f - MathF.Abs(line.S[p] - line.S[point]) / MathF.Max(reach, 1e-3f), 0f, 1f);
+                    shift[p] += by * t * t * (3f - 2f * t);
+                }
+            }
+
+            line.Shift = shift;
+            line.Formation += shift.Max(MathF.Abs);
+        }
+    }
+
     private void SpreadForks()
     {
         _forks.Clear();
+        _surfaceShifts.Clear();
         var touching = new Dictionary<long, int>();
         var ends = new Dictionary<long, List<(NetworkLine Line, int Point)>>();
         foreach (var line in _lines)
@@ -1493,7 +1622,9 @@ public sealed partial class NetworkLines
             var ordered = list.OrderByDescending(e => e.Line.Width).ToList();
             var (main, a, b) = (ordered[0], ordered[1], ordered[2]);
             var width = main.Line.Width;
-            if (width < a.Line.Width * 1.2f || width < (a.Line.Width + b.Line.Width) * 0.75f)
+            // A fork when the road's wider than either branch and near enough as wide as both: an exit or an entry taking a lane
+            // or two off the side (not a side road at a corner, where the road's no wider than the one carrying on).
+            if (width < a.Line.Width + 0.5f || width < (a.Line.Width + b.Line.Width) * 0.6f)
                 continue;
 
             var (ox, oz) = Outward(main.Line, main.Point);
@@ -1519,8 +1650,23 @@ public sealed partial class NetworkLines
             if (Math.Abs(sideA - sideB) < 0.5)
                 continue;
 
-            MoveOver(a, (ox, oz), (sx, sz), (sideA > sideB ? 1f : -1f) * (width - a.Line.Width) * 0.5f);
-            MoveOver(b, (ox, oz), (sx, sz), (sideB > sideA ? 1f : -1f) * (width - b.Line.Width) * 0.5f);
+            // As built: the through lanes run straight on, and the wide road is the through road with the exit's (or entry's) lanes
+            // added on one side. So the branch carrying straightest on (the wider, if near) stays as mapped; the wide road's surface
+            // sits off its line towards the other branch, by the lanes it has over the through road, so its through edge carries
+            // straight on into the through road's; and the other branch is moved out to lie beside the through road there.
+            float Straightness((NetworkLine Line, int Point) e)
+            {
+                var (x, z) = Outward(e.Line, e.Point);
+                return (float)-(x * ox + z * oz) + e.Line.Width * 0.01f;
+            }
+
+            var (through, peel, peelSide) = Straightness(a) >= Straightness(b) ? (a, b, sideB > sideA ? 1f : -1f) : (b, a, sideA > sideB ? 1f : -1f);
+            var surface = (width - through.Line.Width) * 0.5f;
+            MoveOver(peel, (ox, oz), (sx, sz), peelSide * (width - (through.Line.Width + peel.Line.Width) * 0.5f));
+            var (_, mainRight) = (0, RightAt(main.Line, main.Point));
+            _surfaceShifts.Add((main.Line, main.Point, surface * peelSide * (float)(sx * mainRight.X + sz * mainRight.Z)));
+            if (Environment.GetEnvironmentVariable("HB_WATCH") == main.Line.Index.ToString())
+                RailWerkz.Core.Logging.Log.Info($"Fork at {main.Line.Index} end {main.Point}: wide {width:0.0}, through {through.Line.Index} {through.Line.Width:0.0} straight {Straightness(through):0.00}, peel {peel.Line.Index} {peel.Line.Width:0.0} straight {Straightness(peel):0.00} side {peelSide}, surface {surface:0.0}, dot {sx * mainRight.X + sz * mainRight.Z:0.00}");
             _forks.Add(node);
         }
     }
@@ -1529,7 +1675,7 @@ public sealed partial class NetworkLines
     {
         var (line, point) = end;
         var (nx, nz) = (line.X[point], line.Z[point]);
-        var reach = MathF.Min(MathF.Max(40f, MathF.Abs(by) * 14f), line.S[line.Count - 1] * 0.8f);
+        var reach = MathF.Min(TaperLength(line, by), line.S[line.Count - 1] * 0.8f);
         var from = line.S[point];
         for (var p = 0; p < line.Count; p++)
         {
@@ -1551,13 +1697,18 @@ public sealed partial class NetworkLines
         line.MaxZ = line.Z.Max();
     }
 
+    /// The half width of the widest road at each node.
+    private readonly Dictionary<long, float> _widestAt = [];
+
     private float[] JunctionDistances(NetworkLine line)
     {
         var distances = new float[line.Count];
         Array.Fill(distances, float.MaxValue);
+        // At a junction the distance starts below nothing by how much wider the widest road there is than this one, so this one's
+        // markings stop at that road's edge, not its own width from the node (which, on a wide road, is over its lanes).
         foreach (var (node, point) in line.Nodes)
             if (_junctionNodes.Contains(node) && !_continuing.ContainsKey((line.Index, point)) && !_forks.Contains(node))
-                distances[point] = 0f;
+                distances[point] = line.Rail ? 0f : MathF.Min(0f, line.Width * 0.5f - _widestAt.GetValueOrDefault(node));
 
         for (var p = 1; p < line.Count; p++)
             distances[p] = Math.Min(distances[p], distances[p - 1] + line.S[p] - line.S[p - 1]);
@@ -1570,6 +1721,8 @@ public sealed partial class NetworkLines
     private const float RailTopAbove = NetworkLine.BallastHeight + 0.18f;
     private const float RoadSurfaceAbove = 0.06f;
     private const float RoadToRailGrade = 0.02f;
+    /// The most a road's lifted or lowered to meet rails it crosses on the level.
+    private const float LevelCrossingMost = 1.5f;
 
     /// Where a road crosses a track on the level, it comes to the rails' height there, so the two can be one surface. Its grade eases to
     /// that gently, and stays at its own height at its ends, which other roads meet.
@@ -1618,6 +1771,10 @@ public sealed partial class NetworkLines
                     }
 
                 var change = target - here;
+                // More than a little apart and it's not a level crossing at all: the track's on a bank or in a cutting, over or
+                // under the road, and the road stays as it is.
+                if (MathF.Abs(change) > LevelCrossingMost)
+                    continue;
                 var reach = MathF.Min(MathF.Max(25f, MathF.Abs(change) / RoadToRailGrade), MathF.Max(MathF.Min(at, length - at), 1f));
                 for (var p = 0; p < road.Count; p++)
                 {

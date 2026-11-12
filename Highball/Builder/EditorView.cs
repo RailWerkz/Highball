@@ -1717,7 +1717,9 @@ public sealed partial class EditorView : IDisposable
         var change = _shape.Update(lines, Input.MousePosition, blocked || _hit is not { } hit ? null : (hit.X, hit.Z), Project, S(1f), _camera.X, _camera.Z, ViewReach,
             !blocked && Input.MouseDown(GlfwMouseButton.Left), Input.Mouse(GlfwMouseButton.Left),
             Input.Key(GlfwKey.LeftShift) || Input.Key(GlfwKey.RightShift), Input.Key(GlfwKey.LeftAlt) || Input.Key(GlfwKey.RightAlt),
-            keys && Input.KeyDown(GlfwKey.Delete), keys && Input.KeyDown(GlfwKey.L), _rebuild is not null);
+            keys && Input.KeyDown(GlfwKey.Delete), keys && Input.KeyDown(GlfwKey.L), keys && Input.KeyDown(GlfwKey.K), _rebuild is not null);
+        if (_shape.Refused is { } refused)
+            (_switchRefused, _shape.Refused) = (refused, null);
         if (change is { } made)
             CommitShape(source, made.Line, made.Shape);
     }
@@ -2159,6 +2161,112 @@ public sealed partial class EditorView : IDisposable
                 break;
             }
 
+            case "roadprofile":
+            {
+                // roadprofile,LAT,LON: the road nearest there, its ground and height every point 60 m either side.
+                var (px, pz) = At(1);
+                var road = lines.Lines.Where(l => !l.Rail && !l.Mark).MinBy(l => Enumerable.Range(0, l.Count).Min(i => (l.X[i] - px) * (l.X[i] - px) + (l.Z[i] - pz) * (l.Z[i] - pz)));
+                if (road is null)
+                    break;
+                var at = Enumerable.Range(0, road.Count).MinBy(i => (road.X[i] - px) * (road.X[i] - px) + (road.Z[i] - pz) * (road.Z[i] - pz));
+                Log.Info($"Road {road.Index}: class {(RoadClass)road.Class}, {road.Count} points, nodes at {string.Join(",", road.Nodes.Select(n => $"{n.Point}{(lines.IsJunction(n.Node) ? "J" : "")}"))}");
+                for (var i = 0; i < road.Count; i++)
+                    if (MathF.Abs(road.S[i] - road.S[at]) < 60f)
+                        Log.Info(string.Create(CultureInfo.InvariantCulture, $"  {i} s {road.S[i]:0.0} ground {road.Ground[i]:0.00} y {road.Y[i]:0.00} {(i < road.Structures.Length ? road.Structures[i] : Structure.Ground)}"));
+                break;
+            }
+
+            case "layercross":
+            {
+                // layercross,LAT,LON,RADIUS: road bridges crossing each other near there, each one's layer and deck height at the crossing.
+                var (cx, cz) = At(1);
+                var r = Number(3);
+                var near = lines.Lines.Where(l => !l.Rail && !l.Mark && l.Structures.Contains(Structure.Bridge) && Enumerable.Range(0, l.Count).Any(i => (l.X[i] - cx) * (l.X[i] - cx) + (l.Z[i] - cz) * (l.Z[i] - cz) < r * r)).ToList();
+                var (bad, total) = (0, 0);
+                for (var a = 0; a < near.Count; a++)
+                    for (var b = a + 1; b < near.Count; b++)
+                        for (var i = 0; i + 1 < near[a].Count; i++)
+                            for (var j = 0; j + 1 < near[b].Count; j++)
+                            {
+                                var (A, B) = (near[a], near[b]);
+                                var (ux, uz, vx, vz) = (A.X[i + 1] - A.X[i], A.Z[i + 1] - A.Z[i], B.X[j + 1] - B.X[j], B.Z[j + 1] - B.Z[j]);
+                                var cross = ux * vz - uz * vx;
+                                if (Math.Abs(cross) < 1e-9)
+                                    continue;
+                                var (wx, wz) = (B.X[j] - A.X[i], B.Z[j] - A.Z[i]);
+                                var (t, q) = ((wx * vz - wz * vx) / cross, (wx * uz - wz * ux) / cross);
+                                if (t < 0 || t > 1 || q < 0 || q > 1 || A.Nodes.Any(n => B.Nodes.Any(m => m.Node == n.Node)))
+                                    continue;
+                                var (ya, yb) = (A.Y[i] + (A.Y[i + 1] - A.Y[i]) * (float)t, B.Y[j] + (B.Y[j + 1] - B.Y[j]) * (float)q);
+                                var (la, lb) = (i < A.Layers.Length ? A.Layers[i] : -9, j < B.Layers.Length ? B.Layers[j] : -9);
+                                total++;
+                                if (MathF.Abs(ya - yb) < 6f)
+                                {
+                                    bad++;
+                                    var g = _route.Projection!.Inverse(new RoutePoint(A.X[i] + ux * t, -(A.Z[i] + uz * t)));
+                                    Log.Info(string.Create(CultureInfo.InvariantCulture, $"  clash at {g.Lat:0.000000},{g.Lon:0.000000}: road {A.Index} layer {la} y {ya:0.0} {A.Structures[i]} vs road {B.Index} layer {lb} y {yb:0.0} {B.Structures[j]}"));
+                                }
+                            }
+
+                Log.Info($"Layer crossings: {total} crossings between {near.Count} decks, {bad} under 6 m apart");
+                break;
+            }
+
+            case "roadaudit":
+            {
+                // roadaudit: every road measured (NetworkLines.AuditRoads), the counts and the worst places logged.
+                var report = lines.AuditRoads();
+                Log.Info($"Road audit: {string.Join("; ", report.Counts.OrderBy(c => c.Key).Select(c => $"{c.Key}: {c.Value}"))}");
+                foreach (var f in report.Worst)
+                {
+                    var g = _route.Projection!.Inverse(new RoutePoint(f.X, -f.Z));
+                    Log.Info(string.Create(CultureInfo.InvariantCulture, $"  {f.Kind}: {f.Value:0.00} at {g.Lat:0.000000},{g.Lon:0.000000} (road {f.Line})"));
+                }
+
+                break;
+            }
+
+            case "roadsnear":
+            {
+                // roadsnear,LAT,LON,RADIUS: the road lines passing within RADIUS metres, logged: how wide, which way, where they end.
+                var (cx, cz) = At(1);
+                var radius = Number(3);
+                foreach (var l in lines.Lines.Where(l => !l.Rail && !l.Mark && Enumerable.Range(0, l.Count).Any(p => (l.X[p] - cx) * (l.X[p] - cx) + (l.Z[p] - cz) * (l.Z[p] - cz) < radius * radius)))
+                {
+                    string End(int p)
+                    {
+                        var g = _route.Projection!.Inverse(new RoutePoint(l.X[p], -l.Z[p]));
+                        var node = l.Nodes.FirstOrDefault(n => n.Point == p).Node;
+                        var others = lines.Lines.Count(o => o != l && o.Nodes.Any(n => n.Node == node));
+                        var on = lines.Continuing(l, p) is { } c ? string.Create(CultureInfo.InvariantCulture, $"carries on into {c.Line.Index}, {Math.Sqrt(Math.Pow(c.Line.X[c.Point] - l.X[p], 2) + Math.Pow(c.Line.Z[c.Point] - l.Z[p], 2)):0.00} m apart") : "carries on into nothing";
+                        return string.Create(CultureInfo.InvariantCulture, $"{g.Lat:0.000000},{g.Lon:0.000000} node {node} ({others} others, {on})");
+                    }
+
+                    string NodeUsers(long node) => "(node: " + string.Join(",", lines.Lines.Where(o => o.Nodes.Any(n => n.Node == node)).Select(o =>
+                    {
+                        var at = o.Nodes.First(n => n.Node == node).Point;
+                        return $"{(o.Rail ? "rail" : o.Mark ? "mark" : "road")}{o.Index}{(at == 0 || at == o.Count - 1 ? " end" : " through")}";
+                    })) + ")";
+                    var (wobble, worst) = (0.0, 0);
+                    var wobbles = new List<string>();
+                    for (var p = 1; p + 1 < l.Count; p++)
+                    {
+                        var w = Math.Abs((l.X[p] - l.X[p - 1]) * (l.Z[p + 1] - l.Z[p - 1]) - (l.Z[p] - l.Z[p - 1]) * (l.X[p + 1] - l.X[p - 1])) / Math.Max(Math.Sqrt(Math.Pow(l.X[p + 1] - l.X[p - 1], 2) + Math.Pow(l.Z[p + 1] - l.Z[p - 1], 2)), 1e-6);
+                        if (w > 0.05)
+                            wobbles.Add(string.Create(CultureInfo.InvariantCulture, $"{p}@{l.S[p]:0}m:{w * 100:0}cm{(l.Structures[p] != l.Structures[p - 1] ? "(structure)" : "")}{(l.Nodes.Any(n => n.Point == p) ? NodeUsers(l.Nodes.First(n => n.Point == p).Node) : "")}"));
+                        if (w > wobble)
+                            (wobble, worst) = (w, p);
+                    }
+
+                    if (wobbles.Count > 0)
+                        Log.Info($"Road {l.Index} wobbles: {string.Join(" ", wobbles.Take(30))}");
+
+                    Log.Info(string.Create(CultureInfo.InvariantCulture, $"Road {l.Index}: wobble {wobble * 100:0.0} cm, class {(RoadClass)l.Class}, {l.Lanes} lanes, {l.Width:0.0} m wide{(l.Oneway ? ", one way" : "")}, {l.S[^1]:0} m, {l.Count} points, {l.Structures.Count(s => s == Structure.Bridge)} bridge segments; from {End(0)} to {End(l.Count - 1)}"));
+                }
+
+                break;
+            }
+
             case "linesdump":
             {
                 // Every built track's line, with its junctions, for working out a hand re-lay.
@@ -2393,7 +2501,7 @@ public sealed partial class EditorView : IDisposable
                 var target = (h.Line.X[h.Point] + Number(3), h.Line.Z[h.Point] - Number(4));
                 _tool = Tool.Shape;
                 (NetworkLine Line, Alignment Shape)? Step(bool pressed, bool held) =>
-                    _shape.Update(lines, screen, target, Project, S(1f), _camera.X, _camera.Z, ViewReach, pressed, held, false, false, false, false, false);
+                    _shape.Update(lines, screen, target, Project, S(1f), _camera.X, _camera.Z, ViewReach, pressed, held, false, false, false, false, false, false);
                 Step(true, true);
                 var picked = _shape.LineIn(lines);
                 Step(false, false);
@@ -2421,6 +2529,44 @@ public sealed partial class EditorView : IDisposable
                 var next = h.Handles[h.Handles.IndexOf(h.Point) + 2];
                 Report("straighten", h.Line, TrackShaping.Straighten(h.Line, h.Handles, h.Point, next, p => h.Line.Nodes.Any(n => n.Point == p && lines.IsJunction(n.Node))));
                 break;
+            case "ease":
+            {
+                // ease,LAT,LON,LAT,LON: one smooth curve between the line's points nearest the two places (as K does in Shape).
+                var (ea, eb) = (At(1), At(3));
+                int Closest(NetworkLine l, (double X, double Z) p) => Enumerable.Range(0, l.Count).MinBy(i => (l.X[i] - p.X) * (l.X[i] - p.X) + (l.Z[i] - p.Z) * (l.Z[i] - p.Z));
+                double Away(NetworkLine l, (double X, double Z) p) { var i = Closest(l, p); return Math.Sqrt((l.X[i] - p.X) * (l.X[i] - p.X) + (l.Z[i] - p.Z) * (l.Z[i] - p.Z)); }
+                var on = lines.Lines.Where(l => l.Rail && !l.Disused && l.Alignment is not null).MinBy(l => Away(l, ea) + 0.01 * Away(l, eb));
+                if (on is null)
+                    break;
+                var (pa, pb) = (Closest(on, ea), Closest(on, eb));
+                double Jump(Alignment shape, double u0, double u1)
+                {
+                    // Curvature sampled every 2 m from 30 m before to 30 m after, and the biggest change between samples.
+                    var (jump, previous) = (0.0, (double?)null);
+                    for (var u = Math.Max(u0 - 30, 2.0); u < Math.Min(u1 + 30, shape.Length - 2.0); u += 2.0)
+                    {
+                        var k = Math.IEEERemainder(shape.HeadingAt(u + 1.0) - shape.HeadingAt(u - 1.0), 2.0 * Math.PI) / 2.0;
+                        if (previous is { } p)
+                            jump = Math.Max(jump, Math.Abs(k - p));
+                        previous = k;
+                    }
+
+                    return jump;
+                }
+
+                var was = Jump(on.Alignment!, on.Alignment!.U[Math.Min(pa, pb)], on.Alignment.U[Math.Max(pa, pb)]);
+                var eased = TrackShaping.Ease(on, pa, pb, p => on.Nodes.Any(n => n.Point == p && lines.IsJunction(n.Node)));
+                Log.Info($"Ease: line {on.Index}, points {pa} and {pb} of {on.Count}, junctions at " + string.Join(", ", on.Nodes.Where(n => lines.IsJunction(n.Node)).Select(n =>
+                {
+                    var g = _route.Projection!.Inverse(new RoutePoint(on.X[n.Point], -on.Z[n.Point]));
+                    return string.Create(CultureInfo.InvariantCulture, $"{n.Point} ({g.Lat:0.000000},{g.Lon:0.000000}, {on.S[n.Point]:0} m)");
+                })));
+                if (eased is not null)
+                    Log.Info(string.Create(CultureInfo.InvariantCulture, $"Ease: points {pa}..{pb}, biggest curvature step {was * 1000:0.00} /km before, {Jump(eased.Shape, eased.Shape.U[Math.Min(pa, pb)], eased.Shape.U[Math.Max(pa, pb)]) * 1000:0.00} /km after"));
+                Report("ease", on, eased);
+                break;
+            }
+
             case "remove" when Nearest(At(1), true) is { } h:
                 Report("remove", h.Line, TrackShaping.Remove(h.Line, h.Handles, h.Point));
                 break;
@@ -3035,6 +3181,14 @@ public sealed partial class EditorView : IDisposable
     {
         if (edit is null)
             return;
+        // Track laid or moved across another gets a diamond there, in the same edit.
+        if (_tracks is not null)
+        {
+            edit = _tracks.WithDiamonds(edit)!;
+            if (_tracks.ShallowCrossings > 0)
+                _switchRefused = $"Tracks cross under {TrackEditor.MinDiamondDegrees:0} degrees: too shallow for a diamond";
+        }
+
         _undo.Push(edit);
         _redo.Clear();
         RebuildNetwork();
@@ -3930,6 +4084,14 @@ public sealed partial class EditorView : IDisposable
         if (Kit.Button("backtosolved", "Back to Solved", 0f, ButtonKind.Secondary, shaped && _rebuild is null))
             CommitShape(source, line, null);
         Kit.EndCard();
+
+        // How far K's smooth curve may move the track for smoothness.
+        Kit.BeginCard("Smooth Curve", "Shift-click two handles, then K");
+        var factor = imperial ? FeetPerMeter : 1f;
+        var hold = (float)TrackShaping.EaseHold * factor;
+        if (ToolPanel.Value("easehold", imperial ? "Leeway (ft)" : "Leeway (m)", ref hold, 0.05f * factor, 3f * factor, "0.00", log: true))
+            TrackShaping.EaseHold = Math.Clamp(hold / factor, 0.05, 3.0);
+        Kit.EndCard();
     }
 
     /// The picked switch: what it is now, and the sizes to choose from, each shown by its model.
@@ -4168,7 +4330,7 @@ public sealed partial class EditorView : IDisposable
                 Tool.Place => [("LMB", "Place, pick, drag"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Turn round or other side"), ("DEL", "Delete"), ("CTRL+Z", "Undo")],
                 Tool.Follow when _yard.Mode != YardMode.Follow => [("LMB", "Pick a track, then lay"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
                 Tool.Follow => [("LMB", "Click a guide or track"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove click"), ("CTRL+Z", "Undo")],
-                Tool.Shape => [("LMB", "Select, drag handle"), ("SHIFT+LMB", "Mark handles"), ("L", "Straighten"), ("DEL", "Remove handle"), ("ALT", "No snap"), ("CTRL+Z", "Undo")],
+                Tool.Shape => [("LMB", "Select, drag handle"), ("SHIFT+LMB", "Mark handles"), ("L", "Straighten"), ("K", "Smooth curve"), ("DEL", "Remove handle"), ("ALT", "No snap"), ("CTRL+Z", "Undo")],
                 Tool.Flatten when _flattenSample is not null => [("LMB", "Flatten"), ("F", FlattenSampleText), ("ESC", "Clear sample"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
                 Tool.Flatten => [("LMB", "Flatten"), ("F", FlattenSampleText), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
                 Tool.Paint => [("LMB", "Paint"), ("P", "Cover"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],

@@ -868,6 +868,115 @@ public sealed class TrackEditor
         return Commit(changes);
     }
 
+    /// The shallowest two tracks can cross at and take a diamond.
+    public const double MinDiamondDegrees = 8.0;
+
+    /// How near a place two tracks already meet (a switch, where one's lead runs alongside the other) a crossing of theirs can
+    /// be and not take a diamond.
+    private const double DiamondShareGap = 40.0;
+
+    /// How many crossings the last WithDiamonds left alone as too shallow for a diamond.
+    public int ShallowCrossings { get; private set; }
+
+    /// The edit with a diamond put in wherever track it laid or moved now crosses another with nothing joining them, so the
+    /// crossing and the track come and go together with one undo. Crossings under MinDiamondDegrees are left (ShallowCrossings).
+    public NetworkEdit? WithDiamonds(NetworkEdit? edit)
+    {
+        ShallowCrossings = 0;
+        if (edit is null)
+            return null;
+        var touched = edit.Ways.Where(c => c.After is { Rail: true } after && !RouteNetwork.IsGuide(after) && Moved(c.Before, after)).Select(c => c.Id).ToHashSet();
+        if (touched.Count == 0)
+            return edit;
+
+        var merged = new Dictionary<long, (NetworkWay? Before, NetworkWay? After)>();
+        foreach (var (id, before, after) in edit.Ways)
+            merged[id] = (before, after);
+        var joined = false;
+        for (var guard = 0; guard < 256; guard++)
+        {
+            if (NextCrossing(touched) is not { } crossing || JoinCrossing(crossing) is not { } made)
+                break;
+            joined = true;
+            foreach (var (id, before, after) in made.Ways)
+                merged[id] = merged.TryGetValue(id, out var was) ? (was.Before, after) : (before, after);
+        }
+
+        return joined ? new NetworkEdit([.. merged.Select(m => (m.Key, m.Value.Before, m.Value.After))]) : edit;
+    }
+
+    /// Whether a way is new, or has a point it didn't have or a point that's moved.
+    private static bool Moved(NetworkWay? before, NetworkWay after)
+    {
+        if (before is null)
+            return true;
+        var was = new Dictionary<long, (double, double)>();
+        for (var i = 0; i < before.Nodes.Length && i < before.Lat.Length; i++)
+            was[before.Nodes[i]] = (before.Lat[i], before.Lon[i]);
+        for (var i = 0; i < after.Nodes.Length && i < after.Lat.Length; i++)
+            if (!was.TryGetValue(after.Nodes[i], out var at) || at != (after.Lat[i], after.Lon[i]))
+                return true;
+        return false;
+    }
+
+    /// The first place one of these ways crosses another built track with nothing joining them, steep enough for a diamond and
+    /// clear of where the two already meet. Counts the shallow ones into ShallowCrossings as it goes.
+    private (long WayA, int SegmentA, long WayB, int SegmentB, double X, double Z, double Degrees)? NextCrossing(HashSet<long> ways)
+    {
+        Refresh();
+        ShallowCrossings = 0;
+        var mine = _rails.Where(w => ways.Contains(w.Id)).ToList();
+        foreach (var a in mine)
+            for (var i = 0; i + 1 < a.Nodes.Length; i++)
+            {
+                var (p0, p1) = (_nodes[a.Nodes[i]], _nodes[a.Nodes[i + 1]]);
+                var (minX, maxX, minZ, maxZ) = (Math.Min(p0.X, p1.X), Math.Max(p0.X, p1.X), Math.Min(p0.Z, p1.Z), Math.Max(p0.Z, p1.Z));
+                foreach (var b in _rails)
+                {
+                    if (b.Id == a.Id)
+                        continue;
+                    for (var j = 0; j + 1 < b.Nodes.Length; j++)
+                    {
+                        var (q0, q1) = (_nodes[b.Nodes[j]], _nodes[b.Nodes[j + 1]]);
+                        if (Math.Max(q0.X, q1.X) < minX || Math.Min(q0.X, q1.X) > maxX || Math.Max(q0.Z, q1.Z) < minZ || Math.Min(q0.Z, q1.Z) > maxZ)
+                            continue;
+                        if (!Crosses(p0, p1, q0, q1))
+                            continue;
+                        var (rx, rz, sx, sz) = (p1.X - p0.X, p1.Z - p0.Z, q1.X - q0.X, q1.Z - q0.Z);
+                        var t = ((q0.X - p0.X) * sz - (q0.Z - p0.Z) * sx) / (rx * sz - rz * sx);
+                        var (cx, cz) = (p0.X + rx * t, p0.Z + rz * t);
+                        if (MeetNear(a, b, cx, cz))
+                            continue;
+                        var cross = Math.Abs(rx * sz - rz * sx) / Math.Sqrt((rx * rx + rz * rz) * (sx * sx + sz * sz));
+                        var degrees = Math.Asin(Math.Min(cross, 1.0)) * 180.0 / Math.PI;
+                        if (degrees < MinDiamondDegrees)
+                        {
+                            ShallowCrossings++;
+                            continue;
+                        }
+
+                        return (a.Id, i, b.Id, j, cx, cz, degrees);
+                    }
+                }
+            }
+
+        return null;
+    }
+
+    /// Whether two ways share a point within DiamondShareGap of a place.
+    private bool MeetNear(NetworkWay a, NetworkWay b, double x, double z)
+    {
+        foreach (var node in a.Nodes)
+            if (Array.IndexOf(b.Nodes, node) >= 0)
+            {
+                var (nx, nz) = _nodes[node];
+                if ((nx - x) * (nx - x) + (nz - z) * (nz - z) < DiamondShareGap * DiamondShareGap)
+                    return true;
+            }
+
+        return false;
+    }
+
     /// The nearest track end with nothing else there, within reach.
     public long? LooseEndNear(double x, double z, double within)
     {

@@ -32,6 +32,13 @@ public sealed class RouteGenerator
         /// Just fetch where the rail runs under the tiles, into the network: nothing's built.
         public bool FindTrackOnly { get; init; }
 
+        /// Just fetch the roads under the tiles and put every one back as mapped, edited or not (a bridge taken off, a road
+        /// moved or deleted): nothing's built, and the track's left alone.
+        public bool RestoreRoadsOnly { get; init; }
+
+        /// With RestoreRoadsOnly: every mapped road in the world is taken out first, not only those in the tiles.
+        public bool EveryRoad { get; init; }
+
         public int RoadLevel { get; init; }
         public int RailLevel { get; init; }
 
@@ -216,7 +223,7 @@ public sealed class RouteGenerator
             try
             {
                 await Build(request, token);
-                if (!request.FindTrackOnly)
+                if (!request.FindTrackOnly && !request.RestoreRoadsOnly)
                     _status = $"Built {request.Tiles.Count} tile{(request.Tiles.Count == 1 ? "" : "s")} in {watch.Elapsed.TotalSeconds:0}s";
                 Log.Info($"Route builder: {_status}");
             }
@@ -266,6 +273,37 @@ public sealed class RouteGenerator
             r.Network.Save(route);
             Interlocked.Increment(ref _version);
             Say($"{railWays.Count} rail lines found", 1f);
+            return;
+        }
+
+        if (r.RestoreRoadsOnly)
+        {
+            // The roads in the tiles replaced with exactly what the road detail asks for: every mapped road with a point in them
+            // goes (edited or not), then what's fetched goes in. At NONE nothing's fetched, so they're all gone. Roads drawn by hand stay.
+            var tileSet = r.Tiles.ToHashSet();
+            bool InTiles(NetworkWay w)
+            {
+                if (r.EveryRoad)
+                    return true;
+                for (var i = 0; i < w.Lat.Length; i++)
+                    if (tileSet.Contains(grid.TileAt(projection.Forward(new GeoPoint(w.Lat[i], w.Lon[i])))))
+                        return true;
+                return false;
+            }
+
+            List<NetworkWay> roadWays = [];
+            List<NetworkNode> roadNodes = [];
+            if (roads.Classes.Length > 0)
+            {
+                Say("Asking OpenStreetMap for the roads", 0.5f);
+                (roadWays, roadNodes) = await OpenStreetMap(route, r.Tiles, roads.Classes, [], token);
+                token.ThrowIfCancellationRequested();
+            }
+
+            var (removed, added) = r.Network.ReplaceRoads(InTiles, roadWays.Where(w => !w.Rail), roadNodes);
+            r.Network.Save(route);
+            Interlocked.Increment(ref _version);
+            Say($"Roads ({roads.Name.ToLowerInvariant()}): {removed} taken out, {added} put in", 1f);
             return;
         }
 

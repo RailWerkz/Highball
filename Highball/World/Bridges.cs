@@ -139,7 +139,7 @@ public static class BridgePlanner
                 var (dx, dz) = (b.Mx - a.Mx, b.Mz - a.Mz);
                 var across = Math.Abs(dx * -a.Fz + dz * a.Fx);
                 var along = Math.Abs(dx * a.Fx + dz * a.Fz);
-                if (across <= a.Half + b.Half + 4.0 && along <= (a.Length + b.Length) * 0.5)
+                if (across <= a.Half + b.Half + 4.0 && along <= (a.Length + b.Length) * 0.5 && SideBySide(a.Line, a.First, a.Last, b.Line, b.First, b.Last, a.Half + b.Half + 4.0))
                     parent[Root(i)] = Root(j);
             }
 
@@ -175,6 +175,31 @@ public static class BridgePlanner
         foreach (var group in groups)
             FindUnder(group, lines);
         return groups;
+    }
+
+    /// Whether two bridged stretches stay beside each other the whole way along: every point of the shorter within reach of the
+    /// other, and on the same level of an interchange.
+    private static bool SideBySide(NetworkLine a, int a0, int a1, NetworkLine b, int b0, int b1, double reach)
+    {
+        if (a.S[a1] - a.S[a0] > b.S[b1] - b.S[b0])
+            (a, a0, a1, b, b0, b1) = (b, b0, b1, a, a0, a1);
+        if (a.Layers.Length > 0 && b.Layers.Length > 0 && a.Layers[Math.Min((a0 + a1) / 2, a.Layers.Length - 1)] != b.Layers[Math.Min((b0 + b1) / 2, b.Layers.Length - 1)])
+            return false;
+        for (var p = a0; p <= a1; p += Math.Max(1, (a1 - a0) / 12))
+        {
+            var best = double.MaxValue;
+            for (var q = b0; q < b1; q++)
+            {
+                var (dx, dz) = (b.X[q + 1] - b.X[q], b.Z[q + 1] - b.Z[q]);
+                var t = Math.Clamp(((a.X[p] - b.X[q]) * dx + (a.Z[p] - b.Z[q]) * dz) / Math.Max(dx * dx + dz * dz, 1e-9), 0.0, 1.0);
+                best = Math.Min(best, Math.Pow(b.X[q] + dx * t - a.X[p], 2) + Math.Pow(b.Z[q] + dz * t - a.Z[p], 2));
+            }
+
+            if (best > reach * reach)
+                return false;
+        }
+
+        return true;
     }
 
     /// A guide's bridged points set to the height of the bridge's reference line beside each.
@@ -227,7 +252,9 @@ public static class BridgePlanner
                     var (lu, lv) = (Math.Sqrt(ux * ux + uz * uz), Math.Sqrt(vx * vx + vz * vz));
                     var sine = (float)Math.Max(Math.Abs(cross) / Math.Max(lu * lv, 1e-9), 0.2);
                     var s = reference.S[p] + (reference.S[p + 1] - reference.S[p]) * (float)q - group.From;
-                    group.Under.Add(new BridgeUnder(s, line.Formation, (float)(ux / lu), (float)(uz / lu), sine));
+                    // A road's own width (its shoulders included), not the flat ground it's laid on: the median beside it is for piers.
+                    var half = line.Rail || line.Mark ? line.Formation : line.Width * 0.5f + (i < line.Shift.Length ? MathF.Abs(line.Shift[i]) : 0f);
+                    group.Under.Add(new BridgeUnder(s, half, (float)(ux / lu), (float)(uz / lu), sine));
                 }
             }
         }
@@ -297,9 +324,25 @@ public static class BridgePlanner
                 return [.. piers.Select(s => { var (ax, az) = Direction(group, s, across); return new BridgePier(s, ax, az); })];
         }
 
-        // Nowhere clear enough: evenly, as needed.
-        var n = (int)MathF.Ceiling(length / max) - 1;
-        return [.. Enumerable.Range(1, n).Select(k => { var s = length * k / (n + 1); var (ax, az) = across(s); return new BridgePier(s, ax, az); })];
+        // Nowhere clear at an even spacing: piers only where they're clear (never in a road or on a track), as far apart as the deck
+        // allows; where there's nowhere clear within that, the deck spans further to the next clear place.
+        var clear = new List<float>();
+        for (var s = 3f; s <= length - 3f; s += 0.5f)
+            if (Clear(s))
+                clear.Add(s);
+        var chosen = new List<float>();
+        var from = 0f;
+        while (length - from > max)
+        {
+            var within = clear.Where(s => s > from + 2f && s <= from + max).ToList();
+            var next = within.Count > 0 ? within.Max() : clear.Where(s => s > from + 2f).DefaultIfEmpty(float.NaN).Min();
+            if (float.IsNaN(next))
+                break;
+            chosen.Add(next);
+            from = next;
+        }
+
+        return [.. chosen.Select(s => { var (ax, az) = Direction(group, s, across); return new BridgePier(s, ax, az); })];
     }
 
     /// The way a pier at s runs: along what it's nearest beside (within 25 m, and not crossing the bridge at too steep a skew),

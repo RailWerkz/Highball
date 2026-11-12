@@ -8,7 +8,7 @@ namespace Highball.Builder;
 /// Shaping the track by hand: click a line to select it and it shows its handles. Drag a handle to move it (the track
 /// between the handles either side is laid in again through it), click the line between handles to add one and drag it,
 /// Delete takes the handle under the pointer out, Shift-click two handles and L makes the line exactly straight between
-/// them. Junction handles stay put. A handle snaps to the straight between its neighbours and to the mapped line; Alt
+/// them, or K lays one smooth curve between them (spirals in and out, as gentle as it can be). Junction handles stay put. A handle snaps to the straight between its neighbours and to the mapped line; Alt
 /// turns that off.
 internal sealed class ShapeTool
 {
@@ -30,6 +30,9 @@ internal sealed class ShapeTool
 
     public int Selected => _selected.Count;
 
+    /// Why the last thing asked of it couldn't be done, if it couldn't.
+    public string? Refused { get; set; }
+
     public List<int> HandlesOf(NetworkLines lines, NetworkLine line) => TrackShaping.Handles(line, lines.IsJunction, _extra);
 
     /// Selects a line, by its key.
@@ -48,7 +51,7 @@ internal sealed class ShapeTool
 
     /// One frame's input. Returns a new shape for the line, if there is one to commit.
     public (NetworkLine Line, Alignment Shape)? Update(NetworkLines lines, float2 mouse, (double X, double Z)? hit, Func<double, double, double, float2?> project, float scale,
-        double cameraX, double cameraZ, double reach, bool pressed, bool held, bool shift, bool noSnap, bool remove, bool straighten, bool busy)
+        double cameraX, double cameraZ, double reach, bool pressed, bool held, bool shift, bool noSnap, bool remove, bool straighten, bool ease, bool busy)
     {
         var line = LineIn(lines);
         if (_key is not null && line is null)
@@ -107,6 +110,17 @@ internal sealed class ShapeTool
                 _selected.Clear();
                 return (line, straight.Shape);
             }
+        }
+
+        if (line is not null && ease && _selected.Count == 2)
+        {
+            if (TrackShaping.Ease(line, _selected.Min(), _selected.Max(), p => IsFixed(lines, line, handles, p)) is { } eased)
+            {
+                _selected.Clear();
+                return (line, eased.Shape);
+            }
+
+            Refused = "No smooth curve fits between those handles (or a junction's between them)";
         }
 
         if (!pressed)
