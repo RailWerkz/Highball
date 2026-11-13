@@ -46,7 +46,8 @@ public sealed partial class EditorView : IDisposable
     private const float GradeColourWindow = 25f;
 
     private readonly RouteInfo _route;
-    private readonly Task<TerrainSource> _opening;
+    /// The route as it's loaded: ground, track, streaming, switches and the rail graph.
+    private readonly RouteWorld _routeWorld;
     private readonly WorldDisplay _world;
     private WorldRenderer _renderer => _world.Renderer;
 
@@ -61,8 +62,8 @@ public sealed partial class EditorView : IDisposable
     /// The camera everything draws from and picks with: the editor's own (EditorCamera), which the drive cameras move too.
     private Camera _camera => _eye.Camera;
     private readonly RoutePoint? _start;
-    private Terrain? _terrain;
-    private NetworkMeshes? _network;
+    private Terrain? _terrain => _routeWorld.Terrain;
+    private NetworkMeshes? _network => _routeWorld.Network;
     private float _fps;
     /// Looking round with the right button held: the pointer's captured.
     private bool _looking { get => _eye.Looking; set => _eye.Looking = value; }
@@ -170,7 +171,7 @@ public sealed partial class EditorView : IDisposable
 
     public bool CapturesMouse => _looking;
     public bool Ready => _terrain is not null;
-    public bool Failed => _opening.IsFaulted;
+    public bool Failed => _routeWorld.Failed;
 
     /// Where the camera is, in route metres east and north of the origin.
     public RoutePoint Position => new(_camera.X, -_camera.Z);
@@ -182,7 +183,7 @@ public sealed partial class EditorView : IDisposable
         _start = start;
         var place = new GeoPoint(route.Origin.Latitude, route.Origin.Longitude);
         _world = new WorldDisplay(place.Lat, place.Lon, route.Projection?.GridNorth(place) ?? 0.0);
-        _opening = TerrainSource.Open(route);
+        _routeWorld = new RouteWorld(route);
         if (DevTools.Clean)
             _overlay = TrackOverlay.Off;
         if (DevTools.Skybox is { } sky)
@@ -209,13 +210,12 @@ public sealed partial class EditorView : IDisposable
         _backgroundTiles.Dispose();
         _circuitEditor?.Dispose();
         _trains.Dispose();
-        _terrain?.Dispose();
-        _network?.Dispose();
+        _routeWorld.Dispose();
         _world.Dispose();
     }
 
     /// Saves any edits not yet saved. True when that included track, so a copy of the network read before is stale.
-    public bool Save() => _opening.IsCompletedSuccessfully && Save(_opening.Result);
+    public bool Save() => _routeWorld.Opened && Save(_routeWorld.Read);
 
     /// Esc: drops track being drawn, or the selection. False when there was neither, so Esc means something else.
     public bool Escape()
@@ -312,35 +312,26 @@ public sealed partial class EditorView : IDisposable
 
         if (_terrain is null)
         {
-            if (!_opening.IsCompleted)
+            if (!_routeWorld.TryFinishOpening())
                 return;
 
-            if (_opening.IsFaulted)
-            {
-                Log.Error($"3D Editor: {_opening.Exception?.InnerException?.Message}");
-                return;
-            }
-
-            _terrain = new Terrain(_opening.Result);
-            _network = new NetworkMeshes(_opening.Result) { Switches = _switches };
-            _network.SetObjects(_opening.Result.Objects, [], _route.Projection!);
             if (DevTools.AuditFile is { } auditFile)
             {
                 DevTools.AuditFile = null;
-                var report = TrackAudit.Report(TrackAudit.Run(_opening.Result.Lines!, _opening.Result.Objects, _route.Projection!, _route.BuiltTiles(), _route.Grid!.TileSize), _route.Projection!, _route.Name);
+                var report = TrackAudit.Report(TrackAudit.Run(_routeWorld.Read.Lines!, _routeWorld.Read.Objects, _route.Projection!, _route.BuiltTiles(), _route.Grid!.TileSize), _route.Projection!, _route.Name);
                 File.WriteAllText(auditFile, report);
                 Log.Info(report.Split('#')[1]);
             }
-            _tracks = new TrackEditor(_route, _opening.Result.Network);
+            _tracks = new TrackEditor(_route, _routeWorld.Read.Network);
             _circuitEditor = new CircuitEditor(_route);
             if (DevTools.ProfileStats)
-                Log.Info(ProfileReport.Of(_opening.Result.Lines!, _route.Projection!));
+                Log.Info(ProfileReport.Of(_routeWorld.Read.Lines!, _route.Projection!));
             if (DevTools.Tool is { } first)
             {
                 DevTools.Tool = null;
                 _tool = (Tool)Math.Clamp(first - 1, 0, (int)Tool.Place);
             }
-            PlaceCamera(_opening.Result);
+            PlaceCamera(_routeWorld.Read);
             if (Driving)
                 (_overlayBeforeDriving, _overlay) = (_overlay, TrackOverlay.Off);
             if (_topDown)
@@ -416,18 +407,9 @@ public sealed partial class EditorView : IDisposable
         var settings = Settings.Current;
         var above = Math.Max(0.0, _camera.Y - _terrain.Source.HeightAt(_camera.X, _camera.Z));
         var limit = _topDown ? 0.0 : settings.ViewDistance + above;
-        _terrain.DetailFactor = Quality.TerrainDetail;
-        _terrain.ViewLimit = limit;
         _renderer.Sky.SetViewLimit((float)limit);
-        _network!.FarRadius = limit > 0.0 ? (float)Math.Min(FarestTrack, limit) : FarestTrack;
-
-        using (Profiler.Sample("Terrain LOD"))
-            _terrain.Update(_camera.X, _camera.Y, _camera.Z);
-        using (Profiler.Sample("Line chunks"))
-            _network.Update(_camera.X, _camera.Y, _camera.Z);
+        _routeWorld.Stream(_camera, limit);
     }
-
-    private const float FarestTrack = 6000f;
 
     private void PlaceCamera(TerrainSource source)
     {
@@ -1753,8 +1735,7 @@ public sealed partial class EditorView : IDisposable
         return new float2((clip.X / clip.W * 0.5f + 0.5f) * _screen.X, (0.5f - clip.Y / clip.W * 0.5f) * _screen.Y);
     }
 
-    private Trains.RailGraph? _railGraph;
-    private NetworkLines? _railGraphFor;
+    private Trains.RailGraph? _railGraph => _routeWorld.Graph;
     private readonly TrainPanel _trains = new();
     private (double X, double Y, double Z)? _followed;
 
@@ -1836,18 +1817,16 @@ public sealed partial class EditorView : IDisposable
     public void Notify(string text) => _trains.Notify(text);
 
     /// Which way every switch is set: kept across the track being laid out again, for the trains and the blades both.
-    private readonly Trains.SwitchStates _switches = new();
+    private Trains.SwitchStates _switches => _routeWorld.Switches;
 
     private void RefreshRailGraph()
     {
-        if (_terrain!.Source.Lines is not { } lines || _network is not { } network || ReferenceEquals(lines, _railGraphFor))
+        if (!_routeWorld.RefreshGraph())
             return;
-        _railGraphFor = lines;
-        _railGraph = RailGraphBuilder.Build(lines);
-        _railGraph.Reversed = _switches.Reversed;
+        var lines = _terrain!.Source.Lines!;
         _trains.Railway.Switches = _switches;
         _trains.Ground = (x, z) => _terrain!.Source.HeightAt(x, z);
-        _trains.Use(_railGraph);
+        _trains.Use(_railGraph!);
         RestoreStock();
         RelinkSignals(lines);
         Net?.Attach(_trains.Railway, _switches, _railGraph);
@@ -1860,7 +1839,7 @@ public sealed partial class EditorView : IDisposable
     /// The train: placing it where the track's clicked, running it on, and the camera along with it if it follows.
     private void UpdateTrains(float dt)
     {
-        if (DevTools.Train is { } dev && _railGraph is not null && DevTools.Lay is null && _rebuild is null && ReferenceEquals(_railGraphFor, _terrain!.Source.Lines))
+        if (DevTools.Train is { } dev && _railGraph is not null && DevTools.Lay is null && _rebuild is null && _routeWorld.GraphCurrent)
         {
             DevTools.Train = null;
             var at = _route.Projection!.Forward(new GeoPoint(dev.Lat, dev.Lon));
