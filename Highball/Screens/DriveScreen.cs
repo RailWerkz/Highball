@@ -21,7 +21,7 @@ public sealed class DriveScreen : Screen, IWorldScreen
 
     private readonly PackSource _pack;
     private readonly NetPlay? _net;
-    private readonly EditorView _view;
+    private readonly DrivingView _view;
     private float _headerBottom;
     private float _footerTop = float.MaxValue;
     private string _notice = "";
@@ -44,8 +44,7 @@ public sealed class DriveScreen : Screen, IWorldScreen
         RoutePoint? middle = built.Count > 0 && route.Grid is { } grid
             ? new RoutePoint(built.Average(t => t.I + 0.5) * grid.TileSize, built.Average(t => t.J + 0.5) * grid.TileSize)
             : null;
-        _view = new EditorView(route, middle) { Driving = true, Net = net };
-        _view.View = DriveView.Orbit;
+        _view = new DrivingView(route, middle, net) { View = DriveView.Orbit };
         if (net is not null)
             net.Notice += Notify;
         if (DevTools.DriveView is { } start && Enum.TryParse<DriveView>(start, true, out var view))
@@ -80,12 +79,12 @@ public sealed class DriveScreen : Screen, IWorldScreen
                 _view.View = DriveView.Free;
             else if (ImGui.IsKeyPressed(ImGuiKey.C))
                 _view.TrainWindow.Open = !_view.TrainWindow.Open;
-            else if (ImGui.IsKeyPressed(ImGuiKey.Escape) && !_view.Escape())
+            else if (ImGui.IsKeyPressed(ImGuiKey.Escape) && !_view.TrainWindow.Placing)
                 HighballApp.Instance.Push(new PauseScreen(this));
         }
 
         _view.Update(dt, _headerBottom, _footerTop);
-        if (DevTools.HideWindows && _view.DriveTrain is not null)
+        if (DevTools.HideWindows && _view.Train is not null)
         {
             _view.TrainWindow.Open = false;
             _view.TrainWindow.Graphs.Open = false;
@@ -124,7 +123,7 @@ public sealed class DriveScreen : Screen, IWorldScreen
         var y = _footerTop + (height - S(14f)) * 0.5f;
         var x = S(24f);
 
-        if (_view.DriveTrain is { } train)
+        if (_view.Train is { } train)
         {
             var driving = ReferenceEquals(train, _view.TrainWindow.Controlled);
             var items = new List<(string Label, string Value)>

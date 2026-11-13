@@ -200,13 +200,8 @@ public sealed partial class EditorView : IDisposable
         }
     }
 
-    /// The editor's track overlay, put back when driving's over (the overlay's kept between editor sessions).
-    private TrackOverlay? _overlayBeforeDriving;
-
     public void Dispose()
     {
-        if (_overlayBeforeDriving is { } overlay)
-            _overlay = overlay;
         Save();
         if (_sizePictures is not null)
             foreach (var (texture, reference) in _sizePictures.Values)
@@ -339,20 +334,18 @@ public sealed partial class EditorView : IDisposable
                 _tool = (Tool)Math.Clamp(first - 1, 0, (int)Tool.Place);
             }
             PlaceCamera(_routeWorld.Read);
-            if (Driving)
-                (_overlayBeforeDriving, _overlay) = (_overlay, TrackOverlay.Off);
             if (_topDown)
                 EnterTopDown();
         }
 
         if (_topDown)
             _eye.Pan(dt, Blocked, WheelTurns, _screen, _terrain!.Source.HeightAt);
-        else if (!_session.InCab)
-            {
-                _eye.Fly(dt, Blocked, WheelTurns, _terrain!.Source.HeightAt);
-                if (DevTools.FlySpeed is { } fly)
-                    FlyTest(fly, _camera.Forward, dt);
-            }
+        else
+        {
+            _eye.Fly(dt, Blocked, WheelTurns, _terrain!.Source.HeightAt);
+            if (DevTools.FlySpeed is { } fly)
+                FlyTest(fly, _camera.Forward, dt);
+        }
         using (Profiler.Sample("Editing"))
         {
             Edit(dt);
@@ -479,12 +472,8 @@ public sealed partial class EditorView : IDisposable
         if (IsBrush(_tool))
             _brush = _tool;
 
-        // Driving: only looking (picking vehicles, throwing switches, placing stock from the train window).
-        if (Driving)
-            _tool = Tool.Look;
-
         // (Not while typing in a field: digits there aren't tools.)
-        if (!Keyboard.KeysBlocked && !Driving)
+        if (!Keyboard.KeysBlocked)
         {
             for (var i = 0; i <= (int)Tool.Circuits; i++)
                 if (Input.KeyDown(GlfwKey.Number1 + i))
@@ -1772,20 +1761,6 @@ public sealed partial class EditorView : IDisposable
             _tool = Tool.Look;
     }
 
-    // --- Driving (Single Player and Multiplayer). ---
-
-    /// Played rather than built: no editing tools or panel, only looking, the train window and the train's cameras.
-    public bool Driving { get; init; }
-
-    /// The camera (TrainSession.View).
-    public Trains.DriveView View { get => _session.View; set => _session.View = value; }
-
-    /// The train the cameras are on (TrainSession.Focus).
-    public Trains.Train? DriveTrain => _session.Focus;
-
-    /// The train window: placing, building, driving and coupling stock.
-    public TrainPanel TrainWindow => _trains;
-
     private void EditTrack()
     {
         var tracks = _tracks!;
@@ -2656,7 +2631,7 @@ public sealed partial class EditorView : IDisposable
     }
 
     /// Whether the side panel has anything to show.
-    public bool HasPanel => !Driving && (_terrain is null || _tool != Tool.Look || _topDown);
+    public bool HasPanel => _terrain is null || _tool != Tool.Look || _topDown;
 
     /// The track overlay's key and its title, for the footer while it's shown (the Circuits tool draws its own colours
     /// instead). The class key lists only the classes the route has.
