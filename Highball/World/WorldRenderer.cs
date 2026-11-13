@@ -76,9 +76,6 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly MotionVectors _motion = new();
     private readonly ModelInstances _instances = new();
     private readonly VehicleOutline _outline = new();
-
-    /// The glow round the driven and picked vehicles: its colours and width come from the interface.
-    public VehicleOutline Outline => _outline;
     private readonly List<ModelInstances.Batch> _seen = [];
     private readonly List<ModelInstances.Batch> _moving = [];
     private readonly TerrainHorizon _horizon = new();
@@ -108,14 +105,8 @@ public sealed unsafe class WorldRenderer : IDisposable
     public Clouds Clouds => _clouds;
     public Vegetation Vegetation => _vegetation;
 
-    /// Lamps a screen adds this frame, like an engine's headlights.
-    public List<LocalLight> SceneLights { get; } = [];
 
-    /// Exhaust smoke a screen gives this frame (ExhaustSmoke's plumes, as capsules); none if it sets nothing.
-    public IReadOnlyList<Highball.Trains.SmokeSegment> SceneSmoke { get; set; } = [];
 
-    /// Heat haze over running engines' stacks a screen gives this frame (ExhaustSmoke's); none if it sets nothing.
-    public IReadOnlyList<Highball.Trains.HazeSource> SceneHaze { get; set; } = [];
 
     public WorldRenderer()
     {
@@ -218,9 +209,9 @@ public sealed unsafe class WorldRenderer : IDisposable
     private static float3 Normalize(float3 v) => v / MathF.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
 
     /// Records the world into the HDR target. Outside any render pass.
-    public void Render(CommandBuffer cmd, int2 size, Camera camera, Terrain? terrain, NetworkMeshes? network, IReadOnlyList<ModelDraw>? models = null,
-        IReadOnlyList<Outlined>? outlined = null)
+    public void Render(CommandBuffer cmd, int2 size, FrameScene scene)
     {
+        var (camera, terrain, network, models, outlined) = (scene.Camera, scene.Terrain, scene.Network, scene.Models, scene.Outlines);
         if (_pipelineSamples != RenderTarget.Samples)
         {
             DestroyWorldPipelines();
@@ -255,12 +246,12 @@ public sealed unsafe class WorldRenderer : IDisposable
             AddSignals(network);
             AddLightPoles(network, camera, lampsOn);
         }
-        foreach (var light in SceneLights)
+        foreach (var light in scene.Lights)
             _lights.Add(in light);
         using (Profiler.Sample("Local lights", cmd))
             _lights.Upload(cmd, camera, size, aspect);
         using (Profiler.Sample("Smoke upload", cmd))
-            _smoke.Upload(cmd, camera, aspect, SceneSmoke, Sky);
+            _smoke.Upload(cmd, camera, aspect, scene.Smoke, Sky);
 
         using (Profiler.Sample("Sun shadows", cmd))
             _shadows.Render(cmd, camera, aspect, Sun, terrain, models, _instances, terrain is null ? null : _vegetation, network);
@@ -392,6 +383,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         // How what moves moved, for the temporal pass to follow it.
         using (Profiler.Sample("Motion", cmd))
             _motion.Record(cmd, _target, camera, aspect, _moving);
+        (_outline.DrivenColor, _outline.PickedColor, _outline.Scale) = (scene.OutlineStyle.Driven, scene.OutlineStyle.Picked, scene.OutlineStyle.Scale);
         _outline.Record(cmd, size, camera, aspect, outlined);
 
         if (RailWerkz.Core.Settings.Settings.Current.AmbientOcclusion)
@@ -416,14 +408,14 @@ public sealed unsafe class WorldRenderer : IDisposable
         using (Profiler.Sample("After the world", cmd))
         {
             var falling = Precipitation.Falling(_weather);
-            var haze = SceneHaze.Count > 0;
+            var haze = scene.Haze.Count > 0;
             _post.Draw(cmd, _target, _motion.Image!, camera, aspect, Sky, !falling && !_smoke.Any && !haze ? null : over =>
             {
                 // The haze bends what's behind it, so it goes first, from the picture as it was; the smoke over it, and rain
                 // and snow fall in front of both as much as behind.
                 if (haze && _post.Picture is { } picture)
                     using (Profiler.Sample("Heat haze", over))
-                        _haze.Draw(over, _target, picture, _post.PictureVersion, _clouds, camera, aspect, SceneHaze);
+                        _haze.Draw(over, _target, picture, _post.PictureVersion, _clouds, camera, aspect, scene.Haze);
                 using (Profiler.Sample("Smoke", over))
                     _smoke.Draw(over);
                 if (falling)

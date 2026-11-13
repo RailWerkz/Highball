@@ -30,6 +30,8 @@ public sealed class LightingScreen : Screen, IWorldScreen
     private readonly List<ModelDraw> _scene = [];
     private readonly Dictionary<string, RenderModel> _engines = [];
     private readonly List<ModelDraw> _draws = [];
+    private readonly List<LocalLight> _lamps = [];
+    private readonly FrameScene _frame = new();
 
     private string _engine = Engines[0].Id;
     private bool _showSpheres = true;
@@ -148,7 +150,7 @@ public sealed class LightingScreen : Screen, IWorldScreen
         _draws.Add(new ModelDraw(Engine(_engine), default));
 
         // Its headlight and ditch lights, on towards dusk.
-        var lamps = _renderer.SceneLights;
+        var lamps = _lamps;
         lamps.Clear();
         var on = 1f - MathEx.SmoothStep(-0.02f, 0.1f, _renderer.Sky.RealSunHeight);
         if (on > 0f && Trains.VehicleCatalog.Find("sd40-2") is { } def)
@@ -171,7 +173,10 @@ public sealed class LightingScreen : Screen, IWorldScreen
     public void RenderWorld(CommandBuffer cmd, int width, int height)
     {
         _panel.Apply();
-        _renderer.Render(cmd, new int2(width, height), _camera, null, null, _draws);
+        _frame.Camera = _camera;
+        _frame.Models = _draws;
+        _frame.Lights = _lamps;
+        _renderer.Render(cmd, new int2(width, height), _frame);
     }
 
     public void CompositeWorld(CommandBuffer cmd) => _renderer.Composite(cmd);

@@ -52,6 +52,9 @@ public sealed partial class EditorView : IDisposable
     /// Puts the sky, time of day and exposure from Settings onto the renderer.
     public LightingPanel Lighting { get; }
     private readonly EditorCamera _eye = new();
+
+    /// What the renderer draws this frame, filled in by RenderWorld.
+    private readonly FrameScene _scene = new();
     private readonly DriveCamera _drive = new();
 
     /// The camera everything draws from and picks with: the editor's own (EditorCamera), which the drive cameras move too.
@@ -2443,15 +2446,14 @@ public sealed partial class EditorView : IDisposable
 
     public void RenderWorld(CommandBuffer cmd, int width, int height)
     {
-        // The train's lit lamps.
-        _renderer.SceneLights.Clear();
-        _renderer.SceneLights.AddRange(_trains.Lamps);
-        _renderer.SceneSmoke = _trains.Smoke;
-        _renderer.SceneHaze = _trains.Haze;
-        _renderer.Outline.DrivenColor = Style.Clear.Float4;
-        _renderer.Outline.PickedColor = Style.Accent.Float4;
-        _renderer.Outline.Scale = S(1f);
-        _renderer.Render(cmd, new int2(width, height), _camera, _terrain, _network, _trains.Draws, _trains.Outlines);
+        _scene.Camera = _camera;
+        (_scene.Terrain, _scene.Network) = (_terrain, _network);
+        _scene.Models = _trains.Draws;
+        _scene.Outlines = _trains.Outlines;
+        _scene.OutlineStyle = new OutlineStyle(Style.Clear.Float4, Style.Accent.Float4, S(1f));
+        _scene.Lights = _trains.Lamps;
+        (_scene.Smoke, _scene.Haze) = (_trains.Smoke, _trains.Haze);
+        _renderer.Render(cmd, new int2(width, height), _scene);
     }
 
     public void CompositeWorld(CommandBuffer cmd) => _renderer.Composite(cmd);

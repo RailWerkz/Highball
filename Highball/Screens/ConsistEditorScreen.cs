@@ -23,6 +23,7 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
     private readonly LightingPanel _lighting;
     private readonly Camera _camera = new();
     private readonly List<ModelDraw> _draws = [];
+    private readonly FrameScene _scene = new();
     private readonly Dictionary<string, VehicleModel?> _models = [];
     private DisplayTrack? _track;
 
@@ -633,7 +634,9 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
     public void RenderWorld(CommandBuffer cmd, int width, int height)
     {
         _lighting.Apply();
-        _renderer.Render(cmd, new int2(width, height), _camera, null, null, _draws);
+        _scene.Camera = _camera;
+        _scene.Models = _draws;
+        _renderer.Render(cmd, new int2(width, height), _scene);
     }
 
     public void CompositeWorld(CommandBuffer cmd) => _renderer.Composite(cmd);

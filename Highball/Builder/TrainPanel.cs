@@ -125,7 +125,7 @@ public sealed partial class TrainPanel : IDisposable
     private readonly List<LocalLight> _lamps = [];
     public IReadOnlyList<LocalLight> Lamps => _lamps;
 
-    /// The locomotives' exhaust smoke, for the world to draw (WorldRenderer.SceneSmoke).
+    /// The locomotives' exhaust smoke, for the world to draw (FrameScene.Smoke).
     private readonly ExhaustSmoke _smoke = new();
     public IReadOnlyList<SmokeSegment> Smoke => _smoke.Segments;
     public IReadOnlyList<HazeSource> Haze => _smoke.Haze;
