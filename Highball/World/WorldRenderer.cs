@@ -291,29 +291,8 @@ public sealed unsafe class WorldRenderer : IDisposable
             });
         }
 
-        // Plants and models first: their depth is down before the ground's expensive shader runs, so it isn't worked out for
-        // ground they hide. (The ground still goes before the track's fades, which don't write depth.)
-        if (terrain is not null && _vegetation.Enabled)
-        {
-            using var _ = Profiler.Sample("Plants and rocks", cmd);
-            cmd.BindPipeline(VkPipelineBindPoint.Graphics, _plant);
-            Sky.Bind(cmd, _modelLayout);
-            _shadows.Bind(cmd, _modelLayout);
-            _clouds.Bind(cmd, _modelLayout);
-            _vegetation.Draw(cmd, _modelLayout, camera, aspect);
-        }
-
-        _seen.Clear();
-        _moving.Clear();
-        if (models is not null)
-        {
-            using var _ = Profiler.Sample("Models", cmd);
-            _instances.Add(models, camera, (_, centre, radius) => ModelInstances.InView(camera, aspect, centre, radius), _seen);
-            _instances.Add(models, camera, (draw, centre, radius) => draw.Moving && ModelInstances.InView(camera, aspect, centre, radius), _moving);
-            DrawModels(cmd, camera, aspect);
-        }
-
-
+        // The ground, then the track's fades into it, then what stands on them. The fades are drawn well nearer the camera than
+        // they are and write no depth, so they show over coarse ground; plants and models must come after, to cover them.
         if (terrain is not null)
         {
             using var _ = Profiler.Sample("Terrain", cmd);
@@ -366,6 +345,26 @@ public sealed unsafe class WorldRenderer : IDisposable
                 network.DrawParts(cmd, _layout, camera.X, camera.Y, camera.Z, view, Push);
                 push.Camera = new float4(camPos.X, camPos.Y, camPos.Z, network.NearRadius);
             }
+        }
+
+        if (terrain is not null && _vegetation.Enabled)
+        {
+            using var _ = Profiler.Sample("Plants and rocks", cmd);
+            cmd.BindPipeline(VkPipelineBindPoint.Graphics, _plant);
+            Sky.Bind(cmd, _modelLayout);
+            _shadows.Bind(cmd, _modelLayout);
+            _clouds.Bind(cmd, _modelLayout);
+            _vegetation.Draw(cmd, _modelLayout, camera, aspect);
+        }
+
+        _seen.Clear();
+        _moving.Clear();
+        if (models is not null)
+        {
+            using var _ = Profiler.Sample("Models", cmd);
+            _instances.Add(models, camera, (_, centre, radius) => ModelInstances.InView(camera, aspect, centre, radius), _seen);
+            _instances.Add(models, camera, (draw, centre, radius) => draw.Moving && ModelInstances.InView(camera, aspect, centre, radius), _moving);
+            DrawModels(cmd, camera, aspect);
         }
 
         var tanY = MathF.Tan(camera.FieldOfView * 0.5f);
