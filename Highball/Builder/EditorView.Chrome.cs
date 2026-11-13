@@ -543,35 +543,4 @@ public sealed partial class EditorView
         SyncBrush().Panel(imperial);
     }
 
-    /// How many tracks to lay, and how far apart: beside a track, on whichever side of it the pointer is, or on open ground.
-    private void ParallelPanel()
-    {
-        var imperial = Settings.Current.Units == UnitSystem.Imperial;
-        Kit.BeginCard("Tracks");
-        var mode = ToolPanel.Mode("parallelmode", ["Draw", "Follow"], _parallelFollowing ? 1 : 0, 2);
-        if (mode == 1 != _parallelFollowing)
-        {
-            _parallelFollowing = mode == 1;
-            _parallelPen.Clear();
-            _parallelFollow.Clear();
-            _parallel.Clear();
-        }
-
-        var tracks = _parallel.ParallelTracks;
-        if (ToolPanel.Count("paralleltracks", "Tracks", ref tracks, 1, YardTool.MaxParallel))
-            _parallel.ParallelTracks = tracks;
-        var factor = imperial ? FeetPerMeter : 1f;
-        var spacing = _parallel.Spacing * factor;
-        if (ToolPanel.Value("parallelspacing", imperial ? "Spacing (ft)" : "Spacing (m)", ref spacing, YardTool.MinSpacing * factor, YardTool.MaxSpacing * factor, "0.0"))
-            _parallel.Spacing = Math.Clamp(spacing / factor, YardTool.MinSpacing, YardTool.MaxSpacing);
-
-        if (_parallel.Plan is not { } plan)
-            ToolPanel.Hint(_parallel.Anchor is not null ? "Click where they end." : _parallelPen.Count > 0 || _parallelFollow.Count > 0 ? "Enter lays them."
-                : _parallelFollowing ? "Click along a guide." : "Click a track, or draw.");
-        else if (plan.Problem is { } problem)
-            ToolPanel.Problem(problem);
-        else
-            ToolPanel.Line(plan.Summary);
-        Kit.EndCard();
-    }
 }

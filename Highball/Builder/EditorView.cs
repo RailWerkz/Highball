@@ -142,17 +142,17 @@ public sealed partial class EditorView : IDisposable, IToolHost
     /// The Shape Track tool.
     private readonly ShapeTrackTool _shapeTool;
     private ShapeTool _shape => _shapeTool.Shape;
-    private readonly FollowTool _follow = new();
+    /// The Lay Yard tool: along the guides, crossovers and ladders.
+    private readonly LayYardTool _layYard;
+    private FollowTool _follow => _layYard.Follow;
+    private YardTool _yard => _layYard.Yard;
 
-    /// Parallel started on a guide: its first track follows the guide as Follow lays it, the others beside it.
-    private readonly FollowTool _parallelFollow = new();
-    private bool _parallelFollowing;
-    private readonly YardTool _yard = new();
-    private readonly YardTool _parallel = YardTool.ForParallel();
-
-    /// Parallel's path, drawn as with Pen, and where it would run on to if clicked now.
-    private readonly PenTool _parallelPen = new();
-    private (double X, double Z)? _parallelPreview;
+    /// The Parallel tool.
+    private readonly ParallelTool _parallelTool;
+    private FollowTool _parallelFollow => _parallelTool.Follow;
+    private bool _parallelFollowing { get => _parallelTool.Following; set => _parallelTool.Following = value; }
+    private YardTool _parallel => _parallelTool.Yard;
+    private PenTool _parallelPen => _parallelTool.Pen;
     private readonly PlaceTool _place = new();
     private (double X, double Z)? _placeGrab;
     /// Turning with the wheel: what it was before, for one undo when R is let go, and whether the wheel moved this hold of R.
@@ -186,6 +186,8 @@ public sealed partial class EditorView : IDisposable, IToolHost
         _shapeTool = new ShapeTrackTool(_tools);
         _roadTool = new RoadsTool(_tools);
         _switchTool = new SwitchesTool(_tools, route);
+        _layYard = new LayYardTool(_tools, route);
+        _parallelTool = new ParallelTool(_tools, route);
         _brushes = new TerrainBrush(_tools);
         if (DevTools.Clean)
             _overlay = TrackOverlay.Off;
@@ -228,11 +230,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
         else if (_selection.Count > 0)
             _selection.Clear();
         else if (_tool == Tool.Parallel && (_parallel.Anchor is not null || _parallelPen.Count > 0 || _parallelFollow.Count > 0))
-        {
-            _parallelPen.Clear();
-            _parallelFollow.Clear();
-            _parallel.Clear();
-        }
+            _parallelTool.Escape();
         else if (_tool == Tool.Place && _place.Selected is not null)
             _place.Selected = null;
         else if (_tool == Tool.Place && _place.Stamp is not null)
@@ -509,9 +507,9 @@ public sealed partial class EditorView : IDisposable, IToolHost
         if (source.Lines is { } guided)
             (_guides ??= new YardGuides(source.Network, _route.Projection!)).Refresh(guided);
         if (_tool == Tool.Follow)
-            FollowUpdate();
+            _layYard.Update(dt);
         if (_tool == Tool.Parallel)
-            ParallelUpdate(Blocked);
+            _parallelTool.Update(dt);
         if (_tool == Tool.Place && source.Lines is { } placing)
             PlaceUpdate(source, placing);
         if (_tool == Tool.Road)
@@ -1217,40 +1215,15 @@ public sealed partial class EditorView : IDisposable, IToolHost
     /// The crossing road width being dragged on the slider, until it's let go.
     private float? _crossingWidth;
 
-    // --- Following guides. ---
+    // --- Following guides (LayYardTool, ParallelTool, YardLaying). ---
 
-    /// What a click at this place would be: on a guide (right at its node, if that's on built track, it joins there), or
-    /// on built track.
-    private FollowTool.Click? FollowClick(GuidePlace? guide, (long Way, int Segment, double X, double Z)? segment)
-    {
-        if (guide is { } place)
-        {
-            if (_guides!.NodeAt(place, FollowSnap) is { } node && _tracks!.Has(node))
-            {
-                var (nx, nz) = _tracks.PositionOf(node);
-                return new FollowTool.Click(nx, nz, place, new LayPoint(nx, nz, Node: node), _tracks.RunsAt(node));
-            }
+    private FollowTool.Click? FollowClick(GuidePlace? guide, (long Way, int Segment, double X, double Z)? segment) => YardLaying.Click(_guides!, _tracks!, guide, segment);
 
-            // A guide's place on built track joins it there: a branch off it.
-            if (_tracks!.TrackNear(place.X, place.Z, FollowOnTrack, FollowAtPoint) is { } track)
-                return new FollowTool.Click(track.Point.X, track.Point.Z, place, track.Point, track.Runs);
+    private string PanelLength(double metres) => YardLaying.Length(metres);
 
-            return new FollowTool.Click(place.X, place.Z, place, new LayPoint(place.X, place.Z));
-        }
+    private void YardPress(NetworkLines lines, double x, double z) => YardLaying.Press(_tools, _route, ActiveYard, lines, x, z);
 
-        if (segment is not { } s)
-            return null;
-        return _tracks!.TrackNear(s.X, s.Z, FollowOnTrack, FollowAtPoint) is { } on
-            ? new FollowTool.Click(on.Point.X, on.Point.Z, null, on.Point, on.Runs)
-            : new FollowTool.Click(s.X, s.Z, null, new LayPoint(s.X, s.Z, Split: (s.Way, s.Segment)));
-    }
-
-    /// How near a click on a guide has to be to its node to join what's there.
-    private const double FollowSnap = 4.0;
-
-    /// How near a click on a guide has to be to built track to join it, and to one of its points to join there.
-    private const double FollowOnTrack = 2.5;
-    private const double FollowAtPoint = 2.5;
+    private void FollowLay() => _layYard.Lay();
 
     /// A Shift-drag marks an area on the ground; a Shift-click drops it.
     private bool BoxUpdate(float2 mouse, bool pressed, bool held)
@@ -1283,236 +1256,6 @@ public sealed partial class EditorView : IDisposable, IToolHost
         _follow.Clear();
         _area = null;
         Committed(_tracks!.SetGuide(box.Contains, guide));
-    }
-
-    private void FollowUpdate()
-    {
-        var blocked = Blocked;
-        var mouse = Input.MousePosition;
-        var shift = Input.Key(GlfwKey.LeftShift) || Input.Key(GlfwKey.RightShift);
-
-        if (_yard.Mode != YardMode.Follow)
-        {
-            YardUpdate(blocked);
-            return;
-        }
-
-        var click = blocked ? null : FollowClick(_guides!.PlaceAt(mouse, ProjectGround, _camera.X, _camera.Z, ViewReach, S(12f)), _tracks!.SegmentAt(mouse, _camera.X, _camera.Z, ProjectGround));
-        click ??= !blocked && _hit is { } ground ? new FollowTool.Click(ground.X, ground.Z, null, new LayPoint(ground.X, ground.Z)) : null;
-        _follow.Update(_guides!, click);
-        if (blocked || _rebuild is not null)
-            return;
-        if (Input.MouseDown(GlfwMouseButton.Left) && click is { } placed)
-            _follow.Add(placed);
-        if (Keyboard.KeysBlocked)
-            return;
-        if (Input.KeyDown(GlfwKey.Backspace))
-            _follow.RemoveLast();
-        if (Input.KeyDown(GlfwKey.Enter))
-            FollowLay();
-    }
-
-    private string PanelLength(double metres) => Settings.Current.Units == UnitSystem.Imperial
-        ? string.Create(CultureInfo.InvariantCulture, $"{metres * FeetPerMeter:0.#} ft")
-        : string.Create(CultureInfo.InvariantCulture, $"{metres:0.#} m");
-
-    private void YardUpdate(bool blocked)
-    {
-        if (_terrain?.Source.Lines is not { } lines)
-            return;
-        ActiveYard.Update(_tracks!, lines, !blocked && _hit is { } ground ? (ground.X, ground.Z) : null, PanelLength);
-        if (blocked || _rebuild is not null)
-            return;
-        if (Input.MouseDown(GlfwMouseButton.Left) && _hit is { } hit)
-            YardPress(lines, hit.X, hit.Z);
-        if (!Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.Backspace))
-            ActiveYard.Clear();
-    }
-
-    /// Parallel: a first click on a track, away from its points, runs beside that track as far as the second click. Anything
-    /// else draws as Pen does, from a point, a track's end or open ground: the path is the first track and the rest go beside
-    /// it, F flips the side, and Enter lays them all.
-    private void ParallelUpdate(bool blocked)
-    {
-        if (_parallel.Anchor is not null)
-        {
-            YardUpdate(blocked);
-            return;
-        }
-
-        var tracks = _tracks!;
-        _parallelPreview = null;
-        if (!Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.F) && !ImGui.IsKeyDown(ImGuiKey.LeftShift))
-            _parallel.Side = -_parallel.Side;
-        if (blocked || _rebuild is not null)
-        {
-            _parallel.Show(null, null);
-            return;
-        }
-
-        var mouse = Input.MousePosition;
-        var node = tracks.NodeAt(mouse, _camera.X, _camera.Z, ProjectGround);
-        if (!_parallelFollowing && _parallelPen.Count == 0 && node is null && Input.MouseDown(GlfwMouseButton.Left) && _hit is { } hit &&
-            tracks.SegmentAt(mouse, _camera.X, _camera.Z, ProjectGround) is not null)
-        {
-            _parallel.Start(tracks, hit.X, hit.Z);
-            return;
-        }
-
-        // Follow: clicked along the guides (from a track's end, or off a track) as Lay's Follow is.
-        if (_parallelFollowing)
-        {
-            var guideClick = FollowClick(_guides!.PlaceAt(mouse, ProjectGround, _camera.X, _camera.Z, ViewReach, S(12f)), tracks.SegmentAt(mouse, _camera.X, _camera.Z, ProjectGround));
-            ParallelFollow(tracks, guideClick ?? (_hit is { } spot ? new FollowTool.Click(spot.X, spot.Z, null, new LayPoint(spot.X, spot.Z)) : null));
-            return;
-        }
-
-        LayPoint? snap = node is { } on
-            ? new LayPoint(tracks.PositionOf(on).X, tracks.PositionOf(on).Z, Node: on)
-            : _hit is { } ground ? new LayPoint(ground.X, ground.Z) : null;
-        _parallelPen.Update(mouse, snap, _hit is { } h ? (h.X, h.Z) : null, ProjectGround,
-            Input.MouseDown(GlfwMouseButton.Left), Input.Mouse(GlfwMouseButton.Left));
-        if (!Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.Backspace))
-            _parallelPen.RemoveLast();
-        _parallelPreview = !_parallelPen.Busy && snap is { } next ? (next.X, next.Z) : null;
-
-        var drawn = _parallelPen.Points(_parallelPreview);
-        _parallel.Show(drawn.Count >= 2 ? _parallel.PenParallel(tracks, drawn, PanelLength) : null, _hit is { } p ? (p.X, p.Z) : null);
-        if (!Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.Enter) && _parallelPen.Count >= 2 &&
-            _parallel.PenParallel(tracks, _parallelPen.Points(), PanelLength, laying: true) is { Problem: null } plan && tracks.LayWays(plan.Ways) is { } edit)
-        {
-            _parallelPen.Clear();
-            _parallel.Show(null, null);
-            Committed(edit);
-        }
-    }
-
-    /// Parallel along a guide: the clicks as Follow takes them, the first track the fit through them and the rest beside it.
-    private void ParallelFollow(TrackEditor tracks, FollowTool.Click? click)
-    {
-        _parallelFollow.Update(_guides!, click);
-        _parallel.Show(_parallelFollow.Preview is { } preview ? _parallel.FollowParallel(tracks, preview, null, PanelLength) : null, click is { } at ? (at.X, at.Z) : null);
-        if (Input.MouseDown(GlfwMouseButton.Left) && click is { } placed)
-            _parallelFollow.Add(placed);
-        if (Keyboard.KeysBlocked)
-            return;
-        if (Input.KeyDown(GlfwKey.Backspace))
-            _parallelFollow.RemoveLast();
-        if (Input.KeyDown(GlfwKey.Enter))
-        {
-            _parallelFollow.Update(_guides!, null);
-            if (_parallelFollow.Preview is { } pieces && _parallelFollow.Points() is { } first &&
-                _parallel.FollowParallel(tracks, pieces, first, PanelLength) is { Problem: null } plan && tracks.LayWays(plan.Ways) is { } edit)
-            {
-                _parallelFollow.Clear();
-                _parallel.Show(null, null);
-                Committed(edit);
-            }
-        }
-    }
-
-    /// A click: the first picks the track to start from, the second lays what's shown if it can be.
-    private void YardPress(NetworkLines lines, double x, double z)
-    {
-        var yard = ActiveYard;
-        if (yard.Anchor is null)
-        {
-            yard.Start(_tracks!, x, z);
-            return;
-        }
-
-        yard.Update(_tracks!, lines, (x, z), PanelLength);
-        if (yard.Plan is not { Problem: null } plan || _tracks!.LayWays(plan.Ways) is not { } edit)
-            return;
-        if (yard.Mode == YardMode.Crossover && yard.Size != 0 && edit.Ways.Select(w => w.After).FirstOrDefault(w => w is not null && w.Nodes.Length == plan.Ways[0].Points.Count && w.Tags.ContainsKey(RouteNetwork.ExactTag)) is { } crossover)
-            SwitchSizes.Set(_route, crossover.Nodes[0], yard.Size);
-        yard.Clear();
-        Committed(edit);
-    }
-
-    private void YardControls()
-    {
-        var modes = new[] { YardMode.Follow, YardMode.Crossover, YardMode.Ladder };
-        var current = Array.IndexOf(modes, _yard.Mode);
-        var pick = ToolPanel.Mode("yardmode", ["Follow", "Crossover", "Ladder"], current, 3, _rebuild is null);
-        if (pick != current && pick >= 0)
-        {
-            _yard.SetMode(modes[pick]);
-            _follow.Clear();
-        }
-
-        if (_yard.Mode == YardMode.Follow)
-            return;
-
-        Kit.BeginCard(_yard.Mode == YardMode.Ladder ? "Ladder" : "Crossover");
-        if (_yard.Mode != YardMode.Crossover)
-        {
-            var imperial = Settings.Current.Units == UnitSystem.Imperial;
-            var factor = imperial ? FeetPerMeter : 1f;
-            var spacing = _yard.Spacing * factor;
-            if (ToolPanel.Value("yardspacing", imperial ? "Spacing (ft)" : "Spacing (m)", ref spacing, YardTool.MinSpacing * factor, YardTool.MaxSpacing * factor, "0.0"))
-                _yard.Spacing = Math.Clamp(spacing / factor, YardTool.MinSpacing, YardTool.MaxSpacing);
-        }
-
-        if (_yard.Mode == YardMode.Ladder)
-        {
-            var tracks = _yard.Tracks;
-            if (ToolPanel.Count("yardtracks", "Tracks", ref tracks, 1, YardTool.MaxTracks))
-                _yard.Tracks = tracks;
-        }
-
-        // The switch size: any standard one (a ladder's up to No. 10), or automatic for a crossover.
-        var sizes = new List<(int Number, string Name)>();
-        if (_yard.Mode == YardMode.Crossover)
-            sizes.Add((0, "Auto"));
-        foreach (var (number, _) in Turnout.Sizes)
-            if (_yard.Mode != YardMode.Ladder || number <= 10)
-                sizes.Add((number, $"No. {number}"));
-        var size = _yard.Mode == YardMode.Ladder && _yard.Size == 0 ? 8 : _yard.Size;
-        Kit.Caption("Switch size");
-        var shown = sizes.FindIndex(s => s.Number == size);
-        var chosen = ToolPanel.Mode("yardsize", sizes.Select(s => s.Name).ToArray(), shown, 4);
-        if (chosen != shown && chosen >= 0)
-            _yard.Size = sizes[chosen].Number;
-
-        if (_yard.Plan is { } plan)
-        {
-            if (plan.Problem is { } problem)
-                ToolPanel.Problem(problem);
-            else
-                ToolPanel.Line(plan.Summary);
-        }
-
-        Kit.EndCard();
-    }
-
-    private void FollowLay()
-    {
-        _follow.Update(_guides!, null);
-        if (_follow.Points() is { } points)
-        {
-            Committed(_tracks!.Lay(points, lead: false, exact: true));
-            _follow.Clear();
-        }
-    }
-
-    /// The route's yards, to clear for laying by hand or put back to be generated; and how much of the guides is done.
-    private void FollowPanel()
-    {
-        var imperial = Settings.Current.Units == UnitSystem.Imperial;
-        string Far(double metres) => imperial ? string.Create(CultureInfo.InvariantCulture, $"{metres * FeetPerMeter / 5280.0:0.0} mi") : string.Create(CultureInfo.InvariantCulture, $"{metres / 1000.0:0.0} km");
-        string Near(double metres) => imperial ? string.Create(CultureInfo.InvariantCulture, $"{metres * FeetPerMeter:0} ft") : string.Create(CultureInfo.InvariantCulture, $"{metres:0} m");
-
-        YardControls();
-        if (_follow.Preview is not null)
-            ToolPanel.Line($"{Near(_follow.Length)}{(_follow.Unfitted ? ", as mapped: no clean fit" : _follow.Radius < double.MaxValue ? $", tightest curve {Near(_follow.Radius)}" : ", straight")}");
-
-        if (_guides is { GuideLength: > 0.0 } guides)
-        {
-            Kit.BeginCard("Guides", $"{Far(guides.DoneLength)} of {Far(guides.GuideLength)}");
-            Kit.Gauge((float)(guides.DoneLength / guides.GuideLength), Accent);
-            Kit.EndCard();
-        }
     }
 
     // --- Shaping track. ---
@@ -2024,14 +1767,9 @@ public sealed partial class EditorView : IDisposable, IToolHost
         if (_tool is Tool.Follow or Tool.Pen or Tool.Parallel || (_tool == Tool.Place && _place.Mode is PlaceMode.Track or PlaceMode.Bridge))
             _tracks?.DrawAttach(draw, _camera.X, _camera.Z, ProjectGround, Input.MousePosition);
         if (_tool == Tool.Follow)
-            _follow.Draw(draw, ProjectGround, Input.MousePosition);
-        if (_tool == Tool.Follow)
-            _yard.Draw(draw, ProjectGround, S(1f));
+            _layYard.Draw(draw);
         if (_tool == Tool.Parallel)
-        {
-            _parallelPen.Draw(draw, ProjectGround, _parallelPreview);
-            _parallel.Draw(draw, ProjectGround, S(1f));
-        }
+            _parallelTool.Draw(draw);
         if (_tool == Tool.Place && _place.Mode == PlaceMode.EditBridge)
             BridgeDraw(draw);
         else if (_tool == Tool.Place && _terrain is { } shown)
@@ -2117,6 +1855,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
     string? IToolHost.Refused { get => _switchRefused; set => _switchRefused = value; }
     TrackEditor IToolHost.Tracks => _tracks!;
     RoadEditor IToolHost.Roads => Roads;
+    YardGuides? IToolHost.Guides => _guides;
     void IToolHost.Record(object? edit) => Record(edit);
     void IToolHost.Commit(NetworkEdit? edit) => Committed(edit);
     void IToolHost.RebuildNetwork() => RebuildNetwork();
@@ -2347,7 +2086,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
         if (IsBrush(_tool))
             BrushPanel(imperial);
         if (_tool == Tool.Parallel)
-            ParallelPanel();
+            _parallelTool.Panel(imperial);
         if (_tool == Tool.Pen)
             PenPanel(imperial);
         if (_tool == Tool.Circuits)
@@ -2357,7 +2096,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
         if (_tool == Tool.Shape)
             _shapeTool.Panel(imperial);
         if (_tool == Tool.Follow)
-            FollowPanel();
+            _layYard.Panel(imperial);
         if (_tool == Tool.Track)
             SelectionPanel();
         if (_tool is Tool.Track or Tool.Pen or Tool.Follow or Tool.Parallel || (_tool == Tool.Place && _place.Mode == PlaceMode.Track))
@@ -2523,10 +2262,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
             {
                 Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", _topDown ? "Zoom" : "Speed"), .. (_topDown ? ((string, string)[])[] : [("ALT+WHEEL", _camera.Zoom <= 1.01f ? "Zoom" : string.Create(CultureInfo.InvariantCulture, $"Zoom {_camera.Zoom:0.0}x"))]), ("G", "Overlay"), ("T", "Throw switch"), .. (_trains.Train is null ? ((string, string)[])[] : [("LMB", "Pick vehicle or coupling")])],
                 Tool.Road => _roadTool.Hints,
-                Tool.Parallel => _parallel.Anchor is not null
-                    ? [("LMB", "End"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")]
-                    : _parallelFollowing ? [("LMB", "Along a guide"), ("ENTER", "Lay tracks"), ("F", _parallel.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove click"), ("ESC", "Cancel")]
-                    : [("LMB", "Point or track"), ("DRAG", "Curve"), ("ENTER", "Lay tracks"), ("F", _parallel.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")],
+                Tool.Parallel => _parallelTool.Hints,
                 Tool.Switches => _switchTool.Hints,
                 Tool.Place when _place.Mode == PlaceMode.EditBridge => [("LMB", "Pick bridge, drag pier"), ("DEL", "Remove pier"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.RunFrom is not null => [("LMB", "Lay to here"), ("ESC", "End run"), ("CTRL+Z", "Undo")],
@@ -2534,8 +2270,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
                 Tool.Place when _place.Mode == PlaceMode.Pole && _place.Drawn == PoleDraw.Pen => [("LMB", "Point"), ("DRAG", "Curve"), ("ENTER", "Lay"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.Mode == PlaceMode.Track && _place.Selected is null => [("LMB", "Lay piece"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Mirror"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Place => [("LMB", "Place, pick, drag"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Flip"), ("DEL", "Delete"), ("CTRL+Z", "Undo")],
-                Tool.Follow when _yard.Mode != YardMode.Follow => [("LMB", "Pick track"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
-                Tool.Follow => [("LMB", "Guide or track"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove click"), ("CTRL+Z", "Undo")],
+                Tool.Follow => _layYard.Hints,
                 Tool.Shape => _shapeTool.Hints,
                 _ when IsBrush(_tool) => SyncBrush().Hints,
                 Tool.Track => [("LMB", "Select, drag"), ("SHIFT", "Add"), ("CTRL+LMB", "Insert point"), ("L", "Straighten"), ("K", "Smooth"), ("I", "Simplify"), ("J", "Join"), ("U", "Split"), ("DEL", "Delete")],

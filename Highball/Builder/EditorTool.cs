@@ -37,6 +37,7 @@ public interface IToolHost
     string? Refused { get; set; }
     TrackEditor Tracks { get; }
     RoadEditor Roads { get; }
+    YardGuides? Guides { get; }
     void Record(object? edit);
     void Commit(NetworkEdit? edit);
     void RebuildNetwork();
@@ -74,6 +75,9 @@ public sealed class ToolContext(IToolHost host)
 
     public TrackEditor Tracks => host.Tracks;
     public RoadEditor Roads => host.Roads;
+
+    /// The mapped track the yards are laid along, once there's track.
+    public YardGuides? Guides => host.Guides;
 
     /// Keeps an edit (of any kind) for undoing.
     public void Record(object? edit) => host.Record(edit);
