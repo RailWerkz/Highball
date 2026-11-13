@@ -21,7 +21,7 @@ public sealed class HostScreen : MenuScreen
         }
 
         if (packs.Count == 0)
-            Menu.Add(new MenuItem { Label = "NO WORLDS INSTALLED WITH SERVER TRACK", Enabled = () => false, SeparatorAfter = true });
+            Menu.Add(new MenuItem { Label = "NO SERVER WORLDS INSTALLED", Enabled = () => false, SeparatorAfter = true });
         Menu.Add(new MenuItem { Label = "BACK", OnSelect = Back });
     }
 
@@ -117,7 +117,7 @@ public sealed class ConnectingScreen : MenuScreen
                 var found = PackSource.Installed().FirstOrDefault(p => p.World.Equals(_net.World, StringComparison.OrdinalIgnoreCase) && p.Region.Equals(_net.Region, StringComparison.OrdinalIgnoreCase));
                 if (found.Path is null)
                 {
-                    _status = $"You don't have {_net.World} · {_net.Region} installed";
+                    _status = $"{_net.World} · {_net.Region} not installed";
                     _net.Dispose();
                     _done = true;
                     return;

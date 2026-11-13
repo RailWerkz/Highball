@@ -106,7 +106,7 @@ public sealed class NetPlay : IDisposable
         var mine = graph.Checksum();
         if (mine != _serverChecksum)
         {
-            Fail("This world's track isn't the same as the server's: install the same version of its pack");
+            Fail("Track differs from the server's pack");
             _session.Close();
             return;
         }

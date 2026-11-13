@@ -107,7 +107,7 @@ public sealed class AudioEditor
         Kit.EndCard();
 
         Kit.BeginCard("BUS COMPRESSOR");
-        Kit.Note("Holds all the train sounds down together when they pile up: a lash-up working hard, with its wheels.");
+        Kit.Note("Train sounds ducked together when loud.");
         var on = mix.Compressor;
         if (Kit.Toggle("mix.comp.on", "On", ref on))
         {
@@ -132,7 +132,7 @@ public sealed class AudioEditor
     {
         if (car is null)
         {
-            Kit.Note("Pick a locomotive in the world (Free Look, left click), or put a train with one on the track.");
+            Kit.Note("No locomotive picked.");
             return;
         }
 
@@ -151,7 +151,7 @@ public sealed class AudioEditor
 
         Kit.BeginCard("POSITIONS");
         Kit.Toggle("loco.show", "Show handles in the world", ref ShowPositions);
-        Kit.Note("Metres on the engine: across, up from the rail, towards its front. Drag a handle to move it across; hold Shift to move it up and down. Right-click one to put it back.");
+        Kit.Note("Metres: across, up, forward. Shift+drag: height. Right-click: reset.");
         foreach (var (spot, name, color) in Spots)
         {
             var p = TrainPanel.SoundPosition(car, spot);

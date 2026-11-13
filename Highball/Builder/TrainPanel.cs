@@ -196,7 +196,7 @@ public sealed partial class TrainPanel : IDisposable
 
         if (!cut.Train.Cars.Any(c => c.Def.Kind == VehicleKind.Locomotive))
         {
-            _notice = "There's no locomotive in this cut to take control of";
+            _notice = "No locomotive in this cut";
             return false;
         }
 
@@ -231,13 +231,13 @@ public sealed partial class TrainPanel : IDisposable
 
         if (_toPlace is null && (_picked < 0 || _picked >= _consists.Count))
         {
-            _notice = "Make up a consist on the Build tab first";
+            _notice = "No consist made";
             return;
         }
 
         if (graph.Nearest(x, z, 25.0) is not { } near)
         {
-            _notice = "No laid track within 25 m of there";
+            _notice = "No track within 25 m";
             return;
         }
 
@@ -247,7 +247,7 @@ public sealed partial class TrainPanel : IDisposable
         _toPlace = null;
         if (VehicleCount + consist.Cars.Count > MaxVehicles)
         {
-            _notice = $"That would make more than {MaxVehicles:#,0} vehicles on the track";
+            _notice = $"Over {MaxVehicles:#,0} vehicles";
             return;
         }
 
