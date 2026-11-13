@@ -982,6 +982,7 @@ public sealed partial class NetworkLines
 
     public void FinishProfiles()
     {
+        _liftCells = null;
 
         Parallel.ForEach(_lines, line =>
         {
@@ -1016,6 +1017,7 @@ public sealed partial class NetworkLines
         LiftBridges();
         Watch("lift");
         SpreadForks();
+        _liftCells = null; // (SpreadForks moves lines: LiftBridges' cells are made again.)
         ShiftSurfaces();
 
         var surfaceWatch = System.Diagnostics.Stopwatch.StartNew();
@@ -1817,14 +1819,7 @@ public sealed partial class NetworkLines
     private const double CrossingCell = 64.0;
 
     /// The grid cells a segment's bounds cover.
-    private static IEnumerable<(int X, int Z)> CellsOf(double ax, double az, double bx, double bz)
-    {
-        var (x0, x1) = ((int)Math.Floor(Math.Min(ax, bx) / CrossingCell), (int)Math.Floor(Math.Max(ax, bx) / CrossingCell));
-        var (z0, z1) = ((int)Math.Floor(Math.Min(az, bz) / CrossingCell), (int)Math.Floor(Math.Max(az, bz) / CrossingCell));
-        for (var z = z0; z <= z1; z++)
-            for (var x = x0; x <= x1; x++)
-                yield return (x, z);
-    }
+    private static GridCells CellsOf(double ax, double az, double bx, double bz) => new(ax, az, bx, bz, CrossingCell);
 
     /// How steeply a track eases between one bed's height and another's.
     private const float BedRamp = 0.012f;

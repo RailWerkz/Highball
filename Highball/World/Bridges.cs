@@ -425,14 +425,7 @@ public static class BridgePlanner
     /// The grid cells (UnderCell a side) a box covers, for FindUnder.
     private const double UnderCell = 64.0;
 
-    private static IEnumerable<(int X, int Z)> UnderCells(double ax, double az, double bx, double bz)
-    {
-        var (x0, x1) = ((int)Math.Floor(Math.Min(ax, bx) / UnderCell), (int)Math.Floor(Math.Max(ax, bx) / UnderCell));
-        var (z0, z1) = ((int)Math.Floor(Math.Min(az, bz) / UnderCell), (int)Math.Floor(Math.Max(az, bz) / UnderCell));
-        for (var z = z0; z <= z1; z++)
-            for (var x = x0; x <= x1; x++)
-                yield return (x, z);
-    }
+    private static GridCells UnderCells(double ax, double az, double bx, double bz) => new(ax, az, bx, bz, UnderCell);
 
     /// The piers for a bridge: as few as keep every span within what its deck can carry, each as near evenly spaced as it can be
     /// while standing clear of whatever runs underneath (with a metre to spare). A pier near what it stands beside runs along it,

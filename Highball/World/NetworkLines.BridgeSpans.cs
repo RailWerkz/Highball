@@ -90,14 +90,14 @@ public sealed partial class NetworkLines
             RailWerkz.Core.Logging.Log.Info($"Bridges: {bridged} tracks given the bridges they were laid over");
     }
 
-    /// The segments of these lines that are of one kind (on the ground, a bridge), filed by the grid cells they cross (CellsOf).
-    private static Dictionary<(int X, int Z), List<(NetworkLine Line, int I)>> Cells(IEnumerable<NetworkLine> lines, Structure kind)
+    /// The segments of these lines that are of one kind (on the ground, a bridge; null, any), filed by the grid cells they cross (CellsOf).
+    private static Dictionary<(int X, int Z), List<(NetworkLine Line, int I)>> Cells(IEnumerable<NetworkLine> lines, Structure? kind)
     {
         var cells = new Dictionary<(int X, int Z), List<(NetworkLine Line, int I)>>();
         foreach (var line in lines)
             for (var i = 0; i + 1 < line.Count; i++)
             {
-                if (line.Structures[i] != kind)
+                if (kind is { } only && line.Structures[i] != only)
                     continue;
                 foreach (var cell in CellsOf(line.X[i], line.Z[i], line.X[i + 1], line.Z[i + 1]))
                 {

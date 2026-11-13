@@ -18,9 +18,29 @@ public sealed partial class NetworkLines
     private const float MostLift = 10f;
     private const float MostDip = 8f;
 
+    /// Every line's segments (but the marks') filed by the grid cells they cross, and each line's place in the list, for LiftBridges
+    /// to look only at what's near each bridge. Made once and kept while the lines' places stay put (it's let go when the profiles
+    /// begin, and after SpreadForks moves them), as LiftBridges is run several times over.
+    private (Dictionary<(int X, int Z), List<(NetworkLine Line, int I)>> Cells, Dictionary<NetworkLine, int> Order)? _liftCells;
+
+    private (Dictionary<(int X, int Z), List<(NetworkLine Line, int I)>> Cells, Dictionary<NetworkLine, int> Order) LiftCells(List<NetworkLine> lines)
+    {
+        if (_liftCells is { } kept)
+            return kept;
+        var order = new Dictionary<NetworkLine, int>();
+        foreach (var line in lines)
+            order[line] = order.Count;
+        var made = (Cells(lines, null), order);
+        _liftCells = made;
+        return made;
+    }
+
     private void LiftBridges()
     {
         var lines = _lines.Where(l => !l.Mark && l.Count >= 2).ToList();
+        var (cells, order) = LiftCells(lines);
+        var near = new HashSet<(NetworkLine Line, int I)>();
+        var joins = new Dictionary<NetworkLine, bool>();
         var dips = new Dictionary<NetworkLine, List<(float S, float Height, float Half)>>();
         List<(NetworkLine Line, List<(float S, float Height, float Half)> Needs)> Collect(bool withDips)
         {
@@ -44,14 +64,21 @@ public sealed partial class NetworkLines
                     (bx0, bx1, bz0, bz1) = (Math.Min(bx0, line.X[q]), Math.Max(bx1, line.X[q]), Math.Min(bz0, line.Z[q]), Math.Max(bz1, line.Z[q]));
 
                 var mineNodes = line.Nodes.Select(n => n.Node).ToHashSet();
-                foreach (var other in lines)
+                // What's near (LiftCells), in the order the lines and their segments come, so what's found is found in the same order.
+                near.Clear();
+                joins.Clear();
+                foreach (var cell in CellsOf(bx0, bz0, bx1, bz1))
+                    if (cells.TryGetValue(cell, out var inCell))
+                        foreach (var segment in inCell)
+                            if (segment.Line != line)
+                                near.Add(segment);
+                foreach (var (other, i) in near.OrderBy(n => order[n.Line]).ThenBy(n => n.I))
                 {
-                    if (other == line || other.MaxX < bx0 || other.MinX > bx1 || other.MaxZ < bz0 || other.MinZ > bz1)
-                        continue;
                     // A road joined to this one meets it, at its height: it isn't under it.
-                    if (other.Nodes.Any(n => mineNodes.Contains(n.Node)))
+                    if (!joins.TryGetValue(other, out var joined))
+                        joins[other] = joined = other.Nodes.Any(n => mineNodes.Contains(n.Node));
+                    if (joined)
                         continue;
-                    for (var i = 0; i + 1 < other.Count; i++)
                     {
                         if (Math.Max(other.X[i], other.X[i + 1]) < bx0 || Math.Min(other.X[i], other.X[i + 1]) > bx1 ||
                             Math.Max(other.Z[i], other.Z[i + 1]) < bz0 || Math.Min(other.Z[i], other.Z[i + 1]) > bz1)
