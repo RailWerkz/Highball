@@ -74,6 +74,9 @@ public sealed class ToolContext(IToolHost host)
     public string? Refused { get => host.Refused; set => host.Refused = value; }
 
     public TrackEditor Tracks => host.Tracks;
+
+    /// The track, roads and lineside as built and drawn, once the route's open.
+    public NetworkMeshes? Network => host.World.Network;
     public RoadEditor Roads => host.Roads;
 
     /// The mapped track the yards are laid along, once there's track.

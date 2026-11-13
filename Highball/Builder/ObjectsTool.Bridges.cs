@@ -13,7 +13,7 @@ namespace Highball.Builder;
 /// Editing a bridge (Structures, Edit bridge): click one to pick it; its piers show as handles to drag along it; its card sets its
 /// deck, its piers' style and where they stand, its room for more tracks either side, and each end's retaining walls. Each change is
 /// saved to Bridges.json and undone as one.
-public sealed partial class EditorView
+internal sealed partial class ObjectsTool
 {
     /// The bridge picked, the pier picked on it (for Remove), and the pier being dragged with where it's got to.
     private long? _bridgeKey;
@@ -26,7 +26,7 @@ public sealed partial class EditorView
     private float2? PierHandle(BridgeGroup bridge, float s)
     {
         var (x, z, underside) = _network!.BridgePlace(bridge, s);
-        return Project(x, underside, z);
+        return context.Project(x, underside, z);
     }
 
     private int? PierUnder(BridgeGroup bridge, float2 mouse)
@@ -91,11 +91,10 @@ public sealed partial class EditorView
         if (before == plain)
             return;
         ApplyBridge(bridge.Key, plain);
-        _undo.Push(new BridgeChange(bridge.Key, before, plain));
-        _redo.Clear();
+        context.Record(new BridgeChange(bridge.Key, before, plain));
     }
 
-    private void ApplyBridge(long key, BridgeEdit? edit)
+    public void ApplyBridge(long key, BridgeEdit? edit)
     {
         var source = _terrain!.Source;
         if (edit is null)
@@ -122,7 +121,7 @@ public sealed partial class EditorView
         if (_network is null)
             return;
         var mouse = Input.MousePosition;
-        var hovered = !Blocked && _hit is { } at ? _network.BridgeAt(at.X, at.Z, 6.0) : null;
+        var hovered = !context.Blocked && context.Hit is { } at ? _network.BridgeAt(at.X, at.Z, 6.0) : null;
         foreach (var bridge in (BridgeGroup?[])[hovered, PickedBridge])
         {
             if (bridge is null)
@@ -136,7 +135,7 @@ public sealed partial class EditorView
                 for (var p = bridge.First; p <= bridge.Last; p++)
                 {
                     var (x, z, y, _, _, rx, rz) = new Leg(line, 0, 1).At(line.S[p]);
-                    var here = Project(x + rx * u, y + 0.5, z + rz * u);
+                    var here = context.Project(x + rx * u, y + 0.5, z + rz * u);
                     if (previous is { } a && here is { } b)
                         draw.AddLine(a, b, color, S(picked ? 2.5f : 1.5f));
                     previous = here;
@@ -165,7 +164,7 @@ public sealed partial class EditorView
 
     /// A track laid across a bridge beside the outermost track on that side (a track's spacing out from it): on the bridge, and on
     /// the ground for BridgeApproach past each end, its ends loose to join. The bridge widens to carry it.
-    private void LayTrackOnBridge(BridgeGroup bridge, int side)
+    public void LayTrackOnBridge(BridgeGroup bridge, int side)
     {
         if (_tracks is not { } tracks)
             return;
@@ -210,7 +209,7 @@ public sealed partial class EditorView
 
         _bridgeProblem = null;
         if (tracks.LayWays(ways) is { } laid)
-            Committed(laid);
+            context.Commit(laid);
     }
 
     private string? _bridgeProblem;

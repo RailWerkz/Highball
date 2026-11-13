@@ -179,8 +179,8 @@ public sealed partial class EditorView
                 var picked = _network?.BridgeAt(bx0, bz0, 30.0);
                 var before = source.Network.Ways.Count;
                 if (picked is not null)
-                    LayTrackOnBridge(picked, (int)Number(3));
-                Log.Info($"Bridge track: bridge {picked?.Key.ToString() ?? "none"}, {source.Network.Ways.Count - before} ways added, problem {_bridgeProblem ?? "none"}");
+                    _objects.LayTrackOnBridge(picked, (int)Number(3));
+                Log.Info($"Bridge track: bridge {picked?.Key.ToString() ?? "none"}, {source.Network.Ways.Count - before} ways added, problem {_objects.BridgeProblem ?? "none"}");
                 break;
             }
 
@@ -218,7 +218,7 @@ public sealed partial class EditorView
                 _place.Selected = null;
                 _place.Update(lines, _tracks!, (px, pz), PanelLength);
                 var note = _place.Note;
-                PlacePress(source, lines, px, pz);
+                _objects.PlacePress(source, lines, px, pz);
                 var made = source.Objects.FirstOrDefault(o => o.Id == _place.Selected);
                 Log.Info($"Place {parts[1]}: snapped {_place.Snapped is not null}, {note}, refused: {_switchRefused ?? "no"}, placed {made?.Kind}, {source.Objects.Count} objects");
                 break;
@@ -246,7 +246,7 @@ public sealed partial class EditorView
                     _place.Update(lines, _tracks!, (px, pz), PanelLength);
                     var note = _place.Note;
                     var before = source.Objects.Count;
-                    PolePress(lines, px, pz);
+                    _objects.PolePress(lines, px, pz);
                     Log.Info($"Pole {parts[1]} {parts[2]}: {note}, refused: {_switchRefused ?? "no"}, {source.Objects.Count - before} made, {source.Objects.Count} objects");
                 }
 
@@ -279,7 +279,7 @@ public sealed partial class EditorView
 
                 _switchRefused = null;
                 var before = source.Objects.Count;
-                PenLay();
+                _objects.PenLay();
                 Log.Info($"Pole pen {parts[1]}: refused: {_switchRefused ?? "no"}, {source.Objects.Count - before} made, {source.Objects.Count} objects");
                 foreach (var made in source.Objects.Where(o => o.Kind.IsPole()).TakeLast(3))
                 {
@@ -302,7 +302,7 @@ public sealed partial class EditorView
                 _place.Update(lines, _tracks!, (sx, sz), PanelLength);
                 var plan = _place.Plan;
                 Log.Info($"Stamp {parts[1]}: {plan?.Summary}, problem: {plan?.Problem ?? "none"}, {plan?.Ways.Count} ways, {plan?.Switches.Length} switches");
-                LayStamp(lines, sx, sz);
+                _objects.LayStamp(lines, sx, sz);
                 break;
             }
 
@@ -327,15 +327,15 @@ public sealed partial class EditorView
                 if (source.Objects.LastOrDefault() is not { } last)
                     break;
                 if (parts[0] == "placeturn")
-                    PlaceTurn(last, Number(1));
+                    _objects.PlaceTurn(last, Number(1));
                 else if (parts[0] == "placeflip")
-                    PlaceFlip(last);
+                    _objects.PlaceFlip(last);
                 else if (parts[0] == "placedelete")
                     PlacedChange(last, null);
                 else
                 {
                     var (toX, toZ) = At(1);
-                    PlaceMove(lines, last, toX, toZ);
+                    _objects.PlaceMove(lines, last, toX, toZ);
                 }
 
                 Log.Info($"Place {parts[0]}: {source.Objects.Count} objects");
@@ -595,8 +595,8 @@ public sealed partial class EditorView
             {
                 // bridgeclick,lat,lon: as a click with Place bridge in hand.
                 var (cx, cz) = At(1);
-                BridgeClick(cx, cz);
-                Log.Info($"Bridge click: {(_bridgeFrom is null ? "finished" : "begun")} {_switchRefused}");
+                _objects.BridgeClick(cx, cz);
+                Log.Info($"Bridge click: {(_objects.BridgeFrom is null ? "finished" : "begun")} {_switchRefused}");
                 break;
             }
 
@@ -831,8 +831,8 @@ public sealed partial class EditorView
                 // bridgepick,LAT,LON: Structures, Edit bridge, with the bridge nearest there picked.
                 var bridgeAt = At(1);
                 (_tool, _place.Mode) = (Tool.Place, PlaceMode.EditBridge);
-                _bridgeKey = _network?.BridgeAt(bridgeAt.X, bridgeAt.Z, 30.0)?.Key;
-                Log.Info($"Bridge pick: {_bridgeKey?.ToString() ?? "none"}");
+                _objects.BridgeKey = _network?.BridgeAt(bridgeAt.X, bridgeAt.Z, 30.0)?.Key;
+                Log.Info($"Bridge pick: {_objects.BridgeKey?.ToString() ?? "none"}");
                 break;
             case "crossingcut":
                 // crossingcut,LAT,LON: the grade crossing nearest there has its roads cut back to its ends.
