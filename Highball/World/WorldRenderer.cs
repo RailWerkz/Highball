@@ -52,8 +52,6 @@ public sealed unsafe class WorldRenderer : IDisposable
     private struct ModelPush
     {
         public float4x4 ViewProjection;
-        public float4 Rotation;
-        public float4 PlaceAndScale;
         public float4 BaseColor;
         public float4 Material;
     }
@@ -76,6 +74,9 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly AmbientOcclusion _occlusion = new();
     private readonly PostProcess _post = new();
     private readonly MotionVectors _motion = new();
+    private readonly ModelInstances _instances = new();
+    private readonly List<ModelInstances.Batch> _seen = [];
+    private readonly List<ModelInstances.Batch> _moving = [];
     private readonly TerrainHorizon _horizon = new();
     private readonly Vegetation _vegetation = new();
     private VkPipeline _sky;
@@ -176,6 +177,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         _model = Pipelines.Create(new PipelineDesc
         {
             Vertex = modelVert, Fragment = modelFrag, Layout = _modelLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(), Cull = VkCullModeFlags.None,
+            InstanceAttributes = ModelInstance.Layout[..2], InstanceStride = Marshal.SizeOf<ModelInstance>(),
         });
         // Drawn over what's solid, and no part of it.
         _glow = Pipelines.Create(new PipelineDesc { Vertex = glowVert, Fragment = glowFrag, Layout = _layout, Cull = VkCullModeFlags.None, DepthWrite = false, Blend = true });
@@ -220,6 +222,7 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         _target.Resize(size);
         _post.Jitter(camera, size);
+        _instances.Begin();
         var aspect = size.X / (float)size.Y;
         var camPos = new float4((float)camera.X, (float)camera.Y, (float)camera.Z, 0f);
         var sun = new float4(Sun, 0f);
@@ -253,7 +256,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             _smoke.Upload(cmd, camera, aspect, SceneSmoke, Sky);
 
         using (Profiler.Sample("Sun shadows", cmd))
-            _shadows.Render(cmd, camera, aspect, Sun, terrain, models, terrain is null ? null : _vegetation, network);
+            _shadows.Render(cmd, camera, aspect, Sun, terrain, models, _instances, terrain is null ? null : _vegetation, network);
         if (terrain is not null)
             _clouds.GroundLevel = terrain.Source.HeightAt(0.0, 0.0);
         using (Profiler.Sample("Cloud shade", cmd))
@@ -361,10 +364,14 @@ public sealed unsafe class WorldRenderer : IDisposable
             _vegetation.Draw(cmd, _modelLayout, camera, aspect);
         }
 
+        _seen.Clear();
+        _moving.Clear();
         if (models is not null)
         {
             using var _ = Profiler.Sample("Models", cmd);
-            DrawModels(cmd, camera, aspect, models);
+            _instances.Add(models, camera, (_, centre, radius) => ModelInstances.InView(camera, aspect, centre, radius), _seen);
+            _instances.Add(models, camera, (draw, centre, radius) => draw.Moving && ModelInstances.InView(camera, aspect, centre, radius), _moving);
+            DrawModels(cmd, camera, aspect);
         }
 
         using (Profiler.Sample("Glows", cmd))
@@ -374,7 +381,7 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         // How what moves moved, for the temporal pass to follow it.
         using (Profiler.Sample("Motion", cmd))
-            _motion.Record(cmd, _target, camera, aspect, models);
+            _motion.Record(cmd, _target, camera, aspect, _moving);
 
         if (RailWerkz.Core.Settings.Settings.Current.AmbientOcclusion)
         {
@@ -541,7 +548,8 @@ public sealed unsafe class WorldRenderer : IDisposable
         }
     }
 
-    private void DrawModels(CommandBuffer cmd, Camera camera, float aspect, IReadOnlyList<ModelDraw> models)
+    /// The models in view: one instanced draw per material of each model.
+    private void DrawModels(CommandBuffer cmd, Camera camera, float aspect)
     {
         cmd.BindPipeline(VkPipelineBindPoint.Graphics, _model);
         Sky.Bind(cmd, _modelLayout);
@@ -549,22 +557,19 @@ public sealed unsafe class WorldRenderer : IDisposable
         _clouds.Bind(cmd, _modelLayout);
         var viewProjection = camera.JitteredViewProjection(aspect);
 
-        foreach (var draw in models)
+        foreach (var batch in _seen)
         {
-            var relative = draw.RelativeTo(camera.X, camera.Y, camera.Z);
-            foreach (var part in draw.Model.Parts)
+            foreach (var part in batch.Model.Parts)
             {
                 var push = new ModelPush
                 {
                     ViewProjection = viewProjection,
-                    Rotation = draw.Orientation,
-                    PlaceAndScale = new float4(relative, draw.Scale),
-                    BaseColor = draw.BaseColor ?? part.BaseColor,
-                    Material = new float4(draw.Metallic ?? part.Metallic, draw.Roughness ?? part.Roughness, (float)camera.Y, part.AlphaCutoff),
+                    BaseColor = batch.BaseColor ?? part.BaseColor,
+                    Material = new float4(batch.Metallic ?? part.Metallic, batch.Roughness ?? part.Roughness, (float)camera.Y, part.AlphaCutoff),
                 };
                 part.Textures.Bind(cmd, _modelLayout);
                 cmd.PushConstants(_modelLayout, Stages, ByteSize.Zero, push);
-                draw.Model.Mesh.DrawRange(cmd, part.FirstIndex, part.IndexCount);
+                batch.Model.Mesh.DrawRangeInstanced(cmd, batch.Buffer, part.FirstIndex, part.IndexCount, batch.Count, batch.First);
             }
         }
     }
@@ -588,6 +593,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         _lights.Dispose();
         _post.Dispose();
         _motion.Dispose();
+        _instances.Dispose();
         _horizon.Dispose();
         _vegetation.Dispose();
         Pipelines.Destroy(default, _layout);

@@ -40,6 +40,9 @@ public static unsafe class Gpu
     /// The command buffer of the frame being recorded (between BeginFrame and EndFrame).
     public static CommandBuffer Cmd => _frames[_frame].Cmd;
 
+    /// Which of the FramesInFlight slots this frame records into: data written per slot is safe from frames still in flight.
+    public static int FrameSlot => _frame;
+
     /// FIFO when on; mailbox (or immediate) when off. Takes effect on the next frame.
     public static bool VSync
     {

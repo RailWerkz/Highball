@@ -20,11 +20,8 @@ public sealed unsafe class MotionVectors : IDisposable
     private struct Push
     {
         public float4x4 ViewProjection;
-        public float4 Rotation;
-        public float4 PlaceAndScale;
-        public float4 PreviousRotation;
-        /// xyz: where it was last frame relative to the camera now; w: the camera's near distance.
-        public float4 PreviousPlaceAndNear;
+        /// x: the camera's near distance.
+        public float4 Near;
     }
 
     private const VkShaderStageFlags Stages = VkShaderStageFlags.VertexBit | VkShaderStageFlags.FragmentBit;
@@ -52,6 +49,7 @@ public sealed unsafe class MotionVectors : IDisposable
         {
             // Only the position: it's all a point's move needs.
             Vertex = vertex, Fragment = fragment, Layout = _layout, Attributes = [Mesh.VertexLayout[0]], Stride = Marshal.SizeOf<Vertex>(),
+            InstanceAttributes = ModelInstance.Layout, InstanceStride = Marshal.SizeOf<ModelInstance>(),
             Cull = VkCullModeFlags.None, DepthTest = false, DepthWrite = false, SingleSample = true, DepthFormat = VkFormat.Undefined,
         });
     }
@@ -84,7 +82,7 @@ public sealed unsafe class MotionVectors : IDisposable
 
     /// After the world's drawn (its depth ready to read), before the temporal pass. Always clears the image, so nothing stale
     /// is read once a thing stops moving.
-    public void Record(CommandBuffer cmd, RenderTarget target, Camera camera, float aspect, IReadOnlyList<ModelDraw>? models)
+    public void Record(CommandBuffer cmd, RenderTarget target, Camera camera, float aspect, IReadOnlyList<ModelInstances.Batch> moving)
     {
         Resize(target);
         var image = Image!;
@@ -96,8 +94,7 @@ public sealed unsafe class MotionVectors : IDisposable
         var range = Subresources.Full(VkImageAspectFlags.ColorBit);
         cmd.ClearColorImage(image.VkImage, VkImageLayout.General, &clear, [range]);
 
-        var moving = models?.Any(m => m.Moving) == true;
-        if (moving)
+        if (moving.Count > 0)
         {
             Gpu.Barrier(cmd, image.VkImage, Subresources.Full(VkImageAspectFlags.ColorBit), VkImageLayout.General, VkImageLayout.General,
                 VkPipelineStageFlags.TransferBit, VkPipelineStageFlags.ColorAttachmentOutputBit, VkAccessFlags.TransferWriteBit, VkAccessFlags.ColorAttachmentWriteBit);
@@ -116,22 +113,10 @@ public sealed unsafe class MotionVectors : IDisposable
 
             // As the world was drawn this frame, jitter and all, so each pixel lines up with what's under it.
             var viewProjection = camera.JitteredViewProjection(aspect);
-            foreach (var draw in models!)
-            {
-                if (draw.PreviousAt is not { } was)
-                    continue;
-                var push = new Push
-                {
-                    ViewProjection = viewProjection,
-                    Rotation = draw.Orientation,
-                    PlaceAndScale = new float4(draw.RelativeTo(camera.X, camera.Y, camera.Z), draw.Scale),
-                    PreviousRotation = draw.PreviousRotation ?? draw.Orientation,
-                    PreviousPlaceAndNear = new float4((float)(was.X - camera.X), (float)(was.Y - camera.Y), (float)(was.Z - camera.Z), camera.Near),
-                };
-                cmd.PushConstants(_layout, Stages, ByteSize.Zero, push);
-                foreach (var part in draw.Model.Parts)
-                    draw.Model.Mesh.DrawRange(cmd, part.FirstIndex, part.IndexCount);
-            }
+            var push = new Push { ViewProjection = viewProjection, Near = new float4(camera.Near, 0f, 0f, 0f) };
+            cmd.PushConstants(_layout, Stages, ByteSize.Zero, push);
+            foreach (var batch in moving)
+                batch.Model.DrawShape(cmd, batch.Buffer, batch.Count, batch.First);
 
             cmd.EndRendering();
             Gpu.Barrier(cmd, image.VkImage, Subresources.Full(VkImageAspectFlags.ColorBit), VkImageLayout.General, VkImageLayout.General,

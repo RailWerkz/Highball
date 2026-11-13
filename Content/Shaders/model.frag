@@ -17,8 +17,6 @@ layout(set = 0, binding = 2) uniform sampler2D normalMap;            // one texe
 layout(push_constant) uniform Push
 {
     mat4 viewProjection;
-    vec4 rotation;
-    vec4 placeAndScale;
     vec4 baseColor;
     vec4 material; // x: metallic, y: roughness, z: camera height, w: alpha cutoff
 } pc;

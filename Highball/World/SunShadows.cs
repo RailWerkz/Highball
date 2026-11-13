@@ -56,8 +56,6 @@ public sealed unsafe class SunShadows : IDisposable
     private struct ModelPush
     {
         public float4x4 Light;
-        public float4 Rotation;
-        public float4 PlaceAndScale;
     }
 
     private const VkShaderStageFlags Stages = VkShaderStageFlags.VertexBit | VkShaderStageFlags.FragmentBit;
@@ -136,6 +134,7 @@ public sealed unsafe class SunShadows : IDisposable
         _model = Pipelines.Create(new PipelineDesc
         {
             Vertex = modelVert, Layout = _layout, Attributes = position, Stride = Marshal.SizeOf<Vertex>(), Cull = VkCullModeFlags.None, DepthOnly = true,
+            InstanceAttributes = ModelInstance.Layout[..2], InstanceStride = Marshal.SizeOf<ModelInstance>(),
             DepthBiasConstant = -60f, DepthBiasSlope = -1.75f,
         });
 
@@ -217,8 +216,9 @@ public sealed unsafe class SunShadows : IDisposable
         cmd.BindDescriptorSets(VkPipelineBindPoint.Graphics, layout, 2, [_set], []);
 
     /// Draws the cascades and updates what shadows.glsl reads. Outside any render pass, before the world.
-    public void Render(CommandBuffer cmd, Camera camera, float aspect, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation = null, NetworkMeshes? network = null)
+    public void Render(CommandBuffer cmd, Camera camera, float aspect, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models, ModelInstances instances, Vegetation? vegetation = null, NetworkMeshes? network = null)
     {
+        _instances = instances;
         // The Quality setting's changed: the old map's freed once the frames using it are done.
         if (_map.Size != Quality.ShadowSize)
         {
@@ -337,6 +337,9 @@ public sealed unsafe class SunShadows : IDisposable
     private const float ShadowSlack = 20f;
     private const float TallestCaster = 30f;
 
+    private ModelInstances? _instances;
+    private readonly List<ModelInstances.Batch> _casters = [];
+
     private void DrawCasters(CommandBuffer cmd, Camera camera, float aspect, int cascade, float3 centre, float3 right, float3 up, float3 sun, float radius,
         float seenFrom, float seenTo, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation, NetworkMeshes? network, float4x4 light)
     {
@@ -402,24 +405,16 @@ public sealed unsafe class SunShadows : IDisposable
             network.DrawPartCasters(cmd, camera.X, camera.Y, camera.Z, trackOnly ? 0 : cascade, Reaches, Place, coarse: trackOnly);
         }
 
-        if (models is not null)
+        if (models is not null && _instances is not null)
         {
-            cmd.BindPipeline(VkPipelineBindPoint.Graphics, _model);
-            foreach (var draw in models)
+            _casters.Clear();
+            _instances.Add(models, camera, (draw, centre, size) => draw.CastsShadow && (size <= 0f || Reaches(centre, size)), _casters);
+            if (_casters.Count > 0)
             {
-                if (!draw.CastsShadow)
-                    continue;
-
-                var relative = draw.RelativeTo(camera.X, camera.Y, camera.Z);
-                var mesh = draw.Model.Mesh;
-                var size = MathF.Max(MathEx.Length(mesh.BoundsMin), MathEx.Length(mesh.BoundsMax)) * draw.Scale;
-                if (size > 0f && !Reaches(relative, size))
-                    continue;
-
-                    var push = new ModelPush { Light = light, Rotation = draw.Orientation, PlaceAndScale = new float4(relative, draw.Scale) };
-                cmd.PushConstants(_layout, Stages, ByteSize.Zero, push);
-                foreach (var part in draw.Model.Parts)
-                    mesh.DrawRange(cmd, part.FirstIndex, part.IndexCount);
+                cmd.BindPipeline(VkPipelineBindPoint.Graphics, _model);
+                cmd.PushConstants(_layout, Stages, ByteSize.Zero, new ModelPush { Light = light });
+                foreach (var batch in _casters)
+                    batch.Model.DrawShape(cmd, batch.Buffer, batch.Count, batch.First);
             }
         }
 

@@ -1,3 +1,5 @@
+using Brutal.VulkanApi.Abstractions;
+using Brutal.VulkanApi;
 using RailWerkz.Vulkan;
 
 namespace Highball.World;
@@ -14,6 +16,35 @@ public sealed class RenderModel : IDisposable
 
     public Mesh Mesh { get; }
     public IReadOnlyList<Part> Parts => _parts;
+
+    /// All its parts as one run of the index buffer, when they lie end to end: drawn in one call where materials don't
+    /// matter (shadows, motion). Null if they don't.
+    public (int FirstIndex, int IndexCount)? Whole
+    {
+        get
+        {
+            if (_whole is { } known)
+                return known.Count > 0 ? (known.First, known.Count) : null;
+            var sorted = _parts.OrderBy(p => p.FirstIndex).ToList();
+            var contiguous = sorted.Count > 0;
+            for (var i = 1; i < sorted.Count && contiguous; i++)
+                contiguous = sorted[i].FirstIndex == sorted[i - 1].FirstIndex + sorted[i - 1].IndexCount;
+            _whole = contiguous ? (sorted[0].FirstIndex, sorted[^1].FirstIndex + sorted[^1].IndexCount - sorted[0].FirstIndex) : (0, 0);
+            return Whole;
+        }
+    }
+
+    private (int First, int Count)? _whole;
+
+    /// Draws every instance of a run in as few calls as the parts allow, materials ignored.
+    public void DrawShape(CommandBuffer cmd, BufferEx instances, int count, int first)
+    {
+        if (Whole is { } whole)
+            Mesh.DrawRangeInstanced(cmd, instances, whole.FirstIndex, whole.IndexCount, count, first);
+        else
+            foreach (var part in _parts)
+                Mesh.DrawRangeInstanced(cmd, instances, part.FirstIndex, part.IndexCount, count, first);
+    }
 
     /// A loaded model, which this now owns.
     public RenderModel(Model model)
