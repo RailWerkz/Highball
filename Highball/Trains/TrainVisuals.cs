@@ -30,7 +30,7 @@ public sealed class TrainVisuals : IDisposable
         }
     }
 
-    private readonly Dictionary<string, VehicleModel?> _models = [];
+    private readonly VehicleModels _models = new("Trains");
     private readonly List<ModelDraw> _draws = [];
     private readonly List<LocalLight> _lamps = [];
     private readonly ExhaustSmoke _smoke = new();
@@ -178,19 +178,7 @@ public sealed class TrainVisuals : IDisposable
                 : (lamp.Front ? systems.FrontHeadlight : systems.RearHeadlight) switch { HeadlightSetting.Bright => 1f, HeadlightSetting.Dim => 0.22f, _ => 0f };
             if (level <= 0f)
                 continue;
-            level *= brightness;
-            // Aimed a little down the track.
-            var aim = MathEx.Normalize(lamp.Facing + new float3(0f, lamp.Ditch ? -0.08f : -0.04f, 0f));
-            var p = VehicleOverlay.Rotate(rotation, lamp.Position);
-            var f = VehicleOverlay.Rotate(rotation, aim);
-            var (x, y, z) = (at.X + p.X, at.Y + p.Y, at.Z + p.Z);
-            if (lamp.Ditch)
-                _lamps.Add(new LocalLight(x, y, z, 120f, new float3(350f, 320f, 265f) * level, f, 0.97f, 0.9f, 0.2f, new float3(4f, 3.6f, 2.8f) * level));
-            else
-            {
-                var share = 1f / Math.Max(1, car.Def.Lamps.Count(l => !l.Ditch && l.Front == lamp.Front));
-                _lamps.Add(new LocalLight(x, y, z, 350f, new float3(2000f, 1800f, 1500f) * (level * share), f, 0.985f, 0.95f, 0.3f, new float3(5f, 4.4f, 3.4f) * level));
-            }
+            _lamps.Add(LocoLamps.Light(lamp, LocoLamps.Heads(car.Def, lamp.Front), level * brightness, rotation, at));
         }
     }
 
@@ -254,31 +242,12 @@ public sealed class TrainVisuals : IDisposable
     }
 
     /// A vehicle's model, loaded once.
-    public VehicleModel? Model(string? path)
-    {
-        if (path is null)
-            return null;
-        if (_models.TryGetValue(path, out var model))
-            return model;
-        try
-        {
-            model = VehicleModel.Load(path);
-        }
-        catch (Exception e)
-        {
-            Log.Warn($"Trains: model {path} unreadable ({e.Message})");
-            model = null;
-        }
-
-        return _models[path] = model;
-    }
+    public VehicleModel? Model(string? path) => _models.Get(path);
 
     public void Dispose()
     {
         _overlay.Dispose();
-        foreach (var model in _models.Values)
-            model?.Dispose();
-        _models.Clear();
+        _models.Dispose();
         _draws.Clear();
     }
 }

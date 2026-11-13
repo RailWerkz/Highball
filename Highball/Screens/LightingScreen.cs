@@ -156,15 +156,8 @@ public sealed class LightingScreen : Screen, IWorldScreen
         if (on > 0f && Trains.VehicleCatalog.Find("sd40-2") is { } def)
         {
             // The front end's lamps, where the catalog has them: the headlight's beam shared between its lamps.
-            var heads = Math.Max(1, def.Lamps.Count(l => l.Front && !l.Ditch));
             foreach (var lamp in def.Lamps.Where(l => l.Front))
-            {
-                var aim = MathEx.Normalize(lamp.Facing + new float3(0f, lamp.Ditch ? -0.08f : -0.04f, 0f));
-                var (x, y, z) = (lamp.Position.X, lamp.Position.Y, lamp.Position.Z);
-                lamps.Add(lamp.Ditch
-                    ? new LocalLight(x, y, z, 120f, new float3(350f, 320f, 265f) * on, aim, 0.97f, 0.9f, 0.2f, new float3(4f, 3.6f, 2.8f) * on)
-                    : new LocalLight(x, y, z, 350f, new float3(2000f, 1800f, 1500f) * (on / heads), aim, 0.985f, 0.95f, 0.35f, new float3(5f, 4.4f, 3.4f) * on));
-            }
+                lamps.Add(Trains.LocoLamps.Light(lamp, Trains.LocoLamps.Heads(def, front: true), on, new float4(0f, 0f, 0f, 1f), default));
         }
         if (_showSpheres)
             AddSpheres(_draws);

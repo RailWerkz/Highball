@@ -25,7 +25,7 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
     private readonly Camera _camera = new();
     private readonly List<ModelDraw> _draws = [];
     private FrameScene _scene => _world.Scene;
-    private readonly Dictionary<string, VehicleModel?> _models = [];
+    private readonly VehicleModels _models = new("Consist editor");
     private DisplayTrack? _track;
 
     private Consist _consist;
@@ -89,9 +89,7 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
 
     public override void Exit()
     {
-        foreach (var model in _models.Values)
-            model?.Dispose();
-        _models.Clear();
+        _models.Dispose();
         _track?.Dispose();
         _world.Dispose();
     }
@@ -378,32 +376,13 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
                 var car = _consist.Cars[i];
                 if (car.Def is not { } def || ModelFor(car.ModelPath) is not { } carModel)
                     continue;
-                var yaw = car.Reversed ? MathF.PI : 0f;
-                var at = new float3(0f, 0f, _carZ[i]);
-                if (carModel.Trucks is { } carTrucks)
-                {
-                    var sag = (float)Suspension.Sag(def, car.Fill);
-                    _draws.Add(new ModelDraw(carTrucks, at, Yaw: yaw));
-                    _draws.Add(new ModelDraw(carModel.Body, at + new float3(0f, -sag, 0f), Yaw: yaw));
-                }
-                else
-                    _draws.Add(new ModelDraw(carModel.Body, at, Yaw: yaw));
+                VehicleDraws.AddStanding(_draws, carModel, new float3(0f, 0f, _carZ[i]), car.Reversed ? MathF.PI : 0f, (float)Suspension.Sag(def, car.Fill));
             }
         }
         else if (Shown() is { } shown && ModelFor(ShownModel(shown)) is { } model)
         {
             // The body settles on its springs under its load; the trucks stay on the rail.
-            var yaw = shown.Reversed ? MathF.PI : 0f;
-            if (model.Trucks is { } trucks)
-            {
-                var sag = (float)Suspension.Sag(shown.Def, shown.Car?.Fill ?? 0.0);
-                _draws.Add(new ModelDraw(trucks, default, Yaw: yaw));
-                _draws.Add(new ModelDraw(model.Body, new float3(0f, -sag, 0f), Yaw: yaw));
-            }
-            else
-            {
-                _draws.Add(new ModelDraw(model.Body, default, Yaw: yaw));
-            }
+            VehicleDraws.AddStanding(_draws, model, default, shown.Reversed ? MathF.PI : 0f, (float)Suspension.Sag(shown.Def, shown.Car?.Fill ?? 0.0));
         }
     }
 
@@ -513,25 +492,7 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
         shown.Car?.ModelPath ?? shown.Livery?.Model;
 
     /// Loaded the first time it's shown; null if it can't be.
-    private VehicleModel? ModelFor(string? path)
-    {
-        if (path is null)
-            return null;
-        if (_models.TryGetValue(path, out var model))
-            return model;
-
-        try
-        {
-            model = VehicleModel.Load(path);
-        }
-        catch (Exception e)
-        {
-            Log.Warn($"Consist editor: model {path} unreadable ({e.Message})");
-            model = null;
-        }
-
-        return _models[path] = model;
-    }
+    private VehicleModel? ModelFor(string? path) => _models.Get(path);
 
     /// What the selected car is seen carrying once it's loaded.
     private void SetCargo(int index, string cargo)
