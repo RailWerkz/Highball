@@ -607,6 +607,18 @@ public static unsafe class Gpu
     /// before it) has finished.
     public static void Defer(Action release) => _deferred.Add(release);
 
+    /// Runs every deferred release now, and any those defer in turn (disposing one thing can let go of others).
+    private static void RunDeferred()
+    {
+        while (_deferred.Count > 0)
+        {
+            var batch = _deferred.ToArray();
+            _deferred.Clear();
+            foreach (var release in batch)
+                release();
+        }
+    }
+
     /// Records commands, runs them, and waits: for uploads at load time.
     public static void Submit(Action<CommandBuffer> record)
     {
@@ -662,11 +674,13 @@ public static unsafe class Gpu
     public static void Flush()
     {
         WaitIdle();
-        foreach (var release in _deferred)
-            release();
-        _deferred.Clear();
-        while (Retiring.TryDequeue(out var retired))
-            retired.Release();
+        // (Each can let go of more of the other: run both until neither has anything left.)
+        do
+        {
+            RunDeferred();
+            while (Retiring.TryDequeue(out var retired))
+                retired.Release();
+        } while (_deferred.Count > 0);
     }
 
     /// Last thing before the device goes. Anything still allocated here was never disposed, so it gets named in the
@@ -691,11 +705,13 @@ public static unsafe class Gpu
             return;
 
         WaitIdle();
-        foreach (var release in _deferred)
-            release();
-        _deferred.Clear();
-        while (Retiring.TryDequeue(out var retired))
-            retired.Release();
+        // (Each can let go of more of the other: run both until neither has anything left.)
+        do
+        {
+            RunDeferred();
+            while (Retiring.TryDequeue(out var retired))
+                retired.Release();
+        } while (_deferred.Count > 0);
 
         foreach (var frame in _frames)
         {
