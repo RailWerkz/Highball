@@ -45,9 +45,14 @@ public static class VehicleDraws
     /// on its springs, or all of it as one if it has no trucks of its own.
     public static void AddStanding(List<ModelDraw> into, VehicleModel model, float3 at, float yaw, float sag)
     {
-        if (model.Trucks is { } trucks)
+        if (model.HasTrucks)
         {
-            into.Add(new ModelDraw(trucks, at, Yaw: yaw));
+            if (model.Trucks is { } trucks)
+                into.Add(new ModelDraw(trucks, at, Yaw: yaw));
+            if (model.FrontTruck is { } front)
+                into.Add(new ModelDraw(front.Model, at, Yaw: yaw));
+            if (model.RearTruck is { } rear)
+                into.Add(new ModelDraw(rear.Model, at, Yaw: yaw));
             into.Add(new ModelDraw(model.Body, at + new float3(0f, -sag, 0f), Yaw: yaw));
         }
         else

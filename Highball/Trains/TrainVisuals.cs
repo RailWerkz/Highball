@@ -22,11 +22,19 @@ public sealed class TrainVisuals : IDisposable
         /// Each car body's roll on its springs.
         public readonly List<Suspension.Roll> Rolls = [];
 
+        /// The way the track runs under each car's trucks this frame (Train.Pose).
+        public readonly List<((double X, double Z) Front, (double X, double Z) Rear)> Facings = [];
+
+        /// Each car's trucks, turned on their own, as drawn last frame, for their motion.
+        public readonly List<(float4 FrontRotation, double3 FrontAt, float4 RearRotation, double3 RearAt)> PreviousTrucks = [];
+
         public void Clear()
         {
             Pose.Clear();
             Previous.Clear();
             Rolls.Clear();
+            Facings.Clear();
+            PreviousTrucks.Clear();
         }
     }
 
@@ -66,14 +74,18 @@ public sealed class TrainVisuals : IDisposable
     /// Ends the frame: the smoke moves on.
     public void End(float dt) => _smoke.Update(dt);
 
-    /// One cut's vehicles drawn where they are this frame, its bodies on their springs (moved on by step), and its engines'
-    /// lamps and smoke. ground, if given, is the height of the ground at a place, for distributed power's radio.
-    public void Draw(Train train, CutState state, float dt, double step, Func<double, double, double>? ground)
+    /// One cut's vehicles drawn where they are this frame, its trucks turned with the track under them, its bodies on their
+    /// springs (moved on by step), and its engines' lamps and smoke. ground, if given, is the height of the ground at a
+    /// place, for distributed power's radio. Returns the most any truck's turned from its body, in degrees.
+    public double Draw(Train train, CutState state, float dt, double step, Func<double, double, double>? ground)
     {
-        var (pose, previous, rolls) = (state.Pose, state.Previous, state.Rolls);
+        var (pose, previous, rolls, trucksWere) = (state.Pose, state.Previous, state.Rolls, state.PreviousTrucks);
+        var worst = 0.0;
         // Last frame's places count only for the same cars.
         if (previous.Count != train.Cars.Count)
             previous.Clear();
+        if (trucksWere.Count != train.Cars.Count)
+            trucksWere.Clear();
         if (rolls.Count != train.Cars.Count)
         {
             rolls.Clear();
@@ -81,8 +93,9 @@ public sealed class TrainVisuals : IDisposable
         }
 
         train.Dp.Ground = ground;
-        train.Pose(pose);
+        train.Pose(pose, state.Facings);
         var hadPrevious = previous.Count > 0;
+        var hadTrucks = trucksWere.Count > 0;
         for (var i = 0; i < train.Cars.Count; i++)
         {
             var car = train.Cars[i];
@@ -97,13 +110,32 @@ public sealed class TrainVisuals : IDisposable
             var at = new double3((fx + rx) * 0.5, (fy + ry) * 0.5, (fz + rz) * 0.5);
             var (bodyRotation, bodyAt) = Sprung(train, state, i, rotation, at, step);
             var (wasRotation, wasAt, wasBodyRotation, wasBodyAt) = hadPrevious ? previous[i] : (rotation, at, bodyRotation, bodyAt);
-            if (Model(car.ModelPath) is { } model)
+            // Each truck swivelled to the track under it, about its own middle: the model's front truck stands at the car's
+            // front unless the car's turned.
+            var (frontFacing, rearFacing) = state.Facings[i];
+            if (car.Reversed)
+                (frontFacing, rearFacing) = (rearFacing, frontFacing);
+            var found = Model(car.ModelPath);
+            var (frontRotation, frontAt, frontAngle) = found?.FrontTruck is { } ft ? Swivel(ft, frontFacing, dx, dy, dz, rotation, at) : (rotation, at, 0.0);
+            var (rearRotation, rearAt, rearAngle) = found?.RearTruck is { } rt ? Swivel(rt, rearFacing, dx, dy, dz, rotation, at) : (rotation, at, 0.0);
+            worst = Math.Max(worst, Math.Max(frontAngle, rearAngle));
+            var (wasFrontRotation, wasFrontAt, wasRearRotation, wasRearAt) = hadTrucks ? trucksWere[i] : (frontRotation, frontAt, rearRotation, rearAt);
+            if (hadTrucks)
+                trucksWere[i] = (frontRotation, frontAt, rearRotation, rearAt);
+            else
+                trucksWere.Add((frontRotation, frontAt, rearRotation, rearAt));
+            if (found is { } model)
             {
                 // Where it was last frame too, so temporal anti-aliasing follows it (see MotionVectors). The trucks stay on
                 // the rail; the body above them settles under its load and rolls a little on the springs.
-                if (model.Trucks is { } trucks)
+                if (model.HasTrucks)
                 {
-                    _draws.Add(new ModelDraw(trucks, default, Rotation: rotation, At: at, PreviousRotation: wasRotation, PreviousAt: wasAt));
+                    if (model.Trucks is { } trucks)
+                        _draws.Add(new ModelDraw(trucks, default, Rotation: rotation, At: at, PreviousRotation: wasRotation, PreviousAt: wasAt));
+                    if (model.FrontTruck is { } front)
+                        _draws.Add(new ModelDraw(front.Model, default, Rotation: frontRotation, At: frontAt, PreviousRotation: wasFrontRotation, PreviousAt: wasFrontAt));
+                    if (model.RearTruck is { } rear)
+                        _draws.Add(new ModelDraw(rear.Model, default, Rotation: rearRotation, At: rearAt, PreviousRotation: wasRearRotation, PreviousAt: wasRearAt));
                     _draws.Add(new ModelDraw(model.Body, default, Rotation: bodyRotation, At: bodyAt, PreviousRotation: wasBodyRotation, PreviousAt: wasBodyAt));
                 }
                 else
@@ -125,6 +157,28 @@ public sealed class TrainVisuals : IDisposable
             else
                 previous.Add((rotation, at, bodyRotation, bodyAt));
         }
+
+        return worst;
+    }
+
+    /// A truck turned to face the way the track runs under it (facing, on the plan), pitched as its body is, and moved so its
+    /// middle stays where the body has it. (dx, dy, dz) is the body's way along the car; rotation and at place the body.
+    /// Returns its turn, place, and how far it's turned from the body in degrees.
+    private static (float4 Rotation, double3 At, double Degrees) Swivel(TruckPart truck, (double X, double Z) facing, double dx, double dy, double dz,
+        float4 rotation, double3 at)
+    {
+        var flat = Math.Sqrt(dx * dx + dz * dz);
+        var (fx, fz) = facing;
+        if (flat < 1e-6 || fx * fx + fz * fz < 1e-12)
+            return (rotation, at, 0.0);
+        // The track faces the way the train goes; the truck faces the body's way.
+        if (fx * dx + fz * dz < 0.0)
+            (fx, fz) = (-fx, -fz);
+        var degrees = Math.Acos(Math.Clamp((fx * dx + fz * dz) / flat, -1.0, 1.0)) * 180.0 / Math.PI;
+        var turned = Facing(fx * flat, dy, fz * flat);
+        var onBody = VehicleOverlay.Rotate(rotation, truck.Pivot);
+        var onTruck = VehicleOverlay.Rotate(turned, truck.Pivot);
+        return (turned, new double3(at.X + onBody.X - onTruck.X, at.Y + onBody.Y - onTruck.Y, at.Z + onBody.Z - onTruck.Z), degrees);
     }
 
     /// What the renderer outlines this frame (VehicleOutline): the driven vehicle and the picked one.

@@ -170,6 +170,9 @@ public sealed partial class TrainPanel : IDisposable
         Railway.Use(graph);
     }
 
+    /// The furthest a truck can turn from its car's body, in degrees, before it's off the rail.
+    private const double MaxTruckSwivel = 10.0;
+
     /// Takes a cut off the track (not another driver's).
     private void Remove(Cut cut)
     {
@@ -513,8 +516,25 @@ public sealed partial class TrainPanel : IDisposable
             return;
         }
 
+        // A truck turned further than it can from its body has left the rail: the whole cut comes off (only this player's own).
+        var derailed = new List<(Cut Cut, double Degrees)>();
         foreach (var cut in _cuts)
-            _visuals.Draw(cut.Train, cut.Drawn, dt, step, Ground);
+            if (_visuals.Draw(cut.Train, cut.Drawn, dt, step, Ground) is var swivel and > MaxTruckSwivel && !cut.Remote)
+                derailed.Add((cut, swivel));
+        foreach (var (cut, degrees) in derailed)
+        {
+            Railway.Remove(cut);
+            _notice = $"{cut.Train.Name} derailed: track too sharp for its trucks";
+            RailWerkz.Core.Logging.Log.Info(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Derailed: {cut.Train.Name}, a truck turned {degrees:0.0} degrees from its body"));
+        }
+
+        if (derailed.Count > 0 && _cuts.Count == 0)
+        {
+            StopEngines();
+            _pose = [];
+            _visuals.End(dt);
+            return;
+        }
         _visuals.End(dt);
         _pose = (_focus ?? _cuts[0]).Pose;
         if (Train is { } looked)

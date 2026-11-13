@@ -494,9 +494,15 @@ public sealed class Train
     /// has gone into the next step, so the train moves smoothly whatever the frame rate. Found on the track (the front put
     /// back by the part of the last step not yet due, then each car walked back from it as the steps place them), so the
     /// trucks are always on the rails; at a step's end it's exactly where the step put them. A frame behind the physics.
-    public void Pose(List<((double X, double Y, double Z) Front, (double X, double Y, double Z) Rear)> into)
+    public void Pose(List<((double X, double Y, double Z) Front, (double X, double Y, double Z) Rear)> into) => Pose(into, null);
+
+    /// As Pose, and the way the track runs under each car's trucks there (on the plan, a unit vector the way the place
+    /// faces), for the trucks to turn with it.
+    public void Pose(List<((double X, double Y, double Z) Front, (double X, double Y, double Z) Rear)> into,
+        List<((double X, double Z) Front, (double X, double Z) Rear)>? facings)
     {
         into.Clear();
+        facings?.Clear();
         var memory = _memory.Copy();
         var at = Head;
         var back = (1.0 - Alpha) * _lastPlan;
@@ -508,8 +514,10 @@ public sealed class Train
             var car = Cars[i];
             Walk(ref at, car.LeadingOverhang, memory);
             var front = Graph.PositionOf(at);
+            var frontFacing = facings is null ? default : Graph.FacingOf(at);
             Walk(ref at, car.TruckCentres, memory);
             into.Add((front, Graph.PositionOf(at)));
+            facings?.Add((frontFacing, Graph.FacingOf(at)));
             Walk(ref at, car.TrailingOverhang + (i < Body.Extension.Length ? Body.Extension[i] : 0.0), memory);
         }
     }
