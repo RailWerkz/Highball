@@ -1,5 +1,3 @@
-using RailWerkz.UI;
-using Brutal.ImGuiApi;
 using Highball.App;
 using RailWerkz.Core.Settings;
 
@@ -7,7 +5,7 @@ namespace Highball.World;
 
 /// Puts the Settings screen's sky, time of day and exposure onto a world renderer. The sun comes from the date and time and the
 /// route's place on Earth. A skybox brings its own sun, so they only apply to the procedural sky.
-public sealed class LightingPanel
+public sealed class Lighting
 {
     private readonly WorldRenderer _renderer;
     private readonly double _latitude;
@@ -18,13 +16,11 @@ public sealed class LightingPanel
 
     private string _skySetting = Settings.Current.Skybox;
 
-    public bool Open;
-
     /// The named times of a day.
     public static readonly (string Id, string Label)[] Presets = [("dawn", "Dawn"), ("noon", "Noon"), ("golden", "Golden hour"), ("dusk", "Dusk"), ("night", "Night")];
 
     /// Barstow, for a scene with no route of its own.
-    public LightingPanel(WorldRenderer renderer, double latitude = 34.9, double longitude = -117.09, double gridNorth = 0.0)
+    public Lighting(WorldRenderer renderer, double latitude = 34.9, double longitude = -117.09, double gridNorth = 0.0)
     {
         _renderer = renderer;
         _latitude = latitude;
@@ -98,7 +94,14 @@ public sealed class LightingPanel
         }
     }
 
-    private SunPosition Sun()
+    /// The route's longitude, for its time zone.
+    public double Longitude => _longitude;
+
+    /// The sky has a time of day (the procedural one; a skybox brings its own sun).
+    public bool HasClock => _renderer.Sky.Name == Sky.Procedural;
+
+    /// Where the sun is at the Settings' date and time.
+    public SunPosition Sun()
     {
         var s = Settings.Current;
         return SunPosition.At(_latitude, _longitude, s.SkyYear, s.SkyMonth, s.SkyDay, s.SkyHour);
@@ -181,48 +184,6 @@ public sealed class LightingPanel
 
         _renderer.Exposure = s.Exposure;
         _renderer.MeasureExposure = s.AutoExposure;
-    }
-
-    /// The test scene's window: the named times, where the sun is, and anything else the screen wants in it. The rest is in Settings.
-    public void Draw(Action? extra = null)
-    {
-        if (!Open)
-            return;
-
-        ImGui.SetNextWindowPos(new float2(90f, 44f), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSize(new float2(380f, 0f), ImGuiCond.FirstUseEver);
-        if (WindowBounds.Begin("Lighting"u8, ref Open))
-        {
-            if (_renderer.Sky.Name == Sky.Procedural)
-                DrawClock(Settings.Current);
-            else
-                ImGui.TextDisabled("Skybox: no time of day"u8);
-
-            extra?.Invoke();
-        }
-
-        ImGui.End();
-    }
-
-    private void DrawClock(Settings s)
-    {
-        foreach (var (id, label) in Presets)
-        {
-            if (ImGui.Button(label))
-                Preset(id);
-            ImGui.SameLine();
-        }
-
-        ImGui.NewLine();
-
-        var zone = SunPosition.TimeZone(_longitude);
-        var sun = Sun();
-        ImGui.Text($"{Clock(s.SkyHour)} on {s.SkyYear}-{s.SkyMonth:00}-{s.SkyDay:00}, UTC{zone:+0;-0;+0}");
-        ImGui.Text($"Sun {sun.Elevation:0.0} degrees up, bearing {sun.Azimuth:0}");
-        if (double.IsNaN(sun.Sunrise))
-            ImGui.Text(sun.Elevation > 0f ? "No sunset today"u8 : "No sunrise today"u8);
-        else
-            ImGui.Text($"Sunrise {Clock(sun.Sunrise)}, noon {Clock(sun.SolarNoon)}, sunset {Clock(sun.Sunset)}");
     }
 
     public static string Clock(double hour)

@@ -25,7 +25,7 @@ public sealed class LightingScreen : Screen, IWorldScreen
 
     private readonly WorldDisplay _world = new();
     private WorldRenderer _renderer => _world.Renderer;
-    private LightingPanel _panel => _world.Lighting;
+    private Lighting _panel => _world.Lighting;
     private readonly Camera _camera = new();
     private readonly List<IDisposable> _owned = [];
     private readonly List<ModelDraw> _scene = [];
@@ -178,8 +178,7 @@ public sealed class LightingScreen : Screen, IWorldScreen
     public override void DrawWindows()
     {
         // Always open here: it's what the screen is for.
-        _panel.Open = true;
-        _panel.Draw(() =>
+        LightingWindow.Draw(_panel, () =>
         {
             ImGui.Separator();
             foreach (var (id, label) in Engines)

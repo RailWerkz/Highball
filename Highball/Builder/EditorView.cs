@@ -50,7 +50,7 @@ public sealed partial class EditorView : IDisposable
     private WorldRenderer _renderer => _world.Renderer;
 
     /// Puts the sky, time of day and exposure from Settings onto the renderer.
-    public LightingPanel Lighting => _world.Lighting;
+    public Lighting Lighting => _world.Lighting;
     private readonly EditorCamera _eye = new();
 
     /// The camera as it's seen on the screen: projecting to it and picking the ground.
@@ -363,7 +363,7 @@ public sealed partial class EditorView : IDisposable
         if (ImGui.IsKeyPressed(ImGuiKey.G) && !Keyboard.KeysBlocked)
             _overlay = _overlay switch { TrackOverlay.Off => TrackOverlay.Grade, TrackOverlay.Grade => TrackOverlay.Class, TrackOverlay.Class => TrackOverlay.ClassMap, _ => TrackOverlay.Off };
         if (ImGui.IsKeyPressed(ImGuiKey.M) && !Keyboard.KeysBlocked)
-            World.MaterialsWindow.Instance.Toggle();
+            MaterialsWindow.Instance.Toggle();
 
         // T throws the switch nearest the pointer.
         if (ImGui.IsKeyPressed(ImGuiKey.T) && !Keyboard.KeysBlocked && Pick(Input.MousePosition) is { } at)

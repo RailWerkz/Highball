@@ -57,7 +57,7 @@ public sealed class BuilderScreen : Screen, IWorldScreen
     {
         _editor?.Dispose();
         _planner.Dispose();
-        World.MaterialsWindow.Instance.Dispose();
+        MaterialsWindow.Instance.Dispose();
     }
 
     /// A short notice on the right of the footer.
@@ -255,8 +255,8 @@ public sealed class BuilderScreen : Screen, IWorldScreen
             if (editing && ImGui.BeginMenu("Route"))
             {
                 _editor!.MenuRoute();
-                if (ImGui.MenuItem("Track Materials...", "M", World.MaterialsWindow.Instance.Open, true))
-                    World.MaterialsWindow.Instance.Toggle();
+                if (ImGui.MenuItem("Track Materials...", "M", MaterialsWindow.Instance.Open, true))
+                    MaterialsWindow.Instance.Toggle();
                 ImGui.EndMenu();
             }
 
@@ -302,7 +302,7 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         {
             using (Profiler.Sample("Editor windows"))
                 _editor?.Windows();
-            World.MaterialsWindow.Instance.Draw();
+            MaterialsWindow.Instance.Draw();
         }
 
         var left = (_mode == Mode.Planner ? 0f : EditorView.StripWidth) + (_showPanel ? PanelWidth : 0f) + 12f;

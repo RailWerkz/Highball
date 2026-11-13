@@ -119,7 +119,7 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
         return all[(at + direction + all.Count) % all.Count];
     }
 
-    private static string Clock(double hour) => LightingPanel.Clock(hour);
+    private static string Clock(double hour) => Lighting.Clock(hour);
 
     /// To the quarter hour, round the clock.
     private static float StepHour(float hour, int direction) => ((MathF.Round(hour * 4f) + direction + 96f) % 96f) / 4f;
@@ -156,21 +156,21 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
     private int PresetAt()
     {
         var hour = Settings.Current.SkyHour;
-        return Array.FindIndex(LightingPanel.Presets, p => MathF.Abs((float)LightingPanel.PresetHour(p.Id, _latitude, _longitude) - hour) < 0.01f);
+        return Array.FindIndex(Lighting.Presets, p => MathF.Abs((float)Lighting.PresetHour(p.Id, _latitude, _longitude) - hour) < 0.01f);
     }
 
     private string PresetName()
     {
         var at = PresetAt();
-        return at < 0 ? "CUSTOM" : LightingPanel.Presets[at].Label.ToUpperInvariant();
+        return at < 0 ? "CUSTOM" : Lighting.Presets[at].Label.ToUpperInvariant();
     }
 
     private void StepPreset(int direction)
     {
-        var count = LightingPanel.Presets.Length;
+        var count = Lighting.Presets.Length;
         var at = PresetAt();
         var next = at < 0 ? (direction > 0 ? 0 : count - 1) : (at + direction + count) % count;
-        Settings.Current.SkyHour = (float)LightingPanel.PresetHour(LightingPanel.Presets[next].Id, _latitude, _longitude);
+        Settings.Current.SkyHour = (float)Lighting.PresetHour(Lighting.Presets[next].Id, _latitude, _longitude);
     }
 
     public void RenderWorld(CommandBuffer cmd, int width, int height) => (_under as IWorldScreen)?.RenderWorld(cmd, width, height);

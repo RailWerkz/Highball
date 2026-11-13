@@ -21,7 +21,7 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
 
     private readonly WorldDisplay _world = new();
     private WorldRenderer _renderer => _world.Renderer;
-    private LightingPanel _lighting => _world.Lighting;
+    private Lighting _lighting => _world.Lighting;
     private readonly Camera _camera = new();
     private readonly List<ModelDraw> _draws = [];
     private FrameScene _scene => _world.Scene;

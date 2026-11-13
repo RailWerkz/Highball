@@ -1,10 +1,11 @@
 using Brutal.ImGuiApi;
 using Highball.App;
+using Highball.World;
 using RailWerkz.Core.Logging;
 using RailWerkz.UI;
 using RailWerkz.Vulkan;
 
-namespace Highball.World;
+namespace Highball.Builder;
 
 /// The Track Materials window: every part of the track and of what's placed beside it, the texture each is drawn with now, and
 /// a list of every texture under Content/Textures (or any path) to swap it for. A change shows on the next frame or two;
