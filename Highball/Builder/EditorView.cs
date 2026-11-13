@@ -79,17 +79,13 @@ public sealed partial class EditorView : IDisposable, IToolHost
     /// The Track Circuits tool, and the route's circuits (made once the route's open).
     private CircuitsTool? _circuits;
     private CircuitEditor? _circuitEditor => _circuits?.Editor;
-    private long? _hover;
-    // Editing track: the selected control points, the one grabbed to drag them and how far they've been dragged, and
-    // where a box being dragged out to select began.
-    private readonly HashSet<long> _selection = [];
-    private long? _grabbed;
-    private (double X, double Z)? _grabFrom;
-    private (double X, double Z)? _dragOffset;
-    private float2? _boxFrom;
-    /// Editing track, with no control point under the pointer: the place on a track it's over, where Ctrl+click puts a new point.
-    private (long Way, int Segment, double X, double Z)? _insertAt;
-    private readonly PenTool _pen = new();
+    /// The Edit Track tool, and its selection (which the class and bed panels apply to).
+    private readonly EditTrackTool _editTrack;
+    private HashSet<long> _selection => _editTrack.Selection;
+
+    /// The Pen tool.
+    private readonly PenTrackTool _penTrack;
+    private PenTool _pen => _penTrack.Pen;
     /// The Roads tool.
     private readonly RoadsTool _roadTool;
     private RoadTool _road => _roadTool.Road;
@@ -98,8 +94,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
     /// What the bridge begun at _bridgeFrom can end on, and where on the screen it was begun, to tell a drag from a click.
     private HashSet<long> _bridgeLine = [];
     private float2 _bridgePressed;
-    private LayPoint? _layNext;
-    private PenTool.Measure? _penMeasure;
+    private PenTool.Measure? _penMeasure => _penTrack.Measure;
     private Task<NetworkChange>? _rebuild;
     private bool _rebuildAgain;
 
@@ -187,6 +182,8 @@ public sealed partial class EditorView : IDisposable, IToolHost
         _roadTool = new RoadsTool(_tools);
         _switchTool = new SwitchesTool(_tools, route);
         _layYard = new LayYardTool(_tools, route);
+        _editTrack = new EditTrackTool(_tools);
+        _penTrack = new PenTrackTool(_tools, _editTrack.Selection);
         _parallelTool = new ParallelTool(_tools, route);
         _brushes = new TerrainBrush(_tools);
         if (DevTools.Clean)
@@ -216,7 +213,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
     public bool Escape()
     {
         if (_pen.Count > 0)
-            _pen.Clear();
+            _penTrack.Escape();
         else if (_tool == Tool.Road && _road.Busy)
             _roadTool.Escape();
         else if (_tool == Tool.Place && _bridgeFrom is not null)
@@ -1444,142 +1441,21 @@ public sealed partial class EditorView : IDisposable, IToolHost
 
         if (_tool is not (Tool.Track or Tool.Pen) || Blocked)
         {
-            _hover = null;
-            _penMeasure = null;
+            _editTrack.Idle();
+            _penTrack.Idle();
             return;
         }
-
-        if (_grabbed is null)
-            _hover = tracks.NodeAt(mouse, _camera.X, _camera.Z, ProjectGround);
 
         if (_tool == Tool.Track)
-        {
-            _insertAt = _hover is null && _grabbed is null && _boxFrom is null ? tracks.SegmentAt(mouse, _camera.X, _camera.Z, ProjectGround) : null;
-            SelectAndDrag(tracks, mouse);
-            return;
-        }
-
-        // The pen: where the next point would go, snapped to a control point or a track under the pointer.
-        _layNext = _hover is { } on
-            ? new LayPoint(tracks.PositionOf(on).X, tracks.PositionOf(on).Z, Node: on)
-            : tracks.SegmentAt(mouse, _camera.X, _camera.Z, ProjectGround) is { } segment
-                ? new LayPoint(segment.X, segment.Z, Split: (segment.Way, segment.Segment))
-                : _hit is { } ground ? new LayPoint(ground.X, ground.Z) : null;
-
-        _pen.Update(mouse, _layNext, _hit is { } h ? (h.X, h.Z) : null, ProjectGround,
-            Input.MouseDown(GlfwMouseButton.Left), Input.Mouse(GlfwMouseButton.Left));
-        if (Input.KeyDown(GlfwKey.Backspace))
-            _pen.RemoveLast();
-        if (Input.KeyDown(GlfwKey.Enter) && _pen.Count >= 2)
-        {
-            Committed(tracks.Lay(_pen.Points(), lead: false));
-            _pen.Clear();
-        }
-
-        _penMeasure = PenTool.Measured(_pen.Points(PenPreview), _terrain!.Source.HeightAt);
+            _editTrack.Update(0f);
+        else
+            _penTrack.Update(0f);
     }
 
-    /// Editing track: click a control point to select it (Shift adds or takes it away), drag out a box over the
-    /// ground to select every point in it (Shift adds them), drag a selected point to move them all. L straightens
-    /// the selection, K smooths it, J joins the ways it touches and Delete takes its points out.
-    private void SelectAndDrag(TrackEditor tracks, float2 mouse)
-    {
-        var shift = Input.Key(GlfwKey.LeftShift) || Input.Key(GlfwKey.RightShift);
-        var ctrl = Input.Key(GlfwKey.LeftControl) || Input.Key(GlfwKey.RightControl);
-        if (Input.MouseDown(GlfwMouseButton.Left) && ctrl && _hover is null && _insertAt is { } at)
-        {
-            // A new point in the track, selected, ready to drag.
-            if (tracks.InsertPoint(at.Way, at.Segment, at.X, at.Z, out var made) is { } inserted)
-            {
-                Committed(inserted);
-                _selection.Clear();
-                _selection.Add(made);
-                _insertAt = null;
-            }
+    /// Unjoins track at the one point selected (EditTrackTool.Split).
+    private void SplitTrack(TrackEditor tracks) => _editTrack.Split();
 
-            return;
-        }
-
-        if (Input.MouseDown(GlfwMouseButton.Left))
-        {
-            if (_hover is { } node && shift)
-            {
-                if (!_selection.Remove(node))
-                    _selection.Add(node);
-            }
-            else if (_hover is { } grabbed)
-            {
-                if (!_selection.Contains(grabbed))
-                {
-                    _selection.Clear();
-                    _selection.Add(grabbed);
-                }
-
-                _grabbed = grabbed;
-                _grabFrom = tracks.PositionOf(grabbed);
-            }
-            else
-                _boxFrom = mouse;
-        }
-
-        if (_grabbed is not null && _hit is { } hit && _grabFrom is { } from)
-            _dragOffset = (hit.X - from.X, hit.Z - from.Z);
-
-        if (!Input.Mouse(GlfwMouseButton.Left))
-        {
-            if (_grabbed is not null && _dragOffset is { } o && Math.Abs(o.X) + Math.Abs(o.Z) > 0.01)
-                Committed(tracks.MoveMany(_selection.ToDictionary(n => n, n => (tracks.PositionOf(n).X + o.X, tracks.PositionOf(n).Z + o.Z))));
-            _grabbed = null;
-            _grabFrom = null;
-            _dragOffset = null;
-
-            if (_boxFrom is { } start)
-            {
-                if (!shift)
-                    _selection.Clear();
-                if (MathF.Abs(mouse.X - start.X) + MathF.Abs(mouse.Y - start.Y) > 4f)
-                    _selection.UnionWith(tracks.NodesIn(start, mouse, _camera.X, _camera.Z, ProjectGround));
-                _boxFrom = null;
-            }
-        }
-
-        if (Keyboard.KeysBlocked)
-            return;
-        if (Input.KeyDown(GlfwKey.Delete))
-            Committed(_selection.Count > 0 ? tracks.DeleteMany(_selection) : _hover is { } doomed ? tracks.Delete(doomed) : null);
-        if (Input.KeyDown(GlfwKey.L))
-            Committed(tracks.Straighten(_selection));
-        if (Input.KeyDown(GlfwKey.K))
-            Committed(tracks.Smooth(_selection));
-        if (Input.KeyDown(GlfwKey.I))
-            Committed(tracks.Simplify(_selection));
-        if (Input.KeyDown(GlfwKey.J))
-            Committed(tracks.Join(_selection));
-        if (Input.KeyDown(GlfwKey.U))
-            SplitTrack(tracks);
-    }
-
-    /// Unjoins track at the one point selected, which isn't selected after: there are two ends there now.
-    private void SplitTrack(TrackEditor tracks)
-    {
-        var made = tracks.Split(_selection);
-        _switchRefused = tracks.SplitRefused;
-        if (made is null)
-            return;
-        Committed(made);
-        _selection.Clear();
-    }
-
-    /// The selection's tools, for the menu and the side panel: name, key, and what it does.
-    private (string Name, string Key, Func<TrackEditor, IReadOnlySet<long>, NetworkEdit?> Act)[] SelectionTools =>
-    [
-        ("Straighten", "L", (t, s) => t.Straighten(s)),
-        ("Smooth", "K", (t, s) => t.Smooth(s)),
-        ("Simplify", "I", (t, s) => t.Simplify(s)),
-        ("Join", "J", (t, s) => t.Join(s)),
-        ("Split", "U", (t, s) => t.Split(s)),
-        ("Delete", "Del", (t, s) => t.DeleteMany(s)),
-    ];
+    private static (string Name, string Key, Func<TrackEditor, IReadOnlySet<long>, NetworkEdit?> Act)[] SelectionTools => EditTrackTool.SelectionTools;
 
     /// The track circuits tool (CircuitsTool).
     private void EditCircuits()
@@ -1602,9 +1478,6 @@ public sealed partial class EditorView : IDisposable, IToolHost
     private double ViewReach => _topDown
         ? (_camera.Y - _terrain!.Source.HeightAt(_camera.X, _camera.Z)) * Math.Tan(_camera.FieldOfView * 0.5) * (_screen.X / _screen.Y) * 1.2
         : 2500.0;
-
-    /// Where the pen's path would run on to if the pointer were clicked now.
-    private (double X, double Z)? PenPreview => !_pen.Busy && _layNext is { } next ? (next.X, next.Z) : null;
 
     private void Committed(NetworkEdit? edit)
     {
@@ -1679,29 +1552,10 @@ public sealed partial class EditorView : IDisposable, IToolHost
     {
         if (_tool is Tool.Track or Tool.Pen)
         {
-            _tracks!.Draw(draw, _camera.X, _camera.Z, ProjectGround, _hover, _selection, _dragOffset);
-            // Where Ctrl+click would put a new point: a ring on the track under the pointer, lit while Ctrl's held.
-            if (_tool == Tool.Track && _insertAt is { } at && ProjectGround(at.X, at.Z) is { } spot)
-            {
-                var ctrl = Input.Key(GlfwKey.LeftControl) || Input.Key(GlfwKey.RightControl);
-                draw.AddCircleFilled(spot, S(4f), ctrl ? Rgba.White : Rgba.White.WithAlpha(0.55f), 16);
-                draw.AddCircle(spot, S(8f), (ctrl ? Style.Accent : Rgba.White).WithAlpha(ctrl ? 1f : 0.45f), 20, S(1.5f));
-            }
-            if (_boxFrom is { } from)
-            {
-                var to = Input.MousePosition;
-                var (min, max) = (new float2(MathF.Min(from.X, to.X), MathF.Min(from.Y, to.Y)), new float2(MathF.Max(from.X, to.X), MathF.Max(from.Y, to.Y)));
-                draw.AddRectFilled(min, max, Rgba.White.WithAlpha(0.06f));
-                draw.AddRect(min, max, Rgba.White.WithAlpha(0.6f), 0f, ImDrawFlags.None, 1f);
-            }
-
-            if (_tool == Tool.Pen)
-            {
-                _pen.Draw(draw, ProjectGround, PenPreview);
-                if (_penMeasure is { } m && !Blocked)
-                    PenTool.Label(draw, Input.MousePosition, PenTool.Describe(m, Settings.Current.Units == UnitSystem.Imperial), Style.Text);
-            }
-
+            if (_tool == Tool.Track)
+                _editTrack.Draw(draw);
+            else
+                _penTrack.Draw(draw);
             return;
         }
 
@@ -2088,7 +1942,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
         if (_tool == Tool.Parallel)
             _parallelTool.Panel(imperial);
         if (_tool == Tool.Pen)
-            PenPanel(imperial);
+            _penTrack.Panel(imperial);
         if (_tool == Tool.Circuits)
             _circuits?.Panel(imperial);
         if (_tool == Tool.Switches)
@@ -2098,7 +1952,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
         if (_tool == Tool.Follow)
             _layYard.Panel(imperial);
         if (_tool == Tool.Track)
-            SelectionPanel();
+            _editTrack.Panel(imperial);
         if (_tool is Tool.Track or Tool.Pen or Tool.Follow or Tool.Parallel || (_tool == Tool.Place && _place.Mode == PlaceMode.Track))
         {
             ClassPanel();
@@ -2148,45 +2002,6 @@ public sealed partial class EditorView : IDisposable, IToolHost
         _ when IsBrush(_tool) => ("Terrain", "2-6"),
         _ => ("Free Look", "1"),
     };
-
-    /// What the pen's drawn so far: its points, length, tightest curve and the ground's grade along it.
-    private void PenPanel(bool imperial)
-    {
-        string Length(double metres) => imperial
-            ? metres >= 1609.344 ? $"{metres / 1609.344:0.00} mi" : $"{metres * FeetPerMeter:0} ft"
-            : metres >= 1000 ? $"{metres / 1000:0.00} km" : $"{metres:0} m";
-        if (_penMeasure is not { } m)
-            return;
-        Kit.BeginCard("Drawn", $"{_pen.Count} point{(_pen.Count == 1 ? "" : "s")}");
-            Kit.Stats(
-            [
-                new Stat("Length", Length(m.Length)),
-                new Stat("Tightest curve", double.IsInfinity(m.MinRadius) ? "Straight" : Length(m.MinRadius)),
-                new Stat("Ground grade", string.Create(CultureInfo.InvariantCulture, $"{m.Grade * 100:0.00}%")),
-                new Stat("Steepest", string.Create(CultureInfo.InvariantCulture, $"{m.SteepestGrade * 100:0.00}%")),
-            ], 2);
-        Kit.EndCard();
-    }
-
-    /// The Edit tool's selection, and what can be done to it.
-    private void SelectionPanel()
-    {
-        Kit.BeginCard("Selection", $"{_selection.Count} point{(_selection.Count == 1 ? "" : "s")}");
-        var tools = SelectionTools;
-        for (var i = 0; i < tools.Length; i += 2)
-        {
-            var count = Math.Min(2, tools.Length - i);
-            var labels = new string[count];
-            var enabled = new bool[count];
-            for (var k = 0; k < count; k++)
-                (labels[k], enabled[k]) = (tools[i + k].Name, _selection.Count > 0);
-            var hit = Kit.Buttons($"selection{i}", labels, enabled);
-            if (hit >= 0)
-                Committed(tools[i + hit].Act(_tracks!, _selection));
-        }
-
-        Kit.EndCard();
-    }
 
     /// Saves a switch's size (SwitchesTool.PickSize).
     private void PickSize(long node, int? size) => _switchTool.PickSize(node, size);
@@ -2273,9 +2088,9 @@ public sealed partial class EditorView : IDisposable, IToolHost
                 Tool.Follow => _layYard.Hints,
                 Tool.Shape => _shapeTool.Hints,
                 _ when IsBrush(_tool) => SyncBrush().Hints,
-                Tool.Track => [("LMB", "Select, drag"), ("SHIFT", "Add"), ("CTRL+LMB", "Insert point"), ("L", "Straighten"), ("K", "Smooth"), ("I", "Simplify"), ("J", "Join"), ("U", "Split"), ("DEL", "Delete")],
+                Tool.Track => _editTrack.Hints,
                 Tool.Circuits => _circuits?.Hints ?? [],
-                Tool.Pen => [("LMB", "Point"), ("DRAG", "Curve"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")],
+                Tool.Pen => _penTrack.Hints,
                 _ => [("LMB", _tool.ToString()), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
             };
             return tool;
