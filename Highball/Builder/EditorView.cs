@@ -39,13 +39,9 @@ public sealed partial class EditorView : IDisposable
     private const float MaxRadius = 400f;
 
     private const float FeetPerMeter = 3.28084f;
-    private const float MinSpeed = 2f;
-    private const float MaxSpeed = 2000f;
 
     /// Straight down, all but: exactly down leaves the camera no way to tell which way is north.
     private const float TopDownPitch = -MathF.PI / 2f + 0.001f;
-    private const double MinTopDownHeight = 20.0;
-    private const double MaxTopDownHeight = 40000.0;
     private const double GradeReadoutWindow = 50.0;
     private const float GradeColourWindow = 25f;
 
@@ -55,13 +51,17 @@ public sealed partial class EditorView : IDisposable
 
     /// Puts the sky, time of day and exposure from Settings onto the renderer.
     public LightingPanel Lighting { get; }
-    private readonly Camera _camera = new();
+    private readonly EditorCamera _eye = new();
+    private readonly DriveCamera _drive = new();
+
+    /// The camera everything draws from and picks with: the editor's own (EditorCamera), which the drive cameras move too.
+    private Camera _camera => _eye.Camera;
     private readonly RoutePoint? _start;
     private Terrain? _terrain;
     private NetworkMeshes? _network;
-    private float _speed = 60f;
     private float _fps;
-    private bool _looking;
+    /// Looking round with the right button held: the pointer's captured.
+    private bool _looking { get => _eye.Looking; set => _eye.Looking = value; }
 
     private Tool _tool;
     private float _radius = 20f;
@@ -113,7 +113,6 @@ public sealed partial class EditorView : IDisposable
     // Seen from above: the flying camera is kept to go back to, and where a pan drag last was.
     private bool _topDown;
     private (double X, double Y, double Z, float Yaw, float Pitch)? _flight;
-    private float2? _panFrom;
 
     /// What the track overlay colours rail lines by: nothing, their grade, or their class (Main, Branch, Yard...).
     private enum TrackOverlay { Off, Grade, Class, ClassMap }
@@ -254,8 +253,7 @@ public sealed partial class EditorView : IDisposable
             return;
         _topDown = on;
         _camera.Zoom = 1f;
-        _looking = false;
-        _panFrom = null;
+        _eye.StopLooking();
         if (_terrain is null)
             return;
         if (on)
@@ -346,9 +344,13 @@ public sealed partial class EditorView : IDisposable
         }
 
         if (_topDown)
-            Pan(dt);
+            _eye.Pan(dt, Blocked, WheelTurns, _screen, _terrain!.Source.HeightAt);
         else if (!Driving || View != DriveView.Cab || DriveTrain is null)
-            Fly(dt);
+            {
+                _eye.Fly(dt, Blocked, WheelTurns, _terrain!.Source.HeightAt);
+                if (DevTools.FlySpeed is { } fly)
+                    FlyTest(fly, _camera.Forward, dt);
+            }
         using (Profiler.Sample("Editing"))
         {
             Edit(dt);
@@ -423,47 +425,6 @@ public sealed partial class EditorView : IDisposable
 
     private const float FarestTrack = 6000f;
 
-    /// Seen from above: drag with the right or middle button (or WASD) to pan, the wheel zooms about the pointer.
-    private void Pan(float dt)
-    {
-        _looking = false;
-        var source = _terrain!.Source;
-        var above = Math.Max(MinTopDownHeight, _camera.Y - source.HeightAt(_camera.X, _camera.Z));
-        var metresPerPixel = 2.0 * above * Math.Tan(_camera.FieldOfView * 0.5) / _screen.Y;
-        var mouse = Input.MousePosition;
-
-        var dragging = Input.Mouse(GlfwMouseButton.Right) || Input.Mouse(GlfwMouseButton.Middle);
-        if (!dragging)
-            _panFrom = null;
-        else if (_panFrom is null && !Blocked)
-            _panFrom = mouse;
-        if (_panFrom is { } from)
-        {
-            _camera.X -= (mouse.X - from.X) * metresPerPixel;
-            _camera.Z -= (mouse.Y - from.Y) * metresPerPixel;
-            _panFrom = mouse;
-        }
-
-        var speed = above * (Input.Key(GlfwKey.LeftShift) ? 4.0 : 1.0) * dt;
-        if (Input.Key(GlfwKey.W)) _camera.Z -= speed;
-        if (Input.Key(GlfwKey.S)) _camera.Z += speed;
-        if (Input.Key(GlfwKey.A)) _camera.X -= speed;
-        if (Input.Key(GlfwKey.D)) _camera.X += speed;
-
-        if (Input.Scroll != 0f && !Blocked && !WheelTurns)
-        {
-            // The ground under the pointer stays under it.
-            var zoomed = Math.Clamp(above * Math.Pow(0.8, Input.Scroll), MinTopDownHeight, MaxTopDownHeight);
-            var shrink = 1.0 - zoomed / above;
-            _camera.X += (mouse.X - _screen.X * 0.5) * metresPerPixel * shrink;
-            _camera.Z += (mouse.Y - _screen.Y * 0.5) * metresPerPixel * shrink;
-            above = zoomed;
-            _camera.Y = source.HeightAt(_camera.X, _camera.Z) + above;
-        }
-
-        _camera.Y = Math.Max(_camera.Y, source.HeightAt(_camera.X, _camera.Z) + MinTopDownHeight);
-    }
-
     private void PlaceCamera(TerrainSource source)
     {
         double x, z;
@@ -497,54 +458,6 @@ public sealed partial class EditorView : IDisposable
                 _camera.Zoom = zoom;
         }
     }
-
-    private void Fly(float dt)
-    {
-        // Only starting is up to where the pointer is: once looking, it's held until the button's let go.
-        _looking = Input.Mouse(GlfwMouseButton.Right) && (_looking || !Blocked);
-        if (_looking)
-        {
-            // (Slower zoomed in, so that things move across the screen at the same rate.)
-            var sensitivity = 0.0025f / _camera.Zoom;
-            _camera.Yaw += Input.MouseDelta.X * sensitivity;
-            _camera.Pitch = Math.Clamp(_camera.Pitch - Input.MouseDelta.Y * sensitivity, -1.55f, 1.55f);
-        }
-
-        if (Input.Scroll != 0f && !Blocked && !WheelTurns)
-        {
-            if (Input.Key(GlfwKey.LeftAlt))
-                _camera.Zoom = Math.Clamp(_camera.Zoom * MathF.Pow(1.25f, Input.Scroll), 1f, MaxLensZoom);
-            else
-                _speed = Math.Clamp(_speed * MathF.Pow(1.25f, Input.Scroll), MinSpeed, MaxSpeed);
-        }
-
-        var forward = _camera.Forward;
-        var right = _camera.Right;
-        var move = default(float3);
-        if (Input.Key(GlfwKey.W)) move += forward;
-        if (Input.Key(GlfwKey.S)) move -= forward;
-        if (Input.Key(GlfwKey.D)) move += right;
-        if (Input.Key(GlfwKey.A)) move -= right;
-        if (Input.Key(GlfwKey.E)) move.Y += 1f;
-        if (Input.Key(GlfwKey.Q)) move.Y -= 1f;
-
-        var length = MathF.Sqrt(move.X * move.X + move.Y * move.Y + move.Z * move.Z);
-        if (length > 0f)
-        {
-            var speed = _speed * (Input.Key(GlfwKey.LeftShift) ? 4f : 1f) * dt / length;
-            _camera.X += move.X * speed;
-            _camera.Y += move.Y * speed;
-            _camera.Z += move.Z * speed;
-        }
-
-        if (DevTools.FlySpeed is { } fly)
-            FlyTest(fly, forward, dt);
-
-        var ground = _terrain!.Source.HeightAt(_camera.X, _camera.Z);
-        _camera.Y = Math.Max(_camera.Y, ground + 1.8);
-    }
-
-    private const float MaxLensZoom = 10f;
 
     private double _flyLogAt;
     private float _flyWorst;
@@ -2014,9 +1927,16 @@ public sealed partial class EditorView : IDisposable
         _trains.Update(dt);
         Net?.Update(dt);
         if (Driving && _placeOrbit && View == DriveView.Orbit && DriveTrain is { } orbited)
-            PlaceOrbit(orbited);
+        {
+            _placeOrbit = false;
+            if (_drive.PlaceOrbit(_camera, orbited, _trains, _terrain!.Source.HeightAt))
+                _followed = null;
+        }
         if (Driving && View == DriveView.Cab && DriveTrain is { } train)
-            CabCamera(train);
+        {
+            if (_drive.Cab(_camera, train, _trains, Blocked, _eye))
+                _followed = null;
+        }
         else
         {
             var (bx, by, bz) = _trains.FollowBy(ref _followed);
@@ -2062,71 +1982,6 @@ public sealed partial class EditorView : IDisposable
 
     /// The train window: placing, building, driving and coupling stock.
     public TrainPanel TrainWindow => _trains;
-
-    private float _cabYaw, _cabPitch;
-
-    /// The engineer's eye: over the rail tops, back from the lead unit's front end, and right of its middle.
-    private const double CabHeight = 3.9, CabBack = 3.0, CabRight = 0.6;
-
-    /// The lead unit as it's drawn this frame: its cab end's way and the trucks under it.
-    private (double Dx, double Dz, (double X, double Y, double Z) Front, (double X, double Y, double Z) Rear, Trains.TrainCar Car)? Lead(Trains.Train train)
-    {
-        var index = Math.Clamp(train.LeadUnit, 0, train.Cars.Count - 1);
-        if (_trains.Drawn(index) is not { } pose)
-            return null;
-        var car = train.Cars[index];
-        // Whichever end its cab faces.
-        var (front, rear) = train.CabSense < 0 ? (pose.Rear, pose.Front) : (pose.Front, pose.Rear);
-        var (dx, dz) = (front.X - rear.X, front.Z - rear.Z);
-        var flat = Math.Sqrt(dx * dx + dz * dz);
-        return flat < 1e-6 ? null : (dx / flat, dz / flat, front, rear, car);
-    }
-
-    /// Orbit's starting place: behind the lead unit and above it, looking along the train, once on going into Orbit.
-    private void PlaceOrbit(Trains.Train train)
-    {
-        _placeOrbit = false;
-        if (Lead(train) is not var (dx, dz, front, rear, _))
-            return;
-        var (cx, cy, cz) = ((front.X + rear.X) * 0.5, (front.Y + rear.Y) * 0.5, (front.Z + rear.Z) * 0.5);
-        _camera.X = cx - dx * 30.0 - dz * 12.0;
-        _camera.Z = cz - dz * 30.0 + dx * 12.0;
-        _camera.Y = Math.Max(cy + 12.0, _terrain!.Source.HeightAt(_camera.X, _camera.Z) + 2.0);
-        var (tx, ty, tz) = (cx - _camera.X, cy + 2.0 - _camera.Y, cz - _camera.Z);
-        _camera.Yaw = (float)Math.Atan2(tx, -tz);
-        _camera.Pitch = (float)Math.Atan2(ty, Math.Sqrt(tx * tx + tz * tz));
-        _followed = null;
-    }
-
-    /// From the engineer's seat, on the lead unit as it's drawn (so it's as steady as Follow).
-    private void CabCamera(Trains.Train train)
-    {
-        if (Lead(train) is not var (dx, dz, front, rear, car))
-            return;
-        var flat = Math.Sqrt((front.X - rear.X) * (front.X - rear.X) + (front.Z - rear.Z) * (front.Z - rear.Z));
-        var heading = (float)Math.Atan2(dx, -dz);
-        var grade = (float)Math.Atan2(front.Y - rear.Y, flat);
-        // The cab end is the truck's overhang on from it.
-        var overhang = train.CabSense < 0 ? car.TrailingOverhang : car.LeadingOverhang;
-        var end = (X: front.X + dx * overhang, Y: front.Y, Z: front.Z + dz * overhang);
-
-        _looking = Input.Mouse(GlfwMouseButton.Right) && (_looking || !Blocked);
-        if (_looking)
-        {
-            var look = Input.MouseDelta * (0.0025f / _camera.Zoom);
-            _cabYaw = Math.Clamp(_cabYaw + look.X, -2.6f, 2.6f);
-            _cabPitch = Math.Clamp(_cabPitch - look.Y, -1.2f, 1.0f);
-        }
-
-        if (Input.Scroll != 0f && !Blocked)
-            _camera.Zoom = Math.Clamp(_camera.Zoom * MathF.Pow(1.25f, Input.Scroll), 1f, MaxLensZoom);
-        _camera.X = end.X - dx * CabBack - dz * CabRight;
-        _camera.Z = end.Z - dz * CabBack + dx * CabRight;
-        _camera.Y = end.Y + CabHeight;
-        _camera.Yaw = heading + _cabYaw;
-        _camera.Pitch = grade + _cabPitch;
-        _followed = null;
-    }
 
     private void EditTrack()
     {

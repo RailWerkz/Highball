@@ -580,7 +580,7 @@ public sealed partial class EditorView
 
             case "lens":
                 // lens,ZOOM: as rolling the wheel to that zoom in the 3D Editor.
-                _camera.Zoom = Math.Clamp((float)Number(1), 1f, MaxLensZoom);
+                _camera.Zoom = Math.Clamp((float)Number(1), 1f, EditorCamera.MaxLensZoom);
                 break;
 
             case "splitat":

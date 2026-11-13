@@ -152,8 +152,8 @@ public sealed partial class EditorView
             var camera = $"AGL {Height(_camera.Y - terrain.Source.HeightAt(_camera.X, _camera.Z))}";
             if (!_topDown)
                 camera += imperial
-                    ? string.Create(CultureInfo.InvariantCulture, $"   {_speed * 2.23694f:0} MPH")
-                    : string.Create(CultureInfo.InvariantCulture, $"   {_speed * 3.6f:0} KM/H");
+                    ? string.Create(CultureInfo.InvariantCulture, $"   {_eye.Speed * 2.23694f:0} MPH")
+                    : string.Create(CultureInfo.InvariantCulture, $"   {_eye.Speed * 3.6f:0} KM/H");
             if (_pointerAt is not { } at)
                 return camera;
             var geo = _route.Projection!.Inverse(new RoutePoint(at.X, -at.Z));
