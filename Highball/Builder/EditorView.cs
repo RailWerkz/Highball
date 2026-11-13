@@ -42,8 +42,6 @@ public sealed partial class EditorView : IDisposable
 
     /// Straight down, all but: exactly down leaves the camera no way to tell which way is north.
     private const float TopDownPitch = -MathF.PI / 2f + 0.001f;
-    private const double GradeReadoutWindow = 50.0;
-    private const float GradeColourWindow = 25f;
 
     private readonly RouteInfo _route;
     /// The route as it's loaded: ground, track, streaming, switches and the rail graph.
@@ -2211,6 +2209,7 @@ public sealed partial class EditorView : IDisposable
         using (Profiler.Sample("Background"))
             DrawBackground(draw);
         var overlays = Profiler.Sample("Overlays");
+        _gradeAt = null;
         if (_tool == Tool.Circuits)
             _circuitEditor?.Draw(draw, _camera.X, _camera.Z, ViewReach, ProjectGround,
                 !_topDown || _camera.Y - _terrain.Source.HeightAt(_camera.X, _camera.Z) < 5000.0);
@@ -2218,7 +2217,15 @@ public sealed partial class EditorView : IDisposable
         {
             if (_overlay == TrackOverlay.ClassMap)
                 _guides?.DrawClasses(draw, ProjectGround, _camera.X, _camera.Z, ViewReach, size);
-            DrawGrades(draw, size);
+            if (_terrain.Source.Lines is { } graded)
+            {
+                // From above, as far as the view reaches; in flight, a few kilometres.
+                var reach = _topDown
+                    ? (_camera.Y - _terrain.Source.HeightAt(_camera.X, _camera.Z)) * Math.Tan(_camera.FieldOfView * 0.5) * (size.X / size.Y) * 1.2
+                    : 3000.0;
+                _grades.Draw(draw, graded, _view, reach, ByClass, Blocked);
+                _gradeAt = _grades.At;
+            }
         }
         overlays.Dispose();
         DrawBrush(draw);
@@ -2321,131 +2328,10 @@ public sealed partial class EditorView : IDisposable
                 draw.AddLine(a, b, color, S(3f));
     }
 
-    private static Rgba GradeColor(float grade) => MathF.Abs(grade) switch
-    {
-        < 0.01f => Style.Clear,
-        < 0.02f => Style.Caution,
-        _ => Style.Stop,
-    };
+    private static Rgba GradeColor(float grade) => GradeOverlay.GradeColor(grade);
 
-    private readonly List<NetworkLine> _gradeLines = [];
-    private List<(float2 A, float2 B, Rgba Color, NetworkLine Line, int Point)>[] _gradeSegments = [];
-
-    /// Every rail line in view coloured by its grade, and the grade under the pointer (averaged over a short stretch,
-    /// as a train would feel it) if it's over one. The lines are projected on every core (FrameJobs), each slice into
-    /// its own list, and drawn here.
-    private void DrawGrades(ImDrawListPtr draw, float2 size)
-    {
-        _gradeAt = null;
-        if (_terrain!.Source.Lines is not { } lines)
-            return;
-
-        var reach = _topDown
-            ? (_camera.Y - _terrain.Source.HeightAt(_camera.X, _camera.Z)) * Math.Tan(_camera.FieldOfView * 0.5) * (size.X / size.Y) * 1.2
-            : 3000.0;
-        _gradeLines.Clear();
-        foreach (var line in lines.Lines)
-            if (line.Rail && line.MaxX >= _camera.X - reach && line.MinX <= _camera.X + reach && line.MaxZ >= _camera.Z - reach && line.MinZ <= _camera.Z + reach)
-                _gradeLines.Add(line);
-
-        _ = ViewProjection;
-        var slices = FrameJobs.Slices(_gradeLines.Count, 4);
-        if (_gradeSegments.Length < slices)
-            _gradeSegments = [.. Enumerable.Range(0, slices).Select(i => i < _gradeSegments.Length ? _gradeSegments[i] : [])];
-        for (var i = 0; i < slices; i++)
-            _gradeSegments[i].Clear();
-        FrameJobs.For(_gradeLines.Count, slices, (slice, from, to) => GradeSegments(_gradeLines, from, to, size, _gradeSegments[slice]));
-
-        var mouse = Input.MousePosition;
-        var nearest = S(12f);
-        (NetworkLine Line, int Point)? hovered = null;
-        var width = S(3f);
-        for (var slice = 0; slice < slices; slice++)
-        {
-            foreach (var (a, b, color, line, point) in _gradeSegments[slice])
-            {
-                draw.AddLine(a, b, color, width);
-                var d = DistanceToSegment(mouse, a, b);
-                if (d < nearest && !Blocked)
-                {
-                    nearest = d;
-                    hovered = (line, point);
-                }
-            }
-        }
-
-        if (hovered is not { } over)
-            return;
-        var l = over.Line;
-        var (i0, i1) = (over.Point, over.Point);
-        while (i0 > 0 && l.S[over.Point] - l.S[i0] < GradeReadoutWindow)
-            i0--;
-        while (i1 < l.Count - 1 && l.S[i1] - l.S[over.Point] < GradeReadoutWindow)
-            i1++;
-        var span = l.S[i1] - l.S[i0];
-        _gradeAt = (mouse, span > 0.01f ? (l.Y[i1] - l.Y[i0]) / span : 0f, l.Y[over.Point], l.Class);
-    }
-
-    /// One slice of the lines' coloured segments on the screen (a job). Each segment's colour is the grade over
-    /// GradeColourWindow either side of it, not its own: the short pieces round a bridge or a crossing would otherwise
-    /// flicker red. Points closer than a couple of pixels to the last one drawn are skipped, and so are segments off
-    /// the screen.
-    private void GradeSegments(List<NetworkLine> lines, int from, int to, float2 size, List<(float2, float2, Rgba, NetworkLine, int)> into)
-    {
-        into.Clear();
-        var margin = 50f;
-        for (var n = from; n < to; n++)
-        {
-            var line = lines[n];
-            float2? previous = Project(line.X[0], line.Y[0] + 0.5, line.Z[0]);
-            var (lo, hi) = (0, 0);
-            for (var i = 1; i < line.Count; i++)
-            {
-                var screen = Project(line.X[i], line.Y[i] + 0.5, line.Z[i]);
-                if (screen is not { } b)
-                {
-                    previous = null;
-                    continue;
-                }
-
-                if (previous is not { } a)
-                {
-                    previous = b;
-                    continue;
-                }
-
-                if (i < line.Count - 1 && MathF.Abs(b.X - a.X) + MathF.Abs(b.Y - a.Y) < 2.5f)
-                    continue;
-
-                var offscreen = (a.X < -margin && b.X < -margin) || (a.X > size.X + margin && b.X > size.X + margin) ||
-                                (a.Y < -margin && b.Y < -margin) || (a.Y > size.Y + margin && b.Y > size.Y + margin);
-                if (!offscreen)
-                {
-                    var middle = (line.S[i] + line.S[i - 1]) * 0.5f;
-                    while (lo < i - 1 && line.S[lo + 1] <= middle - GradeColourWindow)
-                        lo++;
-                    hi = Math.Max(hi, i);
-                    while (hi < line.Count - 1 && line.S[hi] < middle + GradeColourWindow)
-                        hi++;
-                    var ds = line.S[hi] - line.S[lo];
-                    var grade = ds > 0.01f ? (line.Y[hi] - line.Y[lo]) / ds : 0f;
-                    var color = ByClass ? RailColours.Of(line.Class) : GradeColor(grade);
-                    into.Add((a, b, color.WithAlpha(0.9f), line, i));
-                }
-
-                previous = b;
-            }
-        }
-    }
-
-    private static float DistanceToSegment(float2 p, float2 a, float2 b)
-    {
-        var ab = b - a;
-        var length = ab.X * ab.X + ab.Y * ab.Y;
-        var t = length > 0f ? Math.Clamp(((p.X - a.X) * ab.X + (p.Y - a.Y) * ab.Y) / length, 0f, 1f) : 0f;
-        var q = a + ab * t;
-        return MathF.Sqrt((p.X - q.X) * (p.X - q.X) + (p.Y - q.Y) * (p.Y - q.Y));
-    }
+    /// The track coloured by its grade or class (G), and the grade under the pointer.
+    private readonly GradeOverlay _grades = new();
 
     // --- Menus, the side panel and windows (ImGui). ---
 
