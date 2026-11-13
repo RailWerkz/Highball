@@ -55,9 +55,14 @@ public sealed partial class EditorView : IDisposable
     public LightingPanel Lighting => _world.Lighting;
     private readonly EditorCamera _eye = new();
 
+    /// The camera as it's seen on the screen: projecting to it and picking the ground.
+    private readonly CameraView _view;
+
+    /// The trains on the route: the train window, placing and picking, stepping, the train's cameras and sound.
+    private readonly Trains.TrainSession _session;
+
     /// What the renderer draws this frame, filled in by RenderWorld.
     private FrameScene _scene => _world.Scene;
-    private readonly DriveCamera _drive = new();
 
     /// The camera everything draws from and picks with: the editor's own (EditorCamera), which the drive cameras move too.
     private Camera _camera => _eye.Camera;
@@ -80,7 +85,7 @@ public sealed partial class EditorView : IDisposable
     private double3? _hit;
     /// The ground under the pointer whatever the tool, for the status line.
     private double3? _pointerAt;
-    private float2 _screen = new(1f, 1f);
+    private float2 _screen { get => _view.Size; set => _view.Size = value; }
     // Terrain strokes and network edits, in the order they were made.
     private readonly Stack<object> _undo = new();
     private readonly Stack<object> _redo = new();
@@ -184,7 +189,8 @@ public sealed partial class EditorView : IDisposable
         var place = new GeoPoint(route.Origin.Latitude, route.Origin.Longitude);
         _world = new WorldDisplay(place.Lat, place.Lon, route.Projection?.GridNorth(place) ?? 0.0);
         _routeWorld = new RouteWorld(route);
-        _trains = new TrainPanel(_routeWorld.Railway);
+        _view = new CameraView(_camera);
+        _session = new Trains.TrainSession(_routeWorld, _camera);
         if (DevTools.Clean)
             _overlay = TrackOverlay.Off;
         if (DevTools.Skybox is { } sky)
@@ -210,7 +216,7 @@ public sealed partial class EditorView : IDisposable
             }
         _backgroundTiles.Dispose();
         _circuitEditor?.Dispose();
-        _trains.Dispose();
+        _session.Dispose();
         _routeWorld.Dispose();
         _world.Dispose();
     }
@@ -341,7 +347,7 @@ public sealed partial class EditorView : IDisposable
 
         if (_topDown)
             _eye.Pan(dt, Blocked, WheelTurns, _screen, _terrain!.Source.HeightAt);
-        else if (!Driving || View != DriveView.Cab || DriveTrain is null)
+        else if (!_session.InCab)
             {
                 _eye.Fly(dt, Blocked, WheelTurns, _terrain!.Source.HeightAt);
                 if (DevTools.FlySpeed is { } fly)
@@ -370,7 +376,7 @@ public sealed partial class EditorView : IDisposable
 
         // T throws the switch nearest the pointer.
         if (ImGui.IsKeyPressed(ImGuiKey.T) && !Keyboard.KeysBlocked && Pick(Input.MousePosition) is { } at)
-            _network!.Throw(at.X, at.Z, 40.0);
+            _routeWorld.Throw(at.X, at.Z, 40.0);
         if (DevTools.SwitchAt is { } pick && _terrain.Source.Lines is { } picking && picking.Turnouts.Count > 0 && _rebuild is null)
         {
             DevTools.SwitchAt = null;
@@ -383,19 +389,7 @@ public sealed partial class EditorView : IDisposable
                 PickSize(chosen, pick.Size < 0 ? null : pick.Size);
         }
 
-        if (DevTools.ThrowAt is { } dev && _network!.Turnouts > 0)
-        {
-            DevTools.ThrowAt = null;
-            var p = _route.Projection!.Forward(new GeoPoint(dev.Lat, dev.Lon));
-            var thrown = _network.Throw(p.East, -p.North, 200.0);
-            Log.Info(thrown is null ? "Throw: no switch near" : $"Throw: switch at node {thrown.Node}, frog {thrown.FrogNormal:0.0} m out, blades {thrown.BladeLength:0.0} m");
-            if (thrown is null)
-                foreach (var t in _terrain.Source.Lines!.Turnouts.OrderBy(t => (t.X - p.East) * (t.X - p.East) + (t.Z + p.North) * (t.Z + p.North)).Take(5))
-                {
-                    var g = _route.Projection.Inverse(new RoutePoint(t.X, -t.Z));
-                    Log.Info(string.Create(CultureInfo.InvariantCulture, $"Switch near: {g.Lat:0.000000} {g.Lon:0.000000}, frog {t.FrogNormal:0.0} m, side {t.Side}"));
-                }
-        }
+        _routeWorld.ThrowScripted();
     }
 
     /// Brings the ground and the track up to date with the camera and the settings.
@@ -647,7 +641,7 @@ public sealed partial class EditorView : IDisposable
     private bool Save(TerrainSource source)
     {
         _circuitEditor?.Save();
-        SaveStock();
+        _session.SaveStock();
         if (source.Unsaved)
             source.SaveEdits();
         if (!source.Network.Unsaved)
@@ -1707,75 +1701,13 @@ public sealed partial class EditorView : IDisposable
 
     private float2? ProjectGround(double x, double z) => Project(x, _terrain!.Source.HeightAt(x, z) + 0.6, z);
 
-    /// The camera's view and projection, made again only when the camera or the window has changed: projecting is done
-    /// for thousands of points a frame. Read it on the main thread before any job projects with it.
-    private float4x4 ViewProjection
-    {
-        get
-        {
-            var state = (_camera.Yaw, _camera.Pitch, _camera.FieldOfView, _screen.X / _screen.Y);
-            if (state != _viewProjectionFor)
-            {
-                _viewProjection = _camera.ViewProjection(state.Item4);
-                _viewProjectionFor = state;
-            }
+    /// The camera's view and projection (CameraView).
+    private float4x4 ViewProjection => _view.ViewProjection;
 
-            return _viewProjection;
-        }
-    }
-
-    private float4x4 _viewProjection;
-    private (float, float, float, float) _viewProjectionFor = (float.NaN, 0f, 0f, 0f);
-
-    private float2? Project(double x, double y, double z)
-    {
-        var relative = new float3((float)(x - _camera.X), (float)(y - _camera.Y), (float)(z - _camera.Z));
-        var clip = MathEx.Project(relative, ViewProjection);
-        if (clip.W <= 0.01f)
-            return null;
-        return new float2((clip.X / clip.W * 0.5f + 0.5f) * _screen.X, (0.5f - clip.Y / clip.W * 0.5f) * _screen.Y);
-    }
+    private float2? Project(double x, double y, double z) => _view.Project(x, y, z);
 
     private Trains.RailGraph? _railGraph => _routeWorld.Graph;
-    private readonly TrainPanel _trains;
-    private (double X, double Y, double Z)? _followed;
-
-    /// The route's saved stock has been put back on the track (once, on the first rail graph). Until then nothing's saved
-    /// over it, so a save before the track's ready doesn't lose it.
-    private bool _stockRestored;
-
-    /// The stock on the track written to the route's Stock.json.
-    private void SaveStock()
-    {
-        if (!_stockRestored || _route.Projection is not { } projection)
-            return;
-        try
-        {
-            Trains.RouteStock.Save(_route, _trains.Snapshot((x, z) =>
-            {
-                var geo = projection.Inverse(new RoutePoint(x, -z));
-                return (geo.Lat, geo.Lon);
-            }));
-        }
-        catch (Exception e)
-        {
-            Log.Warn($"Placed stock: not saved ({e.Message})");
-        }
-    }
-
-    private void RestoreStock()
-    {
-        if (_stockRestored || _route.Projection is not { } projection)
-            return;
-        _stockRestored = true;
-        var saved = Trains.RouteStock.Load(_route);
-        if (saved.Count > 0)
-            _trains.Restore(saved, (lat, lon) =>
-            {
-                var p = projection.Forward(new GeoPoint(lat, lon));
-                return (p.East, -p.North);
-            });
-    }
+    private TrainPanel _trains => _session.Panel;
 
     /// The trains' rail graph, built again whenever the lines change (at first, and after an edit), with the train put
     /// back on it. With --railgraph, checked and logged too.
@@ -1812,156 +1744,44 @@ public sealed partial class EditorView : IDisposable
     }
 
     /// The multiplayer session this view's part of, if it is (see BuilderScreen.Play).
-    public Multiplayer.NetPlay? Net { get; set; }
+    public Multiplayer.NetPlay? Net { get => _session.Net; set => _session.Net = value; }
 
     /// Tells the crew something (shown in the train window).
-    public void Notify(string text) => _trains.Notify(text);
+    public void Notify(string text) => _session.Notify(text);
 
-    /// Which way every switch is set: kept across the track being laid out again, for the trains and the blades both.
-    private Trains.SwitchStates _switches => _routeWorld.Switches;
 
     private void RefreshRailGraph()
     {
         if (!_routeWorld.RefreshGraph())
             return;
         var lines = _terrain!.Source.Lines!;
-        _trains.Ground = (x, z) => _terrain!.Source.HeightAt(x, z);
-        _trains.Use(_railGraph!);
-        RestoreStock();
+        _session.TrackChanged();
         RelinkSignals(lines);
-        Net?.Attach(_routeWorld.Railway, _switches, _railGraph);
         if (DevTools.TakeExport())
             Export();
         if (DevTools.RailGraphReport)
             Log.Info(Trains.RailGraphCheck.Report(_railGraph, lines));
     }
 
-    /// The train: placing it where the track's clicked, running it on, and the camera along with it if it follows.
+    /// The trains (TrainSession): placing (which takes the left button off the tools), picking with Free Look, running
+    /// them on, and the camera along with them.
     private void UpdateTrains(float dt)
     {
-        if (DevTools.Train is { } dev && _railGraph is not null && DevTools.Lay is null && _rebuild is null && _routeWorld.GraphCurrent)
-        {
-            DevTools.Train = null;
-            var at = _route.Projection!.Forward(new GeoPoint(dev.Lat, dev.Lon));
-            var forward = _camera.Forward;
-            if (!_trains.Pick(dev.Consist))
-                Log.Warn($"--train: no saved consist called {dev.Consist}");
-            _trains.PlaceAt(at.East, -at.North, forward.X, forward.Z);
-            if (_trains.Train is null)
-                Log.Warn($"--train: not placed ({_trains.Notice})");
-            if (_trains.Train is { } placed)
-            {
-                placed.Reverser = 1;
-                placed.Independent = 0.0;
-                placed.Brake = 0.0;
-                placed.Notch = dev.Notch;
-                var (hx, hz) = placed.Graph.FacingOf(placed.Head);
-                double From((double X, double Y, double Z) p) => Math.Sqrt((p.X - _camera.X) * (p.X - _camera.X) + (p.Z - _camera.Z) * (p.Z - _camera.Z));
-                Log.Info(string.Create(System.Globalization.CultureInfo.InvariantCulture,
-                    $"--train: facing ({hx:0.00}, {hz:0.00}), camera ({forward.X:0.00}, {forward.Z:0.00}); lead front truck {From(placed.Cars[0].FrontAt):0.0} m from the camera, last rear truck {From(placed.Cars[^1].RearAt):0.0} m"));
-                _trains.Follow = true;
-            }
-
-            _trains.Open = true;
-            if (_trains.Train is { } cut && DevTools.Uncouple is { } behind && behind >= 1 && behind < cut.Cars.Count)
-            {
-                var air = cut.Body.Brakes;
-                air.CockAhead[behind - 1] = air.CockBehind[behind - 1] = 0.0;
-                air.Hose[behind - 1] = false;
-                cut.Body.Uncouple(behind - 1, out _);
-            }
-
-            if (DevTools.TrainTab is { } tab)
-                _trains.ShowTab(tab);
-            if (DevTools.PickCoupling is { } coupling)
-                _trains.SelectCoupling(coupling - 1);
-            if (DevTools.PickVehicle is { } pick)
-                _trains.Select(pick - 1);
-            else if (DevTools.PickCoupling is null)
-                _trains.Graphs.Open = true;
-        }
-
-        // --trainbrake: the brake worked on a timetable once it's placed.
-        if (_trains.Train is { } braked && DevTools.TrainBrakes.Count > 0 && braked.Time >= DevTools.TrainBrakes[0].At)
-        {
-            var (_, handle) = DevTools.TrainBrakes[0];
-            DevTools.TrainBrakes.RemoveAt(0);
-            braked.Notch = 0;
-            braked.Emergency = handle < 0.0;
-            braked.Brake = Math.Max(handle, 0.0);
-            Log.Info($"--trainbrake: at {braked.Time:0.0} s, automatic brake {(handle < 0.0 ? "emergency" : handle.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture))}");
-        }
-
+        _session.Update(dt, _view, _eye, Blocked, DevTools.Lay is null && _rebuild is null, _tool == Tool.Look && !_audioEditor.WantsPointer);
         if (_trains.Placing)
-        {
             _tool = Tool.Look;
-            if (ImGui.IsKeyPressed(ImGuiKey.Escape))
-                _trains.CancelPlacing();
-            else if (ImGui.IsMouseClicked(ImGuiMouseButton.Left) && !Blocked && Pick(Input.MousePosition) is { } p)
-            {
-                var forward = _camera.Forward;
-                _trains.PlaceAt(p.X, p.Z, forward.X, forward.Z);
-            }
-        }
-        else if (_tool == Tool.Look && _trains.Train is not null && ImGui.IsMouseClicked(ImGuiMouseButton.Left) && !Blocked && !_audioEditor.WantsPointer)
-            // Free Look's left button picks a vehicle (or lets go of it, off them).
-            _trains.SelectAt(Input.MousePosition, Project, new double3(_camera.X, _camera.Y, _camera.Z));
-
-        _trains.Update(dt, _routeWorld.Step(dt, _trains.FocusCut));
-        Net?.Update(dt);
-        if (Driving && _placeOrbit && View == DriveView.Orbit && DriveTrain is { } orbited)
-        {
-            _placeOrbit = false;
-            if (_drive.PlaceOrbit(_camera, orbited, _trains, _terrain!.Source.HeightAt))
-                _followed = null;
-        }
-        if (Driving && View == DriveView.Cab && DriveTrain is { } train)
-        {
-            if (_drive.Cab(_camera, train, _trains, Blocked, _eye))
-                _followed = null;
-        }
-        else
-        {
-            var (bx, by, bz) = _trains.FollowBy(ref _followed);
-            _camera.X += bx;
-            _camera.Y += by;
-            _camera.Z += bz;
-        }
-
-        _trains.Hear(_camera, dt);
     }
 
-    // --- Driving (Single Player and Multiplayer): the train's cameras. ---
-
-    /// The views a driver switches between: from the lead unit's cab, orbiting the lead unit, or flying free.
-    public enum DriveView { Cab, Orbit, Free }
+    // --- Driving (Single Player and Multiplayer). ---
 
     /// Played rather than built: no editing tools or panel, only looking, the train window and the train's cameras.
     public bool Driving { get; init; }
 
-    /// The camera: Orbit is the Route Builder's Follow camera (flown as ever, carried along by the train as it's drawn),
-    /// Free is the same without following, Cab sits in the lead unit's cab.
-    public DriveView View
-    {
-        get => _driveView;
-        set
-        {
-            var entering = value == DriveView.Orbit && (_driveView != DriveView.Orbit || !_trains.Follow);
-            _driveView = value;
-            _trains.Follow = value == DriveView.Orbit;
-            if (value != DriveView.Cab)
-                _camera.Zoom = 1f;
-            if (entering)
-                _placeOrbit = true;
-        }
-    }
+    /// The camera (TrainSession.View).
+    public Trains.DriveView View { get => _session.View; set => _session.View = value; }
 
-    private DriveView _driveView = DriveView.Free;
-    private bool _placeOrbit;
-
-    /// The train the cameras are on: the one looked at (which Follow tracks; taking control looks at it), or else the one
-    /// driven.
-    public Trains.Train? DriveTrain => _trains.Train ?? _trains.Controlled;
+    /// The train the cameras are on (TrainSession.Focus).
+    public Trains.Train? DriveTrain => _session.Focus;
 
     /// The train window: placing, building, driving and coupling stock.
     public TrainPanel TrainWindow => _trains;
@@ -2330,43 +2150,8 @@ public sealed partial class EditorView : IDisposable
             _terrain!.Invalidate(r.X0, r.Z0, r.X1, r.Z1);
     }
 
-    /// Where the ray through a point on the screen first meets the ground: marched out in steps that grow with
-    /// distance, then narrowed down by halving.
-    private double3? Pick(float2 point)
-    {
-        var source = _terrain!.Source;
-        var tanY = MathF.Tan(_camera.FieldOfView * 0.5f);
-        var aspect = _screen.X / _screen.Y;
-        var nx = point.X / _screen.X * 2f - 1f;
-        var ny = 1f - point.Y / _screen.Y * 2f;
-        var dir = MathEx.Normalize(_camera.Forward + _camera.Right * (nx * tanY * aspect) + _camera.Up * (ny * tanY));
-
-        double Above(double t) => _camera.Y + dir.Y * t - source.HeightAt(_camera.X + dir.X * t, _camera.Z + dir.Z * t);
-
-        var previous = 0.0;
-        var t = 1.0;
-        while (t < 20000.0)
-        {
-            if (Above(t) < 0.0)
-            {
-                var lo = previous;
-                var hi = t;
-                for (var i = 0; i < 24; i++)
-                {
-                    var mid = (lo + hi) * 0.5;
-                    if (Above(mid) < 0.0) hi = mid;
-                    else lo = mid;
-                }
-
-                return new double3(_camera.X + dir.X * hi, _camera.Y + dir.Y * hi, _camera.Z + dir.Z * hi);
-            }
-
-            previous = t;
-            t += Math.Max(1.0, t * 0.01);
-        }
-
-        return null;
-    }
+    /// Where the ray through a point on the screen first meets the ground (CameraView.Pick).
+    private double3? Pick(float2 point) => _view.Pick(point, _terrain!.Source.HeightAt);
 
     /// The brush on the ground: a ring of points dropped onto the terrain, projected to the screen.
     private void DrawBrush(ImDrawListPtr draw)

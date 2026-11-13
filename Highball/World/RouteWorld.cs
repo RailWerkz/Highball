@@ -1,3 +1,5 @@
+using System.Globalization;
+using Highball.App;
 using Highball.Routes;
 using Highball.Trains;
 using RailWerkz.Core.Logging;
@@ -133,6 +135,28 @@ public sealed class RouteWorld : IDisposable
         Graph = RailGraphBuilder.Build(lines);
         Graph.Reversed = Switches.Reversed;
         return true;
+    }
+
+    /// Throws the switch nearest a point, if there's one within so many metres. Returns it.
+    public Turnout? Throw(double x, double z, double within) => Network?.Throw(x, z, within);
+
+    /// --throw: the switch nearest a place thrown once there's track, and what was found logged (the nearest few when
+    /// none was).
+    public void ThrowScripted()
+    {
+        if (DevTools.ThrowAt is not { } dev || Network is not { Turnouts: > 0 } network)
+            return;
+        DevTools.ThrowAt = null;
+        var projection = Route.Projection!;
+        var p = projection.Forward(new GeoPoint(dev.Lat, dev.Lon));
+        var thrown = network.Throw(p.East, -p.North, 200.0);
+        Log.Info(thrown is null ? "Throw: no switch near" : $"Throw: switch at node {thrown.Node}, frog {thrown.FrogNormal:0.0} m out, blades {thrown.BladeLength:0.0} m");
+        if (thrown is null)
+            foreach (var t in Source!.Lines!.Turnouts.OrderBy(t => (t.X - p.East) * (t.X - p.East) + (t.Z + p.North) * (t.Z + p.North)).Take(5))
+            {
+                var g = projection.Inverse(new RoutePoint(t.X, -t.Z));
+                Log.Info(string.Create(CultureInfo.InvariantCulture, $"Switch near: {g.Lat:0.000000} {g.Lon:0.000000}, frog {t.FrogNormal:0.0} m, side {t.Side}"));
+            }
     }
 
     public void Dispose()

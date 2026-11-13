@@ -27,9 +27,9 @@ public sealed class DriveScreen : Screen, IWorldScreen
     private string _notice = "";
     private double _noticeAt = double.MinValue;
 
-    private static readonly (EditorView.DriveView View, string Name, string Key)[] Views =
+    private static readonly (DriveView View, string Name, string Key)[] Views =
     [
-        (EditorView.DriveView.Cab, "Cab", "F1"), (EditorView.DriveView.Orbit, "Orbit", "F2"), (EditorView.DriveView.Free, "Free", "F3"),
+        (DriveView.Cab, "Cab", "F1"), (DriveView.Orbit, "Orbit", "F2"), (DriveView.Free, "Free", "F3"),
     ];
 
     public override WorldView View => _view.Ready ? WorldView.World : WorldView.None;
@@ -45,10 +45,10 @@ public sealed class DriveScreen : Screen, IWorldScreen
             ? new RoutePoint(built.Average(t => t.I + 0.5) * grid.TileSize, built.Average(t => t.J + 0.5) * grid.TileSize)
             : null;
         _view = new EditorView(route, middle) { Driving = true, Net = net };
-        _view.View = EditorView.DriveView.Orbit;
+        _view.View = DriveView.Orbit;
         if (net is not null)
             net.Notice += Notify;
-        if (DevTools.DriveView is { } start && Enum.TryParse<EditorView.DriveView>(start, true, out var view))
+        if (DevTools.DriveView is { } start && Enum.TryParse<DriveView>(start, true, out var view))
         {
             DevTools.DriveView = null;
             _view.View = view;
@@ -73,11 +73,11 @@ public sealed class DriveScreen : Screen, IWorldScreen
         if (!Keyboard.KeysBlocked)
         {
             if (ImGui.IsKeyPressed(ImGuiKey.F1))
-                _view.View = EditorView.DriveView.Cab;
+                _view.View = DriveView.Cab;
             else if (ImGui.IsKeyPressed(ImGuiKey.F2))
-                _view.View = EditorView.DriveView.Orbit;
+                _view.View = DriveView.Orbit;
             else if (ImGui.IsKeyPressed(ImGuiKey.F3))
-                _view.View = EditorView.DriveView.Free;
+                _view.View = DriveView.Free;
             else if (ImGui.IsKeyPressed(ImGuiKey.C))
                 _view.TrainWindow.Open = !_view.TrainWindow.Open;
             else if (ImGui.IsKeyPressed(ImGuiKey.Escape) && !_view.Escape())
@@ -158,8 +158,8 @@ public sealed class DriveScreen : Screen, IWorldScreen
 
     private (string Key, string Action)[] Hints => _view.View switch
     {
-        EditorView.DriveView.Free => [("RMB", "Look"), ("WASD", "Move"), ("WHEEL", "Speed"), ("T", "Throw switch"), ("C", "Consist"), ("ESC", "Menu")],
-        EditorView.DriveView.Cab => [("RMB", "Look round"), ("WHEEL", "Zoom"), ("T", "Throw switch"), ("C", "Consist"), ("ESC", "Menu")],
+        DriveView.Free => [("RMB", "Look"), ("WASD", "Move"), ("WHEEL", "Speed"), ("T", "Throw switch"), ("C", "Consist"), ("ESC", "Menu")],
+        DriveView.Cab => [("RMB", "Look round"), ("WHEEL", "Zoom"), ("T", "Throw switch"), ("C", "Consist"), ("ESC", "Menu")],
         _ => [("RMB", "Look"), ("WASD", "Move round the train"), ("WHEEL", "Speed"), ("T", "Throw switch"), ("C", "Consist"), ("ESC", "Menu")],
     };
 
