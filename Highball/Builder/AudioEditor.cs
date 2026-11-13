@@ -154,7 +154,7 @@ public sealed class AudioEditor
         Kit.Note("Metres: across, up, forward. Shift+drag: height. Right-click: reset.");
         foreach (var (spot, name, color) in Spots)
         {
-            var p = TrainPanel.SoundPosition(car, spot);
+            var p = TrainAudio.SoundPosition(car, spot);
             var tunedHere = Get(tuned, spot) is not null;
             var at = ImGui.GetCursorScreenPos();
             var draw = ImGui.GetWindowDrawList();
@@ -294,7 +294,7 @@ public sealed class AudioEditor
         var drawn = new List<float2>();
         foreach (var (spot, name, color) in Spots)
         {
-            var world = World(rotation, middle, TrainPanel.SoundPosition(car, spot));
+            var world = World(rotation, middle, TrainAudio.SoundPosition(car, spot));
             if (project(world.X, world.Y, world.Z) is not { } at)
                 continue;
             // A thin line down to the rail, so where it is along and across reads at a glance.
@@ -324,7 +324,7 @@ public sealed class AudioEditor
             {
                 _dragging = hot;
                 _dragFrom = mouse;
-                _dragStart = World(rotation, middle, TrainPanel.SoundPosition(car, hot));
+                _dragStart = World(rotation, middle, TrainAudio.SoundPosition(car, hot));
                 // How far a pixel moves it, where it is: its distance over the view's height at that distance.
                 var (dx, dy, dz) = (_dragStart.X - camera.X, _dragStart.Y - camera.Y, _dragStart.Z - camera.Z);
                 var distance = (float)Math.Sqrt(dx * dx + dy * dy + dz * dz);
