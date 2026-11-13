@@ -38,6 +38,9 @@ public sealed class RouteWorld : IDisposable
     /// Which way every switch is set: kept across the track being laid out again, for the trains and the blades both.
     public SwitchStates Switches { get; } = new();
 
+    /// The stock on the track and what happens between it.
+    public Railway Railway { get; } = new();
+
     /// The trains' rail graph for the track as it is now (RefreshGraph), or null before there's track.
     public RailGraph? Graph { get; private set; }
 
@@ -48,7 +51,43 @@ public sealed class RouteWorld : IDisposable
     {
         Route = route;
         _opening = TerrainSource.Open(route);
+        Railway.Switches = Switches;
     }
+
+    /// Runs the trains on for this frame, paced (below); every cut's stepped, but one left standing a while sleeps until
+    /// it's driven, run into, or is awake (the one looked at). Returns how far on it ran them, seconds.
+    public double Step(float dt, Railway.Cut? awake)
+    {
+        var step = Paced(dt);
+        Railway.Step(step, awake);
+        return step;
+    }
+
+    // Frame times as measured wobble from one frame to the next by more than the screen's do: the picture is shown at the
+    // display's own beat, so running the train on by each frame's own time makes it move unevenly on the screen. It's run on
+    // by a running average instead, and whatever that gets ahead of or behind real time is paid back a little each frame,
+    // so it never drifts from the clock. A hitch past a quarter of a second is let through at once.
+    private double _paceAverage = -1.0;
+    private double _paceOwed;
+
+    private double Paced(double dt)
+    {
+        if (dt <= 0.0)
+            return 0.0;
+        _paceAverage = _paceAverage < 0.0 ? dt : _paceAverage + (dt - _paceAverage) * 0.1;
+        _paceOwed += dt - _paceAverage;
+        if (Math.Abs(_paceOwed) > 0.25)
+        {
+            var hitch = _paceOwed;
+            _paceOwed = 0.0;
+            return Math.Max(0.0, _paceAverage + hitch);
+        }
+
+        var repay = _paceOwed * 0.05;
+        _paceOwed -= repay;
+        return Math.Max(0.0, _paceAverage + repay);
+    }
+
 
     /// Builds the ground and track once the route's been read in the background. True on the frame they're made.
     public bool TryFinishOpening()

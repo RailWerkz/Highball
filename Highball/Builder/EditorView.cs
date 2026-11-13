@@ -184,6 +184,7 @@ public sealed partial class EditorView : IDisposable
         var place = new GeoPoint(route.Origin.Latitude, route.Origin.Longitude);
         _world = new WorldDisplay(place.Lat, place.Lon, route.Projection?.GridNorth(place) ?? 0.0);
         _routeWorld = new RouteWorld(route);
+        _trains = new TrainPanel(_routeWorld.Railway);
         if (DevTools.Clean)
             _overlay = TrackOverlay.Off;
         if (DevTools.Skybox is { } sky)
@@ -1736,7 +1737,7 @@ public sealed partial class EditorView : IDisposable
     }
 
     private Trains.RailGraph? _railGraph => _routeWorld.Graph;
-    private readonly TrainPanel _trains = new();
+    private readonly TrainPanel _trains;
     private (double X, double Y, double Z)? _followed;
 
     /// The route's saved stock has been put back on the track (once, on the first rail graph). Until then nothing's saved
@@ -1824,12 +1825,11 @@ public sealed partial class EditorView : IDisposable
         if (!_routeWorld.RefreshGraph())
             return;
         var lines = _terrain!.Source.Lines!;
-        _trains.Railway.Switches = _switches;
         _trains.Ground = (x, z) => _terrain!.Source.HeightAt(x, z);
         _trains.Use(_railGraph!);
         RestoreStock();
         RelinkSignals(lines);
-        Net?.Attach(_trains.Railway, _switches, _railGraph);
+        Net?.Attach(_routeWorld.Railway, _switches, _railGraph);
         if (DevTools.TakeExport())
             Export();
         if (DevTools.RailGraphReport)
@@ -1907,7 +1907,7 @@ public sealed partial class EditorView : IDisposable
             // Free Look's left button picks a vehicle (or lets go of it, off them).
             _trains.SelectAt(Input.MousePosition, Project, new double3(_camera.X, _camera.Y, _camera.Z));
 
-        _trains.Update(dt);
+        _trains.Update(dt, _routeWorld.Step(dt, _trains.FocusCut));
         Net?.Update(dt);
         if (Driving && _placeOrbit && View == DriveView.Orbit && DriveTrain is { } orbited)
         {

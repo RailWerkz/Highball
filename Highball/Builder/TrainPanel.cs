@@ -28,8 +28,8 @@ public sealed partial class TrainPanel : IDisposable
     /// Run together faster than this (mph, closing) and both cuts are taken off: there's no crash yet to show.
     public const double CoupleSpeed = Railway.CoupleSpeed;
 
-    /// The stock on the track and what happens between it: this window drives it and draws it.
-    public readonly Railway Railway = new();
+    /// The stock on the track and what happens between it (the route's, RouteWorld.Railway): this window drives it.
+    public readonly Railway Railway;
 
     /// A cut on the track, with what it takes to draw it smoothly from one frame to the next.
     private sealed class Cut(Train train) : Railway.Cut(train)
@@ -53,8 +53,9 @@ public sealed partial class TrainPanel : IDisposable
         set => Railway.Controlled = value;
     }
 
-    public TrainPanel()
+    public TrainPanel(Railway railway)
     {
+        Railway = railway;
         Railway.NewCut = (train, from) => new Cut(train) { From = (from as Cut)?.From };
         Railway.Notice += what => _notice = what;
         Railway.Removed += cut =>
@@ -477,11 +478,12 @@ public sealed partial class TrainPanel : IDisposable
         consist.Save();
     }
 
-    public void Update(float dt)
+    /// The cut looked at, which the world keeps awake as it steps (RouteWorld.Step).
+    public Railway.Cut? FocusCut => _focus;
+
+    /// After the world's stepped the trains on by step (paced: see RouteWorld.Step): the controls, and the trains drawn.
+    public void Update(float dt, double step)
     {
-        var step = Paced(dt);
-        // Every cut's stepped, but one left standing a while sleeps until it's driven, looked at or run into.
-        Railway.Step(step, _focus);
         Graphs.Record(Train, dt);
         _visuals.Begin();
         if (_controlled?.Train is { } driven)
@@ -551,31 +553,6 @@ public sealed partial class TrainPanel : IDisposable
         }
 
         _couplings.Add(End(count - 1, true));
-    }
-
-    // Frame times as measured wobble from one frame to the next by more than the screen's do: the picture is shown at the
-    // display's own beat, so running the train on by each frame's own time makes it move unevenly on the screen. It's run on
-    // by a running average instead, and whatever that gets ahead of or behind real time is paid back a little each frame,
-    // so it never drifts from the clock. A hitch past a quarter of a second is let through at once.
-    private double _paceAverage = -1.0;
-    private double _paceOwed;
-
-    private double Paced(double dt)
-    {
-        if (dt <= 0.0)
-            return 0.0;
-        _paceAverage = _paceAverage < 0.0 ? dt : _paceAverage + (dt - _paceAverage) * 0.1;
-        _paceOwed += dt - _paceAverage;
-        if (Math.Abs(_paceOwed) > 0.25)
-        {
-            var hitch = _paceOwed;
-            _paceOwed = 0.0;
-            return Math.Max(0.0, _paceAverage + hitch);
-        }
-
-        var repay = _paceOwed * 0.05;
-        _paceOwed -= repay;
-        return Math.Max(0.0, _paceAverage + repay);
     }
 
     // With --train: how evenly the lead truck moves on the screen from frame to frame, drawn as it is and as the physics
