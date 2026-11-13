@@ -531,14 +531,10 @@ public sealed partial class EditorView
             {
                 // road,KIND,MODE,lat,lon,lat,lon[,lat,lon...]: each point a click.
                 _tool = Tool.Road;
-                _road.Clear();
-                (_road.Kind, _road.Mode) = (int.Parse(parts[1], CultureInfo.InvariantCulture), Enum.Parse<RoadMode>(parts[2], true));
+                var clicks = new List<(double X, double Z)>();
                 for (var i = 3; i + 1 < parts.Length; i += 2)
-                {
-                    var (rx, rz) = At(i);
-                    if (_road.Click(Roads.Snap(rx, rz, 5.0)) is { } laid)
-                        Committed(Roads.Lay(laid, RoadTool.Kinds[_road.Kind]));
-                }
+                    clicks.Add(At(i));
+                _roadTool.LayScripted(int.Parse(parts[1], CultureInfo.InvariantCulture), Enum.Parse<RoadMode>(parts[2], true), clicks);
 
                 Log.Info($"Road: laid, {source.Network.Ways.Count} ways");
                 break;

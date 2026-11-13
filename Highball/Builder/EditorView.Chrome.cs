@@ -484,26 +484,6 @@ public sealed partial class EditorView
         Kit.EndCard();
     }
 
-    /// The Roads tool's panel: how it draws, and what.
-    private void RoadPanel()
-    {
-        var modes = new[] { RoadMode.Straight, RoadMode.Curved, RoadMode.Freeform, RoadMode.Remove };
-        var current = Array.IndexOf(modes, _road.Mode);
-        var pick = ToolPanel.Mode("roadmode", ["Straight", "Curved", "Freeform", "Remove"], current, 2);
-        if (pick != current && pick >= 0)
-        {
-            _road.Mode = modes[pick];
-            _road.Clear();
-        }
-
-        if (_road.Mode == RoadMode.Remove)
-            return;
-        Kit.BeginCard("Road");
-        for (var i = 0; i < RoadTool.Kinds.Length; i++)
-            if (ToolPanel.Item($"roadkind{i}", ToolIcon.Road, RoadTool.Kinds[i].Name, null, _road.Kind == i))
-                _road.Kind = i;
-        Kit.EndCard();
-    }
 
     /// A piece on the palette: its plan, its name, lit when it's in hand.
     private bool StampTile(TrackStamp stamp, float width)

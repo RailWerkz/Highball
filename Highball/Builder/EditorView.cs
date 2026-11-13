@@ -24,7 +24,7 @@ namespace Highball.Builder;
 /// (see PenTool; Enter lays the track, Backspace takes the last point back, Esc drops it). [ and ] size the brush, P
 /// picks the cover to paint, G shows the track's grades, Ctrl+Z and Ctrl+Y undo and redo, Ctrl+S saves (switching
 /// back to the Planner or leaving saves too).
-public sealed partial class EditorView : IDisposable
+public sealed partial class EditorView : IDisposable, IToolHost
 {
     private enum Tool { Look, Raise, Lower, Smooth, Flatten, Paint, Track, Pen, Circuits, Switches, Shape, Follow, Place, Parallel, Road }
 
@@ -90,14 +90,14 @@ public sealed partial class EditorView : IDisposable
     /// Editing track, with no control point under the pointer: the place on a track it's over, where Ctrl+click puts a new point.
     private (long Way, int Segment, double X, double Z)? _insertAt;
     private readonly PenTool _pen = new();
-    private readonly RoadTool _road = new();
+    /// The Roads tool.
+    private readonly RoadsTool _roadTool;
+    private RoadTool _road => _roadTool.Road;
     private RoadEditor? _roads;
     private RoadEditor.Hit? _bridgeFrom;
     /// What the bridge begun at _bridgeFrom can end on, and where on the screen it was begun, to tell a drag from a click.
     private HashSet<long> _bridgeLine = [];
     private float2 _bridgePressed;
-    private long? _roadHover;
-    private LayPoint? _roadNext;
     private LayPoint? _layNext;
     private PenTool.Measure? _penMeasure;
     private Task<NetworkChange>? _rebuild;
@@ -136,7 +136,9 @@ public sealed partial class EditorView : IDisposable
 
     /// The switch picked with the Switches tool, by its node, and each standard size's picture (loaded when first shown).
     private long? _switch;
-    private readonly ShapeTool _shape = new();
+    /// The Shape Track tool.
+    private readonly ShapeTrackTool _shapeTool;
+    private ShapeTool _shape => _shapeTool.Shape;
     private readonly FollowTool _follow = new();
 
     /// Parallel started on a guide: its first track follows the guide as Follow lays it, the others beside it.
@@ -178,7 +180,9 @@ public sealed partial class EditorView : IDisposable
         _routeWorld = new RouteWorld(route);
         _view = new CameraView(_camera);
         _session = new Trains.TrainSession(_routeWorld, _camera);
-        _tools = new ToolContext(_routeWorld, _view, () => Blocked, () => _hit, Record, () => _topDown, () => ViewReach);
+        _tools = new ToolContext(this);
+        _shapeTool = new ShapeTrackTool(_tools);
+        _roadTool = new RoadsTool(_tools);
         _brushes = new TerrainBrush(_tools);
         if (DevTools.Clean)
             _overlay = TrackOverlay.Off;
@@ -214,7 +218,7 @@ public sealed partial class EditorView : IDisposable
         if (_pen.Count > 0)
             _pen.Clear();
         else if (_tool == Tool.Road && _road.Busy)
-            _road.Clear();
+            _roadTool.Escape();
         else if (_tool == Tool.Place && _bridgeFrom is not null)
             _bridgeFrom = null;
         else if (_tool == Tool.Flatten && _brushes.FlattenSample is not null)
@@ -503,7 +507,7 @@ public sealed partial class EditorView : IDisposable
             SwitchesUpdate(picked);
 
         if (_tool == Tool.Shape)
-            ShapeUpdate(source);
+            _shapeTool.Update(dt);
         if (source.Lines is { } guided)
             (_guides ??= new YardGuides(source.Network, _route.Projection!)).Refresh(guided);
         if (_tool == Tool.Follow)
@@ -513,7 +517,7 @@ public sealed partial class EditorView : IDisposable
         if (_tool == Tool.Place && source.Lines is { } placing)
             PlaceUpdate(source, placing);
         if (_tool == Tool.Road)
-            RoadUpdate();
+            _roadTool.Update(dt);
         BridgeUpdate();
         // "until:<seconds>" holds the ops after it till the app's been running that long.
         if (DevTools.ShapeOps is { Count: > 0 } ops && _rebuild is null
@@ -861,11 +865,7 @@ public sealed partial class EditorView : IDisposable
     };
 
     /// How many metres of ground a few pixels cover, at a place on it.
-    private double PickReach(double x, double z)
-    {
-        var (dx, dy, dz) = (x - _camera.X, _terrain!.Source.HeightAt(x, z) - _camera.Y, z - _camera.Z);
-        return Math.Max(3.0, Math.Sqrt(dx * dx + dy * dy + dz * dz) * 2.0 * Math.Tan(_camera.FieldOfView * 0.5) / Math.Max(_screen.Y, 1f) * S(14f));
-    }
+    private double PickReach(double x, double z) => _tools.PickReach(x, z);
 
     /// The shortest bridge worth building and the longest it can go, in metres. How far past a line's end the cursor has to be to
     /// carry the bridge on past it, and how near an end a bridge starting there begins at the end itself.
@@ -951,36 +951,6 @@ public sealed partial class EditorView : IDisposable
         var moved = Input.MousePosition - _bridgePressed;
         if (moved.X * moved.X + moved.Y * moved.Y > S(16f) * S(16f))
             BridgeFinish(hit.X, hit.Z);
-    }
-
-    private void RoadUpdate()
-    {
-        _roadHover = null;
-        _roadNext = null;
-        if (Blocked || _hit is not { } hit)
-            return;
-
-        var (x, z) = (hit.X, hit.Z);
-        var reach = PickReach(x, z);
-        if (_road.Mode == RoadMode.Remove)
-        {
-            if (Roads.Nearest(x, z, reach, RoadEditor.IsRoad) is { } under)
-            {
-                _roadHover = under.Way;
-                if (Input.MouseDown(GlfwMouseButton.Left))
-                    Committed(Roads.Remove(under.Way));
-            }
-
-            return;
-        }
-
-        if ((Input.Key(GlfwKey.LeftShift) || Input.Key(GlfwKey.RightShift)) && _road.Mode == RoadMode.Straight)
-            (x, z) = _road.Stepped(x, z);
-
-        // The control point of a curve stands free; everything else joins what it lands on.
-        _roadNext = _road.Mode == RoadMode.Curved && _road.From is not null && _road.Control is null ? new LayPoint(x, z) : Roads.Snap(x, z, reach);
-        if (Input.MouseDown(GlfwMouseButton.Left) && _road.Click(_roadNext.Value) is { } points)
-            Committed(Roads.Lay(points, RoadTool.Kinds[_road.Kind]));
     }
 
     /// Lays the track piece in hand, as it's shown at this place, and sets its switches to its size.
@@ -1582,30 +1552,7 @@ public sealed partial class EditorView : IDisposable
 
     // --- Shaping track. ---
 
-    private void ShapeUpdate(TerrainSource source)
-    {
-        if (source.Lines is not { } lines)
-            return;
-        var blocked = Blocked;
-        var keys = !Keyboard.KeysBlocked && !blocked;
-        var change = _shape.Update(lines, Input.MousePosition, blocked || _hit is not { } hit ? null : (hit.X, hit.Z), Project, S(1f), _camera.X, _camera.Z, ViewReach,
-            !blocked && Input.MouseDown(GlfwMouseButton.Left), Input.Mouse(GlfwMouseButton.Left),
-            Input.Key(GlfwKey.LeftShift) || Input.Key(GlfwKey.RightShift), Input.Key(GlfwKey.LeftAlt) || Input.Key(GlfwKey.RightAlt),
-            keys && Input.KeyDown(GlfwKey.Delete), keys && Input.KeyDown(GlfwKey.L), keys && Input.KeyDown(GlfwKey.K), _rebuild is not null);
-        if (_shape.Refused is { } refused)
-            (_switchRefused, _shape.Refused) = (refused, null);
-        if (change is { } made)
-            CommitShape(source, made.Line, made.Shape);
-    }
-
-    private void CommitShape(TerrainSource source, NetworkLine line, Alignment? shape)
-    {
-        var edit = new TrackShapeEdit(line.Key, source.TrackEdits.Get(line.Key), shape);
-        source.TrackEdits.Set(line.Key, shape);
-        _undo.Push(edit);
-        _redo.Clear();
-        RebuildNetwork();
-    }
+    private void CommitShape(TerrainSource source, NetworkLine line, Alignment? shape) => _shapeTool.Commit(line, shape);
 
     private readonly MapTiles _backgroundTiles = new();
     private bool _showBackground;
@@ -2110,8 +2057,8 @@ public sealed partial class EditorView : IDisposable
             var imperial = Settings.Current.Units == UnitSystem.Imperial;
             _handles.Draw(draw, handled, handledSwitch, ProjectGround, S(1f), m => imperial ? string.Create(CultureInfo.InvariantCulture, $"{m * FeetPerMeter:0} ft") : string.Create(CultureInfo.InvariantCulture, $"{m:0} m"));
         }
-        if (_tool == Tool.Shape && _terrain?.Source.Lines is { } shaping)
-            _shape.Draw(draw, shaping, Project, S(1f));
+        if (_tool == Tool.Shape)
+            _shapeTool.Draw(draw);
         if (_tool is Tool.Follow or Tool.Parallel || (_tool is Tool.Pen or Tool.Shape && _overlay != TrackOverlay.ClassMap))
             _guides?.Draw(draw, ProjectGround, _camera.X, _camera.Z, ViewReach);
         if (_tool is Tool.Follow or Tool.Pen or Tool.Parallel || (_tool == Tool.Place && _place.Mode is PlaceMode.Track or PlaceMode.Bridge))
@@ -2131,9 +2078,7 @@ public sealed partial class EditorView : IDisposable
             _place.Draw(draw, ProjectGround, shown.Source.Objects, PlacedAtWorld, S(1f));
         if (_tool == Tool.Road)
         {
-            _road.Draw(draw, ProjectGround, _roadNext, S(1f));
-            if (_roadHover is { } doomed && _roads?.Shape(doomed) is { } shape)
-                DrawPicked(draw, shape.X, shape.Z, Style.Stop);
+            _roadTool.Draw(draw);
         }
 
         if (_tool == Tool.Place && _place.Mode == PlaceMode.RemoveBridge && !Blocked && _hit is { } at2
@@ -2193,17 +2138,28 @@ public sealed partial class EditorView : IDisposable
     }
 
     /// A line over the view, to show what a click would act on.
-    private void DrawPicked(ImDrawListPtr draw, double[] x, double[] z, Rgba color)
-    {
-        for (var i = 0; i + 1 < x.Length; i++)
-            if (ProjectGround(x[i], z[i]) is { } a && ProjectGround(x[i + 1], z[i + 1]) is { } b)
-                draw.AddLine(a, b, color, S(3f));
-    }
+    private void DrawPicked(ImDrawListPtr draw, double[] x, double[] z, Rgba color) => _tools.DrawPicked(draw, x, z, color);
 
     private static Rgba GradeColor(float grade) => GradeOverlay.GradeColor(grade);
 
     /// The track coloured by its grade or class (G), and the grade under the pointer.
     private readonly GradeOverlay _grades = new();
+
+    // --- What the tools are given (IToolHost, through ToolContext). ---
+
+    RouteWorld IToolHost.World => _routeWorld;
+    CameraView IToolHost.View => _view;
+    bool IToolHost.Blocked => Blocked;
+    double3? IToolHost.Hit => _hit;
+    bool IToolHost.TopDown => _topDown;
+    double IToolHost.Reach => ViewReach;
+    bool IToolHost.Rebuilding => _rebuild is not null;
+    string? IToolHost.Refused { get => _switchRefused; set => _switchRefused = value; }
+    TrackEditor IToolHost.Tracks => _tracks!;
+    RoadEditor IToolHost.Roads => Roads;
+    void IToolHost.Record(object? edit) => Record(edit);
+    void IToolHost.Commit(NetworkEdit? edit) => Committed(edit);
+    void IToolHost.RebuildNetwork() => RebuildNetwork();
 
     // --- Menus, the side panel and windows (ImGui). ---
 
@@ -2436,7 +2392,7 @@ public sealed partial class EditorView : IDisposable
         if (_tool == Tool.Switches)
             SwitchPanel();
         if (_tool == Tool.Shape)
-            ShapePanel();
+            _shapeTool.Panel(imperial);
         if (_tool == Tool.Follow)
             FollowPanel();
         if (_tool == Tool.Track)
@@ -2449,7 +2405,7 @@ public sealed partial class EditorView : IDisposable
         if (_tool == Tool.Place)
             PlacePanel(_terrain.Source);
         if (_tool == Tool.Road)
-            RoadPanel();
+            _roadTool.Panel(imperial);
 
         if (_topDown)
         {
@@ -2589,41 +2545,6 @@ public sealed partial class EditorView : IDisposable
     }
 
     /// The line in the Shape tool: what's been done to it, what the handle in hand would make of it, and back to as solved.
-    private void ShapePanel()
-    {
-        if (_terrain?.Source is not { Lines: { } lines } source)
-            return;
-        if (_shape.LineIn(lines) is not { } line)
-        {
-            ToolPanel.Hint("Click a track.");
-            return;
-        }
-
-        var imperial = Settings.Current.Units == UnitSystem.Imperial;
-        string Length(double metres) => imperial ? string.Create(CultureInfo.InvariantCulture, $"{metres * FeetPerMeter:0} ft") : string.Create(CultureInfo.InvariantCulture, $"{metres:0.#} m");
-        var shaped = source.TrackEdits.Has(line.Key);
-        Kit.BeginCard("Line", shaped ? "Shaped by hand" : "As solved");
-        var stats = new List<Stat> { new("Length", Length(line.S[^1])) };
-        if (_shape.Preview is { } preview)
-        {
-            stats.Add(new Stat("Tightest curve", preview.Radius < double.MaxValue ? Length(preview.Radius) : "Straight"));
-            stats.Add(new Stat("Off the map", Length(preview.OffMap)));
-        }
-
-        Kit.Stats([.. stats], 2);
-        if (Kit.Button("backtosolved", "Back to Solved", 0f, ButtonKind.Secondary, shaped && _rebuild is null))
-            CommitShape(source, line, null);
-        Kit.EndCard();
-
-        // How far K's smooth curve may move the track for smoothness.
-        Kit.BeginCard("Smooth Curve", "Shift-click two handles, then K");
-        var factor = imperial ? FeetPerMeter : 1f;
-        var hold = (float)TrackShaping.EaseHold * factor;
-        if (ToolPanel.Value("easehold", imperial ? "Leeway (ft)" : "Leeway (m)", ref hold, 0.05f * factor, 3f * factor, "0.00", log: true))
-            TrackShaping.EaseHold = Math.Clamp(hold / factor, 0.05, 3.0);
-        Kit.EndCard();
-    }
-
     /// The picked switch: what it is now, and the sizes to choose from, each shown by its model.
     private void SwitchPanel()
     {
@@ -2849,8 +2770,7 @@ public sealed partial class EditorView : IDisposable
             (string, string)[] tool = _tool switch
             {
                 Tool.Look => [("RMB", _topDown ? "Pan" : "Look"), ("WASD", "Move"), ("WHEEL", _topDown ? "Zoom" : "Speed"), .. (_topDown ? ((string, string)[])[] : [("ALT+WHEEL", _camera.Zoom <= 1.01f ? "Zoom" : string.Create(CultureInfo.InvariantCulture, $"Zoom {_camera.Zoom:0.0}x"))]), ("G", "Overlay"), ("T", "Throw switch"), .. (_trains.Train is null ? ((string, string)[])[] : [("LMB", "Pick vehicle or coupling")])],
-                Tool.Road when _road.Mode == RoadMode.Remove => [("LMB", "Remove road"), ("CTRL+Z", "Undo")],
-                Tool.Road => [("LMB", "Next point"), ("SHIFT", "15 degree steps"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
+                Tool.Road => _roadTool.Hints,
                 Tool.Parallel => _parallel.Anchor is not null
                     ? [("LMB", "End"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")]
                     : _parallelFollowing ? [("LMB", "Along a guide"), ("ENTER", "Lay tracks"), ("F", _parallel.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove click"), ("ESC", "Cancel")]
@@ -2864,7 +2784,7 @@ public sealed partial class EditorView : IDisposable
                 Tool.Place => [("LMB", "Place, pick, drag"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Flip"), ("DEL", "Delete"), ("CTRL+Z", "Undo")],
                 Tool.Follow when _yard.Mode != YardMode.Follow => [("LMB", "Pick track"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
                 Tool.Follow => [("LMB", "Guide or track"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove click"), ("CTRL+Z", "Undo")],
-                Tool.Shape => [("LMB", "Select, drag handle"), ("SHIFT+LMB", "Mark handles"), ("L", "Straighten"), ("K", "Smooth curve"), ("DEL", "Remove handle"), ("ALT", "No snap"), ("CTRL+Z", "Undo")],
+                Tool.Shape => _shapeTool.Hints,
                 _ when IsBrush(_tool) => SyncBrush().Hints,
                 Tool.Track => [("LMB", "Select, drag"), ("SHIFT", "Add"), ("CTRL+LMB", "Insert point"), ("L", "Straighten"), ("K", "Smooth"), ("I", "Simplify"), ("J", "Join"), ("U", "Split"), ("DEL", "Delete")],
                 Tool.Circuits => _circuits?.Hints ?? [],
