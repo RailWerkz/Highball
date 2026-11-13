@@ -49,6 +49,12 @@ public sealed unsafe class PostProcess : IDisposable
     private readonly StorageImage _measured;
 
     private readonly StorageImage?[] _history = new StorageImage?[2];
+
+    /// The picture as it stood just before what's drawn over it (Draw's copyPicture), for what bends it, like heat haze to
+    /// sample from while it draws into the picture itself. PictureVersion changes whenever it's made anew.
+    private StorageImage? _picture;
+    public StorageImage? Picture => _picture;
+    public int PictureVersion { get; private set; }
     private readonly StorageImage?[] _downs = new StorageImage?[BloomLevels];
     private readonly StorageImage?[] _ups = new StorageImage?[BloomLevels - 1];
     private StorageImage? _shafts;
@@ -134,6 +140,8 @@ public sealed unsafe class PostProcess : IDisposable
     {
         _history[0]?.Dispose();
         _history[1]?.Dispose();
+        _picture?.Dispose();
+        _picture = null;
         foreach (var image in _downs)
             image?.Dispose();
         foreach (var image in _ups)
@@ -217,6 +225,8 @@ public sealed unsafe class PostProcess : IDisposable
         var (w, h) = (_size.X, _size.Y);
         _history[0] = new StorageImage(w, h, 1, VkFormat.R16G16B16A16SFloat, false, false, "post.a", drawnTo: true);
         _history[1] = new StorageImage(w, h, 1, VkFormat.R16G16B16A16SFloat, false, false, "post.b", drawnTo: true);
+        _picture = Hdr(w, h, "post.picture");
+        PictureVersion++;
         for (var i = 0; i < BloomLevels; i++)
             _downs[i] = Hdr(w >> (i + 1), h >> (i + 1), "post.down");
         for (var i = 0; i < BloomLevels - 1; i++)
@@ -285,7 +295,9 @@ public sealed unsafe class PostProcess : IDisposable
     }
 
     /// Outside any render pass, with the world and everything over it finished. motion: how what moves moved (MotionVectors).
-    public void Draw(CommandBuffer cmd, RenderTarget target, StorageImage motion, Camera camera, float aspect, Sky sky, Action<CommandBuffer>? overPicture = null)
+    /// copyPicture: copy the picture into Picture first, for overPicture to sample.
+    public void Draw(CommandBuffer cmd, RenderTarget target, StorageImage motion, Camera camera, float aspect, Sky sky, Action<CommandBuffer>? overPicture = null,
+        bool copyPicture = false)
     {
         Resize(target, motion);
 
@@ -334,6 +346,22 @@ public sealed unsafe class PostProcess : IDisposable
         // what's round it there, so it's clamped away.
         if (overPicture is not null)
         {
+            if (copyPicture && _picture is not null)
+            {
+                var written = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.ShaderWriteBit, DstAccessMask = VkAccessFlags.TransferReadBit | VkAccessFlags.TransferWriteBit };
+                cmd.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit | VkPipelineStageFlags.FragmentShaderBit, VkPipelineStageFlags.TransferBit, VkDependencyFlags.None, [written], [], []);
+                var blit = new VkImageBlit
+                {
+                    SrcSubresource = new VkImageSubresourceLayers { AspectMask = VkImageAspectFlags.ColorBit, LayerCount = 1 },
+                    DstSubresource = new VkImageSubresourceLayers { AspectMask = VkImageAspectFlags.ColorBit, LayerCount = 1 },
+                };
+                blit.SrcOffsets[1] = new VkOffset3D { X = w, Y = h, Z = 1 };
+                blit.DstOffsets[1] = new VkOffset3D { X = w, Y = h, Z = 1 };
+                cmd.BlitImage(_history[_current]!.VkImage, VkImageLayout.General, _picture.VkImage, VkImageLayout.General, [blit], VkFilter.Nearest);
+                var copied = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.TransferWriteBit, DstAccessMask = VkAccessFlags.ShaderReadBit | VkAccessFlags.ColorAttachmentWriteBit };
+                cmd.PipelineBarrier(VkPipelineStageFlags.TransferBit, VkPipelineStageFlags.FragmentShaderBit | VkPipelineStageFlags.ColorAttachmentOutputBit, VkDependencyFlags.None, [copied], [], []);
+            }
+
             var into = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.ShaderWriteBit, DstAccessMask = VkAccessFlags.ColorAttachmentReadBit | VkAccessFlags.ColorAttachmentWriteBit };
             cmd.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit, VkPipelineStageFlags.ColorAttachmentOutputBit, VkDependencyFlags.None, [into], [], []);
             var color = new VkRenderingAttachmentInfo

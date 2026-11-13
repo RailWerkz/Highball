@@ -133,7 +133,8 @@ public sealed class AirBrakes
     /// A train that's charged and tight shows little; a big reading released means it's still charging, or there's a leak.
     public double Flow { get; private set; }
 
-    /// The share of the locomotives whose engines are running to drive their compressors, 0 to 1.
+    /// How hard the locomotives' compressors are driven, against every engine running at idle: 0 with none running, 1 all
+    /// idling, more as they're revved (each compressor's driven off its engine, so pumps with its revs).
     public double CompressorShare { get; set; } = 1.0;
 
     // The controls.

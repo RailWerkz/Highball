@@ -39,9 +39,9 @@
     "chug": "Engines/GEVO/run8_es44_chug.wav",
     "startup": "Engines/EMD645/Run8_SD40-2_Startup.wav",
     "startupSeconds": 13,
-    "compressorStart": "Engines/EMD645/run8_es44_compressorStart.wav",
-    "compressorLoop": "Engines/EMD645/run8_es44_aircomploop.wav",
-    "compressorStop": "Engines/EMD645/run8_es44_compressorValveBlast.wav",
+    "compressorStart": "Engines/GEVO/run8_es44_compressorStart.wav",
+    "compressorLoop": "Engines/GEVO/run8_es44_aircomploop.wav",
+    "compressorStop": "Engines/GEVO/run8_es44_compressorValveBlast.wav",
     "dynamicFan": "Engines/EMD645/emd_Fan02.wav"
   }
 }

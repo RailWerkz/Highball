@@ -43,6 +43,25 @@ public sealed class Sound(short[] samples, int channels, int sampleRate)
         return new Sound(result, ch, SampleRate);
     }
 
+    /// The sound turned up (or down) by gainDb, what the gain would push past 0.6 of full scale rounded off by a soft knee
+    /// so it never clips: for recordings that came in quieter than the rest.
+    public Sound Louder(float gainDb)
+    {
+        const float knee = 0.6f, ceiling = 0.97f, room = ceiling - knee;
+        var gain = MathF.Pow(10f, gainDb / 20f);
+        var result = new short[Samples.Length];
+        for (var i = 0; i < Samples.Length; i++)
+        {
+            var x = Samples[i] / 32768f * gain;
+            var m = MathF.Abs(x);
+            if (m > knee)
+                x = MathF.Sign(x) * (knee + room * MathF.Tanh((m - knee) / room));
+            result[i] = (short)Math.Clamp(x * 32768f, -32768f, 32767f);
+        }
+
+        return new Sound(result, Channels, SampleRate);
+    }
+
     public Sound ToMono()
     {
         if (Channels == 1)

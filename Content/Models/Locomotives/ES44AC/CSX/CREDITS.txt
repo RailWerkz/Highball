@@ -1,0 +1,14 @@
+GE GEVO ES44AC (CSX)
+Author: TODO
+Source: TODO (downloaded as GEVO+ES44AC.zip)
+Licence: TODO
+
+The original files are in Source/Mesh and Source/Texture, unchanged.
+Source/gevo_es44ac.glb and .blend are made from Source/Mesh/Gevo.blend by Tools/Blender/gevo_textures.py: the geometry
+unchanged, its three materials (Gevo, Gevo CAB, Control) given the Diffuse, Normal, Spec and Ao textures, which the original
+pointed at UV checker images that weren't included.
+The other models in these folders are made from that .blend by Tools/Blender/gevo.py. Changes: split into body, truck and
+wheelset; turned to run along Y and moved so the rail is at zero; the occlusion laid into the colour, the maps cut to 2048
+and written as JPEG, one roughness per material; the headlights, ditch lights and horn cut out as parts of their own, and
+an empty node for the bell (the source has none). Its couplers are the shared one in Models/Couplers, from the SD40 (see the
+CREDITS.txt there).

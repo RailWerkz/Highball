@@ -18,8 +18,14 @@ public sealed class RunningGear
     private const float MotorRange = 900f;
     private const double WheelHeight = 0.6;
     private const double MotorHeight = 0.9;
-    /// Every running gear sound's level is scaled by this: a touch under 1, so it sits under the rest of the mix.
-    private const float Level = 0.9f;
+    /// Every running gear sound's level is scaled by this: a touch under 1, so it sits under the rest of the mix, and by the
+    /// running gear's level in the mix (AudioTuning, set in the Audio Editor).
+    private static float Level => 0.9f * AudioTuning.Current.Mix.RunningGear;
+
+    /// Each sound's level, and when and how often the knocks come (AudioTuning.GearTuning, set in the Audio Editor).
+    private static AudioTuning.GearTuning Tune => AudioTuning.Current.Gear;
+
+    private double ClankDistance() => Tune.ClankEveryMin + (Math.Max(Tune.ClankEveryMax, Tune.ClankEveryMin) - Tune.ClankEveryMin) * _random.NextDouble();
 
     private static readonly string[] Slow = SoundFiles.Matching(Folder, "slowRolling");
     private static readonly string[] Roll = SoundFiles.Matching(Folder, "axleRoll");
@@ -109,8 +115,8 @@ public sealed class RunningGear
         var moving = Math.Clamp(speed / 2f, 0f, 1f);
         var level = moving * (0.25f + 0.75f * motor.Effort);
         var w = Math.Clamp(speed / 25f, 0f, 1f) * MathF.PI * 0.5f;
-        AudioEngine.SetLoopVolume(motor.Low, MathF.Cos(w) * level * 0.8f * Level, Math.Clamp(0.55f + speed / 14f, 0.55f, 1.8f));
-        AudioEngine.SetLoopVolume(motor.High, MathF.Sin(w) * level * 0.8f * Level, Math.Clamp(0.6f + speed / 30f, 0.6f, 1.6f));
+        AudioEngine.SetLoopVolume(motor.Low, MathF.Cos(w) * level * Tune.Motors * Level, Math.Clamp(0.55f + speed / 14f, 0.55f, 1.8f));
+        AudioEngine.SetLoopVolume(motor.High, MathF.Sin(w) * level * Tune.Motors * Level, Math.Clamp(0.6f + speed / 30f, 0.6f, 1.6f));
         AudioEngine.Move(motor.Low, at);
         AudioEngine.Move(motor.High, at);
 
@@ -121,7 +127,7 @@ public sealed class RunningGear
         if (motor.Slip.IsValid)
         {
             var wheelAt = At(body, i, middle, pair, WheelHeight, listener, WheelReference, WheelRange);
-            AudioEngine.SetLoopVolume(motor.Slip, Math.Clamp(slip * 1.4f, 0f, 1f) * Level, 0.85f + 0.35f * slip + Math.Clamp(speed / 40f, 0f, 0.3f));
+            AudioEngine.SetLoopVolume(motor.Slip, Math.Clamp(slip * 1.4f, 0f, 1f) * Tune.Slip * Level, 0.85f + 0.35f * slip + Math.Clamp(speed / 40f, 0f, 0.3f));
             AudioEngine.Move(motor.Slip, wheelAt);
             if (slip <= 0.01f)
             {
@@ -162,9 +168,9 @@ public sealed class RunningGear
                     continue;
                 wheel.Car = car;
                 wheel.Front = front;
-                // Each truck rolls a little differently; the clanks come at random, every 15 to 45 m.
+                // Each truck rolls a little differently; the clanks come at random, every so many metres (ClankDistance).
                 wheel.Pitch = 0.94f + (float)_random.NextDouble() * 0.12f;
-                wheel.ToClank = 15.0 + _random.NextDouble() * 30.0;
+                wheel.ToClank = ClankDistance();
                 wheel.Gain = 0f;
                 break;
             }
@@ -200,8 +206,8 @@ public sealed class RunningGear
             wheel.Roll = AudioEngine.PlayLoop(r, volume: 0f, at: at);
         // A new emitter comes in gently rather than cutting in.
         wheel.Gain = MathF.Min(1f, wheel.Gain + dt / 0.5f);
-        AudioEngine.SetLoopVolume(wheel.Slow, slow * 0.7f * wheel.Gain * Level, Math.Clamp(0.8f + speed / 10f, 0.8f, 1.3f) * wheel.Pitch);
-        AudioEngine.SetLoopVolume(wheel.Roll, fast * wheel.Gain * Level, Math.Clamp(0.75f + speed / 40f, 0.75f, 1.45f) * wheel.Pitch);
+        AudioEngine.SetLoopVolume(wheel.Slow, slow * Tune.SlowRolling * wheel.Gain * Level, Math.Clamp(0.8f + speed / 10f, 0.8f, 1.3f) * wheel.Pitch);
+        AudioEngine.SetLoopVolume(wheel.Roll, fast * Tune.Rolling * wheel.Gain * Level, Math.Clamp(0.75f + speed / 40f, 0.75f, 1.45f) * wheel.Pitch);
         AudioEngine.Move(wheel.Slow, at);
         AudioEngine.Move(wheel.Roll, at);
 
@@ -210,17 +216,18 @@ public sealed class RunningGear
         wheel.ToClank -= speed * dt;
         if (wheel.ToClank <= 0.0)
         {
-            wheel.ToClank = 15.0 + _random.NextDouble() * 30.0;
-            if (speed > 1f && SoundFiles.Shot(Pick(Clank)) is { } clank)
-                AudioEngine.Play(clank, volume: Math.Clamp(0.3f + speed / 40f, 0.3f, 0.8f) * Level, pitch: wheel.Pitch, at: at);
+            wheel.ToClank = ClankDistance();
+            if (speed > Tune.ClankMinSpeed && SoundFiles.Shot(Pick(Clank)) is { } clank)
+                AudioEngine.Play(clank, volume: Math.Clamp(0.3f + speed / 40f, 0.3f, 0.8f) * Tune.Clank * Level, pitch: wheel.Pitch, at: at);
         }
 
-        var sharp = (float)Math.Clamp(car.Curvature * 500.0, 0.0, 1.0); // full at a 500 m radius and tighter
-        if (sharp > 0.15f && speed > 2f && _random.NextDouble() < 0.7 * sharp * dt && SoundFiles.Shot(Pick(Flange)) is { } flange)
-            AudioEngine.Play(flange, volume: (0.35f + 0.4f * sharp) * Level, pitch: wheel.Pitch, at: at);
+        var sharp = (float)Math.Clamp(car.Curvature * Tune.FlangeRadius, 0.0, 1.0); // full at FlangeRadius and tighter
+        if (sharp > Tune.FlangeOnset && speed > Tune.FlangeMinSpeed && _random.NextDouble() < Tune.FlangeChance * sharp * dt && SoundFiles.Shot(Pick(Flange)) is { } flange)
+            AudioEngine.Play(flange, volume: (0.35f + 0.4f * sharp) * Tune.Flange * Level, pitch: wheel.Pitch, at: at);
 
-        if (body.Braking[i] > 2000.0 && speed is > 0.3f and < 7f && _random.NextDouble() < 0.5 * dt && SoundFiles.Shot(Pick(Squeal)) is { } squeal)
-            AudioEngine.Play(squeal, volume: 0.6f * Level, pitch: wheel.Pitch, at: at);
+        if (body.Braking[i] > Tune.SquealForce && speed > Tune.SquealMinSpeed && speed < Tune.SquealMaxSpeed && _random.NextDouble() < Tune.SquealChance * dt
+            && SoundFiles.Shot(Pick(Squeal)) is { } squeal)
+            AudioEngine.Play(squeal, volume: 0.6f * Tune.Squeal * Level, pitch: wheel.Pitch, at: at);
     }
 
     private static float Smooth(float from, float to, float x)

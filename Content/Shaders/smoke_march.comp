@@ -1,0 +1,294 @@
+#version 450
+// Exhaust smoke, marched as Kitten Space Agency marches its volumetric trails, at a train's scale. Each plume is a chain of
+// capsules. A pixel looks up its tile's list, keeps just the capsules its ray actually crosses (a ray through a plume meets
+// a handful, not the hundreds on screen), and marches only the stretch they span, stopping at the world's depth.
+//
+// At each step the capsules overlapping there are blended into one shape: their falloffs weighted together, so where two
+// meet the plume is as thick as either, not both. That shape is eroded by the clouds' noise, read where the point is in the
+// world and staying put there (the smoke moves through it, as the trails' noise does), with a second, rotated read blended in
+// so the noise's tiling doesn't show. Exhaust is frayed: stirred thicker and thinner in its heart, torn into wisps at its
+// edge. An engine catching billows instead, rounded and carved like a cloud. Lit by the sun through itself and by the sky,
+// near black: diesel smoke swallows the light it meets.
+
+#define PI 3.14159265
+#define saturate(x) clamp(x, 0.0, 1.0)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform SmokeUniforms
+{
+    vec4 right;    // right * tan(half fov x)
+    vec4 up;       // up * tan(half fov y)
+    vec4 forward;  // w: the near distance
+    vec4 sun;
+    vec4 sunColor;
+    vec4 skyTop;
+    vec4 skyLow;
+    vec4 noise;    // xyz: the camera's place in the noise; w: noise tiles per metre
+    vec4 info;     // segments, tiles across, tiles down, seconds
+} u;
+
+struct Segment
+{
+    vec4 a;    // one end relative to the camera; its radius
+    vec4 b;
+    vec4 look; // density, soot, age, billow
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer Segments { Segment segments[]; };
+layout(std430, set = 0, binding = 2) readonly buffer Tiles { uvec2 tiles[]; };
+layout(std430, set = 0, binding = 3) readonly buffer Indices { uint indices[]; };
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D result;
+layout(set = 0, binding = 5, r32f) uniform writeonly image2D resultAlong;
+layout(set = 0, binding = 6) uniform sampler2D sceneDepth;
+layout(set = 0, binding = 7) uniform sampler3D noiseTexture; // the clouds': red billows, green the same at half size
+
+const int MaxHits = 64;
+const int Steps = 40;      // spread over the stretches of the ray with smoke in them
+const int MaxSteps = 64;
+const int SunSteps = 2;
+
+int hits[MaxHits];
+float hitThick[MaxHits];
+float spanFrom[MaxHits];
+float spanTo[MaxHits];
+int hitCount;
+
+float HenyeyGreenstein(float g, float cosine)
+{
+    return (1.0 - g * g) / (4.0 * PI * pow(1.0 + g * g - 2.0 * g * cosine, 1.5));
+}
+
+// How far inside one capsule p is, 0 at its skin to 1 on its axis, and where along it, 0 to 1.
+float Falloff(Segment s, vec3 p, out float along)
+{
+    vec3 ba = s.b.xyz - s.a.xyz;
+    float length2 = dot(ba, ba);
+    along = length2 > 1e-6 ? saturate(dot(p - s.a.xyz, ba) / length2) : 0.0;
+    float radius = mix(s.a.w, s.b.w, along);
+    vec3 off = p - (s.a.xyz + ba * along);
+    float d2 = dot(off, off) / (radius * radius);
+    if (d2 >= 1.0)
+        return 0.0;
+    float f = 1.0 - d2;
+    return f * f;
+}
+
+// The blended plume at p: its shape (0 to 1) and, weighted by how far inside each it is, the capsules' density, soot and
+// billow. Returns the shape.
+float Plume(vec3 p, out float density, out float soot, out float billow)
+{
+    float shape = 0.0, weights = 0.0, d = 0.0, s = 0.0, b = 0.0;
+    for (int i = 0; i < hitCount; i++)
+    {
+        Segment seg = segments[hits[i]];
+        float along;
+        float f = Falloff(seg, p, along);
+        if (f <= 0.0)
+            continue;
+        shape = max(shape, f);
+        weights += f;
+        d += f * seg.look.x;
+        s += f * seg.look.y;
+        b += f * seg.look.w;
+    }
+    float w = max(weights, 1e-6);
+    density = d / w;
+    soot = s / w;
+    billow = b / w;
+    return shape;
+}
+
+// Just the shape, for the march towards the sun.
+float Shape(vec3 p)
+{
+    float shape = 0.0;
+    for (int i = 0; i < hitCount; i++)
+    {
+        float along;
+        shape = max(shape, Falloff(segments[hits[i]], p, along));
+    }
+    return shape;
+}
+
+// The noise at a place relative to the camera, fixed in the world, with a second read turned and shifted blended in to hide
+// where the texture repeats; contrast put back after the blend evens it out.
+float Billows(vec3 uvw)
+{
+    float a = texture(noiseTexture, uvw).r;
+    float b = texture(noiseTexture, vec3(uvw.z, uvw.x, uvw.y) * 1.37 + vec3(0.37, 0.11, 0.73)).r;
+    return saturate((0.5 * (a + b) - 0.5) * 1.6 + 0.5);
+}
+
+float Eroded(vec3 p, float shape, float billow)
+{
+    vec3 uvw = u.noise.xyz + p * u.noise.w + vec3(0.0, -u.info.w * 0.04, 0.0);
+    float broad = Billows(uvw);
+    float fine = texture(noiseTexture, uvw * 3.1 + 0.37).g;
+    float edge = 1.0 - shape;
+    float frayed = saturate(shape * (0.35 + 1.1 * broad) - (1.0 - fine) * (0.2 + 1.3 * edge));
+    float puffy = saturate(shape * 1.5 - (1.0 - broad) * 0.95 - (1.0 - fine) * (0.25 + 0.6 * edge));
+    return mix(frayed, puffy, billow);
+}
+
+void main()
+{
+    ivec2 size = imageSize(result);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    vec3 forward = normalize(u.forward.xyz);
+    vec3 ray = normalize(u.forward.xyz + ndc.x * u.right.xyz + ndc.y * u.up.xyz);
+    float along = u.forward.w / max(textureLod(sceneDepth, uv, 0.0).r, 1e-8);
+    imageStore(resultAlong, pixel, vec4(along));
+    float solid = along / max(dot(ray, forward), 1e-3);
+
+    // The capsules this ray crosses, from its tile's list, and the stretch of the ray they span.
+    ivec2 tile = min(ivec2(uv * u.info.yz), ivec2(u.info.yz) - 1);
+    uvec2 range = tiles[tile.y * int(u.info.y) + tile.x];
+    // Past MaxHits, the thinnest go: old, spread-out wisps barely show, where dropping the dense fresh plume would cut it
+    // off in a hard line.
+    hitCount = 0;
+    for (uint k = 0u; k < range.y; k++)
+    {
+        int index = int(indices[range.x + k]);
+        Segment s = segments[index];
+        vec3 centre = 0.5 * (s.a.xyz + s.b.xyz);
+        float reach = 0.5 * length(s.b.xyz - s.a.xyz) + max(s.a.w, s.b.w);
+        float b = dot(centre, ray);
+        float h = b * b - (dot(centre, centre) - reach * reach);
+        if (h <= 0.0)
+            continue;
+        h = sqrt(h);
+        float enter = max(b - h, 0.0);
+        float leave = min(b + h, solid);
+        if (leave <= enter)
+            continue;
+        float thick = s.look.x * max(s.a.w, s.b.w);
+        if (hitCount < MaxHits)
+        {
+            hitThick[hitCount] = thick;
+            hits[hitCount++] = index;
+            continue;
+        }
+        int thinnest = 0;
+        for (int m = 1; m < MaxHits; m++)
+            if (hitThick[m] < hitThick[thinnest])
+                thinnest = m;
+        if (thick > hitThick[thinnest])
+        {
+            hitThick[thinnest] = thick;
+            hits[thinnest] = index;
+        }
+    }
+
+    // The stretches of the ray the kept capsules cover, nearest first, those that overlap run together. Looking down a line
+    // of engines the ray crosses plumes tens of metres apart: marching the whole length would leave the steps metres apart
+    // in the smoke, and dotted. So the steps go only where there's smoke.
+    int spans = 0;
+    float occupied = 0.0;
+    for (int i = 0; i < hitCount; i++)
+    {
+        Segment s = segments[hits[i]];
+        vec3 centre = 0.5 * (s.a.xyz + s.b.xyz);
+        float reach = 0.5 * length(s.b.xyz - s.a.xyz) + max(s.a.w, s.b.w);
+        float b = dot(centre, ray);
+        float h = sqrt(max(b * b - (dot(centre, centre) - reach * reach), 0.0));
+        float from = max(b - h, 0.0), to = min(b + h, solid);
+        if (to <= from)
+            continue;
+        // Into place by where it starts.
+        int k = spans++;
+        while (k > 0 && spanFrom[k - 1] > from)
+        {
+            spanFrom[k] = spanFrom[k - 1];
+            spanTo[k] = spanTo[k - 1];
+            k--;
+        }
+        spanFrom[k] = from;
+        spanTo[k] = to;
+    }
+    int merged = 0;
+    for (int i = 0; i < spans; i++)
+    {
+        if (merged > 0 && spanFrom[i] <= spanTo[merged - 1])
+            spanTo[merged - 1] = max(spanTo[merged - 1], spanTo[i]);
+        else
+        {
+            spanFrom[merged] = spanFrom[i];
+            spanTo[merged] = spanTo[i];
+            merged++;
+        }
+    }
+    for (int i = 0; i < merged; i++)
+        occupied += spanTo[i] - spanFrom[i];
+    float near = merged > 0 ? spanFrom[0] : 0.0;
+
+    if (hitCount == 0 || merged == 0)
+    {
+        imageStore(result, pixel, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    vec3 sun = normalize(u.sun.xyz);
+    float cosine = dot(ray, sun);
+    // Mostly forward, a little back, scaled so even scattering is 1, matching the world's diffuse light.
+    float phase = (0.7 * HenyeyGreenstein(0.55, cosine) + 0.3 * HenyeyGreenstein(-0.2, cosine)) * 4.0 * PI;
+    vec3 sunLight = u.sunColor.rgb * phase * step(0.0, sun.y + 0.05);
+    vec3 skyLight = mix(u.skyLow.rgb, u.skyTop.rgb, 0.6);
+
+    float step_ = max(occupied / float(Steps), 0.1);
+    // Interleaved gradient noise, so neighbouring pixels start their steps at different depths and the banding breaks up.
+    float jitter = fract(52.9829189 * fract(dot(vec2(pixel), vec2(0.06711056, 0.00583715))));
+    float transmit = 1.0;
+    vec3 light = vec3(0.0);
+    int span = 0;
+    float t = spanFrom[0] + jitter * step_;
+    for (int i = 0; i < MaxSteps; i++)
+    {
+        // On to the next stretch with smoke once past this one.
+        while (span < merged && t > spanTo[span])
+        {
+            span++;
+            if (span < merged)
+                t = max(t, spanFrom[span] + jitter * step_);
+        }
+        if (span >= merged)
+            break;
+        vec3 p = ray * t;
+        t += step_;
+        float density, soot, billow;
+        float shape = Plume(p, density, soot, billow);
+        if (shape <= 0.0)
+            continue;
+        // Squared, so the thin carved edge of a dense plume fades out rather than standing as a hard wall.
+        float eroded = Eroded(p, shape, billow);
+        float d = eroded * eroded * density;
+        if (d <= 1e-4)
+            continue;
+
+        float extinction = d * mix(1.4, 2.4, soot);
+        // How much sun gets this far in: a few steps out towards it through the plume's shape.
+        float sunDepth = 0.0;
+        for (int j = 1; j <= SunSteps; j++)
+            sunDepth += Shape(p + sun * (float(j) * 0.6)) * density * mix(1.4, 2.4, soot) * 0.6;
+        float sunThrough = exp(-sunDepth) * 0.7 + 0.3 / (1.0 + 0.35 * sunDepth + 0.065 * sunDepth * sunDepth);
+
+        // Near black, a touch brown, a touch lighter where it billows so the sun picks out a burst's bulges.
+        vec3 albedo = mix(vec3(0.09, 0.085, 0.08), vec3(0.03, 0.026, 0.022), soot) * (1.0 + 1.2 * billow);
+        vec3 scattered = albedo * (sunLight * sunThrough + skyLight * mix(1.0, 0.55, shape));
+        float kept = exp(-extinction * step_);
+        light += transmit * scattered * (1.0 - kept);
+        transmit *= kept;
+        if (transmit < 0.01)
+            break;
+    }
+
+    // Far off, into the haze.
+    float haze = 1.0 - exp(-near * 0.00035);
+    light = mix(light, u.skyLow.rgb * (1.0 - transmit), haze);
+    imageStore(result, pixel, vec4(light, transmit));
+}

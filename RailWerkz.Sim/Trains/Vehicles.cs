@@ -75,22 +75,76 @@ public sealed class Livery
 /// Something a vehicle can be seen carrying (a well car's containers, single or double stacked): picked once it's loaded.
 public sealed record Cargo(string Id, string Name);
 
+/// One recording of an engine running steady: its path under Content/Audio and the rpm it was made at.
+public sealed class EngineSoundLoop
+{
+    public string Path { get; init; } = "";
+    public float Rpm { get; init; }
+}
+
 /// How a locomotive's prime mover sounds, from vehicle.json's "engineSound": two loops recorded at idle and at full
 /// throttle (paths under Content/Audio), crossfaded and pitched between as the revs follow the throttle, and an exhaust
-/// chug mixed in under load.
+/// chug mixed in under load. Given the engine's rpm, it can have recordings at revs in between too (Loops), and then each
+/// is pitched to the revs from the rpm it was recorded at, the two either side of the revs crossfaded.
 public sealed class EngineSoundDef
 {
     public string Idle { get; init; } = "";
     public string Run { get; init; } = "";
     public string? Chug { get; init; }
 
+    /// Low idle: what it idles at with the isolation switch in Start/Stop, slower than the idle it sits at on line (in Run)
+    /// ready to load, and played at this pitch (1 for a recording made at low idle; under 1 to slow the idle loop down to
+    /// stand in for one). None for an engine that idles the same either way.
+    public string? LowIdle { get; init; }
+    public float LowIdlePitch { get; init; } = 1f;
+
+    /// Seconds to settle from low idle up to idle once it's put on line, and back down once it's isolated.
+    public float LowIdleSeconds { get; init; } = 3f;
+
+    /// The turbocharger's whine (looped), and how loud it gets at full speed. It spools up behind the revs, faster and
+    /// higher the harder the engine's working, and winds down slowly after, on past the engine's being shut off. None for
+    /// an engine without one heard.
+    public string? Turbo { get; init; }
+    public float TurboVolume { get; init; } = 0.5f;
+
+    /// Decibels to turn recordings up (or down) by as they're loaded, for a bank that came in quieter or louder than the
+    /// rest, so they sit together without the files being changed: the engine's loops (idle, low idle, run and Loops), the
+    /// turbo and the chug. Peaks pushed past full scale are rounded off rather than clipped.
+    public float EngineGainDb { get; init; }
+    public float TurboGainDb { get; init; }
+    public float ChugGainDb { get; init; }
+
     /// How far the idle loop is pitched up by full revs, and how far down the full-throttle loop starts, as they crossfade.
+    /// Not used when the rpm are given.
     public float IdlePitchTop { get; init; } = 1.5f;
     public float RunPitchBottom { get; init; } = 0.7f;
+
+    /// The engine's revs at idle (the idle loop's recorded there) and at notch 8, and the rpm the run loop was recorded at
+    /// (notch 8's if not given). All 0 for an engine sounded by the two loops alone, pitched as above.
+    public float IdleRpm { get; init; }
+    public float MaxRpm { get; init; }
+    public float RunRpm { get; init; }
+
+    /// Recordings at revs between idle and the run loop's, each with the rpm it was made at; used once IdleRpm and MaxRpm are.
+    public IReadOnlyList<EngineSoundLoop> Loops { get; init; } = [];
+
+    /// Its loops by the rpm they were recorded at, lowest first, the idle and run loops among them; empty for an engine
+    /// without its rpm given.
+    public IReadOnlyList<EngineSoundLoop> Ladder =>
+        IdleRpm > 0f && MaxRpm > IdleRpm
+            ? Loops.Where(l => l.Path.Length > 0 && l.Rpm > 0f)
+                .Append(new EngineSoundLoop { Path = Idle, Rpm = IdleRpm })
+                .Append(new EngineSoundLoop { Path = Run, Rpm = RunRpm > 0f ? RunRpm : MaxRpm })
+                .OrderBy(l => l.Rpm).ToList()
+            : [];
 
     /// Seconds to spool from idle to full revs, and back down.
     public float SpoolUp { get; init; } = 8f;
     public float SpoolDown { get; init; } = 5f;
+
+    /// Where the revs sit, 0 idle to 1 notch 8, with the reverser out of neutral and the throttle shut: a little above
+    /// idle, ready to load.
+    public float GearIdle { get; init; } = 0.08f;
 
     /// How loud it all is: every engine sound's level is scaled by this. A touch under 1, so it sits under the rest of the mix.
     public float Volume { get; init; } = 0.9f;
@@ -202,6 +256,11 @@ public sealed class VehicleDef
     public float3? Horn { get; init; }
     public float3? Bell { get; init; }
 
+    /// Where its exhaust stack's mouth is, in the same axes (from assembly.json's Exhaust fixture), and how big its opening is
+    /// across and along the engine, in metres; null for an engine whose model doesn't say, which shows no smoke.
+    public float3? Exhaust { get; init; }
+    public float2 ExhaustOpening { get; init; }
+
     public bool CanLoad => MassLoaded > MassEmpty;
 
     /// Truck centres, or a fair guess at them for a vehicle that doesn't say.
@@ -234,14 +293,14 @@ public sealed class VehicleDef
         return Cargoes[0].Id;
     }
 
-    /// The same vehicle with these lamps, horn and bell.
-    public VehicleDef WithFixtures(IReadOnlyList<VehicleLamp> lamps, float3? horn, float3? bell) => new()
+    /// The same vehicle with these lamps, horn, bell and exhaust.
+    public VehicleDef WithFixtures(IReadOnlyList<VehicleLamp> lamps, float3? horn, float3? bell, float3? exhaust = null, float2 opening = default) => new()
     {
         Id = Id, Replaces = Replaces, Name = Name, Kind = Kind, Builder = Builder, Built = Built, Type = Type, Length = Length, KnuckleNose = KnuckleNose,
         TruckCentres = TruckCentres, FrontOverhangGiven = FrontOverhangGiven, Axles = Axles, WheelDiameter = WheelDiameter,
         MassEmpty = MassEmpty, MassLoaded = MassLoaded, Power = Power, StartingTractiveEffort = StartingTractiveEffort,
         ContinuousTractiveEffort = ContinuousTractiveEffort, DynamicBrakeEffort = DynamicBrakeEffort, MaxSpeed = MaxSpeed,
-        Liveries = Liveries, Cargoes = Cargoes, EngineSound = EngineSound, Lamps = lamps, Horn = horn, Bell = bell,
+        Liveries = Liveries, Cargoes = Cargoes, EngineSound = EngineSound, Lamps = lamps, Horn = horn, Bell = bell, Exhaust = exhaust, ExhaustOpening = opening,
         Supplies = Supplies, MassDry = MassDry, Adhesion = Adhesion, AcTraction = AcTraction,
     };
 }
@@ -302,8 +361,8 @@ public static class VehicleCatalog
                 var def = file.ToDef(nose);
                 if (def.Kind == VehicleKind.Locomotive)
                 {
-                    var (horn, bell) = HornAndBellOf(Path.GetDirectoryName(path)!, def);
-                    def = def.WithFixtures(LampsOf(Path.GetDirectoryName(path)!, def), horn, bell);
+                    var (horn, bell, exhaust, opening) = HornAndBellOf(Path.GetDirectoryName(path)!, def);
+                    def = def.WithFixtures(LampsOf(Path.GetDirectoryName(path)!, def), horn, bell, exhaust, opening);
                 }
                 if (found.Any(v => v.Id.Equals(def.Id, StringComparison.OrdinalIgnoreCase)))
                 {
@@ -327,18 +386,18 @@ public static class VehicleCatalog
         return found;
     }
 
-    /// A locomotive's horn and bell: the fixtures named so in assembly.json beside its vehicle.json, turned from Blender's axes
-    /// into the model's as the lamps are; null for either it hasn't.
-    private static (float3? Horn, float3? Bell) HornAndBellOf(string folder, VehicleDef def)
+    /// A locomotive's horn, bell and exhaust: the fixtures named so in assembly.json beside its vehicle.json, turned from
+    /// Blender's axes into the model's as the lamps are; null for any it hasn't. With the exhaust, its opening across and along.
+    private static (float3? Horn, float3? Bell, float3? Exhaust, float2 Opening) HornAndBellOf(string folder, VehicleDef def)
     {
         try
         {
             var assembly = Path.Combine(folder, "assembly.json");
             if (!File.Exists(assembly))
-                return (null, null);
+                return (null, null, null, default);
             using var doc = JsonDocument.Parse(File.ReadAllText(assembly));
             if (!doc.RootElement.TryGetProperty("fixtures", out var fixtures))
-                return (null, null);
+                return (null, null, null, default);
             float3? At(string name)
             {
                 if (!fixtures.TryGetProperty(name, out var f) || !f.TryGetProperty("position", out var v))
@@ -346,12 +405,15 @@ public static class VehicleCatalog
                 return new float3(v[0].GetSingle(), v[2].GetSingle(), -v[1].GetSingle());
             }
 
-            return (At("Horn"), At("Bell"));
+            var opening = fixtures.TryGetProperty("Exhaust", out var stack) && stack.TryGetProperty("opening", out var o)
+                ? new float2(o[0].GetSingle(), o[1].GetSingle())
+                : new float2(0.6f, 0.4f);
+            return (At("Horn"), At("Bell"), At("Exhaust"), opening);
         }
         catch (Exception e)
         {
-            Log.Warn($"Vehicles: {def.Id}'s assembly.json horn and bell unreadable ({e.Message})");
-            return (null, null);
+            Log.Warn($"Vehicles: {def.Id}'s assembly.json horn, bell and exhaust unreadable ({e.Message})");
+            return (null, null, null, default);
         }
     }
 

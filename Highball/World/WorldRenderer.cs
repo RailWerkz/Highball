@@ -70,6 +70,8 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly SunShadows _shadows;
     private VkPipeline _glow;
     private readonly Precipitation _precipitation = new();
+    private readonly Smoke _smoke = new();
+    private readonly HeatHaze _haze = new();
     private readonly Clouds _clouds = new();
     private readonly AmbientOcclusion _occlusion = new();
     private readonly PostProcess _post = new();
@@ -103,6 +105,12 @@ public sealed unsafe class WorldRenderer : IDisposable
 
     /// Lamps a screen adds this frame, like an engine's headlights.
     public List<LocalLight> SceneLights { get; } = [];
+
+    /// Exhaust smoke a screen gives this frame (ExhaustSmoke's plumes, as capsules); none if it sets nothing.
+    public IReadOnlyList<Highball.Trains.SmokeSegment> SceneSmoke { get; set; } = [];
+
+    /// Heat haze over running engines' stacks a screen gives this frame (ExhaustSmoke's); none if it sets nothing.
+    public IReadOnlyList<Highball.Trains.HazeSource> SceneHaze { get; set; } = [];
 
     public WorldRenderer()
     {
@@ -241,6 +249,8 @@ public sealed unsafe class WorldRenderer : IDisposable
             _lights.Add(in light);
         using (Profiler.Sample("Local lights", cmd))
             _lights.Upload(cmd, camera, size, aspect);
+        using (Profiler.Sample("Smoke upload", cmd))
+            _smoke.Upload(cmd, camera, aspect, SceneSmoke, Sky);
 
         using (Profiler.Sample("Sun shadows", cmd))
             _shadows.Render(cmd, camera, aspect, Sun, terrain, models, terrain is null ? null : _vegetation, network);
@@ -381,8 +391,27 @@ public sealed unsafe class WorldRenderer : IDisposable
         using (Profiler.Sample("Clouds", cmd))
             _clouds.Draw(cmd, _target);
 
+        // The exhaust smoke marched against the finished depth, to be laid over the picture after anti-aliasing.
+        using (Profiler.Sample("Smoke march", cmd))
+            _smoke.March(cmd, _target, _clouds);
+
         using (Profiler.Sample("After the world", cmd))
-            _post.Draw(cmd, _target, _motion.Image!, camera, aspect, Sky, !Precipitation.Falling(_weather) ? null : over => _precipitation.Draw(over, _target, camera, aspect, _weather, Sky));
+        {
+            var falling = Precipitation.Falling(_weather);
+            var haze = SceneHaze.Count > 0;
+            _post.Draw(cmd, _target, _motion.Image!, camera, aspect, Sky, !falling && !_smoke.Any && !haze ? null : over =>
+            {
+                // The haze bends what's behind it, so it goes first, from the picture as it was; the smoke over it, and rain
+                // and snow fall in front of both as much as behind.
+                if (haze && _post.Picture is { } picture)
+                    using (Profiler.Sample("Heat haze", over))
+                        _haze.Draw(over, _target, picture, _post.PictureVersion, _clouds, camera, aspect, SceneHaze);
+                using (Profiler.Sample("Smoke", over))
+                    _smoke.Draw(over);
+                if (falling)
+                    _precipitation.Draw(over, _target, camera, aspect, _weather, Sky);
+            }, copyPicture: haze);
+        }
     }
 
     /// The land cover's colour round the camera, for what's reflected in metal and lights things from beneath. It changes slowly,
@@ -554,6 +583,8 @@ public sealed unsafe class WorldRenderer : IDisposable
         _clouds.Dispose();
         _occlusion.Dispose();
         _precipitation.Dispose();
+        _smoke.Dispose();
+        _haze.Dispose();
         _lights.Dispose();
         _post.Dispose();
         _motion.Dispose();

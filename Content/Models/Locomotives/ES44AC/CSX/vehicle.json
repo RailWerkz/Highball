@@ -1,0 +1,45 @@
+{
+  // One vehicle for the consist editor and the simulation. SI units, named in each key. The same locomotive as ES44AC/Black
+  // (see its vehicle.json for where the masses and efforts come from), from another model: its sizes are this model's.
+  "id": "gevo_es44ac",
+  "name": "GE ES44AC (CSX)",
+  "kind": "Locomotive",
+  "builder": "GE",
+  "built": "2003-present",
+  "type": "C-C AC diesel-electric, GEVO-12",
+  // Knuckle nose to knuckle nose, from assembly.json's couplers plus the coupler's reach. The model's a little long: the
+  // real engine's 22.30 m.
+  "lengthM": 22.728,
+  "truckCentresM": 13.349,
+  // Front knuckle nose to front truck centre, as above; 4.379 m at the rear.
+  "frontOverhangM": 4.504,
+  "axles": 6,
+  "wheelDiameterM": 1.078,
+  "massEmptyKg": 195045,
+  "massLoadedKg": 195045,
+  "massDryKg": 173943,
+  "supplies": { "fuelL": 18927, "oilL": 1703, "waterL": 1703, "sandM3": 1.133 },
+  "traction": "AC",
+  "adhesion": 0.36,
+  "powerKw": 3281,
+  "startingTractiveEffortKn": 801,
+  "continuousTractiveEffortKn": 738,
+  "dynamicBrakeEffortKn": 520,
+  "maxSpeedKmh": 121,
+  "liveries": [
+    { "id": "csx", "name": "CSX", "model": "Locomotives/ES44AC/CSX/Assembled/gevo_csx.glb" }
+  ],
+  // Under Content/Audio/Engines/GEVO: idle and notch 8 loops, crossfaded and pitched as the revs follow the throttle,
+  // with its chug, startup, air compressor and dynamic brake blowers.
+  "engineSound": {
+    "idle": "Engines/GEVO/es44_idle02.wav",
+    "run": "Engines/GEVO/es44_run8_02.wav",
+    "chug": "Engines/GEVO/run8_es44_chug.wav",
+    "startup": "Engines/GEVO/gevo12_start.wav",
+    "startupSeconds": 13,
+    "compressorStart": "Engines/GEVO/run8_es44_compressorStart.wav",
+    "compressorLoop": "Engines/GEVO/run8_es44_aircomploop.wav",
+    "compressorStop": "Engines/GEVO/run8_es44_compressorValveBlast.wav",
+    "dynamicFan": "Engines/GEVO/GE_DynBrakeFan01.wav"
+  }
+}

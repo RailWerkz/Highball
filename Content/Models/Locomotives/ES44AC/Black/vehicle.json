@@ -1,5 +1,6 @@
 {
-  // One vehicle for the consist editor and the simulation. SI units, named in each key.
+  // One vehicle for the consist editor and the simulation. SI units, named in each key. The ES44AC (a GEVO), black without
+  // a livery; ES44AC/CSX is the same locomotive from another model.
   "id": "es44ac",
   "name": "GE ES44AC",
   "kind": "Locomotive",
@@ -28,9 +29,10 @@
   "dynamicBrakeEffortKn": 520,
   "maxSpeedKmh": 121,
   "liveries": [
-    { "id": "black", "name": "Black", "model": "Locomotives/ES44AC/Assembled/es44ac_black.glb" }
+    { "id": "black", "name": "Black", "model": "Locomotives/ES44AC/Black/Assembled/es44ac_black.glb" }
   ],
-  // GEVO-12 prime mover: idle and notch 8 loops, crossfaded and pitched as the revs follow the throttle; under Content/Audio.
+  // Under Content/Audio/Engines/GEVO: idle and notch 8 loops, crossfaded and pitched as the revs follow the throttle,
+  // with its chug, startup, air compressor and dynamic brake blowers.
   "engineSound": {
     "idle": "Engines/GEVO/es44_idle02.wav",
     "run": "Engines/GEVO/es44_run8_02.wav",

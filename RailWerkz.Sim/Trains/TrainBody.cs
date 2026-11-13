@@ -137,7 +137,13 @@ public sealed class TrainBody
         Handbrake = new double[Count];
         for (var i = 0; i < Count; i++)
             if (cars[i].Def is { Kind: VehicleKind.Locomotive, Power: > 0.0 } loco)
-                Systems[i] = new LocoSystems(loco.EngineSound?.StartupSeconds ?? 10.0, loco.Supplies);
+                Systems[i] = new LocoSystems(loco.EngineSound?.StartupSeconds ?? 10.0, loco.Supplies)
+                {
+                    SpoolUp = loco.EngineSound?.SpoolUp ?? 8.0,
+                    SpoolDown = loco.EngineSound?.SpoolDown ?? 5.0,
+                    GearIdle = loco.EngineSound?.GearIdle ?? 0.08,
+                    HasLowIdle = loco.EngineSound?.LowIdle is { Length: > 0 },
+                };
         _mass = new double[Count];
         _inertia = new double[Count];
         _gravity = new double[Count];
@@ -210,21 +216,21 @@ public sealed class TrainBody
 
         GravityForce = _gravity.Sum();
 
-        // The locomotives' own systems, and the compressors on the engines that are turning.
+        // The locomotives' own systems, their revs, and the compressors on the engines that are turning, pumping with the revs.
         var engines = 0;
-        var pumping = 0;
+        var pumping = 0.0;
         for (var i = 0; i < Count; i++)
         {
             if (Systems[i] is not { } systems)
                 continue;
             systems.Update(h);
             Starting[i] = systems.SecondsToRunning;
+            systems.Govern(h, Commands[i].Reverser, Commands[i].Dynamic > 0.0 ? 0 : Commands[i].Notch);
             engines++;
-            if (systems.Running)
-                pumping++;
+            pumping += systems.AirOutput;
         }
 
-        Brakes.CompressorShare = engines > 0 ? (double)pumping / engines : 1.0;
+        Brakes.CompressorShare = engines > 0 ? pumping / engines : 1.0;
 
         // Fuel, oil and water burnt, sand put down; a locomotive weighs what it's carrying.
         for (var i = 0; i < Count; i++)

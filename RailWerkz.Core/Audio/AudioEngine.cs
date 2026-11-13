@@ -25,7 +25,21 @@ public static class AudioEngine
         /// Placed with a range: how far that is, and how far from the listener it is now (both 0 when it has none).
         public float Range;
         public float Distance;
+        /// Where it's placed, within how many metres it's at full volume (0 on the listener).
+        public float Reference;
     }
+
+    /// The bus compressor over the world's sounds (the Effects; not the interface, music or voice): settings the game
+    /// gives it each frame, and what it measured and did, for meters.
+    public readonly record struct CompressorSettings(bool On, float ThresholdDb, float Ratio, float AttackMs, float ReleaseMs, float MakeupDb);
+
+    public static CompressorSettings BusCompressor { get; set; } = new(false, -10f, 3f, 40f, 500f, 0f);
+
+    /// How loud the world's sounds are together where they're heard, in dB (0 one sound at full volume next to you), and
+    /// how far the compressor has them turned down (dB, 0 or more).
+    public static float BusLevelDb { get; private set; } = -120f;
+    public static float BusReductionDb { get; private set; }
+    private static float _busGain = 1f;
 
     private readonly record struct Pending(double At, string Name, AudioCategory Category, float Volume, float Pitch);
 
@@ -168,8 +182,8 @@ public static class AudioEngine
     }
 
     /// Loads a WAV to loop as a whole, its end crossfaded into its start so it goes round without a click (recorded
-    /// loops seldom meet exactly). False (and a warning) if it can't.
-    public static bool LoadSeamless(string name, string relativePath, bool mono = false)
+    /// loops seldom meet exactly), turned up or down by gainDb (Sound.Louder). False (and a warning) if it can't.
+    public static bool LoadSeamless(string name, string relativePath, bool mono = false, float gainDb = 0f)
     {
         if (!Available)
             return false;
@@ -179,6 +193,8 @@ public static class AudioEngine
             var sound = Wav.Load(ContentPath.Audio(relativePath));
             if (mono)
                 sound = sound.ToMono();
+            if (gainDb != 0f)
+                sound = sound.Louder(gainDb);
             // Looping from just after the top over to the very end: the attack is the first SustainFade, which the
             // end's crossfade leads back into.
             var (main, _, a, b) = SplitSustained(sound, SustainFade, 0f);
@@ -291,6 +307,7 @@ public static class AudioEngine
             var d = p.Position - _listener;
             voice.Range = p.Range;
             voice.Distance = MathF.Sqrt(d.X * d.X + d.Y * d.Y + d.Z * d.Z);
+            voice.Reference = p.ReferenceDistance;
         }
         else
         {
@@ -298,19 +315,46 @@ public static class AudioEngine
             voice.Source.Position = default;
             voice.Source.Velocity = default;
             voice.Source.AirAbsorptionFactor = 0f;
-            voice.Range = voice.Distance = 0f;
+            voice.Range = voice.Distance = voice.Reference = 0f;
         }
     }
 
     /// What a voice's gain should be: its volume, its category's, and how far into its range's fade-out it is.
     private static float Gain(in Voice voice)
     {
-        var gain = voice.Volume * CategoryGain(voice.Category);
+        var gain = voice.Volume * CategoryGain(voice.Category) * (voice.Category == AudioCategory.Effects ? _busGain : 1f);
         if (voice.Range <= 0f)
             return gain;
 
         var t = Math.Clamp(1f - voice.Distance / voice.Range, 0f, 1f);
         return gain * MathF.Pow(t, RangeCurve);
+    }
+
+    /// The bus compressor: how loud all the world's sounds playing are together at the listener (each one's volume, its
+    /// range's fade and its fall-off with distance, as OpenAL's inverse distance has it, added as power), and past the
+    /// threshold, turned down by the ratio, easing in over the attack and back out over the release. Then the makeup gain.
+    private static void Compress(float dt)
+    {
+        var power = 0.0;
+        for (var i = 0; i < VoiceCount; i++)
+        {
+            ref var voice = ref Voices[i];
+            if (voice.Category != AudioCategory.Effects || !(voice.Looping || voice.Source.State == AlSourceState.Playing))
+                continue;
+            var gain = voice.Volume;
+            if (voice.Range > 0f)
+                gain *= MathF.Pow(Math.Clamp(1f - voice.Distance / voice.Range, 0f, 1f), RangeCurve);
+            if (voice.Reference > 0f && voice.Distance > voice.Reference)
+                gain *= voice.Reference / voice.Distance;
+            power += gain * gain;
+        }
+
+        BusLevelDb = (float)(10.0 * Math.Log10(power + 1e-12));
+        var c = BusCompressor;
+        var target = c.On && BusLevelDb > c.ThresholdDb ? (BusLevelDb - c.ThresholdDb) * (1f - 1f / MathF.Max(c.Ratio, 1f)) : 0f;
+        var time = (target > BusReductionDb ? c.AttackMs : c.ReleaseMs) / 1000f;
+        BusReductionDb += (target - BusReductionDb) * (dt <= 0f ? 1f : 1f - MathF.Exp(-dt / MathF.Max(time, 1e-3f)));
+        _busGain = MathF.Pow(10f, ((c.On ? c.MakeupDb : 0f) - BusReductionDb) / 20f);
     }
 
     /// Plays a sound once, where it's placed if it is.
@@ -512,6 +556,8 @@ public static class AudioEngine
         var now = Time.Time.Now;
         var dt = _lastUpdate < 0.0 ? 0f : (float)Math.Min(now - _lastUpdate, 0.1);
         _lastUpdate = now;
+
+        Compress(dt);
 
         for (var i = 0; i < VoiceCount; i++)
         {

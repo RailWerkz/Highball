@@ -160,6 +160,32 @@ public sealed class LocoSystems(double startupSeconds, LocoSupplies? capacity = 
     public double BootLeft => ControlPowered ? BootSeconds - _boot : 0.0;
     public bool Running => Engine == EngineState.Running;
 
+    // --- The prime mover's revs, and the compressor it drives. ---
+
+    /// 0 at idle to 1 at notch 8, as the governor's got them to. On line they follow the notch, the reverser in neutral
+    /// or not (with it out of neutral never below GearIdle); isolated or stopped it sits at idle.
+    public double Revs { get; private set; }
+
+    /// Seconds to wind from idle to notch 8 and back down, and the revs with the reverser out of neutral (EngineSoundDef).
+    public double SpoolUp = 8.0, SpoolDown = 5.0, GearIdle = 0.08;
+
+    /// It drops to low idle isolated (its engine sound has one), turning slower.
+    public bool HasLowIdle;
+    private const double LowIdleShare = 0.75;
+
+    /// How hard it drives its compressor, against running at idle: none stopped, more revved (notch 8 turns some 2.4
+    /// times idle's revs), less at low idle.
+    public double AirOutput => Running ? (Isolated && HasLowIdle ? LowIdleShare : 1.0) * (1.0 + 1.4 * Revs) : 0.0;
+
+    /// The governor: winds the revs towards what the controls ask at a steady rate, easing in at the end.
+    public void Govern(double h, int reverser, int notch)
+    {
+        var target = MakesPower ? Math.Max(Math.Clamp(notch / (double)Train.Notches, 0.0, 1.0), reverser != 0 ? GearIdle : 0.0) : 0.0;
+        var rate = target > Revs ? 1.0 / Math.Max(SpoolUp, 0.1) : 1.0 / Math.Max(SpoolDown, 0.1);
+        var step = rate * h * Math.Min(1.0, 0.25 + 4.0 * Math.Abs(target - Revs));
+        Revs = target > Revs ? Math.Min(target, Revs + step) : Math.Max(target, Revs - step);
+    }
+
     /// Running and on line: it answers the throttle and the dynamic brake.
     public bool MakesPower => Running && !Isolated;
 

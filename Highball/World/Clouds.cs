@@ -66,6 +66,9 @@ public sealed unsafe class Clouds : IDisposable
     private readonly VkPipeline _shadow;
     private readonly VkPipeline _composite;
     private readonly StorageImage _noise;
+
+    /// The tiling noise the clouds are carved from, which exhaust smoke is carved from too (Smoke).
+    public StorageImage Noise => _noise;
     private readonly StorageImage _shadowMap;
     private readonly BufferEx _uniforms;
     private readonly VkDescriptorPool _worldPool;

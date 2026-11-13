@@ -11,6 +11,10 @@ using RailWerkz.Vulkan;
 
 namespace Highball.Builder;
 
+/// The places on a locomotive its sounds come from, as the Audio Editor moves them.
+public enum SoundSpot { Engine, AirCompressor, BrakeFan, Horn, Bell }
+
+
 /// Locomotives and rolling stock on the track, in the 3D Editor: as many cuts as are put down (up to MaxVehicles vehicles
 /// in all), each placed from a saved consist with a click on the track. One cut is looked at in this window (the focus,
 /// picked by clicking a vehicle) and one is driven (the controlled one): control is taken, and given up, from the window.
@@ -120,6 +124,11 @@ public sealed partial class TrainPanel : IDisposable
     /// The locomotives' lit lamps this frame, for the renderer.
     private readonly List<LocalLight> _lamps = [];
     public IReadOnlyList<LocalLight> Lamps => _lamps;
+
+    /// The locomotives' exhaust smoke, for the world to draw (WorldRenderer.SceneSmoke).
+    private readonly ExhaustSmoke _smoke = new();
+    public IReadOnlyList<SmokeSegment> Smoke => _smoke.Segments;
+    public IReadOnlyList<HazeSource> Haze => _smoke.Haze;
 
     private readonly VehicleOverlay _overlay = new();
     private readonly List<VehicleOverlay.Placed> _placed = [];
@@ -471,6 +480,7 @@ public sealed partial class TrainPanel : IDisposable
         _draws.Clear();
         _placed.Clear();
         _lamps.Clear();
+        _smoke.Begin();
         if (_controlled?.Train is { } driven)
         {
             var keys = !Keyboard.KeysBlocked;
@@ -494,11 +504,13 @@ public sealed partial class TrainPanel : IDisposable
         {
             StopEngines();
             _pose = [];
+            _smoke.Update(dt);
             return;
         }
 
         foreach (var cut in _cuts)
             DrawCut(cut, dt, step);
+        _smoke.Update(dt);
         _pose = (_focus ?? _cuts[0]).Pose;
         _rolls = (_focus ?? _cuts[0]).Rolls;
         _previous = (_focus ?? _cuts[0]).Previous;
@@ -559,12 +571,37 @@ public sealed partial class TrainPanel : IDisposable
             }
 
             if (train.Body.Systems[i] is { } systems)
+            {
                 AddLamps(car, systems, rotation, at);
+                if (car.Def.Exhaust is { } exhaust)
+                    Exhaust(train, i, systems, exhaust, bodyRotation, bodyAt, dt);
+            }
             if (hadPrevious)
                 _previous[i] = (rotation, at, bodyRotation, bodyAt);
             else
                 _previous.Add((rotation, at, bodyRotation, bodyAt));
         }
+    }
+
+    /// A locomotive's exhaust this frame: its stack's mouth on the body as it's drawn (rocking on the springs with it), the way
+    /// it's moving, and how hard its engine's working, for the smoke.
+    private void Exhaust(Train train, int i, LocoSystems systems, float3 exhaust, float4 bodyRotation, double3 bodyAt, float dt)
+    {
+        var mouth = VehicleOverlay.Rotate(bodyRotation, exhaust);
+        var (f, r) = (_pose[i].Front, _pose[i].Rear);
+        var (dx, dy, dz) = (f.X - r.X, f.Y - r.Y, f.Z - r.Z);
+        var length = Math.Max(Math.Sqrt(dx * dx + dy * dy + dz * dz), 1e-6);
+        var speed = train.Speed;
+        var velocity = new float3((float)(dx / length * speed), (float)(dy / length * speed), (float)(dz / length * speed));
+        // As hard as the engine sound has it working: tractive effort against what the lash-up can give, or power against its rating.
+        var effort = train.Cars.Where(c => c.Def.Kind == VehicleKind.Locomotive).Sum(c => c.Def.StartingTractiveEffort);
+        var traction = Math.Abs(train.Traction);
+        var load = systems.MakesPower ? (float)Math.Max(effort > 0.0 ? traction / effort : 0.0, train.Power > 0.0 ? traction * Math.Abs(speed) / train.Power : 0.0) : 0f;
+        var car = train.Cars[i];
+        _smoke.Emit(car, new ExhaustState(
+            (bodyAt.X + mouth.X, bodyAt.Y + mouth.Y, bodyAt.Z + mouth.Z),
+            VehicleOverlay.Rotate(bodyRotation, new float3(1f, 0f, 0f)), VehicleOverlay.Rotate(bodyRotation, new float3(0f, 0f, 1f)),
+            velocity, car.Def.ExhaustOpening, load, (float)systems.Revs, (float)train.Body.Starting[i], systems.Running), dt);
     }
 
     // How high a coupler's knuckle stands over the rail tops.
@@ -825,6 +862,9 @@ public sealed partial class TrainPanel : IDisposable
 
         _lastEar = ear;
         RailWerkz.Core.Audio.AudioEngine.SetListener(default, camera.Forward, camera.Up, _earVelocity);
+        // The bus compressor over the world's sounds, as the mix has it (AudioTuning, set in the Audio Editor).
+        var bus = AudioTuning.Current.Mix;
+        RailWerkz.Core.Audio.AudioEngine.BusCompressor = new(bus.Compressor, bus.ThresholdDb, bus.Ratio, bus.AttackMs, bus.ReleaseMs, bus.MakeupDb);
 
         // The horn, bell and engines heard are the driven cut's, or the looked-at one's when nothing's driven.
         if ((_controlled ?? _focus) is not { } heard || heard.Pose.Count != heard.Train.Cars.Count)
@@ -841,28 +881,74 @@ public sealed partial class TrainPanel : IDisposable
         var (dx, dy, dz) = (front.X - rear.X, front.Y - rear.Y, front.Z - rear.Z);
         var length = Math.Max(Math.Sqrt(dx * dx + dy * dy + dz * dz), 1e-6);
         var velocity = new float3((float)(dx / length * train.Speed), (float)(dy / length * train.Speed), (float)(dz / length * train.Speed));
-        // Where its horn and bell are on its body, as the model has them (the fixtures cut out of it), turned with the body as
-        // it's drawn; an engine that doesn't say has them over its front truck, the horn on the cab roof and the bell low.
+        // Where its horn and bell are on its body (SoundPosition: as tuned, or as the model has them), turned with the body as
+        // it's drawn, and how loud, as tuned.
         var car = train.Cars[lead];
         var (bx, by, bz) = car.Reversed ? (-dx, -dy, -dz) : (dx, dy, dz);
         var rotation = Facing(bx, by, bz);
         var middle = ((front.X + rear.X) * 0.5, (front.Y + rear.Y) * 0.5, (front.Z + rear.Z) * 0.5);
-        float3 At(float3? fixture, double up)
+        float3 At(SoundSpot spot)
         {
-            if (fixture is not { } on)
-                return new((float)(front.X - camera.X), (float)(front.Y + up - camera.Y), (float)(front.Z - camera.Z));
-            var p = VehicleOverlay.Rotate(rotation, on);
+            var p = VehicleOverlay.Rotate(rotation, SoundPosition(car, spot));
             return new((float)(middle.Item1 + p.X - camera.X), (float)(middle.Item2 + p.Y - camera.Y), (float)(middle.Item3 + p.Z - camera.Z));
         }
 
-        Sounds.Move(new(At(car.Def.Horn, HornHeight), velocity, TrainSounds.HornReference, TrainSounds.HornRange),
-            new(At(car.Def.Bell, BellHeight), velocity, TrainSounds.BellReference, TrainSounds.BellRange));
+        var tuned = AudioTuning.Current.For(car.Def.Id);
+        var mix = AudioTuning.Current.Mix;
+        Sounds.HornLevel = tuned.Horn * mix.Horn * mix.Master;
+        Sounds.BellLevel = tuned.Bell * mix.Bell * mix.Master;
+        Sounds.Move(new(At(SoundSpot.Horn), velocity, TrainSounds.HornReference, TrainSounds.HornRange),
+            new(At(SoundSpot.Bell), velocity, TrainSounds.BellReference, TrainSounds.BellRange));
         Engines(train, camera, dt);
         _pose = (_focus ?? heard).Pose;
     }
 
     // How high a prime mover sits over the rail tops, in metres: about the middle of the long hood.
     private const double EngineHeight = 3.2;
+
+    /// Where a sound comes from on a locomotive, in its model's axes (x across, y up from the rail, z towards its front): as
+    /// tuned in the Audio Editor, or else the game's own place for it. The engine, its air compressor and brake blowers in the
+    /// middle of the long hood; the horn and bell as the model has them (the fixtures cut out of it), or over the front truck,
+    /// the horn on the cab roof and the bell low.
+    public static float3 SoundPosition(TrainCar car, SoundSpot spot)
+    {
+        var tuned = AudioTuning.Current.For(car.Def.Id);
+        var engine = new float3(0f, (float)EngineHeight, 0f);
+        var front = (float)(car.Def.Centres * 0.5);
+        return spot switch
+        {
+            SoundSpot.Engine => AudioTuning.Point(tuned.EngineAt) ?? engine,
+            SoundSpot.AirCompressor => AudioTuning.Point(tuned.AirCompressorAt) ?? AudioTuning.Point(tuned.EngineAt) ?? engine,
+            SoundSpot.BrakeFan => AudioTuning.Point(tuned.BrakeFanAt) ?? AudioTuning.Point(tuned.EngineAt) ?? engine,
+            SoundSpot.Horn => AudioTuning.Point(tuned.HornAt) ?? car.Def.Horn ?? new float3(0f, (float)HornHeight, front),
+            _ => AudioTuning.Point(tuned.BellAt) ?? car.Def.Bell ?? new float3(0f, (float)BellHeight, front),
+        };
+    }
+
+    /// The locomotive the Audio Editor works on, and how it's placed: the picked vehicle if it's a locomotive, else the lead
+    /// one of the train looked at. Its middle (between its trucks, on the rail) and its turn, as SoundPosition's are drawn.
+    public bool SoundAnchor(out TrainCar car, out float4 rotation, out double3 middle)
+    {
+        car = null!;
+        rotation = default;
+        middle = default;
+        if (_focus is not { } cut || cut.Pose.Count != cut.Train.Cars.Count)
+            return false;
+        var train = cut.Train;
+        var i = Selected >= 0 && Selected < train.Cars.Count && train.Cars[Selected].Def.Kind == VehicleKind.Locomotive
+            ? Selected
+            : train.Cars.FindIndex(c => c.Def.Kind == VehicleKind.Locomotive);
+        if (i < 0)
+            return false;
+        var (f, r) = (cut.Pose[i].Front, cut.Pose[i].Rear);
+        car = train.Cars[i];
+        var (dx, dy, dz) = (f.X - r.X, f.Y - r.Y, f.Z - r.Z);
+        if (car.Reversed)
+            (dx, dy, dz) = (-dx, -dy, -dz);
+        rotation = Facing(dx, dy, dz);
+        middle = new double3((f.X + r.X) * 0.5, (f.Y + r.Y) * 0.5, (f.Z + r.Z) * 0.5);
+        return true;
+    }
 
     /// The most locomotives heard at once: each engine takes about five of the 64 voices, and the horn, bell, wheels and
     /// couplers need theirs.
@@ -910,7 +996,7 @@ public sealed partial class TrainPanel : IDisposable
             var vehicle = t.Cars[car];
             if (!_engines.TryGetValue(vehicle, out var sound))
                 // Each a little off the others, so a lash-up of the same engines doesn't phase into one.
-                _engines[vehicle] = sound = new EngineSound(vehicle.Def.EngineSound!, 1f + 0.012f * (_engines.Count % 3 - 1) + 0.004f * (_engines.Count / 3));
+                _engines[vehicle] = sound = new EngineSound(vehicle.Def.EngineSound!, 1f + 0.012f * (_engines.Count % 3 - 1) + 0.004f * (_engines.Count / 3), vehicle.Def.Id);
             EngineVoice(t, cut.Pose, car, sound, camera, dt);
         }
     }
@@ -919,7 +1005,8 @@ public sealed partial class TrainPanel : IDisposable
     private static void EngineVoice(Train train, List<((double X, double Y, double Z) Front, (double X, double Y, double Z) Rear)> pose, int car, EngineSound sound,
         Camera camera, float dt)
     {
-        // With the reverser centred the throttle doesn't load the engine, and it stays at idle, as on the real thing.
+        // The revs come from the engine's governor in the simulation (they follow the notch in neutral too, and sit a little
+        // above idle in gear); this throttle's only for an engine without one. With the reverser centred nothing loads it.
         var throttle = train.Reverser != 0 && train.Dynamic <= 0.0 ? train.Notch / (float)Trains.Train.Notches : 0f;
         var effort = train.Cars.Where(c => c.Def.Kind == VehicleKind.Locomotive).Sum(c => c.Def.StartingTractiveEffort);
         var traction = Math.Abs(train.Traction);
@@ -932,11 +1019,23 @@ public sealed partial class TrainPanel : IDisposable
             var (dx, dy, dz) = (front.X - rear.X, front.Y - rear.Y, front.Z - rear.Z);
             var length = Math.Max(Math.Sqrt(dx * dx + dy * dy + dz * dz), 1e-6);
             var velocity = new float3((float)(dx / length * train.Speed), (float)(dy / length * train.Speed), (float)(dz / length * train.Speed));
-            var at = new float3((float)((front.X + rear.X) * 0.5 - camera.X), (float)((front.Y + rear.Y) * 0.5 + EngineHeight - camera.Y),
-                (float)((front.Z + rear.Z) * 0.5 - camera.Z));
+            // The engine, air compressor and blowers where they are on its body (SoundPosition), turned as it's drawn.
+            var vehicle = train.Cars[car];
+            var (bx, by, bz) = vehicle.Reversed ? (-dx, -dy, -dz) : (dx, dy, dz);
+            var rotation = Facing(bx, by, bz);
+            float3 On(SoundSpot spot)
+            {
+                var p = VehicleOverlay.Rotate(rotation, SoundPosition(vehicle, spot));
+                return new((float)((front.X + rear.X) * 0.5 + p.X - camera.X), (float)((front.Y + rear.Y) * 0.5 + p.Y - camera.Y),
+                    (float)((front.Z + rear.Z) * 0.5 + p.Z - camera.Z));
+            }
+            var at = On(SoundSpot.Engine);
             var inputs = new EngineInputs(onLine ? throttle : 0f, onLine ? load : 0f, (float)train.Body.Starting[car], train.Body.Brakes.Compressing,
-                onLine && train.Reverser != 0 ? (float)train.Dynamic : 0f, systems?.Turning ?? true, (float)(systems?.RunDown ?? 0.0));
-            sound.Update(dt, inputs, new(at, velocity, EngineSound.Reference, EngineSound.Range));
+                onLine && train.Reverser != 0 ? (float)train.Dynamic : 0f, systems?.Turning ?? true, (float)(systems?.RunDown ?? 0.0),
+                systems?.Isolated ?? false, (float)(systems?.Revs ?? -1.0));
+            sound.Update(dt, inputs, new(at, velocity, EngineSound.Reference, EngineSound.Range),
+                new(On(SoundSpot.AirCompressor), velocity, EngineSound.Reference, EngineSound.Range),
+                new(On(SoundSpot.BrakeFan), velocity, EngineSound.Reference, EngineSound.Range));
         }
     }
 

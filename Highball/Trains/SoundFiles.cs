@@ -9,8 +9,9 @@ public static class SoundFiles
 {
     private static readonly HashSet<string> Tried = [];
 
-    /// A sound to loop: its name in the audio engine, or null.
-    public static string? Loop(string? path) => Get(path, "loop:", name => AudioEngine.LoadSeamless(name, path!, mono: true));
+    /// A sound to loop, turned up or down by gainDb as it's loaded: its name in the audio engine, or null.
+    public static string? Loop(string? path, float gainDb = 0f) =>
+        Get(path, gainDb == 0f ? "loop:" : $"loop{gainDb:+0.#;-0.#}dB:", name => AudioEngine.LoadSeamless(name, path!, mono: true, gainDb: gainDb));
 
     /// A sound to play once.
     public static string? Shot(string? path) => Get(path, "shot:", name => AudioEngine.Load(name, path!, mono: true));

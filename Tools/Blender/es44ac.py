@@ -4,7 +4,7 @@
 
 The source is "General Electric ES44AC Black" by OUTPISTON, CC BY-NC-SA 4.0:
 https://sketchfab.com/3d-models/general-electric-es44ac-black-ab967059a9504a209c4993816ccb2c9b
-Its file stays in Models/Locomotives/ES44AC/Source. Under ES44AC this writes CREDITS.txt, assembly.json (where each part goes), one
+Its file stays in Models/Locomotives/ES44AC/Black/Source. Under ES44AC/Black this writes CREDITS.txt, assembly.json (where each part goes), one
 folder per level of detail, of which only LOD0 is built (the source is already light, about 23,000 triangles), and
     LOD0/body_<livery>.glb   origin on the railhead, midway between the trucks; the headlights, ditch lights, horn and bell
                              are nodes of their own in it (see FIXTURES), listed with where they are and face in assembly.json
@@ -27,7 +27,7 @@ from mathutils import Matrix, Vector
 
 args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 CONTENT = os.path.abspath(args[0] if args else "Content")
-OUT = os.path.join(CONTENT, "Models", "Locomotives", "ES44AC")
+OUT = os.path.join(CONTENT, "Models", "Locomotives", "ES44AC", "Black")  # ES44AC/CSX is the same engine, another model: gevo.py
 COUPLERS = os.path.join(CONTENT, "Models", "Couplers")
 SOURCE = os.path.join(OUT, "Source", "general_electric_es44ac_black.glb")
 LIVERIES = {"black": "Black, as the source has it"}
@@ -402,7 +402,7 @@ def combined(key):
         for k, a in enumerate(AXLES, 1):
             load("LOD0/wheelset.glb", holder(f"Wheelset_{label}_{k}", (0, a, TREAD_R), 0.0, truck_at), f"Wheelset_{label}_{k}")
     for label, y, yaw in (("Front", COUPLER_FRONT, 0.0), ("Rear", COUPLER_REAR, math.pi)):
-        load(os.path.join("..", "..", "Couplers", "coupler.glb"), holder(f"Coupler_{label}", (0, y, COUPLER_Z), yaw, root), f"Coupler_{label}")
+        load(os.path.join(COUPLERS, "coupler.glb"), holder(f"Coupler_{label}", (0, y, COUPLER_Z), yaw, root), f"Coupler_{label}")
     bpy.context.view_layer.update()
     folder = os.path.join(OUT, "Assembled")
     os.makedirs(folder, exist_ok=True)

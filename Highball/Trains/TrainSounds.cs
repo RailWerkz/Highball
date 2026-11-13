@@ -73,10 +73,15 @@ public sealed class TrainSounds
 
     /// Where the horn and bell are this frame (positions relative to the listener's origin, velocities in m/s); everything
     /// they're playing goes along.
+    /// How loud the horn and bell are, 1 as recorded (the lead engine's tuning and the mix's, AudioTuning).
+    public float HornLevel = 1f, BellLevel = 1f;
+
     public void Move(AudioEngine.Placement horn, AudioEngine.Placement bell)
     {
         _hornAt = horn;
         _bellAt = bell;
+        AudioEngine.SetLoopVolume(_horn, HornLevel);
+        AudioEngine.SetLoopVolume(_bell, BellLevel);
         AudioEngine.Move(_horn, horn);
         AudioEngine.Move(_hornEnd, horn);
         AudioEngine.Move(_bell, bell);
@@ -105,7 +110,7 @@ public sealed class TrainSounds
         if (Loaded.Add(name) && !AudioEngine.Load(name, Path.Combine("Bells", Bell + ".wav"), mono: true))
             return;
         _bellSound = Bell;
-        _bell = AudioEngine.PlayLoop(name, at: _bellAt);
+        _bell = AudioEngine.PlayLoop(name, volume: BellLevel, at: _bellAt);
     }
 
     /// Blows the horn while held is true; lets it go when it turns false.
@@ -125,7 +130,7 @@ public sealed class TrainSounds
         if (Loaded.Add(name) && !AudioEngine.LoadSustained(name, Path.Combine("Horns", Horn + ".wav"), HornAttack, HornRelease, mono: true, brighten: HornBrighten, drive: HornDrive))
             return;
         _hornSound = Horn;
-        _horn = AudioEngine.PlaySustained(name, at: _hornAt);
+        _horn = AudioEngine.PlaySustained(name, volume: HornLevel, at: _hornAt);
     }
 
     /// Silences both at once (the train's gone).

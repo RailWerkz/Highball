@@ -2872,7 +2872,7 @@ public sealed partial class EditorView : IDisposable
                 _trains.PlaceAt(p.X, p.Z, forward.X, forward.Z);
             }
         }
-        else if (_tool == Tool.Look && _trains.Train is not null && ImGui.IsMouseClicked(ImGuiMouseButton.Left) && !Blocked)
+        else if (_tool == Tool.Look && _trains.Train is not null && ImGui.IsMouseClicked(ImGuiMouseButton.Left) && !Blocked && !_audioEditor.WantsPointer)
             // Free Look's left button picks a vehicle (or lets go of it, off them).
             _trains.SelectAt(Input.MousePosition, Project, new double3(_camera.X, _camera.Y, _camera.Z));
 
@@ -3456,6 +3456,8 @@ public sealed partial class EditorView : IDisposable
         // The train's lit lamps.
         _renderer.SceneLights.Clear();
         _renderer.SceneLights.AddRange(_trains.Lamps);
+        _renderer.SceneSmoke = _trains.Smoke;
+        _renderer.SceneHaze = _trains.Haze;
         _renderer.Render(cmd, new int2(width, height), _camera, _terrain, _network, _trains.Draws);
     }
 
@@ -3785,6 +3787,9 @@ public sealed partial class EditorView : IDisposable
             _overlay = _overlay == TrackOverlay.ClassMap ? TrackOverlay.Off : TrackOverlay.ClassMap;
         if (ImGui.MenuItem("Wireframe", "Shift+F",_renderer.Wireframe, true))
             _renderer.Wireframe = !_renderer.Wireframe;
+        ImGui.Separator();
+        if (ImGui.MenuItem("Audio Editor", "", _audioEditor.Open, true))
+            _audioEditor.Open = !_audioEditor.Open;
     }
 
     /// Solve Track Again was picked: asked about before it's done, since it throws the fitted track away.
@@ -3820,6 +3825,9 @@ public sealed partial class EditorView : IDisposable
     }
 
     private readonly AuditState _audit = new();
+
+    /// The Audio Editor (View, Audio Editor): the trains' sound tuned by ear, with handles on the picked locomotive.
+    private readonly AudioEditor _audioEditor = new();
 
     private void RunAudit()
     {
@@ -4279,6 +4287,8 @@ public sealed partial class EditorView : IDisposable
         ToolStrip();
         _trains.Window(_headerBottom);
         AuditWindow();
+        _audioEditor.Window(_trains);
+        _audioEditor.Gizmos(_trains, Project, _camera, _screen.Y, Blocked);
         ConfirmSolve();
     }
 

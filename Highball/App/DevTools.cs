@@ -35,6 +35,7 @@ namespace Highball.App;
 ///   --fly SPEED                                     with --view, fly straight ahead at SPEED metres a second, logging the
 ///                                                   frame times and the terrain left waiting every second
 ///   --panels                                        with --view, open the Frame Statistics, Profiler, Threading and Camera windows
+///   --audioeditor [TAB]                             with --view, open the Audio Editor (on mix, locomotive or gear)
 ///   --skybox NAME                                   with --view, show that sky (a file name in Textures/Skyboxes, or Procedural)
 ///   --throw LAT LON                                 with --view or --view2d, once loaded, throw the switch nearest there
 ///   --train CONSIST LAT LON NOTCH                   with --view, once loaded, put that saved consist on the track there
@@ -145,6 +146,7 @@ public static class DevTools
 
     /// Open the 3D view's Frame Statistics and Profiler windows (--panels).
     public static bool Panels { get; set; }
+    public static string? AudioEditor { get; set; }
 
     /// The lamps every signal has lit unless set by hand (--lamps red,yellow,green, all or none).
     public static World.SignalLamps? Lamps { get; set; }
@@ -343,6 +345,9 @@ public static class DevTools
                     break;
                 case "--panels":
                     Panels = true;
+                    break;
+                case "--audioeditor":
+                    AudioEditor = i + 1 < args.Length && !args[i + 1].StartsWith('-') ? args[++i] : "mix";
                     break;
                 case "--lamps" when i + 1 < args.Length:
                     var named = args[++i].ToLowerInvariant();
