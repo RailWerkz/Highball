@@ -97,7 +97,7 @@ public sealed class ParallelTool(ToolContext context, RouteInfo route) : IEditor
             Follow.RemoveLast();
         if (Input.KeyDown(GlfwKey.Enter))
         {
-            Follow.Update(guides, null);
+            Follow.Update(guides, null, wait: true);
             if (Follow.Preview is { } pieces && Follow.Points() is { } first &&
                 Yard.FollowParallel(tracks, pieces, first, YardLaying.Length) is { Problem: null } plan && tracks.LayWays(plan.Ways) is { } edit)
             {

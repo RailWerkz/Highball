@@ -34,6 +34,11 @@ public sealed class TrackEditor
     private readonly List<NetworkWay> _rails = [];
     private int _version = -1;
 
+    /// How many rail ways run through each node, and which (in the order of _rails): worked out with them, so asking about a
+    /// node (a loose end, a junction, the way it runs) doesn't go through every track on the route, as it did many times a frame.
+    private readonly Dictionary<long, int> _uses = [];
+    private readonly Dictionary<long, List<NetworkWay>> _waysAt = [];
+
     public RouteNetwork Network => _network;
 
     /// Control points are shown and picked this close to the camera.
@@ -79,6 +84,8 @@ public sealed class TrackEditor
         _version = _network.Version;
         _nodes.Clear();
         _rails.Clear();
+        _uses.Clear();
+        _waysAt.Clear();
         var projection = _route.Projection!;
         foreach (var way in _network.Ways.Values)
         {
@@ -90,7 +97,22 @@ public sealed class TrackEditor
                 var p = projection.Forward(new GeoPoint(way.Lat[i], way.Lon[i]));
                 _nodes[way.Nodes[i]] = (p.East, -p.North);
             }
+
+            foreach (var node in way.Nodes.Distinct())
+            {
+                _uses[node] = _uses.GetValueOrDefault(node) + 1;
+                if (!_waysAt.TryGetValue(node, out var list))
+                    _waysAt[node] = list = [];
+                list.Add(way);
+            }
         }
+    }
+
+    /// The first rail way (in the order of _rails) through a node, if any.
+    private NetworkWay? WayThrough(long node)
+    {
+        Refresh();
+        return _waysAt.TryGetValue(node, out var list) ? list[0] : null;
     }
 
     public (double X, double Z) PositionOf(long node)
@@ -762,21 +784,18 @@ public sealed class TrackEditor
         return ex * ex + ez * ez < within * within;
     }
 
+    /// How many rail ways run through each node (read only: it's kept).
     private Dictionary<long, int> RailUses()
     {
         Refresh();
-        var uses = new Dictionary<long, int>();
-        foreach (var way in _rails)
-            foreach (var node in way.Nodes.Distinct())
-                uses[node] = uses.GetValueOrDefault(node) + 1;
-        return uses;
+        return _uses;
     }
 
     /// A point more than one way runs through, other than two ending on each other.
     public bool IsJunction(long node)
     {
         Refresh();
-        var through = _rails.Where(w => w.Nodes.Contains(node)).ToList();
+        var through = _waysAt.TryGetValue(node, out var list) ? list : [];
         return through.Count > 2 || (through.Count == 2 && through.Any(w => w.Nodes[0] != node && w.Nodes[^1] != node));
     }
 
@@ -794,7 +813,7 @@ public sealed class TrackEditor
     {
         if (RailUses().GetValueOrDefault(node) != 1)
             return false;
-        var way = _rails.First(w => w.Nodes.Contains(node));
+        var way = WayThrough(node)!;
         return way.Nodes[0] == node || way.Nodes[^1] == node;
     }
 
@@ -1009,7 +1028,7 @@ public sealed class TrackEditor
     public bool IsYard(LayPoint point)
     {
         Refresh();
-        var way = point.Split is { } split ? _network.Ways.GetValueOrDefault(split.Way) : point.Node is { } node ? _rails.FirstOrDefault(w => w.Nodes.Contains(node)) : null;
+        var way = point.Split is { } split ? _network.Ways.GetValueOrDefault(split.Way) : point.Node is { } node ? WayThrough(node) : null;
         return way?.Class is (int)RailClass.Yard or (int)RailClass.Industrial;
     }
 
@@ -1027,7 +1046,7 @@ public sealed class TrackEditor
             var (bx, bz) = PositionOf(way.Nodes[split.Segment + 1]);
             direction = (bx - ax, bz - az);
         }
-        else if (at.Node is { } node && _rails.FirstOrDefault(w => w.Nodes.Contains(node)) is { } through)
+        else if (at.Node is { } node && WayThrough(node) is { } through)
         {
             var i = Array.IndexOf(through.Nodes, node);
             var (ax, az) = PositionOf(through.Nodes[Math.Max(i - 1, 0)]);
@@ -1229,7 +1248,7 @@ public sealed class TrackEditor
     public (double X, double Z)? RunsAt(long node)
     {
         Refresh();
-        if (_rails.FirstOrDefault(w => w.Nodes.Contains(node)) is not { } way)
+        if (WayThrough(node) is not { } way)
             return null;
         var i = Array.IndexOf(way.Nodes, node);
         var (ax, az) = _nodes[way.Nodes[Math.Max(i - 1, 0)]];

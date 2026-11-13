@@ -46,7 +46,7 @@ public sealed class LayYardTool(ToolContext context, RouteInfo route) : IEditorT
     /// The track through the clicks laid.
     public void Lay()
     {
-        Follow.Update(context.Guides!, null);
+        Follow.Update(context.Guides!, null, wait: true);
         if (Follow.Points() is { } points)
         {
             context.Commit(context.Tracks.Lay(points, lead: false, exact: true));

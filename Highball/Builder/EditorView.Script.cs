@@ -680,7 +680,7 @@ public sealed partial class EditorView
                         _follow.Add(placed);
                 }
 
-                _follow.Update(_guides!, null);
+                _follow.Update(_guides!, null, wait: true);
                 Log.Info(string.Create(CultureInfo.InvariantCulture, $"Follow: {_follow.Length:0} m, tightest curve {_follow.Radius:0} m, fitted {!_follow.Unfitted}, {_follow.Preview?.Count} pieces"));
                 FollowLay();
                 break;
@@ -707,7 +707,7 @@ public sealed partial class EditorView
                         _parallelFollow.Add(placed);
                 }
 
-                _parallelFollow.Update(_guides!, null);
+                _parallelFollow.Update(_guides!, null, wait: true);
                 var plan = _parallelFollow.Preview is { } pieces && _parallelFollow.Points() is { } first ? _parallel.FollowParallel(_tracks!, pieces, first, PanelLength) : null;
                 Log.Info($"Parallel follow: {_parallelFollow.Length:0} m, {plan?.Summary}, problem {plan?.Problem ?? "none"}, points {string.Join("/", plan?.Ways.Select(w => w.Points.Count) ?? [])}, joined {plan?.Ways.Count(w => w.Points[0].Node is not null || w.Points[^1].Node is not null)}");
                 if (plan is { Problem: null })
@@ -819,9 +819,9 @@ public sealed partial class EditorView
                 _follow.Clear();
                 _follow.Add(new FollowTool.Click(ga.X, ga.Z, ga, new LayPoint(ga.X, ga.Z)));
                 var end = new FollowTool.Click(gb.X, gb.Z, gb, new LayPoint(gb.X, gb.Z));
-                _follow.Update(guides, end);
+                _follow.Update(guides, end, wait: true);
                 _follow.Add(end);
-                _follow.Update(guides, null);
+                _follow.Update(guides, null, wait: true);
                 var fitted = watch.ElapsedMilliseconds;
                 var followed = _follow.Points();
                 Log.Info($"Follow test: {_follow.Length:0} m, {(_follow.Unfitted ? "partly as mapped" : "fitted")}, {_follow.Preview?.Count ?? 0} pieces, tightest {_follow.Radius:0} m; " +

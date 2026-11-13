@@ -339,6 +339,11 @@ public sealed class YardGuides
 
         var start = (X: from.X, Z: from.Z);
         var end = (X: to.X, Z: to.Z);
+        // No further round than a few times as far as the places are apart: a walk that can only get there the long way (a
+        // switch it would have to back through) isn't what's meant, and looking for one goes through the whole route, every
+        // frame the pointer moves.
+        var straight = Math.Sqrt((end.X - start.X) * (end.X - start.X) + (end.Z - start.Z) * (end.Z - start.Z));
+        var farthest = straight * PathDetour + PathSlack;
         var distance = new Dictionary<(long Before, long Node), double>
         {
             [(from.B, from.A)] = Along(from, from.A),
@@ -353,7 +358,7 @@ public sealed class YardGuides
         var bestCost = double.MaxValue;
         while (open.TryDequeue(out var state, out var cost))
         {
-            if (cost > distance[state] || cost >= bestCost)
+            if (cost > distance[state] || cost >= bestCost || cost > farthest)
                 continue;
 
             var (before, node) = state;
@@ -391,6 +396,10 @@ public sealed class YardGuides
         List<(double, double)> path = [(from.X, from.Z), .. nodes.Select(n => _nodes[n]), (to.X, to.Z)];
         return path;
     }
+
+    /// How much further than straight a walk along the guides may go (times as far, and metres more) before it's given up.
+    private const double PathDetour = 3.0;
+    private const double PathSlack = 200.0;
 
     /// The sharpest a walk along the guides may turn from one segment to the next (the cosine of 35 degrees).
     private const double CosMaxTurn = 0.82;
@@ -514,6 +523,7 @@ public sealed class FollowTool
     {
         _clicks.Clear();
         (Preview, Radius, Length, Unfitted) = (null, double.MaxValue, 0.0, false);
+        (_lastPath, _lastFit, _fitting) = (null, default, null);
     }
 
     public void Add(Click click) => _clicks.Add(click);
@@ -527,7 +537,13 @@ public sealed class FollowTool
     }
 
     /// Works out the fit through the clicks and on to where the pointer is, if it's somewhere.
-    public void Update(YardGuides guides, Click? pointer)
+    /// The fit of a path being worked out in the background, for the preview while the pointer moves.
+    private (List<(double X, double Z)> Path, Task<(List<TrackPiece> Pieces, double Radius, bool Fitted)> Fit)? _fitting;
+
+    /// The path through the clicks (and the pointer, as the next) along the guides, fitted. wait: fitted now, as laying needs;
+    /// otherwise a path that's changed is fitted in the background and the last fit shown until it's done, so the pointer
+    /// moving never holds up a frame (a long path takes a while to fit).
+    public void Update(YardGuides guides, Click? pointer, bool wait = false)
     {
         List<Click> all = [.. _clicks];
         if (pointer is { } p && all.Count > 0)
@@ -548,9 +564,28 @@ public sealed class FollowTool
         }
 
         // (Fitted again only when the path's changed: a long one takes a while, and this runs every frame.)
+        if (_fitting is { Fit.IsCompleted: true } done)
+        {
+            _fitting = null;
+            if (done.Fit.IsCompletedSuccessfully)
+                (_lastPath, _lastFit) = (done.Path, done.Fit.Result);
+        }
+
         if (_lastPath is null || !_lastPath.SequenceEqual(path))
-            (_lastPath, _lastFit) = (path, TrackAlignment.FitPath(path));
+        {
+            if (wait)
+                (_lastPath, _lastFit) = (path, TrackAlignment.FitPath(path));
+            else if (_fitting is null)
+                _fitting = (path, Task.Run(() => TrackAlignment.FitPath(path)));
+        }
+
         var fit = _lastFit;
+        if (_lastPath is null || (_lastFit.Pieces is null))
+        {
+            (Preview, Radius, Length, Unfitted) = (null, double.MaxValue, 0.0, false);
+            return;
+        }
+
         if (fit.Pieces.Count == 0)
         {
             (Preview, Radius, Length, Unfitted) = (null, double.MaxValue, 0.0, false);
