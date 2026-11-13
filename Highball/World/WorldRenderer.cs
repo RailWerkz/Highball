@@ -142,7 +142,9 @@ public sealed unsafe class WorldRenderer : IDisposable
         using var glowVert = Shader.Load("glow.vert");
         using var glowFrag = Shader.Load("glow.frag");
 
-        _sky = Pipelines.Create(new PipelineDesc { Vertex = fullscreen, Fragment = sky, Layout = _layout, Cull = VkCullModeFlags.None, DepthTest = false, DepthWrite = false });
+        // Drawn after what's solid, at the far plane against its depth: only where nothing else is, so it isn't worked out for
+        // pixels the ground covers.
+        _sky = Pipelines.Create(new PipelineDesc { Vertex = fullscreen, Fragment = sky, Layout = _layout, Cull = VkCullModeFlags.None, DepthTest = true, DepthWrite = false });
         var terrain = new PipelineDesc { Vertex = terrainVert, Fragment = terrainFrag, Layout = _terrainLayout, Attributes = TerrainVertex.Layout, Stride = Marshal.SizeOf<TerrainVertex>() };
         _terrain = Pipelines.Create(terrain);
         _terrainWire = Pipelines.Create(new PipelineDesc
@@ -264,22 +266,6 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         _target.Begin(cmd, new float4(0f, 0f, 0f, 1f));
 
-        var tanY = MathF.Tan(camera.FieldOfView * 0.5f);
-        var sky = new SkyPush
-        {
-            Right = new float4(camera.Right * (tanY * aspect), 0f),
-            Up = new float4(camera.Up * tanY, 0f),
-            Forward = new float4(camera.Forward, 0f),
-            Sun = sun,
-            Camera = camPos,
-        };
-        var skyScope = Profiler.Sample("Sky", cmd);
-        cmd.BindPipeline(VkPipelineBindPoint.Graphics, _sky);
-        Sky.Bind(cmd, _layout);
-        cmd.PushConstants(_layout, Stages, ByteSize.Zero, sky);
-        cmd.Draw(3, 1, 0, 0);
-
-        skyScope.Dispose();
 
         var view = camera.View(aspect);
         if (network is not null && !Wireframe)
@@ -373,6 +359,23 @@ public sealed unsafe class WorldRenderer : IDisposable
             _instances.Add(models, camera, (draw, centre, radius) => draw.Moving && ModelInstances.InView(camera, aspect, centre, radius), _moving);
             DrawModels(cmd, camera, aspect);
         }
+
+        var tanY = MathF.Tan(camera.FieldOfView * 0.5f);
+        var sky = new SkyPush
+        {
+            Right = new float4(camera.Right * (tanY * aspect), 0f),
+            Up = new float4(camera.Up * tanY, 0f),
+            Forward = new float4(camera.Forward, 0f),
+            Sun = sun,
+            Camera = camPos,
+        };
+        var skyScope = Profiler.Sample("Sky", cmd);
+        cmd.BindPipeline(VkPipelineBindPoint.Graphics, _sky);
+        Sky.Bind(cmd, _layout);
+        cmd.PushConstants(_layout, Stages, ByteSize.Zero, sky);
+        cmd.Draw(3, 1, 0, 0);
+
+        skyScope.Dispose();
 
         using (Profiler.Sample("Glows", cmd))
             DrawGlows(cmd, camera, aspect);

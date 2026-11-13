@@ -20,7 +20,8 @@ layout(set = 2, binding = 1) uniform sampler2DArrayShadow shadowMap;
 layout(set = 2, binding = 2) uniform sampler2D horizonMap0;
 layout(set = 2, binding = 3) uniform sampler2D horizonMap1;
 
-// How lit a point is in a shadow layer, 0 to 1: nine filtered taps, for an edge a couple of texels soft. lift: how far off the
+// How lit a point is in a shadow layer, 0 to 1: four filtered taps (each the hardware's own 2 x 2 compare) three quarters of a
+// texel off each way, for an edge a couple of texels soft at under half the cost of a 3 x 3 grid. lift: how far off the
 // surface along its normal it's looked up, so a surface doesn't shadow itself.
 float shadowInLayer(int layer, mat4 cascade, vec3 relative, vec3 n, float lift)
 {
@@ -29,14 +30,12 @@ float shadowInLayer(int layer, mat4 cascade, vec3 relative, vec3 n, float lift)
     vec2 uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
 
     vec2 step = vec2(1.0) / vec2(textureSize(shadowMap, 0).xy);
-    float lit = 0.0;
-    for (int y = -1; y <= 1; y++)
-    {
-        for (int x = -1; x <= 1; x++)
-            lit += texture(shadowMap, vec4(uv + vec2(x, y) * step, float(layer), p.z));
-    }
-
-    return lit / 9.0;
+    vec2 off = step * 0.75;
+    float lit = texture(shadowMap, vec4(uv + vec2(-off.x, -off.y), float(layer), p.z))
+              + texture(shadowMap, vec4(uv + vec2(off.x, -off.y), float(layer), p.z))
+              + texture(shadowMap, vec4(uv + vec2(-off.x, off.y), float(layer), p.z))
+              + texture(shadowMap, vec4(uv + vec2(off.x, off.y), float(layer), p.z));
+    return lit * 0.25;
 }
 
 float shadowInCascade(int cascade, vec3 relative, vec3 n, float nl)

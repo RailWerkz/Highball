@@ -33,6 +33,14 @@ float fbm(vec2 p, float footprint)
     for (int i = 0; i < 5; i++)
     {
         float fade = 1.0 - smoothstep(0.25, 0.5, footprint);
+        if (fade <= 0.0)
+        {
+            // This octave and every finer one are below a pixel: all at their average, so they needn't be worked out.
+            float rest = 2.0 * amplitude * (1.0 - exp2(float(i - 5)));
+            sum += 0.5 * rest;
+            total += rest;
+            break;
+        }
         sum += mix(0.5, noise(p), fade) * amplitude;
         total += amplitude;
         p = mat2(1.6, 1.2, -1.2, 1.6) * p + 17.1; // rotated each octave so the lattice doesn't line up

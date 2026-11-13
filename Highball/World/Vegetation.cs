@@ -89,7 +89,7 @@ public sealed unsafe class Vegetation : IDisposable
 
     /// A cell drawn in this pass: its row in the cell table (where it is, relative to the camera, and its wrapped place),
     /// and its instances of the kind being drawn.
-    private readonly record struct Visible(float4 Cell, int First, int Count);
+    private readonly record struct Visible(float4 Cell, int First, int Count, float Distance);
 
     /// The gusts' and flutter's phases now: (gust, gust, flutter). A gust 69 m long passing at 4 m/s, one 37.5 m long at 4.5 m/s.
     private static float3 WindPhases()
@@ -761,9 +761,12 @@ public sealed unsafe class Vegetation : IDisposable
             var showing = Showing(count, MathF.Max(MathEx.Length(centre) - radius, 0f), kind.Fade * Quality.PlantReach);
             if (showing == 0)
                 continue;
-            _visible.Add(new Visible(new float4((float)ox, (float)oz, WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size)), cell.Offset + cell.Starts[k], showing));
+            var nearest = MathF.Max(MathEx.Length(centre) - radius, 0f);
+            _visible.Add(new Visible(new float4((float)ox, (float)oz, WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size)), cell.Offset + cell.Starts[k], showing, nearest));
         }
 
+        // Nearest first: what's drawn first fills the depth that hides what's behind it, so less is shaded only to be covered.
+        _visible.Sort(static (a, b) => a.Distance.CompareTo(b.Distance));
         return _visible.Count > 0;
     }
 

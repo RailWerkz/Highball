@@ -167,8 +167,11 @@ void main()
     vec3 surface = normalize(vec3(n.x + bump.x, n.y, n.z + bump.y));
 
     // Tree canopy: dark clumps with lighter crowns.
-    float canopy = vCover.a * smoothstep(0.35, 0.6, fbm(world.xz * 0.06, pixel * 0.06));
-    albedo = mix(albedo, albedo * vec3(0.55, 0.7, 0.5), canopy * 0.6);
+    if (vCover.a > 0.0)
+    {
+        float canopy = vCover.a * smoothstep(0.35, 0.6, fbm(world.xz * 0.06, pixel * 0.06));
+        albedo = mix(albedo, albedo * vec3(0.55, 0.7, 0.5), canopy * 0.6);
+    }
 
     // Steep ground is cliff, projected from all three sides so it doesn't smear down the slope.
     float rock = smoothstep(0.80, 0.62, n.y);
@@ -205,7 +208,9 @@ void main()
     // Soil and grass at this scale are far bumpier than their maps say; water isn't.
     s.specular = mix(GroundSpecular, 1.0, clamp(m.z + m.w, 0.0, 1.0));
     float water = clamp(m.z + m.w, 0.0, 1.0);
-    weatherSurface(s, smoothstep(0.68, 0.76, fbm(world.xz * 0.05, pixel * 0.05)) * smoothstep(0.985, 0.998, n.y) * (1.0 - water), 1.0 - water);
+    // (Where puddles would be matters only on wet ground.)
+    float puddle = shadow.weather.x > 0.0 ? smoothstep(0.68, 0.76, fbm(world.xz * 0.05, pixel * 0.05)) * smoothstep(0.985, 0.998, n.y) * (1.0 - water) : 0.0;
+    weatherSurface(s, puddle, 1.0 - water);
 
     // Shadow from the ground's own shape: the relief is too fine for the map to resolve, and would only speckle it.
     vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative, n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative);

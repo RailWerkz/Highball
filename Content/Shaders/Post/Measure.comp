@@ -2,7 +2,8 @@
 // Measures the picture, into one pixel kept from frame to frame. Red: its brightness, as an eye settling on it would see it, ignoring the
 // darkest and brightest parts and counting the middle of the screen for more. Green: how much of the sun can be seen.
 
-layout(local_size_x = 1, local_size_y = 1) in;
+// One workgroup: its threads share out the samples into a histogram in shared memory; the first reads it.
+layout(local_size_x = 256) in;
 
 layout(set = 0, binding = 0, rgba16f) uniform image2D result;
 layout(set = 0, binding = 1) uniform sampler2D reduced;
@@ -37,31 +38,44 @@ float sunVisible()
     return seen / 32.0;
 }
 
+shared uint bins[Bins];
+shared uint totals[256];
+shared float sunSeen;
+
 void main()
 {
-    uint bins[Bins];
-    for (int i = 0; i < Bins; i++)
-        bins[i] = 0u;
+    uint id = gl_LocalInvocationIndex;
+    if (id < uint(Bins))
+        bins[id] = 0u;
+    barrier();
 
-    // This runs on one thread of the GPU, so it can't afford every pixel. Spaced out so about the same number are read at any window size,
-    // which is plenty for a histogram that only has to settle slowly.
     ivec2 size = textureSize(reduced, 0);
     int spacing = max(1, int(sqrt(float(size.x * size.y) / float(Sampled))));
-    uint total = 0u;
-    for (int y = spacing / 2; y < size.y; y += spacing)
+    ivec2 count = (size - spacing / 2 + spacing - 1) / spacing;
+    uint mine = 0u;
+    for (int k = int(id); k < count.x * count.y; k += 256)
     {
-        for (int x = spacing / 2; x < size.x; x += spacing)
-        {
-            vec2 d = (vec2(x, y) + 0.5) / vec2(size) * 2.0 - 1.0;
-            uint weight = uint(1.0 + 3.0 * clamp(1.0 - dot(d, d), 0.0, 1.0));
-            float brightness = log2(max(luma(texelFetch(reduced, ivec2(x, y), 0).rgb), 1e-4));
-            int bin = clamp(int((brightness - LowestLog) / (HighestLog - LowestLog) * float(Bins)), 0, Bins - 1);
-            bins[bin] += weight;
-            total += weight;
-        }
+        int x = spacing / 2 + (k % count.x) * spacing;
+        int y = spacing / 2 + (k / count.x) * spacing;
+        vec2 d = (vec2(x, y) + 0.5) / vec2(size) * 2.0 - 1.0;
+        uint weight = uint(1.0 + 3.0 * clamp(1.0 - dot(d, d), 0.0, 1.0));
+        float brightness = log2(max(luma(texelFetch(reduced, ivec2(x, y), 0).rgb), 1e-4));
+        int bin = clamp(int((brightness - LowestLog) / (HighestLog - LowestLog) * float(Bins)), 0, Bins - 1);
+        atomicAdd(bins[bin], weight);
+        mine += weight;
     }
 
-    // The mean of what's left between the 30th and 85th percentiles.
+    totals[id] = mine;
+    if (id == 0u)
+        sunSeen = sunVisible();
+    barrier();
+    if (id != 0u)
+        return;
+
+    uint total = 0u;
+    for (int i = 0; i < 256; i++)
+        total += totals[i];
+
     float low = float(total) * 0.3;
     float high = float(total) * 0.85;
     float seen = 0.0;
@@ -77,7 +91,7 @@ void main()
     }
 
     float target = sum / max(kept, 1.0);
-    float visible = sunVisible();
+    float visible = sunSeen;
 
     vec4 last = imageLoad(result, ivec2(0));
     if (last.b > 0.5)
