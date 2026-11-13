@@ -54,6 +54,8 @@ public sealed partial class TerrainSource
             Stage("drapes");
             lines.FindLayouts(tagged);
             Stage("layouts");
+            lines.Bridges = BridgePlanner.Find(lines);
+            Stage("bridges");
             TrackLayouts.SaveMarkers(_route, lines.Layouts);
             Stage("markers");
 

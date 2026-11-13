@@ -20,7 +20,7 @@ public sealed partial class NetworkMeshes
 
     private void FindBridges()
     {
-        _bridges = BridgePlanner.Find(_lines);
+        _bridges = _lines.Bridges ??= BridgePlanner.Find(_lines);
         _bridgesByChunk.Clear();
         foreach (var group in _bridges)
         {

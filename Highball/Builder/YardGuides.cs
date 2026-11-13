@@ -51,20 +51,35 @@ public sealed class YardGuides
 
     private readonly RouteNetwork _network;
     private readonly RouteProjection _projection;
-    private readonly Dictionary<long, (double X, double Z)> _nodes = [];
-    private readonly Dictionary<long, List<(long Other, double Length)>> _links = [];
-    private readonly List<(long A, long B, bool Done)> _segments = [];
-    /// Every guide segment's class, and whether any built track (hand-laid or drawn) already runs along it.
-    private readonly List<(int Class, bool Covered)> _classes = [];
+
+    /// What's worked out from the guides and the track: made again whenever either changes, off the main thread (it goes
+    /// through the whole route), and swapped in whole when it's done, the last one used meanwhile.
+    private sealed class Found
+    {
+        public readonly Dictionary<long, (double X, double Z)> Nodes = [];
+        public readonly Dictionary<long, List<(long Other, double Length)>> Links = [];
+        public readonly List<(long A, long B, bool Done)> Segments = [];
+        /// Every guide segment's class, and whether any built track (hand-laid or drawn) already runs along it.
+        public readonly List<(int Class, bool Covered)> Classes = [];
+        public readonly List<YardArea> Areas = [];
+        public double GuideLength, DoneLength;
+    }
+
+    private Found _found = new();
+    private Task<Found>? _finding;
+    private Dictionary<long, (double X, double Z)> _nodes => _found.Nodes;
+    private Dictionary<long, List<(long Other, double Length)>> _links => _found.Links;
+    private List<(long A, long B, bool Done)> _segments => _found.Segments;
+    private List<(int Class, bool Covered)> _classes => _found.Classes;
 
     /// How close any built track has to be to a mapped segment for the class overlay to leave the map line out.
     private const double CoveredWithin = 3.5;
     private int _version = -1;
     private NetworkLines? _lines;
 
-    public List<YardArea> Areas { get; } = [];
-    public double GuideLength { get; private set; }
-    public double DoneLength { get; private set; }
+    public List<YardArea> Areas => _found.Areas;
+    public double GuideLength => _found.GuideLength;
+    public double DoneLength => _found.DoneLength;
 
     public YardGuides(RouteNetwork network, RouteProjection projection)
     {
@@ -72,17 +87,36 @@ public sealed class YardGuides
         _projection = projection;
     }
 
+    /// Brought up to date with the network and the lines, if they've changed: the first time at once, after that in the
+    /// background (the last found is used until it's done).
     public void Refresh(NetworkLines lines)
     {
-        if (_version == _network.Version && _lines == lines)
-            return;
-        (_version, _lines) = (_network.Version, lines);
+        if (_finding is { IsCompleted: true } done)
+        {
+            _finding = null;
+            if (done.IsCompletedSuccessfully)
+                _found = done.Result;
+            else
+                RailWerkz.Core.Logging.Log.Error($"Yard guides: {done.Exception?.InnerException?.Message}");
+        }
 
-        FindAreas();
-        _nodes.Clear();
-        _links.Clear();
-        _segments.Clear();
-        _classes.Clear();
+        if ((_version == _network.Version && _lines == lines) || _finding is not null)
+            return;
+        var first = _lines is null;
+        (_version, _lines) = (_network.Version, lines);
+        // Edits replace ways rather than change them, so a list of them now is a snapshot.
+        var ways = _network.Ways.Values.ToList();
+        var projection = _projection;
+        if (first)
+            _found = Find(ways, lines, projection);
+        else
+            _finding = Task.Run(() => Find(ways, lines, projection));
+    }
+
+    private static Found Find(List<NetworkWay> ways, NetworkLines lines, RouteProjection projection)
+    {
+        var found = new Found();
+        FindAreas(found, ways, projection);
 
         // Where hand-laid track runs.
         var laid = new HashSet<(int, int)>();
@@ -134,22 +168,21 @@ public sealed class YardGuides
             return false;
         }
 
-        (GuideLength, DoneLength) = (0.0, 0.0);
-        foreach (var way in _network.Ways.Values.Where(RouteNetwork.IsGuide))
+        foreach (var way in ways.Where(RouteNetwork.IsGuide))
         {
             for (var i = 0; i < way.Nodes.Length; i++)
             {
-                var p = _projection.Forward(new GeoPoint(way.Lat[i], way.Lon[i]));
-                _nodes[way.Nodes[i]] = (p.East, -p.North);
+                var p = projection.Forward(new GeoPoint(way.Lat[i], way.Lon[i]));
+                found.Nodes[way.Nodes[i]] = (p.East, -p.North);
             }
 
             for (var i = 0; i + 1 < way.Nodes.Length; i++)
             {
                 var (a, b) = (way.Nodes[i], way.Nodes[i + 1]);
-                var (pa, pb) = (_nodes[a], _nodes[b]);
+                var (pa, pb) = (found.Nodes[a], found.Nodes[b]);
                 var length = Math.Sqrt((pb.X - pa.X) * (pb.X - pa.X) + (pb.Z - pa.Z) * (pb.Z - pa.Z));
-                Link(a, b, length);
-                Link(b, a, length);
+                Link(found, a, b, length);
+                Link(found, b, a, length);
 
                 // Long map segments are judged a piece at a time: done only if most of it is.
                 var (hits, tries) = (0, Math.Max(2, (int)(length / 10.0)));
@@ -157,30 +190,31 @@ public sealed class YardGuides
                     if (NearLaid(pa.X + (pb.X - pa.X) * k / tries, pa.Z + (pb.Z - pa.Z) * k / tries))
                         hits++;
                 var done = hits > tries * 0.7;
-                _segments.Add((a, b, done));
+                found.Segments.Add((a, b, done));
                 var covered = 0;
                 for (var k = 0; k <= tries; k++)
                     if (NearBuilt(pa.X + (pb.X - pa.X) * k / tries, pa.Z + (pb.Z - pa.Z) * k / tries))
                         covered++;
-                _classes.Add((way.Class, covered > tries * 0.7));
-                GuideLength += length;
+                found.Classes.Add((way.Class, covered > tries * 0.7));
+                found.GuideLength += length;
                 if (done)
-                    DoneLength += length;
+                    found.DoneLength += length;
             }
         }
+
+        return found;
     }
 
-    private void Link(long from, long to, double length)
+    private static void Link(Found found, long from, long to, double length)
     {
-        if (!_links.TryGetValue(from, out var list))
-            _links[from] = list = [];
+        if (!found.Links.TryGetValue(from, out var list))
+            found.Links[from] = list = [];
         list.Add((to, length));
     }
 
-    private void FindAreas()
+    private static void FindAreas(Found found, List<NetworkWay> ways, RouteProjection projection)
     {
-        Areas.Clear();
-        var yards = _network.Ways.Values.Where(w => w.Rail && w.Nodes.Length >= 2 && w.Lat.Length == w.Nodes.Length && w.Tags.GetValueOrDefault("service") == "yard" && !w.Tags.ContainsKey(RouteNetwork.ExactTag)).ToList();
+        var yards = ways.Where(w => w.Rail && w.Nodes.Length >= 2 && w.Lat.Length == w.Nodes.Length && w.Tags.GetValueOrDefault("service") == "yard" && !w.Tags.ContainsKey(RouteNetwork.ExactTag)).ToList();
         var byNode = new Dictionary<long, List<NetworkWay>>();
         foreach (var way in yards)
             foreach (var node in way.Nodes)
@@ -211,20 +245,20 @@ public sealed class YardGuides
             foreach (var way in group)
                 for (var i = 0; i < way.Nodes.Length; i++)
                 {
-                    var p = _projection.Forward(new GeoPoint(way.Lat[i], way.Lon[i]));
+                    var p = projection.Forward(new GeoPoint(way.Lat[i], way.Lon[i]));
                     (sx, sz, count) = (sx + p.East, sz - p.North, count + 1);
                     if (i > 0)
                     {
-                        var q = _projection.Forward(new GeoPoint(way.Lat[i - 1], way.Lon[i - 1]));
+                        var q = projection.Forward(new GeoPoint(way.Lat[i - 1], way.Lon[i - 1]));
                         length += Math.Sqrt((p.East - q.East) * (p.East - q.East) + (p.North - q.North) * (p.North - q.North));
                     }
                 }
 
             var junctions = group.SelectMany(w => w.Nodes).Count(n => byNode[n].Count > 1) / 2;
-            Areas.Add(new YardArea(seed.Id, [.. group.Select(w => w.Id)], length, junctions, sx / count, sz / count, group.All(RouteNetwork.IsGuide)));
+            found.Areas.Add(new YardArea(seed.Id, [.. group.Select(w => w.Id)], length, junctions, sx / count, sz / count, group.All(RouteNetwork.IsGuide)));
         }
 
-        Areas.Sort((a, b) => b.Length.CompareTo(a.Length));
+        found.Areas.Sort((a, b) => b.Length.CompareTo(a.Length));
     }
 
     /// The guide under the pointer.

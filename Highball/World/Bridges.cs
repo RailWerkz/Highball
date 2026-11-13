@@ -206,7 +206,7 @@ public static class BridgePlanner
                     var (near, far) = (float.MaxValue, float.MinValue);
                     for (var p = m.First; p <= m.Last; p++)
                     {
-                        var across = AcrossOf(reference.Line, m.Line.X[p], m.Line.Z[p]);
+                        var across = AcrossOf(reference.Line, m.Line.X[p], m.Line.Z[p], reference.First - 20, reference.Last + 20);
                         (near, far) = (MathF.Min(near, across), MathF.Max(far, across));
                     }
 
@@ -314,19 +314,36 @@ public static class BridgePlanner
     }
 
     /// How far a place is across a line (to its right), from the nearest place on it.
-    private static float AcrossOf(NetworkLine line, double x, double z)
+
+    private static float AcrossOf(NetworkLine line, double x, double z, int near0, int near1)
     {
-        var (best, across) = (double.MaxValue, 0.0);
-        for (var q = 0; q + 1 < line.Count; q++)
+        // The nearest segment, the first of them if several are as near (as a plain search from the start finds it): looked for
+        // first where it most likely is (near0 to near1, round the bridge), then everywhere else, skipping a segment whose bounds
+        // are already further than the nearest found (a line can be thousands of points long, and this is asked for every point
+        // of every bridge beside another).
+        var (best, bestQ, across) = (double.MaxValue, int.MaxValue, 0.0);
+        void Try(int q)
         {
-            var (dx, dz) = (line.X[q + 1] - line.X[q], line.Z[q + 1] - line.Z[q]);
+            var (ax, az, bx, bz) = (line.X[q], line.Z[q], line.X[q + 1], line.Z[q + 1]);
+            var ox = Math.Max(Math.Max(Math.Min(ax, bx) - x, x - Math.Max(ax, bx)), 0.0);
+            var oz = Math.Max(Math.Max(Math.Min(az, bz) - z, z - Math.Max(az, bz)), 0.0);
+            if (ox * ox + oz * oz > best * (1.0 + 1e-9) + 1e-12)
+                return;
+            var (dx, dz) = (bx - ax, bz - az);
             var length2 = Math.Max(dx * dx + dz * dz, 1e-9);
-            var t = Math.Clamp(((x - line.X[q]) * dx + (z - line.Z[q]) * dz) / length2, 0.0, 1.0);
-            var d = Math.Pow(line.X[q] + dx * t - x, 2) + Math.Pow(line.Z[q] + dz * t - z, 2);
-            if (d < best)
-                (best, across) = (d, ((x - line.X[q]) * -dz + (z - line.Z[q]) * dx) / Math.Sqrt(length2));
+            var t = Math.Clamp(((x - ax) * dx + (z - az) * dz) / length2, 0.0, 1.0);
+            var d = Math.Pow(ax + dx * t - x, 2) + Math.Pow(az + dz * t - z, 2);
+            if (d < best || (d == best && q < bestQ))
+                (best, bestQ, across) = (d, q, ((x - ax) * -dz + (z - az) * dx) / Math.Sqrt(length2));
         }
 
+        var segments = line.Count - 1;
+        var (w0, w1) = (Math.Clamp(near0, 0, segments), Math.Clamp(near1, 0, segments));
+        for (var q = w0; q < w1; q++)
+            Try(q);
+        for (var q = 0; q < segments; q++)
+            if (q < w0 || q >= w1)
+                Try(q);
         return (float)across;
     }
 

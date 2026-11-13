@@ -190,6 +190,11 @@ public sealed partial class NetworkLines
     /// The diamonds' frogs and guard rails (Diamonds), once FindLayouts has run.
     public List<CrossingAssembly> CrossingAssemblies { get; } = [];
 
+    /// The bridges as structures (BridgePlanner.Find), found once for these lines: in the background as track's laid again, so
+    /// the main thread needn't, and before the lines are compared with the last ones (finding them levels the guides' bridged
+    /// stretches to the decks, so lines found and not would always look changed). Null until found.
+    public List<BridgeGroup>? Bridges { get; set; }
+
     /// A No. 20's frog is 52 m past its points; well past that, a switch wants looking at.
     private const float LongestFrog = 80f;
 
