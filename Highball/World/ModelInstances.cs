@@ -66,7 +66,10 @@ public sealed class ModelInstances : IDisposable
                     continue;
             }
 
-            var key = (draw.Model, draw.BaseColor, draw.Metallic, draw.Roughness);
+            // Its lower-detail version by its distance (RenderModel.ForDistance).
+            var relative = draw.RelativeTo(camera.X, camera.Y, camera.Z);
+            var model = draw.Model.ForDistance(MathF.Sqrt(relative.X * relative.X + relative.Y * relative.Y + relative.Z * relative.Z));
+            var key = (model, draw.BaseColor, draw.Metallic, draw.Roughness);
             if (!_groups.TryGetValue(key, out var list))
                 _groups[key] = list = [];
             if (list.Count == 0)

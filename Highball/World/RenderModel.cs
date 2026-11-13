@@ -17,6 +17,25 @@ public sealed class RenderModel : IDisposable
     public Mesh Mesh { get; }
     public IReadOnlyList<Part> Parts => _parts;
 
+    private readonly List<(RenderModel Model, float From)> _lods = [];
+
+    /// Gives it a lower-detail version to draw from a distance on (metres from the camera), which it then owns.
+    public void AddLod(RenderModel lod, float from)
+    {
+        _lods.Add((lod, from));
+        _lods.Sort((a, b) => a.From.CompareTo(b.From));
+    }
+
+    /// The version to draw this far from the camera: itself near, its lower-detail ones further out.
+    public RenderModel ForDistance(float distance)
+    {
+        var chosen = this;
+        foreach (var (model, from) in _lods)
+            if (distance >= from)
+                chosen = model;
+        return chosen;
+    }
+
     /// All its parts as one run of the index buffer, when they lie end to end: drawn in one call where materials don't
     /// matter (shadows, motion). Null if they don't.
     public (int FirstIndex, int IndexCount)? Whole
@@ -76,6 +95,8 @@ public sealed class RenderModel : IDisposable
 
     public void Dispose()
     {
+        foreach (var (lod, _) in _lods)
+            lod.Dispose();
         foreach (var binding in _bindings)
             binding.Dispose();
         foreach (var owned in _owned)

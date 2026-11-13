@@ -21,8 +21,43 @@ public sealed class VehicleModel : IDisposable
         Trucks = trucks;
     }
 
-    /// Throws if the file can't be read at all.
+    /// Where its lower-detail versions take over, in metres from the camera, and the folder each is in beside the model
+    /// (Tools/Blender/lods.py makes them).
+    private static readonly (string Folder, float From)[] Lods = [("LOD1", 60f), ("LOD2", 220f)];
+
+    /// Throws if the file can't be read at all. Its lower-detail versions are added where they're there.
     public static VehicleModel Load(string relativePath)
+    {
+        var model = LoadOne(relativePath);
+        foreach (var (folder, from) in Lods)
+        {
+            var path = Path.Combine(Path.GetDirectoryName(relativePath) ?? "", folder, Path.GetFileName(relativePath)).Replace('\\', '/');
+            if (!File.Exists(RailWerkz.Core.IO.ContentPath.Model(path)))
+                continue;
+            try
+            {
+                var lod = LoadOne(path);
+                // (Both halves or neither: the body's drawn on the springs above the trucks, so they must match.)
+                if ((lod.Trucks is null) != (model.Trucks is null))
+                {
+                    lod.Dispose();
+                    continue;
+                }
+
+                model.Body.AddLod(lod.Body, from);
+                if (lod.Trucks is { } trucks)
+                    model.Trucks!.AddLod(trucks, from);
+            }
+            catch (Exception e)
+            {
+                Log.Warn($"Vehicle model {path}: unreadable ({e.Message}); the full model's drawn there instead");
+            }
+        }
+
+        return model;
+    }
+
+    private static VehicleModel LoadOne(string relativePath)
     {
         Model? trucks = null;
         try
