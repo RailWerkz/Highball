@@ -93,8 +93,8 @@ public sealed class LocoSystems(double startupSeconds, LocoSupplies? capacity = 
     /// What's short enough to stop the engine (or keep it from starting); null if nothing is.
     private string? Short => Capacity is null ? null
         : Fuel <= 0.0 ? "Out of fuel"
-        : OilShare < LowOil ? "Low lube oil: the oil pressure protection stopped the engine"
-        : WaterShare < LowWater ? "Low cooling water: the low water detector stopped the engine"
+        : OilShare < LowOil ? "Low lube oil: engine stopped"
+        : WaterShare < LowWater ? "Low cooling water: engine stopped"
         : null;
 
     /// Burns and loses what it does over h seconds: fuel for its output (kW, at the rail and to run itself), oil and water
@@ -226,13 +226,13 @@ public sealed class LocoSystems(double startupSeconds, LocoSupplies? capacity = 
     /// Whether it can start now, and if not, why.
     public bool CanStart(out string? why)
     {
-        why = Engine is EngineState.Priming or EngineState.Cranking or EngineState.Running ? "It's already running"
-            : Engine == EngineState.Stopping ? "Wait for it to stop first"
-            : !Battery ? "The battery switch is off"
-            : !ControlBreaker ? "The control breaker is off"
-            : !ComputerReady ? "The computer's still starting up"
-            : !FuelPumpBreaker ? "The fuel pump breaker is off"
-            : !Isolated ? "Put the isolation switch in Start/Stop to start it"
+        why = Engine is EngineState.Priming or EngineState.Cranking or EngineState.Running ? "Already running"
+            : Engine == EngineState.Stopping ? "Still stopping"
+            : !Battery ? "Battery off"
+            : !ControlBreaker ? "Control breaker off"
+            : !ComputerReady ? "Computer booting"
+            : !FuelPumpBreaker ? "Fuel pump breaker off"
+            : !Isolated ? "Isolation not in Start / Stop"
             : Short;
         return why is null;
     }
@@ -314,8 +314,8 @@ public sealed class LocoSystems(double startupSeconds, LocoSupplies? capacity = 
         // Without control power or fuel it can't keep going; short of oil or water, its protection stops it.
         if (Turning && (!ComputerReady || !FuelPumpBreaker || Short is not null))
         {
-            Notice = !FuelPumpBreaker ? "The fuel pump was switched off: the engine's run out of fuel"
-                : !ComputerReady ? "Control power was lost: the engine shut down"
+            Notice = !FuelPumpBreaker ? "Fuel pump off: engine starved"
+                : !ComputerReady ? "Control power lost: engine shut down"
                 : Short;
             Set(EngineState.Stopping);
         }

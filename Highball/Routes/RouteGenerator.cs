@@ -447,7 +447,7 @@ public sealed class RouteGenerator
         }
 
         if (unavailable > 0)
-            Say($"USGS heights unavailable for {unavailable} of {tiles.Count} tiles: those used the coarser source. Build them again to retry.", 1f);
+            Say($"No USGS heights for {unavailable} of {tiles.Count} tiles (coarser source used)", 1f);
         Progress = 1f;
     }
 

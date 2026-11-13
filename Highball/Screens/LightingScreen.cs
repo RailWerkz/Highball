@@ -196,7 +196,7 @@ public sealed class LightingScreen : Screen, IWorldScreen
             if (ImGui.Button("Settings"u8))
                 HighballApp.Instance.Push(new SettingsScreen(this));
             ImGui.Separator();
-            ImGui.TextDisabled("Drag to orbit, wheel to zoom, Esc to leave"u8);
+            ImGui.TextDisabled("Drag orbit · Wheel zoom · Esc back"u8);
         });
     }
 

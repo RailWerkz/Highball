@@ -206,7 +206,7 @@ public sealed class DistributedPower
             return;
         if (!Computer(Lead.Head))
         {
-            Happened?.Invoke("The lead's DP computer isn't up: its control power needs to be on");
+            Happened?.Invoke("Lead DP computer off: needs control power");
             return;
         }
 
@@ -340,7 +340,7 @@ public sealed class DistributedPower
             if (remote.Link == DpLink.Linked && !remote.CommLost && now - remote.LastCommand > LostAfter)
             {
                 remote.CommLost = true;
-                Happened?.Invoke($"DP comm with car {remote.Group.Head + 1} lost: it's gone to idle and cut out its brake valve");
+                Happened?.Invoke($"DP comm with car {remote.Group.Head + 1} lost: idling, brake valve cut out");
             }
 
             var working = remote.Link == DpLink.Linked && !remote.CommLost && remoteUp;

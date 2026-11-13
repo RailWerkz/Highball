@@ -790,7 +790,7 @@ public sealed partial class EditorView : IDisposable
             if (edit is not null)
                 Committed(edit);
             else
-                _switchRefused = change.Partner is null ? "Can't move there: its diverging track has no room" : "Can't move the crossover there";
+                _switchRefused = change.Partner is null ? "No room for the diverging track" : "Can't move the crossover there";
         }
     }
 
@@ -914,7 +914,7 @@ public sealed partial class EditorView : IDisposable
 
         if (run.Poles.Count == 0)
         {
-            _switchRefused = "That's less than the gap from the last pole";
+            _switchRefused = "Closer than the pole gap";
             return;
         }
 
@@ -971,7 +971,7 @@ public sealed partial class EditorView : IDisposable
                 break;
             case PlaceMode.Diamond when _tracks!.CrossingNear(x, z, PlaceTool.SnapReach) is { } diamond:
                 if (diamond.Degrees < 8.0)
-                    _switchRefused = "Tracks cross under 8 degrees: too shallow for a diamond";
+                    _switchRefused = "Under 8 degrees: too shallow";
                 else
                     Committed(_tracks.JoinCrossing(diamond));
                 break;
@@ -1035,7 +1035,7 @@ public sealed partial class EditorView : IDisposable
             {
                 _switchRefused = Roads.Nearest(x, z, Math.Max(PickReach(x, z), 8.0), w => !w.Tags.ContainsKey(RouteNetwork.RemovedTag)) is null
                     ? "Click on a road or a track"
-                    : "That's a guide: lay track on it first";
+                    : "Guide only: lay track first";
                 return;
             }
 
@@ -1057,7 +1057,7 @@ public sealed partial class EditorView : IDisposable
         var length = BridgeLength(from, end, landing);
         if (length < ShortestBridge || length > LongestBridge)
         {
-            _switchRefused = length < ShortestBridge ? "Too short for a bridge: keep going" : "Too long for one bridge";
+            _switchRefused = length < ShortestBridge ? "Too short for a bridge" : "Too long for one bridge";
             return;
         }
 
@@ -1307,7 +1307,7 @@ public sealed partial class EditorView : IDisposable
         if (_terrain?.Source.Lines is { } lines && Kit.Button("cutroads", "Cut Roads"))
             CrossingPlace(lines, picked, picked);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Ends the roads along this crossing at its edges, with a node each side for roads to join"u8);
+            ImGui.SetTooltip("Split roads at the crossing edges"u8);
     }
 
     private static string CrossingStyleName(CrossingStyle style) => style switch
@@ -3810,7 +3810,7 @@ public sealed partial class EditorView : IDisposable
         ImGui.SetNextWindowSize(new float2(420f, 0f), ImGuiCond.Always);
         if (!ImGui.BeginPopupModal("Solve Track Again?"u8, ImGuiWindowFlags.AlwaysAutoResize))
             return;
-        ToolPanel.Line("Refits all track to the map from scratch. Hand shaping is kept. This can't be undone.");
+        ToolPanel.Line("Refits all track. Can't be undone.");
         ImGui.Dummy(new float2(1f, S(6f)));
         var answer = Kit.Buttons("solveagain", ["Solve Again", "Cancel"]);
         if (answer == 0)
@@ -3858,7 +3858,7 @@ public sealed partial class EditorView : IDisposable
         ImGui.SetNextWindowSize(new float2(380f, 460f), ImGuiCond.FirstUseEver);
         if (ImGui.Begin("Route Audit"u8, ref _audit.Open))
         {
-            ToolPanel.Header("Route audit", null, _audit.Findings is not { } counted ? "Checking the route..."
+            ToolPanel.Header("Route audit", null, _audit.Findings is not { } counted ? "Checking..."
                 : counted.Count == 0 ? "Nothing found" : $"{counted.Count} found, {counted.Count(f => f.Severe)} serious");
             if (Kit.Button("auditagain", _audit.Running is null ? "Run Again" : "Checking...", 0f, ButtonKind.Secondary, _audit.Running is null))
                 RunAudit();
@@ -4360,17 +4360,17 @@ public sealed partial class EditorView : IDisposable
                 Tool.Road => [("LMB", "Next point"), ("SHIFT", "15 degree steps"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Parallel => _parallel.Anchor is not null
                     ? [("LMB", "End"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")]
-                    : _parallelFollowing ? [("LMB", "Along a guide, from a track's end"), ("ENTER", "Lay tracks"), ("F", _parallel.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove click"), ("ESC", "Cancel")]
-                    : [("LMB", "Point, or a track to run beside"), ("DRAG", "Curve"), ("ENTER", "Lay tracks"), ("F", _parallel.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")],
-                Tool.Switches => [("LMB", "Pick a switch"), ("DRAG", "Move points, curve end or crossover"), ("CTRL+Z", "Undo")],
+                    : _parallelFollowing ? [("LMB", "Along a guide"), ("ENTER", "Lay tracks"), ("F", _parallel.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove click"), ("ESC", "Cancel")]
+                    : [("LMB", "Point or track"), ("DRAG", "Curve"), ("ENTER", "Lay tracks"), ("F", _parallel.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")],
+                Tool.Switches => [("LMB", "Pick a switch"), ("DRAG", "Move"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.Mode == PlaceMode.EditBridge => [("LMB", "Pick bridge, drag pier"), ("DEL", "Remove pier"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.RunFrom is not null => [("LMB", "Lay to here"), ("ESC", "End run"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.Mode == PlaceMode.Pole && _place.Drawn == PoleDraw.Fence && _place.Selected is null => [("LMB", "Start run"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.Mode == PlaceMode.Pole && _place.Drawn == PoleDraw.Pen => [("LMB", "Point"), ("DRAG", "Curve"), ("ENTER", "Lay"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.Mode == PlaceMode.Track && _place.Selected is null => [("LMB", "Lay piece"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Mirror"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
-                Tool.Place => [("LMB", "Place, pick, drag"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Turn round or other side"), ("DEL", "Delete"), ("CTRL+Z", "Undo")],
-                Tool.Follow when _yard.Mode != YardMode.Follow => [("LMB", "Pick a track, then lay"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
-                Tool.Follow => [("LMB", "Click a guide or track"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove click"), ("CTRL+Z", "Undo")],
+                Tool.Place => [("LMB", "Place, pick, drag"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Flip"), ("DEL", "Delete"), ("CTRL+Z", "Undo")],
+                Tool.Follow when _yard.Mode != YardMode.Follow => [("LMB", "Pick track"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
+                Tool.Follow => [("LMB", "Guide or track"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove click"), ("CTRL+Z", "Undo")],
                 Tool.Shape => [("LMB", "Select, drag handle"), ("SHIFT+LMB", "Mark handles"), ("L", "Straighten"), ("K", "Smooth curve"), ("DEL", "Remove handle"), ("ALT", "No snap"), ("CTRL+Z", "Undo")],
                 Tool.Flatten when _flattenSample is not null => [("LMB", "Flatten"), ("F", FlattenSampleText), ("ESC", "Clear sample"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
                 Tool.Flatten => [("LMB", "Flatten"), ("F", FlattenSampleText), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],

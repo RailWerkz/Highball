@@ -76,7 +76,7 @@ public sealed partial class TrainPanel
         // --- Its vehicles, from the front. ---
         Kit.BeginCard("Vehicles, front to rear", $"{_build.Cars.Count}");
         if (_build.Cars.Count == 0)
-            Kit.Note("Add vehicles from the catalog below.");
+            Kit.Note("No vehicles.");
         for (var i = 0; i < _build.Cars.Count; i++)
         {
             var car = _build.Cars[i];
@@ -153,7 +153,7 @@ public sealed partial class TrainPanel
 
         var vehicles = VehicleCatalog.OfKind(_catalogKind).ToList();
         if (vehicles.Count == 0)
-            Kit.Note("None of these in the catalog.");
+            Kit.Note("None in the catalog.");
         for (var i = 0; i < vehicles.Count; i++)
         {
             var v = vehicles[i];

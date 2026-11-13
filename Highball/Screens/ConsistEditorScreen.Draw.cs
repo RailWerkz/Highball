@@ -181,7 +181,7 @@ public sealed partial class ConsistEditorScreen
         var vehicles = VehicleCatalog.OfKind(_kind).ToList();
         if (vehicles.Count == 0)
         {
-            foreach (var line in Canvas.Wrap($"No {_kind.Plural().ToLowerInvariant()} yet. A vehicle.json beside a model under Content/Models adds one.", Regular, S(14f), right - left - S(24f)))
+            foreach (var line in Canvas.Wrap($"No {_kind.Plural().ToLowerInvariant()}.", Regular, S(14f), right - left - S(24f)))
             {
                 Canvas.Text(draw, Regular, S(14f), new float2(left + S(12f), y), TextFaint, line);
                 y += S(20f);
@@ -486,7 +486,7 @@ public sealed partial class ConsistEditorScreen
         if (cars.Count == 0)
         {
             var y0 = listTop + S(24f);
-            foreach (var line in Canvas.Wrap("Nothing in the consist yet. Pick a locomotive from the catalog and press ADD, or drag it here.", Regular, S(14f), right - left - S(40f)))
+            foreach (var line in Canvas.Wrap("Empty consist.", Regular, S(14f), right - left - S(40f)))
             {
                 Canvas.Text(draw, Regular, S(14f), new float2(left + S(20f), y0), TextFaint, line);
                 y0 += S(21f);

@@ -199,7 +199,7 @@ public static class Diamonds
 
         var angle = MathF.Acos(Math.Clamp(MathF.Abs(h[pairs.Item1].X * h[pairs.Item3].X + h[pairs.Item1].Z * h[pairs.Item3].Z), 0f, 1f));
         if (angle < 8f * MathF.PI / 180f)
-            return "Diamond too shallow (under 8 degrees): needs a moveable-point crossing, no template yet";
+            return "Diamond under 8 degrees: no template yet";
 
         CrossingAssembly.Track[] tracks = [new(first[0], first[1]), new(second[0], second[1])];
 

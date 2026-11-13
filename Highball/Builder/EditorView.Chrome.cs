@@ -46,11 +46,11 @@ public sealed partial class EditorView
             (Tool.Track, default, ToolIcon.Edit, "Edit", "Edit control points (7)"),
             (Tool.Shape, default, ToolIcon.Shape, "Shape", "Shape a line's curves (-)"),
             (Tool.Parallel, default, ToolIcon.Parallel, "Parallel", "Lay tracks beside a track (P)"),
-            (Tool.Switches, default, ToolIcon.Switches, "Switches", "Switch sizes, power machines and hand throws (0)"),
+            (Tool.Switches, default, ToolIcon.Switches, "Switches", "Switches (0)"),
         ]),
         ("BUILD",
         [
-            (Tool.Place, PlaceGroup.Assemblies, ToolIcon.Pieces, "Assembly", "Track pieces, diamonds and grade crossings"),
+            (Tool.Place, PlaceGroup.Assemblies, ToolIcon.Pieces, "Assembly", "Track pieces and crossings"),
             (Tool.Place, PlaceGroup.Structures, ToolIcon.Bridge, "Structures", "Bridges"),
         ]),
         ("SIGNAL",
@@ -197,7 +197,7 @@ public sealed partial class EditorView
 
             // Not a tool: the train panel, open beside whatever tool is in hand.
             StripSection(draw, "");
-            if (StripItem(draw, ToolIcon.Consist, "Consist", "Consist panel: place, drive and couple stock", _trains.Open))
+            if (StripItem(draw, ToolIcon.Consist, "Consist", "Consist", _trains.Open))
                 _trains.Open = !_trains.Open;
 
             // Undo and redo at the foot of the strip.

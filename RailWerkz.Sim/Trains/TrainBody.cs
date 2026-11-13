@@ -103,7 +103,7 @@ public sealed class TrainBody
             return false;
         if (CouplerForce[link] > 20000.0)
         {
-            why = "The coupling's under a pull: bunch the slack to lift the pin";
+            why = "Coupling under tension: bunch the slack";
             return false;
         }
 
@@ -308,8 +308,8 @@ public sealed class TrainBody
                 _readyToCouple[j] = false;
                 var speed = Math.Abs(Velocity[j] - Velocity[j + 1]) * MphPerMetrePerSecond;
                 Happened?.Invoke(speed > 4.0
-                    ? $"Coupled {j + 1} to {j + 2} hard, at {speed:0.0} mph: keep it under 4"
-                    : $"Coupled {j + 1} to {j + 2}: join the air hose and open the angle cocks to cut them in");
+                    ? $"Coupled {j + 1} to {j + 2} hard, {speed:0.0} mph"
+                    : $"Coupled {j + 1} to {j + 2} · air hose not joined");
             }
 
             if (Brakes.Hose[j] && Extension[j] > FreeSlack + HoseReach)
@@ -317,8 +317,8 @@ public sealed class TrainBody
                 Brakes.Hose[j] = false;
                 var venting = Brakes.CockAhead[j] > 0.0 || Brakes.CockBehind[j] > 0.0;
                 Happened?.Invoke(venting
-                    ? $"The air hose between {j + 1} and {j + 2} pulled apart with the angle cocks open: the brakes went into emergency"
-                    : $"The air hose between {j + 1} and {j + 2} pulled apart");
+                    ? $"Air hose {j + 1}-{j + 2} pulled apart: emergency"
+                    : $"Air hose {j + 1}-{j + 2} pulled apart");
             }
         }
     }

@@ -171,10 +171,10 @@ public static class TrackLayouts
     {
         string? issue = null;
         if (t.Number is null && options?.Chosen != SwitchSizes.AsMapped)
-            issue = options is null ? "No room for a standard switch: the next junction or the track's end is too close" :
-                options.Chosen is { } chosen ? $"No. {chosen} picked, but there's no room for it" :
+            issue = options is null ? "No room: junction or track end too close" :
+                options.Chosen is { } chosen ? $"No room for No. {chosen}" :
                 options.Why is { } why ? $"No room for a standard switch: {why}" :
-                options.Fits.Length > 0 ? $"Fits No. {string.Join(", ", options.Fits)} but wasn't laid out (shape changed in fitting)" : "No room for a standard switch";
+                options.Fits.Length > 0 ? $"Fits No. {string.Join(", ", options.Fits)}, not laid out" : "No room for a standard switch";
         return new Layout(JunctionKind.Turnout, t.X, t.Z, [t.Node], t.Number, issue);
     }
 

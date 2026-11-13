@@ -551,7 +551,7 @@ public sealed class TrackEditor
             var at = Array.IndexOf(way.Nodes, node);
             if (at <= 0 || at >= way.Nodes.Length - 1 || way.Nodes[0] == way.Nodes[^1])
             {
-                SplitRefused = "That's already the end of the track";
+                SplitRefused = "Already a track end";
                 return null;
             }
 

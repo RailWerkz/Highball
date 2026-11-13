@@ -146,7 +146,7 @@ public static class PoleRuns
             while (next <= walked + length)
             {
                 if (poles.Count >= most)
-                    return new Plan([], path, walked + length, $"That's over {most}: make the gap wider or the run shorter");
+                    return new Plan([], path, walked + length, $"Over {most} poles");
                 var t = next - walked;
                 poles.Add(new Pole(path[i].X + fx * t, path[i].Z + fz * t, HeadingOf(kind, fx, fz, side)));
                 next += gap;

@@ -196,7 +196,7 @@ public sealed class LightingPanel
             if (_renderer.Sky.Name == Sky.Procedural)
                 DrawClock(Settings.Current);
             else
-                ImGui.TextDisabled("A skybox has its own sun. Pick Procedural in Settings for time of day."u8);
+                ImGui.TextDisabled("Skybox: no time of day"u8);
 
             extra?.Invoke();
         }

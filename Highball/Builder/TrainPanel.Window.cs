@@ -72,7 +72,7 @@ public sealed partial class TrainPanel
             : train.Stopped is not null ? ("STOPPED", Caution)
             : Math.Abs(train.Speed) < 0.05 ? ("STANDING", TextDim)
             : (UnitText.Speed(Math.Abs(train.Speed)).ToUpperInvariant(), Style.Clear);
-        var subtitle = train is null ? "Place a consist on the track" : $"{train.Name}  ·  {train.Cars.Count} vehicles";
+        var subtitle = train is null ? "No consist placed" : $"{train.Name}  ·  {train.Cars.Count} vehicles";
         if (Kit.Header("CONSIST", subtitle, status, statusColor))
             Open = false;
 
@@ -137,8 +137,8 @@ public sealed partial class TrainPanel
         var engines = train.Cars.Count(c => c.Def.Kind == VehicleKind.Locomotive);
         Kit.BeginCard("Not in control", Controlled is { } driven ? $"driving {driven.Name}" : "nothing driven", Caution);
         if (engines == 0)
-            Kit.Note("No locomotive in this cut: it can't be driven. Its handbrakes are on the Vehicles tab.");
-        else if (Kit.Button("train.take", Controlled is null ? "Take control" : "Take control (releases the other)", kind: ButtonKind.Primary))
+            Kit.Note("No locomotive in this cut.");
+        else if (Kit.Button("train.take", "Take control", kind: ButtonKind.Primary))
             TakeControl();
         Handbrakes(train);
         Kit.EndCard();
@@ -151,7 +151,7 @@ public sealed partial class TrainPanel
             return;
         var lead = train.LeadUnit;
         var (group, remote) = train.Dp.GroupOf(car);
-        string role = car == lead ? "Lead unit" : group == train.Dp.Lead ? "Trailing unit, with the lead" : remote is not null ? "DP remote" : "Not in use";
+        string role = car == lead ? "Lead unit" : group == train.Dp.Lead ? "Trailing the lead" : remote is not null ? "DP remote" : "Not in use";
         Kit.BeginCard("Role", role, car == lead ? Style.Clear : remote is not null ? Caution : TextDim);
         // Only a locomotive at an end of the train can lead: the far end's turns the whole train round.
         var atRear = false;
@@ -162,14 +162,11 @@ public sealed partial class TrainPanel
         {
             if (atRear)
             {
-                if (Kit.Button("vehicle.lead", "Make lead unit · turn the train round", kind: ButtonKind.Primary))
+                if (Kit.Button("vehicle.lead", "Make lead unit", kind: ButtonKind.Primary))
                     MakeLead(train);
             }
-            else
-                Kit.Note("Only a locomotive at an end of the train can lead.");
         }
 
-        Kit.Note("Units coupled to the lead work with it; any other locomotive is a DP remote.");
         Kit.EndCard();
     }
 
@@ -178,7 +175,7 @@ public sealed partial class TrainPanel
     {
         if (Math.Abs(train.Speed) > 0.1)
         {
-            _notice = "Stop the train first to change ends";
+            _notice = "Stop the train first";
             return;
         }
 
@@ -240,10 +237,7 @@ public sealed partial class TrainPanel
             Placing = !Placing;
         }
 
-        if (noTrack)
-            Kit.Note("No laid track yet: lay some first.");
-        else
-            Kit.Note($"Its front goes where you click, facing away from the camera. {VehicleCount:#,0} of {MaxVehicles:#,0} vehicles on the track.");
+        Kit.Note(noTrack ? "No track laid." : $"{VehicleCount:#,0} / {MaxVehicles:#,0} vehicles");
         Kit.EndCard();
 
         OnTheTrack();
@@ -333,9 +327,9 @@ public sealed partial class TrainPanel
             train.Sand = sand;
         var (running, onLine, engines) = train.Body.EngineCount;
         if (engines > 0 && onLine == 0)
-            Kit.Status(Caution, running == 0 ? "No engine's running: start them on the Power tab" : "No engine's on line: put one in Run on the Power tab");
+            Kit.Status(Caution, running == 0 ? "No engine running" : "No engine on line");
         if (train.WheelSlip > 0.05)
-            Kit.Status(Stop, train.Sand ? "Wheel slip: ease the throttle back" : "Wheel slip: sand, or ease the throttle back");
+            Kit.Status(Stop, "Wheel slip");
         else if (train.Sand && !train.Body.Systems.Any(s => s?.Sanding == true))
             Kit.Status(Caution, "Out of sand");
         Kit.EndCard();
@@ -358,7 +352,7 @@ public sealed partial class TrainPanel
                 ImGuiSliderFlags.AlwaysClamp | ImGuiSliderFlags.NoRoundToFormat))
             train.Independent = independent;
         ImGui.Dummy(new float2(1f, S(2f)));
-        if (Kit.Button("drive.emergency", train.Emergency ? "Emergency · click to release" : "Emergency", tint: train.Emergency ? Stop : null))
+        if (Kit.Button("drive.emergency", train.Emergency ? "Release emergency" : "Emergency", tint: train.Emergency ? Stop : null))
             train.Emergency = !train.Emergency;
         ImGui.Dummy(new float2(1f, S(2f)));
         Kit.Stats([
@@ -367,12 +361,12 @@ public sealed partial class TrainPanel
             new Stat("Cylinder", UnitText.Pressure(air.CylinderOf(head))),
         ]);
         if (air.Valve[head] == ValveState.Emergency || air.Valve[^1] == ValveState.Emergency)
-            Kit.Status(Stop, "In emergency: release, and let it recharge to move");
+            Kit.Status(Stop, "In emergency");
         Kit.EndCard();
 
         Kit.BeginCard("Handbrakes");
         Handbrakes(train);
-        if (Kit.Button("train.release", "Release control · leave it braked"))
+        if (Kit.Button("train.release", "Release control"))
             Release();
         Kit.EndCard();
 
@@ -388,7 +382,7 @@ public sealed partial class TrainPanel
                 Sounds.SetBell(true);
         });
         ImGui.PopItemWidth();
-        Kit.Button("drive.horn", Sounds.HornBlowing ? "Horn · blowing" : "Horn · hold, or Space", out _hornButton, half);
+        Kit.Button("drive.horn", Sounds.HornBlowing ? "Horn · blowing" : "Horn · Space", out _hornButton, half);
         ImGui.SameLine(0f, S(8f));
         if (Kit.Button("drive.bell", Sounds.BellRinging ? "Bell on · B" : "Bell off · B", half, Sounds.BellRinging ? ButtonKind.Primary : ButtonKind.Secondary))
             Sounds.SetBell(!Sounds.BellRinging);
@@ -468,7 +462,6 @@ public sealed partial class TrainPanel
 
         if (Kit.Button("power.lights", "Usual lights"))
             train.LightUp();
-        Kit.Note("The lead's headlight bright with its ditch lights, a trailing engine's dim at the rear. Each engine's own switches are on the Vehicle tab.", TextFaint);
         Kit.EndCard();
 
         // Fuel, oil, water and sand across the engines: the lowest of each, and all of them filled at once.
@@ -485,10 +478,9 @@ public sealed partial class TrainPanel
                 new Stat("Burning", UnitText.FuelRate(stocked.Sum(s => s.FuelRate))),
                 new Stat("Engines", $"{stocked.Count}"),
             ]);
-            if (Kit.Button("power.fill", "Fill up all · fuel, oil, water, sand"))
+            if (Kit.Button("power.fill", "Fill up all"))
                 foreach (var s in stocked)
                     s.FillUp();
-            Kit.Note("Each engine's own tanks are on the Vehicle tab. Short of oil or water its protection stops the engine; out of fuel, it stops.", TextFaint);
             Kit.EndCard();
         }
 
@@ -496,7 +488,7 @@ public sealed partial class TrainPanel
         Kit.BeginCard("Distributed power", dp.Remotes.Count == 1 ? "1 remote" : $"{dp.Remotes.Count} remotes");
         if (dp.Remotes.Count == 0)
         {
-            Kit.Note("Every locomotive's in the lead consist: there's nothing to work by radio.");
+            Kit.Note("No remotes.");
             Kit.EndCard();
             return;
         }
@@ -597,12 +589,11 @@ public sealed partial class TrainPanel
 
         ImGui.EndChild();
         ImGui.PopStyleColor();
-        Kit.Toggle("vehicle.tags", "Name tags in the view", ref ShowTags);
+        Kit.Toggle("vehicle.tags", "Name tags", ref ShowTags);
         Kit.EndCard();
 
         if (Selected < 0 || Selected >= train.Cars.Count)
         {
-            Kit.Note("Pick one here, or click a vehicle in the view.", TextFaint);
             return;
         }
 
@@ -616,7 +607,7 @@ public sealed partial class TrainPanel
             _nameFor = picked;
         }
 
-        Kit.Caption("Name, shown on its tag");
+        Kit.Caption("Name");
         var entered = ImGui.InputText("##name", _name, ImGuiInputTextFlags.EnterReturnsTrue);
         if (entered || ImGui.IsItemDeactivatedAfterEdit())
             Rename(picked, _name.ToString());
@@ -667,7 +658,6 @@ public sealed partial class TrainPanel
         ]);
         if (Kit.Button("vehicle.bleed", "Bleed the brake"))
             air.Bleed(Selected);
-        Kit.Note("The bleed rod lets its brake off, to move a car with no air on it.", TextFaint);
         Kit.EndCard();
 
         if (train.Body.Systems[Selected] is { } systems)
@@ -685,9 +675,9 @@ public sealed partial class TrainPanel
             return;
         Kit.BeginCard("Distributed power");
         if (remote is null)
-            Kit.Status(Style.Clear, car == group.Head ? "Lead unit: works the train" : $"Trailing the lead at car {group.Head + 1}, on MU cables");
+            Kit.Status(Style.Clear, car == group.Head ? "Lead unit" : $"Trailing the lead, car {group.Head + 1}");
         else if (car != group.Head)
-            Kit.Status(TextDim, $"Trailing the remote at car {group.Head + 1}, on MU cables");
+            Kit.Status(TextDim, $"Trailing the remote, car {group.Head + 1}");
         else
         {
             var setUp = remote.SetUp;
@@ -695,10 +685,10 @@ public sealed partial class TrainPanel
                 remote.SetUp = setUp;
             Kit.Note(remote.Link switch
             {
-                DpLink.NotSetUp => "Not powered: it has no MU cables to the lead. Set it up, then link it from the lead (Power tab).",
-                DpLink.SetUp => "Set up: waiting for the lead to link it (Power tab).",
+                DpLink.NotSetUp => "Not set up",
+                DpLink.SetUp => "Waiting for link",
                 DpLink.Linking => "Linking...",
-                _ => remote.CommLost ? "Linked, but comm's lost: it's idling with its brake valve cut out." : "Linked: it does as the lead says, by radio.",
+                _ => remote.CommLost ? "Comm lost: idling, brake valve cut out" : "Linked",
             }, TextFaint);
         }
 
@@ -733,7 +723,7 @@ public sealed partial class TrainPanel
             new Stat("Traction", def.AcTraction ? "AC" : "DC"),
             new Stat("Wheels", train.Body.WheelSlip[car] > 0.05 ? "slipping" : "gripping", train.Body.WheelSlip[car] > 0.05 ? Stop : null),
         ]);
-        if (Kit.Button($"loco.fill.{car}", "Fill up · fuel, oil, water, sand"))
+        if (Kit.Button($"loco.fill.{car}", "Fill up"))
             s.FillUp();
         Kit.EndCard();
     }
@@ -768,7 +758,7 @@ public sealed partial class TrainPanel
         if (!s.ControlPowered)
             Kit.Status(TextFaint, "Computer off");
         else if (s.BootLeft > 0.0)
-            Kit.Status(Caution, Inv($"Computer starting up, {s.BootLeft:0} s"));
+            Kit.Status(Caution, Inv($"Computer booting, {s.BootLeft:0} s"));
         else
             Kit.Status(Style.Clear, "Computer ready");
         Kit.EndCard();
@@ -800,8 +790,6 @@ public sealed partial class TrainPanel
             Kit.Status(Caution, notice);
         else if (s.Engine == EngineState.Stopped && why is not null)
             Kit.Status(TextFaint, why);
-        if (s.Engine == EngineState.Stopped)
-            Kit.Note("Battery on, control and fuel pump breakers on, wait for the computer, isolation in Start / Stop, then Start. Run takes power.", TextFaint);
         Kit.EndCard();
 
         Kit.BeginCard("Lights", s.LampBrightness > 0.0 ? s.Flashing ? "flashing" : "powered" : "no power", s.LampBrightness > 0.0 ? Style.Clear : TextFaint);
@@ -811,8 +799,7 @@ public sealed partial class TrainPanel
         s.RearHeadlight = (HeadlightSetting)Kit.Segmented($"loco.rear.{id}", HeadlightNames, (int)s.RearHeadlight);
         ImGui.Dummy(new float2(1f, S(4f)));
         Kit.Toggle($"loco.ditch.{id}", "Ditch lights", ref s.DitchLights);
-        Kit.Note(s.LampBrightness <= 0.0 ? "No power to the lights: they need the battery and the lights breaker."
-            : $"At the {(s.DitchAtFront ? "front" : "rear")} end (where the headlight's brighter); they flash with the horn.", TextFaint);
+        Kit.Note(s.LampBrightness <= 0.0 ? "Needs battery and lights breaker" : $"At the {(s.DitchAtFront ? "front" : "rear")} end", TextFaint);
         Kit.EndCard();
     }
 
@@ -837,8 +824,6 @@ public sealed partial class TrainPanel
             ImGui.EndCombo();
         }
 
-        if (SelectedCoupling is null)
-            Kit.Note("Or click one in the view: the small marks between the vehicles.", TextFaint);
         Kit.EndCard();
         if (SelectedCoupling is not { } at)
             return;
@@ -859,9 +844,9 @@ public sealed partial class TrainPanel
             ImGui.Dummy(new float2(1f, S(2f)));
             Kit.Stats([new Stat("Brake pipe", UnitText.Pressure(air.Pipe[car]))]);
             if (picked > 0.0)
-                Kit.Status(Stop, "Open on the end of the train: the pipe's venting to the air");
+                Kit.Status(Stop, "Open: venting");
             else
-                Kit.Status(Style.Clear, "Closed, as the end of a train should be");
+                Kit.Status(Style.Clear, "Closed");
             Kit.EndCard();
             return;
         }
@@ -878,15 +863,15 @@ public sealed partial class TrainPanel
         {
             var force = body.CouplerForce[at];
             Kit.Stats([new Stat(force >= 0.0 ? "Pulling" : "Pushing", UnitText.ForceK(Math.Abs(force)))], 2);
-            if (Kit.Button("coupling.uncouple", "Uncouple · lift the cut lever") && !body.Uncouple(at, out var why) && why is not null)
+            if (Kit.Button("coupling.uncouple", "Uncouple") && !body.Uncouple(at, out var why) && why is not null)
                 _notice = why;
             if (air.Hose[at] && (air.CockAhead[at] > 0.0 || air.CockBehind[at] > 0.0))
-                Kit.Status(Caution, "The air's on through here: close both angle cocks and part the hose first, or it'll pull apart and put the brakes in emergency.");
+                Kit.Status(Caution, "Air is through: close the cocks and part the hose first");
         }
         else
         {
             Kit.Stats([new Stat("Apart", UnitText.Length(body.Gap(at)))], 2);
-            Kit.Note("Run them back together to couple (under 4 mph).", TextFaint);
+            Kit.Note("Couples under 4 mph", TextFaint);
         }
 
         Kit.EndCard();
@@ -913,13 +898,13 @@ public sealed partial class TrainPanel
             new Stat("Pipe behind", UnitText.Pressure(air.Pipe[at + 1])),
         ], 2);
         if (venting)
-            Kit.Status(Stop, "A cock's open with no hose on it: the pipe's venting to the air");
+            Kit.Status(Stop, "Cock open, no hose: venting");
         else if (!through)
-            Kit.Status(Caution, "The air's cut off here: the cars behind don't get the brake pipe");
+            Kit.Status(Caution, "Air cut off here");
         else if (air.CockAhead[at] < 1.0 || air.CockBehind[at] < 1.0)
-            Kit.Status(Caution, "A cock's part open: the air's throttled, so the brakes behind answer slowly");
+            Kit.Status(Caution, "Cock part open: air throttled");
         else
-            Kit.Status(Style.Clear, "The air's through");
+            Kit.Status(Style.Clear, "Air through");
         Kit.EndCard();
     }
 }

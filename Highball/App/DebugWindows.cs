@@ -119,7 +119,7 @@ public static class DebugWindows
         if (WindowBounds.Begin("Camera"u8, ref _camera, ImGuiWindowFlags.NoFocusOnAppearing | ImGuiWindowFlags.AlwaysAutoResize))
         {
             if (camera is null)
-                ImGui.Text("No camera in the Planner."u8);
+                ImGui.Text("No camera."u8);
             else
             {
                 var line = "";
@@ -146,15 +146,14 @@ public static class DebugWindows
         ImGui.SetNextWindowPos(new float2(x, y), ImGuiCond.FirstUseEver);
         if (WindowBounds.Begin("Profiler"u8, ref _profiler, ImGuiWindowFlags.AlwaysAutoResize))
         {
-            ImGui.Text("Time per frame, over the last two seconds"u8);
             if (ImGui.BeginTable("sections"u8, 8, ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders))
             {
                 ImGui.TableSetupColumn("Section"u8);
-                ImGui.TableSetupColumn("CPU last"u8);
-                ImGui.TableSetupColumn("CPU avg"u8);
-                ImGui.TableSetupColumn("CPU worst"u8);
-                ImGui.TableSetupColumn("GPU avg"u8);
-                ImGui.TableSetupColumn("GPU worst"u8);
+                ImGui.TableSetupColumn("CPU last ms"u8);
+                ImGui.TableSetupColumn("CPU avg ms"u8);
+                ImGui.TableSetupColumn("CPU worst ms"u8);
+                ImGui.TableSetupColumn("GPU avg ms"u8);
+                ImGui.TableSetupColumn("GPU worst ms"u8);
                 ImGui.TableSetupColumn("Draws"u8);
                 ImGui.TableSetupColumn("Triangles"u8);
                 ImGui.TableHeadersRow();
@@ -185,8 +184,6 @@ public static class DebugWindows
 
                 ImGui.EndTable();
             }
-
-            ImGui.Text("In milliseconds. Wait for GPU and Present include waiting for the display. GPU times count waits for other programs using it."u8);
         }
 
         ImGui.End();
@@ -225,9 +222,9 @@ public static class DebugWindows
         if (WindowBounds.Begin("Threading"u8, ref _threading, ImGuiWindowFlags.AlwaysAutoResize))
         {
             var logical = Environment.ProcessorCount;
-            ImGui.Text($"Whole game {_cpu:0}% of {logical} threads, {_cpu * logical / 100f:0.0} in use");
+            ImGui.Text($"CPU {_cpu:0}% of {logical} threads ({_cpu * logical / 100f:0.0} busy)");
             ImGui.PlotLines("##cpu"u8, CpuHistory, _cpuCursor, default, 0f, 100f, new float2(420f, 50f));
-            ImGui.Text($"{JobStream.Cores} threads for jobs   {ThreadPool.ThreadCount} in the pool");
+            ImGui.Text($"Jobs {JobStream.Cores}   Pool {ThreadPool.ThreadCount}");
 
             if (job is { } building)
             {

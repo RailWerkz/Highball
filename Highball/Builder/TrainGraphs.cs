@@ -86,7 +86,6 @@ public sealed class TrainGraphs
         {
             if (Kit.Header("AIR AND SLACK", "No train", "IDLE", TextFaint))
                 Open = false;
-            Kit.Note("Place a train to see its air and slack.");
             return;
         }
 
@@ -109,7 +108,7 @@ public sealed class TrainGraphs
         Kit.BeginCard("Air along the train", "head to rear");
         AlongTheTrain(train, new float2(Kit.Width, tall));
         Kit.EndCard();
-        Kit.BeginCard("Air over the last two minutes", "head and rear");
+        Kit.BeginCard("Air, last 2 min", "head and rear");
         OverTime(new float2(Kit.Width, tall));
         Kit.EndCard();
         Kit.BeginCard("Couplers", "draft up, buff down");
@@ -258,7 +257,7 @@ public sealed class TrainGraphs
         var n = forces.Length;
         if (n == 0)
         {
-            Label(draw, min + new float2(S(6f), S(4f)), TextDim, "One vehicle: no couplers in use.");
+            Label(draw, min + new float2(S(6f), S(4f)), TextDim, "One vehicle.");
             return;
         }
 

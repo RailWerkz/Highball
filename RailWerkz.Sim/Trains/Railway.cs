@@ -76,7 +76,7 @@ public class Railway
             }
 
         if (lost > 0)
-            Tell(lost == 1 ? "The track under a cut changed: it was taken off" : $"The track under {lost} cuts changed: they were taken off");
+            Tell(lost == 1 ? "Track changed: 1 cut removed" : $"Track changed: {lost} cuts removed");
     }
 
     /// Takes a cut off the track.
@@ -132,7 +132,7 @@ public class Railway
         train.RunThrough = node =>
         {
             Log.Info($"Train {train.Name}: ran through switch {node}, set against it");
-            Tell("Ran through a switch set against the train: it's been forced over");
+            Tell("Ran through a switch: forced over");
             Switches.Set(node, !train.Graph.Reversed(node));
         };
     }
@@ -213,7 +213,7 @@ public class Railway
                         if (mph > CoupleSpeed)
                         {
                             Log.Info($"Trains: {a.Train.Name} and {b.Train.Name} met at {mph:0.0} mph: both taken off");
-                            Tell($"{a.Train.Name} and {b.Train.Name} ran together at {mph:0} mph (over {CoupleSpeed:0}): both were taken off");
+                            Tell($"{a.Train.Name} and {b.Train.Name} hit at {mph:0} mph: both removed");
                             Remove(a);
                             Remove(b);
                             return;
@@ -250,8 +250,8 @@ public class Railway
         Replaced?.Invoke(b, cut);
         Log.Info($"Trains: coupled into {joined.Name}, {joined.Cars.Count} vehicles, at {mph:0.0} mph");
         Tell(mph > 4.0
-            ? $"Coupled hard, at {mph:0.0} mph: keep it under 4. Join the air hose to cut the brakes in"
-            : "Coupled: join the air hose and open the angle cocks to cut the brakes in");
+            ? $"Coupled hard, {mph:0.0} mph · air hose not joined"
+            : "Coupled · air hose not joined");
     }
 
     /// Uncoupled cuts drawn far enough from the rest of their train become cuts of their own.
@@ -383,7 +383,7 @@ public class Railway
         }
 
         if (lost > 0)
-            Tell(lost == 1 ? "A saved cut couldn't be put back where it stood; it's kept in the route's save" : $"{lost} saved cuts couldn't be put back where they stood; they're kept in the route's save");
+            Tell(lost == 1 ? "1 saved cut couldn't be restored (still saved)" : $"{lost} saved cuts couldn't be restored (still saved)");
         Log.Info($"Placed stock: {put} cuts put back{(lost > 0 ? $", {lost} left off" : "")}");
         return put;
     }

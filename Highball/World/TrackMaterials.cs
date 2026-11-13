@@ -25,13 +25,13 @@ public sealed class TrackMaterials
 
     public static readonly (Slot Slot, string Label, string Help, string Default)[] Slots =
     [
-        (Slot.Ballast, "Ballast", "The stone of the track bed and the ground either side", "Terrain/Rocks/Rocks022"),
-        (Slot.RailTop, "Rail top", "The running surface of the rail head, worn bright by wheels", "Metal/Metal021"),
-        (Slot.RailSide, "Rail sides", "The rail's web, foot and the sides of its head", "Metal/Metal025"),
-        (Slot.Ties, "Ties (sleepers)", "The wooden ties, and a turnout's long timbers", "Wood/Wood062"),
-        (Slot.Plates, "Tie plates", "The steel plates and spikes holding the rail down", "Metal/Metal025"),
-        (Slot.PoleWood, "Pole wood", "Wooden poles, and any part painted Wood", "Wood/Wood062"),
-        (Slot.BridgeSteel, "Bridge steel", "The weathering on bridge girders and railings", "Metal/Metal024"),
+        (Slot.Ballast, "Ballast", "Track bed and shoulders", "Terrain/Rocks/Rocks022"),
+        (Slot.RailTop, "Rail top", "Rail head running surface", "Metal/Metal021"),
+        (Slot.RailSide, "Rail sides", "Web, foot and head sides", "Metal/Metal025"),
+        (Slot.Ties, "Ties (sleepers)", "Ties and turnout timbers", "Wood/Wood062"),
+        (Slot.Plates, "Tie plates", "Plates and spikes", "Metal/Metal025"),
+        (Slot.PoleWood, "Pole wood", "Poles and Wood paint", "Wood/Wood062"),
+        (Slot.BridgeSteel, "Bridge steel", "Girders and railings", "Metal/Metal024"),
     ];
 
     /// The paints line.frag knows, in its order (NetworkMeshes.Paints), with the shader's own values as their defaults.

@@ -71,18 +71,12 @@ public sealed class MaterialsWindow : IDisposable
 
                 if (ImGui.CollapsingHeader("Signal lamps"u8, ImGuiTreeNodeFlags.DefaultOpen))
                 {
-                    ImGui.PushTextWrapPos(0f);
-                    ImGui.TextDisabled("How each lit lamp looks: the lens's own glow, the light it casts ahead and how far, and a halo seen from afar. Light a signal's lamps from its panel (Signals tool, select it)."u8);
-                    ImGui.PopTextWrapPos();
                     for (var i = 0; i < TrackMaterials.Lamps.Length; i++)
                         LampRow(materials, i);
                 }
 
                 if (ImGui.CollapsingHeader("Signals, hand throws, crossings and poles"u8, ImGuiTreeNodeFlags.DefaultOpen))
                 {
-                    ImGui.PushTextWrapPos(0f);
-                    ImGui.TextDisabled("Each part of these models is painted one of these, by its name in Blender (Fixed_Black, Moving_Red...). The texture weathers the paint; Texture shows how much of the texture's own colour comes through."u8);
-                    ImGui.PopTextWrapPos();
                     for (var i = 0; i < TrackMaterials.Paints.Length; i++)
                         PaintRow(materials, i);
                 }
@@ -124,7 +118,7 @@ public sealed class MaterialsWindow : IDisposable
         if (ImGui.Button("Game defaults"u8))
         {
             TrackMaterials.ResetToDefaults();
-            _status = "The game's own textures (not saved yet)";
+            _status = "Defaults (not saved)";
         }
 
         ImGui.SameLine();
@@ -134,7 +128,7 @@ public sealed class MaterialsWindow : IDisposable
             _status = $"{_choices.Count} textures found";
         }
 
-        ImGui.SetItemTooltip("Look for textures added to Content/Textures since the window opened"u8);
+        ImGui.SetItemTooltip("Content/Textures"u8);
 
         if (TrackTextures.Loading)
             ImGui.TextColored(new float4(0.95f, 0.75f, 0.3f, 1f), "Loading textures..."u8);
@@ -182,13 +176,13 @@ public sealed class MaterialsWindow : IDisposable
         ImGui.SetNextItemWidth(-90f);
         if (ImGui.SliderFloat("Texture"u8, ref strength, 0f, 1f, "%.2f"u8, ImGuiSliderFlags.None))
             materials.SetPaint(index, paint with { Strength = strength });
-        ImGui.SetItemTooltip("0: flat paint. 1: the texture's own colour, tinted by the paint's"u8);
+        ImGui.SetItemTooltip("0 flat paint, 1 full texture"u8);
 
         var roughness = paint.Roughness;
         ImGui.SetNextItemWidth(-160f);
         if (ImGui.SliderFloat("Roughness"u8, ref roughness, 0f, 1f, "%.2f"u8, ImGuiSliderFlags.None))
             materials.SetPaint(index, paint with { Roughness = roughness });
-        ImGui.SetItemTooltip("Before the texture's roughness map is mixed in (60% of it)"u8);
+        ImGui.SetItemTooltip("Before the roughness map (60%)"u8);
         ImGui.SameLine();
         var metal = paint.Metal;
         if (ImGui.Checkbox("Metal"u8, ref metal))
@@ -196,7 +190,6 @@ public sealed class MaterialsWindow : IDisposable
         ImGui.SameLine();
         if (ImGui.SmallButton("Texture's colour"u8))
             materials.SetPaint(index, paint with { Color = [0.5f, 0.5f, 0.5f], Strength = 1f });
-        ImGui.SetItemTooltip("Show the texture as it is, untinted"u8);
 
         ImGui.EndGroup();
         ImGui.PopID();
@@ -216,7 +209,7 @@ public sealed class MaterialsWindow : IDisposable
         ImGui.Text(name);
         ImGui.SameLine();
         if (SameLamp(lamp, fallback))
-            ImGui.TextDisabled("as the game has it"u8);
+            ImGui.TextDisabled("default"u8);
         else
         {
             ImGui.TextColored(new float4(0.5f, 0.8f, 1f, 1f), "changed"u8);
@@ -243,12 +236,12 @@ public sealed class MaterialsWindow : IDisposable
             return value;
         }
 
-        var lens = Slider("Lens glow"u8, lamp.LensBrightness, 0f, TrackTextures.LensScale, "%.1f"u8, "How bright the lens itself is when lit (bloom picks up the brightest)"u8);
-        var intensity = Slider("Light"u8, lamp.Intensity, 0f, 50f, "%.2f"u8, "How strongly it lights the ground and anything in front of it"u8, true);
-        var range = Slider("Reach (m)"u8, lamp.Range, 1f, 200f, "%.0f"u8, "How far its light reaches"u8, true);
-        var beam = Slider("Beam (deg)"u8, lamp.Beam, 5f, 175f, "%.0f"u8, "Half the width of its beam; it fades in from two thirds of that"u8);
-        var glow = Slider("Halo size (m)"u8, lamp.GlowSize, 0f, 2f, "%.2f"u8, "The bright spot drawn on the lamp, seen from afar; 0 for none"u8);
-        var glowBright = Slider("Halo brightness"u8, lamp.GlowBrightness, 0f, 20f, "%.2f"u8, "How bright that halo is"u8, true);
+        var lens = Slider("Lens glow"u8, lamp.LensBrightness, 0f, TrackTextures.LensScale, "%.1f"u8, "Lit lens brightness"u8);
+        var intensity = Slider("Light"u8, lamp.Intensity, 0f, 50f, "%.2f"u8, "Light cast ahead"u8, true);
+        var range = Slider("Reach (m)"u8, lamp.Range, 1f, 200f, "%.0f"u8, "Light range"u8, true);
+        var beam = Slider("Beam (deg)"u8, lamp.Beam, 5f, 175f, "%.0f"u8, "Half-angle; fades from 2/3"u8);
+        var glow = Slider("Halo size (m)"u8, lamp.GlowSize, 0f, 2f, "%.2f"u8, "Seen from afar; 0 for none"u8);
+        var glowBright = Slider("Halo brightness"u8, lamp.GlowBrightness, 0f, 20f, "%.2f"u8, "Halo brightness"u8, true);
         var changed = lamp with { LensBrightness = lens, Intensity = intensity, Range = range, Beam = beam, GlowSize = glow, GlowBrightness = glowBright };
         if (!SameLamp(changed, lamp))
             materials.SetLamp(index, changed);
@@ -282,7 +275,7 @@ public sealed class MaterialsWindow : IDisposable
         else if (!isDefault)
             ImGui.TextColored(new float4(0.5f, 0.8f, 1f, 1f), "changed"u8);
         else
-            ImGui.TextDisabled("as the game has it"u8);
+            ImGui.TextDisabled("default"u8);
     }
 
     /// The texture list for one part. Returns the one picked, if one was.
@@ -327,9 +320,7 @@ public sealed class MaterialsWindow : IDisposable
             }
 
             ImGui.SeparatorText("Anywhere else"u8);
-            ImGui.PushTextWrapPos(0f);
-            ImGui.TextDisabled("A folder of maps (..._Color, ..._NormalGL, ..._Roughness...), a .zip of them, or a path under Content/Textures."u8);
-            ImGui.PopTextWrapPos();
+            ImGui.TextDisabled("Folder, .zip or Content/Textures path"u8);
             ImGui.SetNextItemWidth(-60f);
             var entered = ImGui.InputTextWithHint("##path"u8, "D:/Textures/MyRock"u8, _path, ImGuiInputTextFlags.EnterReturnsTrue, null, IntPtr.Zero);
             ImGui.SameLine();
@@ -345,7 +336,7 @@ public sealed class MaterialsWindow : IDisposable
         ImGui.SameLine();
         if (ImGui.Button("x"u8, new float2(22f, 0f)))
             picked = fallback;
-        ImGui.SetItemTooltip("Back to the game's own"u8);
+        ImGui.SetItemTooltip("Reset"u8);
         return picked != null && picked != current ? picked : null;
     }
 

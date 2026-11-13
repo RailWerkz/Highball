@@ -422,7 +422,7 @@ public sealed class RoadEditor
             return null;
         if (landing.Split is { } split && along.Any(c => c.Item1 == split.Way))
         {
-            refused = "Land it on one of that line's points";
+            refused = "End on one of the line's points";
             return null;
         }
 
@@ -467,7 +467,7 @@ public sealed class RoadEditor
 
         if (Chain(a.Way, b.Way) is not { } chain)
         {
-            refused = "Both ends of a bridge have to be on the same line";
+            refused = "Bridge ends must be on one line";
             return null;
         }
 
