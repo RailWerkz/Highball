@@ -36,6 +36,11 @@ dotnet run --project Highball -c Release
 Or run `Tools/Run.ps1`. Settings are saved to `%APPDATA%/Highball/Settings.json`, and the log is written next to them.
 
 Routes (`Content/Routes/`) and the train and lineside audio (`Content/Audio/`) are kept on each machine and are not in git.
+The vehicles' lower-detail models aren't either: make them once with Blender (the game draws full detail without them):
+
+```bash
+blender -b --factory-startup --python Tools/Blender/lods.py -- Content
+```
 
 ## The framework
 
