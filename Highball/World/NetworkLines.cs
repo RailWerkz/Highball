@@ -1072,6 +1072,7 @@ public sealed partial class NetworkLines
         Layer();
         Turnouts = Turnout.Find(_lines, Fitted);
         LevelRoutes();
+
     }
 
     /// A switch's rails meet at its frog and its long timbers carry both routes, so its diverging route runs at the normal
@@ -1728,23 +1729,45 @@ public sealed partial class NetworkLines
     /// that gently, and stays at its own height at its ends, which other roads meet.
     private void LevelRoadsAtRails()
     {
-        var rails = _lines.Where(l => l.Rail && !l.Disused).ToList();
+        // The rails' segments on the ground, filed by the grid cells they cross, so a road's segment only looks at the rail near it.
+        // (A long line's bounds take in most of the route: looking through all of it for every road was most of a rebuild.)
+        var segments = new List<(NetworkLine Rail, int R)>();
+        var cells = new Dictionary<(int X, int Z), List<int>>();
+        foreach (var rail in _lines.Where(l => l.Rail && !l.Disused))
+            for (var r = 0; r + 1 < rail.Count; r++)
+            {
+                if (rail.Structures[r] != Structure.Ground)
+                    continue;
+                var id = segments.Count;
+                segments.Add((rail, r));
+                foreach (var cell in CellsOf(rail.X[r], rail.Z[r], rail.X[r + 1], rail.Z[r + 1]))
+                {
+                    if (!cells.TryGetValue(cell, out var list))
+                        cells[cell] = list = [];
+                    list.Add(id);
+                }
+            }
+
         Parallel.ForEach(_lines.Where(l => !l.Rail && !l.Mark), road =>
         {
             var hits = new List<(float S, float Y)>();
+            var looked = new HashSet<int>();
             for (var i = 0; i + 1 < road.Count; i++)
             {
                 if (road.Structures[i] != Structure.Ground)
                     continue;
                 var (ax, az, bx, bz) = (road.X[i], road.Z[i], road.X[i + 1], road.Z[i + 1]);
-                foreach (var rail in rails)
+                looked.Clear();
+                foreach (var cell in CellsOf(ax, az, bx, bz))
                 {
-                    if (Math.Max(ax, bx) < rail.MinX || Math.Min(ax, bx) > rail.MaxX || Math.Max(az, bz) < rail.MinZ || Math.Min(az, bz) > rail.MaxZ)
+                    if (!cells.TryGetValue(cell, out var near))
                         continue;
-                    for (var r = 0; r + 1 < rail.Count; r++)
+                    foreach (var id in near)
                     {
-                        if (rail.Structures[r] != Structure.Ground)
+                        // (A segment in more than one of the cells is met once.)
+                        if (!looked.Add(id))
                             continue;
+                        var (rail, r) = segments[id];
                         var (ux, uz, vx, vz) = (bx - ax, bz - az, rail.X[r + 1] - rail.X[r], rail.Z[r + 1] - rail.Z[r]);
                         var cross = ux * vz - uz * vx;
                         if (Math.Abs(cross) < 1e-6)
@@ -1783,6 +1806,19 @@ public sealed partial class NetworkLines
                 }
             }
         });
+    }
+
+    /// The size of LevelRoadsAtRails' grid cells, metres.
+    private const double CrossingCell = 64.0;
+
+    /// The grid cells a segment's bounds cover.
+    private static IEnumerable<(int X, int Z)> CellsOf(double ax, double az, double bx, double bz)
+    {
+        var (x0, x1) = ((int)Math.Floor(Math.Min(ax, bx) / CrossingCell), (int)Math.Floor(Math.Max(ax, bx) / CrossingCell));
+        var (z0, z1) = ((int)Math.Floor(Math.Min(az, bz) / CrossingCell), (int)Math.Floor(Math.Max(az, bz) / CrossingCell));
+        for (var z = z0; z <= z1; z++)
+            for (var x = x0; x <= x1; x++)
+                yield return (x, z);
     }
 
     /// How steeply a track eases between one bed's height and another's.

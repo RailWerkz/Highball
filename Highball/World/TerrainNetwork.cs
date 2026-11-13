@@ -27,19 +27,35 @@ public sealed partial class TerrainSource
         return Task.Run(() =>
         {
             using var counted = Background.Begin("Laying track");
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var stages = new List<string>();
+            void Stage(string name)
+            {
+                stages.Add($"{name} {clock.ElapsedMilliseconds}");
+                clock.Restart();
+            }
+
             if (solveAgain)
                 NetworkLines.ForgetSolved(_route);
             var lines = NetworkLines.Build(ways, _route, built, shapes);
+            Stage("build");
             lines.SetCrossings(crossings, _route.Projection!);
-            Parallel.ForEach(lines.AdoptGround(previous), id =>
+            Stage("crossings");
+            var sampled = lines.AdoptGround(previous).ToList();
+            Parallel.ForEach(sampled, id =>
             {
                 var data = _route.LoadTile(id);
                 lines.SampleGround(id, data.Heights, samples);
             });
+            Stage($"ground ({sampled.Count} tiles)");
             lines.FinishProfiles();
+            Stage("profiles");
             lines.AdoptDrapes(previous);
+            Stage("drapes");
             lines.FindLayouts(tagged);
+            Stage("layouts");
             TrackLayouts.SaveMarkers(_route, lines.Layouts);
+            Stage("markers");
 
             var old = new Dictionary<long, NetworkLine>();
             foreach (var line in previous.Lines)
@@ -91,6 +107,8 @@ public sealed partial class TerrainSource
                 lines.DrapeMarks(id, reshaped, samples);
                 heights[id] = reshaped;
             });
+            Stage($"reshape ({tiles.Count} tiles)");
+            RailWerkz.Core.Logging.Log.Info($"Track rebuild, ms: {string.Join(", ", stages)}");
 
             return new NetworkChange(lines, heights, areas);
         });

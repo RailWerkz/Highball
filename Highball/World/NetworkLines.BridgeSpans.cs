@@ -25,12 +25,16 @@ public sealed partial class NetworkLines
     /// train crosses a freeway at grade). The bridge is then lengthened and lifted as any other.
     private void BridgeTracks(Dictionary<long, int> uses)
     {
-        var guides = _lines.Where(l => l.Mark && l.Structures.Contains(Structure.Bridge)).ToList();
-        var highways = _lines.Where(l => !l.Rail && !l.Mark && (Routes.RoadClass)l.Class == Routes.RoadClass.Highway).ToList();
+        // The guides' bridged segments and the highways' segments on the ground, filed by the grid cells they cross, so each track
+        // segment only looks at those near it.
+        var guideCells = Cells(_lines.Where(l => l.Mark && l.Structures.Contains(Structure.Bridge)), Structure.Bridge);
+        var highwayCells = Cells(_lines.Where(l => !l.Rail && !l.Mark && (Routes.RoadClass)l.Class == Routes.RoadClass.Highway), Structure.Ground);
+        var joins = new Dictionary<NetworkLine, bool>();
         var bridged = 0;
         foreach (var track in _lines.Where(l => l.Rail && !l.Mark && l.Count >= 2))
         {
             var shared = track.Nodes.Select(n => n.Node).ToHashSet();
+            joins.Clear();
             var changed = false;
             for (var p = 0; p + 1 < track.Count; p++)
             {
@@ -38,33 +42,37 @@ public sealed partial class NetworkLines
                     continue;
                 var (mx, mz) = ((track.X[p] + track.X[p + 1]) * 0.5, (track.Z[p] + track.Z[p + 1]) * 0.5);
                 var over = false;
-                foreach (var guide in guides)
+                foreach (var cell in CellsOf(mx - GuideBridgeReach, mz - GuideBridgeReach, mx + GuideBridgeReach, mz + GuideBridgeReach))
                 {
-                    if (guide.MaxX < mx - GuideBridgeReach || guide.MinX > mx + GuideBridgeReach || guide.MaxZ < mz - GuideBridgeReach || guide.MinZ > mz + GuideBridgeReach)
+                    if (over || !guideCells.TryGetValue(cell, out var near))
                         continue;
-                    for (var q = 0; q + 1 < guide.Count && !over; q++)
+                    foreach (var (guide, q) in near)
                     {
-                        if (guide.Structures[q] != Structure.Bridge)
-                            continue;
                         var (dx, dz) = (guide.X[q + 1] - guide.X[q], guide.Z[q + 1] - guide.Z[q]);
                         var t = Math.Clamp(((mx - guide.X[q]) * dx + (mz - guide.Z[q]) * dz) / Math.Max(dx * dx + dz * dz, 1e-9), 0.0, 1.0);
-                        over = Math.Pow(guide.X[q] + dx * t - mx, 2) + Math.Pow(guide.Z[q] + dz * t - mz, 2) < GuideBridgeReach * GuideBridgeReach;
+                        if (Math.Pow(guide.X[q] + dx * t - mx, 2) + Math.Pow(guide.Z[q] + dz * t - mz, 2) < GuideBridgeReach * GuideBridgeReach)
+                        {
+                            over = true;
+                            break;
+                        }
                     }
-
-                    if (over)
-                        break;
                 }
 
                 if (!over && track.Exact)
-                    foreach (var road in highways)
+                    foreach (var cell in CellsOf(track.X[p], track.Z[p], track.X[p + 1], track.Z[p + 1]))
                     {
-                        if (road.MaxX < Math.Min(track.X[p], track.X[p + 1]) || road.MinX > Math.Max(track.X[p], track.X[p + 1]) ||
-                            road.MaxZ < Math.Min(track.Z[p], track.Z[p + 1]) || road.MinZ > Math.Max(track.Z[p], track.Z[p + 1]) || road.Nodes.Any(n => shared.Contains(n.Node)))
+                        if (over || !highwayCells.TryGetValue(cell, out var near))
                             continue;
-                        for (var i = 0; i + 1 < road.Count && !over; i++)
-                            over = road.Structures[i] == Structure.Ground && Crossing(road, i, track, p) is not null;
-                        if (over)
-                            break;
+                        foreach (var (road, i) in near)
+                        {
+                            if (!joins.TryGetValue(road, out var joined))
+                                joins[road] = joined = road.Nodes.Any(n => shared.Contains(n.Node));
+                            if (!joined && Crossing(road, i, track, p) is not null)
+                            {
+                                over = true;
+                                break;
+                            }
+                        }
                     }
 
                 if (over)
@@ -82,10 +90,38 @@ public sealed partial class NetworkLines
             RailWerkz.Core.Logging.Log.Info($"Bridges: {bridged} tracks given the bridges they were laid over");
     }
 
+    /// The segments of these lines that are of one kind (on the ground, a bridge), filed by the grid cells they cross (CellsOf).
+    private static Dictionary<(int X, int Z), List<(NetworkLine Line, int I)>> Cells(IEnumerable<NetworkLine> lines, Structure kind)
+    {
+        var cells = new Dictionary<(int X, int Z), List<(NetworkLine Line, int I)>>();
+        foreach (var line in lines)
+            for (var i = 0; i + 1 < line.Count; i++)
+            {
+                if (line.Structures[i] != kind)
+                    continue;
+                foreach (var cell in CellsOf(line.X[i], line.Z[i], line.X[i + 1], line.Z[i + 1]))
+                {
+                    if (!cells.TryGetValue(cell, out var list))
+                        cells[cell] = list = [];
+                    list.Add((line, i));
+                }
+            }
+
+        return cells;
+    }
+
     private void StretchBridges(Dictionary<long, int> uses)
     {
         BridgeTracks(uses);
         var lines = _lines.Where(l => !l.Mark && l.Count >= 2).ToList();
+
+        // Every line's segments on the ground, filed by the grid cells they cross, so a bridge only looks at what's near it. (A long
+        // line's bounds take in most of the route: going through all of its points for every bridge was most of shaping the roads.)
+        // A segment can only go from the ground to a bridge as bridges are stretched, never back, so the cells stay good for the
+        // whole pass as long as each one's still checked to be on the ground.
+        var cells = Cells(lines, Structure.Ground);
+        var looked = new HashSet<(NetworkLine, int)>();
+        var joins = new Dictionary<NetworkLine, bool>();
         var stretched = 0;
         var most = 0f;
         foreach (var line in lines)
@@ -116,15 +152,21 @@ public sealed partial class NetworkLines
                 var (bx0, bx1, bz0, bz1) = (double.MaxValue, double.MinValue, double.MaxValue, double.MinValue);
                 for (var q = q0; q <= q1; q++)
                     (bx0, bx1, bz0, bz1) = (Math.Min(bx0, line.X[q]), Math.Max(bx1, line.X[q]), Math.Min(bz0, line.Z[q]), Math.Max(bz1, line.Z[q]));
-                foreach (var other in lines)
+                looked.Clear();
+                joins.Clear();
+                foreach (var cell in CellsOf(bx0, bz0, bx1, bz1))
                 {
-                    if (other == line || other.MaxX < bx0 || other.MinX > bx1 || other.MaxZ < bz0 || other.MinZ > bz1)
+                    if (!cells.TryGetValue(cell, out var near))
                         continue;
-                    // A road that joins this one is beside it, not under it.
-                    if (other.Nodes.Any(n => shared.Contains(n.Node)))
-                        continue;
-                    for (var i = 0; i + 1 < other.Count; i++)
+                    foreach (var (other, i) in near)
                     {
+                        if (other == line || !looked.Add((other, i)))
+                            continue;
+                        // A road that joins this one is beside it, not under it.
+                        if (!joins.TryGetValue(other, out var joined))
+                            joins[other] = joined = other.Nodes.Any(n => shared.Contains(n.Node));
+                        if (joined)
+                            continue;
                         if (other.Structures[i] != Structure.Ground || Math.Max(other.X[i], other.X[i + 1]) < bx0 || Math.Min(other.X[i], other.X[i + 1]) > bx1 ||
                             Math.Max(other.Z[i], other.Z[i + 1]) < bz0 || Math.Min(other.Z[i], other.Z[i + 1]) > bz1)
                             continue;

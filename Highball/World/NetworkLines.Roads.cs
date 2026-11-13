@@ -33,7 +33,14 @@ public sealed partial class NetworkLines
         EvenWidths(roads, uses);
         var before = roads.ToDictionary(r => r, r => ((double[])r.X.Clone(), (double[])r.Z.Clone()));
         SmoothRoads(roads, uses);
-        double Moved(NetworkLine r) => Enumerable.Range(0, r.Count).Max(p => Math.Sqrt((r.X[p] - before[r].Item1[p]) * (r.X[p] - before[r].Item1[p]) + (r.Z[p] - before[r].Item2[p]) * (r.Z[p] - before[r].Item2[p])));
+        double Moved(NetworkLine r)
+        {
+            var (x, z) = before[r];
+            var most = 0.0;
+            for (var p = 0; p < r.Count; p++)
+                most = Math.Max(most, (r.X[p] - x[p]) * (r.X[p] - x[p]) + (r.Z[p] - z[p]) * (r.Z[p] - z[p]));
+            return Math.Sqrt(most);
+        }
         var fitted = roads.Select(Moved).ToList();
         var fitMoved = (fitted.Count(m => m > 0.5), fitted.DefaultIfEmpty(0).Max());
         foreach (var r in roads)
@@ -62,6 +69,7 @@ public sealed partial class NetworkLines
         }
 
         StretchBridges(uses);
+
         RailWerkz.Core.Logging.Log.Info($"Roads: {roads.Count} shaped in {watch.ElapsedMilliseconds} ms");
     }
 

@@ -811,11 +811,14 @@ public sealed partial class EditorView : IDisposable, IToolHost
 
     private void RefreshRailGraph()
     {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
         if (!_routeWorld.RefreshGraph())
             return;
+        Log.Info($"Rail graph built again, ms: {clock.ElapsedMilliseconds}");
         var lines = _terrain!.Source.Lines!;
         _session.TrackChanged();
         RelinkSignals(lines);
+        Log.Info($"Rail graph, trains and signals caught up, ms: {clock.ElapsedMilliseconds}");
         if (DevTools.TakeExport())
             Export();
         if (DevTools.RailGraphReport)
@@ -950,10 +953,13 @@ public sealed partial class EditorView : IDisposable, IToolHost
         _rebuild = null;
         if (done.IsCompletedSuccessfully)
         {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
             var change = done.Result;
             foreach (var (x0, z0, x1, z1) in _terrain!.Source.Apply(change))
                 _terrain.Invalidate(x0, z0, x1, z1);
+            var applied = clock.ElapsedMilliseconds;
             _network!.Replace(change.Lines, change.Areas);
+            Log.Info($"Track rebuild taken in, ms: terrain {applied}, line meshes {clock.ElapsedMilliseconds - applied} ({change.Areas.Count} areas)");
         }
         else
             Log.Error($"Track rebuild: {done.Exception?.InnerException?.Message}");

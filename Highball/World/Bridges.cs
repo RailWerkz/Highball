@@ -160,8 +160,12 @@ public static class BridgePlanner
                 var along = Math.Abs(dx * a.Fx + dz * a.Fz);
                 if (across <= a.Half + b.Half + 4.0 && along <= (a.Length + b.Length) * 0.5 && SideBySide(a.Line, a.First, a.Last, b.Line, b.First, b.Last, a.Half + b.Half + 4.0))
                     parent[Root(i)] = Root(j);
-                // Decks that overlap anywhere, going much the same way at much the same height, can only be one deck.
-                else if (!a.Line.Mark && !b.Line.Mark && Math.Abs(a.Fx * b.Fx + a.Fz * b.Fz) >= 0.8 && Overlap(a.Line, a.First, a.Last, b.Line, b.First, b.Last, a.Half + b.Half))
+                // Decks that overlap anywhere, going much the same way at much the same height, can only be one deck. (No part of a deck is
+                // further from its middle than half its length and its half width, so decks whose middles are further apart than that
+                // can't touch: only those near enough are looked at closely.)
+                else if (!a.Line.Mark && !b.Line.Mark && Math.Abs(a.Fx * b.Fx + a.Fz * b.Fz) >= 0.8 &&
+                         Math.Sqrt(dx * dx + dz * dz) <= (a.Length + b.Length) * 0.5 + a.Half + b.Half + 0.01 &&
+                         Overlap(a.Line, a.First, a.Last, b.Line, b.First, b.Last, a.Half + b.Half))
                     parent[Root(i)] = Root(j);
             }
 
@@ -248,8 +252,24 @@ public static class BridgePlanner
             (group.StartClear, group.EndClear) = (Kept(lines.BridgeEndAt(group.Reference, group.First)), Kept(lines.BridgeEndAt(group.Reference, group.Last)));
         }
 
+        // Every line's segments, filed by the grid cells they cross, so each bridge only looks at what's near it. (A long line's bounds
+        // take in most of the route: going through all of its points for every bridge was most of finding them.)
+        var order = new Dictionary<NetworkLine, int>();
+        var cells = new Dictionary<(int X, int Z), List<(NetworkLine Line, int I)>>();
+        foreach (var line in lines.Lines)
+        {
+            order[line] = order.Count;
+            for (var i = 0; i + 1 < line.Count; i++)
+                foreach (var cell in UnderCells(line.X[i], line.Z[i], line.X[i + 1], line.Z[i + 1]))
+                {
+                    if (!cells.TryGetValue(cell, out var list))
+                        cells[cell] = list = [];
+                    list.Add((line, i));
+                }
+        }
+
         foreach (var group in groups)
-            FindUnder(group, lines);
+            FindUnder(group, cells, order);
         return groups;
     }
 
@@ -337,7 +357,7 @@ public static class BridgePlanner
     }
 
     /// What runs under a bridge: every grounded road or track whose middle line crosses the reference's over the bridge.
-    private static void FindUnder(BridgeGroup group, NetworkLines lines)
+    private static void FindUnder(BridgeGroup group, Dictionary<(int X, int Z), List<(NetworkLine Line, int I)>> cells, Dictionary<NetworkLine, int> order)
     {
         var reference = group.Reference;
         var carried = group.Members.Select(m => m.Line).ToHashSet();
@@ -345,11 +365,16 @@ public static class BridgePlanner
         for (var p = group.First; p <= group.Last; p++)
             (minX, maxX, minZ, maxZ) = (Math.Min(minX, reference.X[p]), Math.Max(maxX, reference.X[p]), Math.Min(minZ, reference.Z[p]), Math.Max(maxZ, reference.Z[p]));
 
-        foreach (var line in lines.Lines)
+        // What's near, in the order the lines and their segments come (so what's under is found in the same order as ever).
+        var near = new HashSet<(NetworkLine Line, int I)>();
+        foreach (var cell in UnderCells(minX, minZ, maxX, maxZ))
+            if (cells.TryGetValue(cell, out var list))
+                foreach (var segment in list)
+                    if (!carried.Contains(segment.Line))
+                        near.Add(segment);
+
+        foreach (var (line, i) in near.OrderBy(n => order[n.Line]).ThenBy(n => n.I))
         {
-            if (carried.Contains(line) || line.MaxX < minX || line.MinX > maxX || line.MaxZ < minZ || line.MinZ > maxZ)
-                continue;
-            for (var i = 0; i + 1 < line.Count; i++)
             {
                 // On the ground, or a deck below this one (a pier mustn't come down through it either).
                 if (line.Structures[i] == Structure.Tunnel)
@@ -378,6 +403,18 @@ public static class BridgePlanner
                 }
             }
         }
+    }
+
+    /// The grid cells (UnderCell a side) a box covers, for FindUnder.
+    private const double UnderCell = 64.0;
+
+    private static IEnumerable<(int X, int Z)> UnderCells(double ax, double az, double bx, double bz)
+    {
+        var (x0, x1) = ((int)Math.Floor(Math.Min(ax, bx) / UnderCell), (int)Math.Floor(Math.Max(ax, bx) / UnderCell));
+        var (z0, z1) = ((int)Math.Floor(Math.Min(az, bz) / UnderCell), (int)Math.Floor(Math.Max(az, bz) / UnderCell));
+        for (var z = z0; z <= z1; z++)
+            for (var x = x0; x <= x1; x++)
+                yield return (x, z);
     }
 
     /// The piers for a bridge: as few as keep every span within what its deck can carry, each as near evenly spaced as it can be
