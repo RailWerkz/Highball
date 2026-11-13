@@ -40,6 +40,9 @@ public interface IToolHost
     void Record(object? edit);
     void Commit(NetworkEdit? edit);
     void RebuildNetwork();
+    void ChangePlaced(PlacedObject? before, PlacedObject? after);
+    PlacedObject NewPlaced(PlacedKind kind, double x, double z, double heading, long? node);
+    void FlyTo(double x, double z);
 }
 
 /// What the editor gives its tools: the route as loaded, the camera on the screen, the ground under the pointer, the
@@ -80,6 +83,15 @@ public sealed class ToolContext(IToolHost host)
 
     /// The track laid out again from the network as it is (after an edit that isn't a NetworkEdit).
     public void RebuildNetwork() => host.RebuildNetwork();
+
+    /// A placed object changed (null before: added; null after: removed), kept for undoing.
+    public void ChangePlaced(PlacedObject? before, PlacedObject? after) => host.ChangePlaced(before, after);
+
+    /// A new placed object at a place in the world, turned heading degrees, on a track node if it's given.
+    public PlacedObject NewPlaced(PlacedKind kind, double x, double z, double heading, long? node = null) => host.NewPlaced(kind, x, z, heading, node);
+
+    /// Moves the camera over a place, looking at it.
+    public void FlyTo(double x, double z) => host.FlyTo(x, z);
 
     /// Where a point in the world is on the screen.
     public float2? Project(double x, double y, double z) => host.View.Project(x, y, z);

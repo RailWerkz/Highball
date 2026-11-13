@@ -135,7 +135,10 @@ public sealed partial class EditorView : IDisposable, IToolHost
     ];
 
     /// The switch picked with the Switches tool, by its node, and each standard size's picture (loaded when first shown).
-    private long? _switch;
+    private long? _switch { get => _switchTool.Picked; set => _switchTool.Picked = value; }
+
+    /// The Switches tool.
+    private readonly SwitchesTool _switchTool;
     /// The Shape Track tool.
     private readonly ShapeTrackTool _shapeTool;
     private ShapeTool _shape => _shapeTool.Shape;
@@ -156,12 +159,11 @@ public sealed partial class EditorView : IDisposable, IToolHost
     private PlacedObject? _wheelFrom;
     private bool _wheeled;
     private YardGuides? _guides;
-    private readonly SwitchHandles _handles = new();
+    private SwitchHandles _handles => _switchTool.Handles;
     private string? _switchRefused;
     private float2? _areaFrom;
     private GroundQuad? _area;
     private (double Built, double Cleared) _areaLength;
-    private Dictionary<int, (Texture2D Texture, ImTextureRef Ref)>? _sizePictures;
 
     public bool CapturesMouse => _looking;
     public bool Ready => _terrain is not null;
@@ -183,6 +185,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
         _tools = new ToolContext(this);
         _shapeTool = new ShapeTrackTool(_tools);
         _roadTool = new RoadsTool(_tools);
+        _switchTool = new SwitchesTool(_tools, route);
         _brushes = new TerrainBrush(_tools);
         if (DevTools.Clean)
             _overlay = TrackOverlay.Off;
@@ -196,12 +199,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
     public void Dispose()
     {
         Save();
-        if (_sizePictures is not null)
-            foreach (var (texture, reference) in _sizePictures.Values)
-            {
-                HighballApp.Instance.RemoveTexture(reference);
-                texture.Dispose();
-            }
+        _switchTool.Dispose();
         _backgroundTiles.Dispose();
         _circuitEditor?.Dispose();
         _session.Dispose();
@@ -503,8 +501,8 @@ public sealed partial class EditorView : IDisposable, IToolHost
 
         _pointerAt = Blocked ? null : Pick(Input.MousePosition);
         _hit = _tool == Tool.Look ? null : _pointerAt;
-        if (_tool == Tool.Switches && source.Lines is { } picked)
-            SwitchesUpdate(picked);
+        if (_tool == Tool.Switches)
+            _switchTool.Update(dt);
 
         if (_tool == Tool.Shape)
             _shapeTool.Update(dt);
@@ -636,41 +634,8 @@ public sealed partial class EditorView : IDisposable, IToolHost
 
     // --- Switches. ---
 
-    /// A press on the picked switch's handles drags them; any other picks what's under it.
-    private void SwitchesUpdate(NetworkLines lines)
-    {
-        var blocked = Blocked;
-        var mouse = Input.MousePosition;
-        var turnout = _switch is { } node ? lines.Turnouts.FirstOrDefault(t => t.Node == node) : null;
-        var clicked = !blocked && Keyboard.Clicked();
-        if (_rebuild is null || _handles.Active)
-            SwitchChange(lines, turnout, _handles.Update(lines, turnout, mouse, !blocked && _hit is { } hit ? (hit.X, hit.Z) : null, ProjectGround, S(1f), clicked && _rebuild is null, Input.Mouse(GlfwMouseButton.Left)));
-        if (clicked && !_handles.Active)
-            _switch = SwitchAt(lines, mouse);
-    }
-
-    private void SwitchChange(NetworkLines lines, Turnout? turnout, SwitchHandles.Change? change)
-    {
-        if (change is null || turnout is null)
-            return;
-        _switchRefused = null;
-        if (change.Reach is { } reach)
-        {
-            var edit = new SwitchCurveEdit(change.Node, SwitchCurves.Load(_route).TryGetValue(change.Node, out var was) ? was : null, reach);
-            SwitchCurves.Set(_route, change.Node, reach);
-            _undo.Push(edit);
-            _redo.Clear();
-            RebuildNetwork();
-        }
-        else if (change.SlideTo is { } to)
-        {
-            var edit = change.Partner is { } partner ? _tracks!.SlideCrossover(turnout, to, partner.Turnout, partner.To) : _tracks!.SlideSwitch(turnout, to.X, to.Z);
-            if (edit is not null)
-                Committed(edit);
-            else
-                _switchRefused = change.Partner is null ? "No room for the diverging track" : "Can't move the crossover there";
-        }
-    }
+    /// A handle let go (SwitchesTool.Change).
+    private void SwitchChange(NetworkLines lines, Turnout? turnout, SwitchHandles.Change? change) => _switchTool.Change(turnout, change);
 
     // --- Placing objects. ---
 
@@ -2051,12 +2016,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
         using (Profiler.Sample("Train overlay"))
             _trains.Overlay(draw, Project, new double3(_camera.X, _camera.Y, _camera.Z), new float2(0f, _headerBottom), new float2(size.X, MathF.Min(size.Y, _footerTop)));
         if (_tool == Tool.Switches)
-            DrawSwitches(draw);
-        if (_tool == Tool.Switches && _terrain?.Source.Lines is { } handled && _switch is { } handledNode && handled.Turnouts.FirstOrDefault(t => t.Node == handledNode) is { } handledSwitch)
-        {
-            var imperial = Settings.Current.Units == UnitSystem.Imperial;
-            _handles.Draw(draw, handled, handledSwitch, ProjectGround, S(1f), m => imperial ? string.Create(CultureInfo.InvariantCulture, $"{m * FeetPerMeter:0} ft") : string.Create(CultureInfo.InvariantCulture, $"{m:0} m"));
-        }
+            _switchTool.Draw(draw);
         if (_tool == Tool.Shape)
             _shapeTool.Draw(draw);
         if (_tool is Tool.Follow or Tool.Parallel || (_tool is Tool.Pen or Tool.Shape && _overlay != TrackOverlay.ClassMap))
@@ -2160,6 +2120,9 @@ public sealed partial class EditorView : IDisposable, IToolHost
     void IToolHost.Record(object? edit) => Record(edit);
     void IToolHost.Commit(NetworkEdit? edit) => Committed(edit);
     void IToolHost.RebuildNetwork() => RebuildNetwork();
+    void IToolHost.ChangePlaced(PlacedObject? before, PlacedObject? after) => PlacedChange(before, after);
+    PlacedObject IToolHost.NewPlaced(PlacedKind kind, double x, double z, double heading, long? node) => Placed(kind, x, z, heading, node);
+    void IToolHost.FlyTo(double x, double z) => FlyTo(x, z);
 
     // --- Menus, the side panel and windows (ImGui). ---
 
@@ -2390,7 +2353,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
         if (_tool == Tool.Circuits)
             _circuits?.Panel(imperial);
         if (_tool == Tool.Switches)
-            SwitchPanel();
+            _switchTool.Panel(imperial);
         if (_tool == Tool.Shape)
             _shapeTool.Panel(imperial);
         if (_tool == Tool.Follow)
@@ -2486,219 +2449,8 @@ public sealed partial class EditorView : IDisposable, IToolHost
         Kit.EndCard();
     }
 
-    // --- Switches: each one's size, picked from the models. ---
-
-    /// Every switch marked (filled where it's modelled), the picked one ringed, and every junction that needs fixing
-    /// ringed red.
-    private void DrawSwitches(ImDrawListPtr draw)
-    {
-        if (_terrain?.Source.Lines is not { } lines)
-            return;
-
-        foreach (var layout in lines.Layouts)
-        {
-            if (layout.Issue is null || Math.Abs(layout.X - _camera.X) > ViewReach || Math.Abs(layout.Z - _camera.Z) > ViewReach || ProjectGround(layout.X, layout.Z) is not { } at)
-                continue;
-            draw.AddCircleFilled(at, S(11f), Style.Stop.WithAlpha(0.25f), 20);
-            draw.AddCircle(at, S(11f), Style.Stop, 20, S(2f));
-        }
-
-        foreach (var t in lines.Turnouts)
-        {
-            if (Math.Abs(t.X - _camera.X) > ViewReach || Math.Abs(t.Z - _camera.Z) > ViewReach || ProjectGround(t.X, t.Z) is not { } at)
-                continue;
-            var r = S(t.Node == _switch ? 9f : 6f);
-            var (a, b, c, d) = (at + new float2(0f, -r), at + new float2(r, 0f), at + new float2(0f, r), at + new float2(-r, 0f));
-            if (t.Modelled)
-                draw.AddQuadFilled(a, b, c, d, Style.Caution);
-            draw.AddQuad(a, b, c, d, t.Modelled ? new Rgba(0f, 0f, 0f, 0.8f) : Style.Clear, S(1.5f));
-            if (t.Node == _switch)
-                draw.AddCircle(at, S(16f), Rgba.White, 24, S(2f));
-        }
-    }
-
-    /// The switch whose marker (or red ring) is under the mouse, measured on the screen as they're drawn, so a click has
-    /// to land on one whatever the camera's distance; the nearest if several are; null if it missed them all.
-    private long? SwitchAt(NetworkLines lines, float2 mouse)
-    {
-        long? nearest = null;
-        var best = float.MaxValue;
-        void Consider(long node, double x, double z, float radius)
-        {
-            if (Math.Abs(x - _camera.X) > ViewReach || Math.Abs(z - _camera.Z) > ViewReach || ProjectGround(x, z) is not { } at)
-                return;
-            var (dx, dy) = (at.X - mouse.X, at.Y - mouse.Y);
-            var distance = MathF.Sqrt(dx * dx + dy * dy);
-            if (distance <= radius && distance < best)
-                (nearest, best) = (node, distance);
-        }
-
-        foreach (var t in lines.Turnouts)
-            Consider(t.Node, t.X, t.Z, S(t.Node == _switch ? 16f : 9f));
-        foreach (var layout in lines.Layouts)
-        {
-            if (layout.Issue is not null && lines.Turnouts.FirstOrDefault(t => layout.Nodes.Contains(t.Node)) is { } turnout)
-                Consider(turnout.Node, layout.X, layout.Z, S(11f));
-        }
-
-        return nearest;
-    }
-
-    /// The line in the Shape tool: what's been done to it, what the handle in hand would make of it, and back to as solved.
-    /// The picked switch: what it is now, and the sizes to choose from, each shown by its model.
-    private void SwitchPanel()
-    {
-        if (_terrain?.Source.Lines is not { } lines)
-            return;
-        if (_switch is not { } node || lines.Turnouts.FirstOrDefault(t => t.Node == node) is not { } turnout)
-        {
-            ToolPanel.Hint("Click a switch.");
-            IssueList(lines);
-            return;
-        }
-
-        var options = lines.SwitchOptions.GetValueOrDefault(node);
-        var chosen = options?.Chosen;
-        var byHand = options?.ReachByHand == true;
-        Kit.BeginCard("Switch", $"Node {node}");
-        Kit.Stats(
-        [
-            new Stat("Size", turnout.Number is { } now ? $"No. {now}" : "As mapped"),
-            new Stat("Sized", turnout.Number is null
-                ? chosen == SwitchSizes.AsMapped ? "Picked" : "No standard fits"
-                : byHand ? "Curve by hand" : chosen is null ? "Automatically" : "Picked"),
-        ], 2);
-        if (lines.Layouts.FirstOrDefault(l => l.Nodes.Contains(node)) is { } layout)
-        {
-            if (layout.Kind is JunctionKind.Crossover or JunctionKind.LadderLink or JunctionKind.ScissorsCrossover)
-                ToolPanel.Line($"Part of a {TrackLayouts.Name(layout.Kind, 0).ToLowerInvariant()}");
-            if (layout.Issue is { } issue)
-                ToolPanel.Problem(issue);
-        }
-
-        if (_switchRefused is { } refused)
-            ToolPanel.Problem(refused);
-        Kit.EndCard();
-
-        SwitchWorking(turnout);
-
-        Kit.BeginCard("Size");
-        var sizing = chosen is null && !byHand ? 0 : chosen == SwitchSizes.AsMapped ? 1 : -1;
-        var pickSizing = ToolPanel.Mode("sizing", ["Automatic", "As mapped"], sizing, 2, _rebuild is null);
-        if (pickSizing != sizing && pickSizing >= 0)
-            PickSize(node, pickSizing == 0 ? null : SwitchSizes.AsMapped);
-
-        _sizePictures ??= LoadSizePictures();
-        var width = Kit.Width;
-        var imperial = Settings.Current.Units == UnitSystem.Imperial;
-        string Length(float metres) => imperial ? $"{metres * FeetPerMeter:0} ft" : $"{metres:0} m";
-        foreach (var (number, radius) in Turnout.Sizes)
-        {
-            var fits = options?.Fits.Contains(number) ?? false;
-            var current = turnout.Number == number;
-            var frog = Turnout.FrogOf(number);
-            var angle = MathF.Atan(frog / radius / 2f) * 360f / MathF.PI;
-
-            ImGui.Dummy(new float2(1f, S(4f)));
-            var draw = ImGui.GetWindowDrawList();
-            var top = ImGui.GetCursorScreenPos();
-            Canvas.Text(draw, current ? Bold : Medium, S(15.5f), top, fits ? Style.Text : TextFaint, $"No. {number}");
-            var tag = current ? "IN USE" : options?.Auto == number ? "AUTOMATIC PICK" : fits ? "" : "NO ROOM";
-            if (tag.Length > 0)
-                Canvas.Spaced(draw, Medium, S(11.5f), new float2(top.X + width - Canvas.SpacedWidth(Medium, S(11.5f), tag, 0.16f), top.Y + S(3.5f)), current ? Style.Caution : TextFaint, tag, 0.16f);
-            ImGui.Dummy(new float2(width, S(21f)));
-            ToolPanel.Hint(string.Create(CultureInfo.InvariantCulture, $"{Length(radius)} curve, {angle:0.0} deg"));
-
-            var size = new float2(width, width * 150f / 480f);
-            var min = ImGui.GetCursorScreenPos();
-            ImGui.BeginDisabled(!fits || _rebuild is not null);
-            if (ImGui.InvisibleButton($"##size{number}", size, ImGuiButtonFlags.None) && !current)
-                PickSize(node, number);
-            ImGui.EndDisabled();
-            var hovered = fits && ImGui.IsItemHovered();
-            if (_sizePictures.TryGetValue(number, out var picture))
-                draw.AddImage(picture.Ref, min, min + size, null, null, fits ? Rgba.White : new Rgba(1f, 1f, 1f, 0.3f));
-            else
-                draw.AddRectFilled(min, min + size, Style.Stroke.WithAlpha(0.2f));
-            if (current || hovered)
-                draw.AddRect(min, min + size, current ? Style.Caution : Style.Accent, 0f, ImDrawFlags.None, S(current ? 2.5f : 1.5f));
-        }
-
-        Kit.EndCard();
-    }
-
-    /// What works the switch: its power machine, or a hand throw in its place (on either side of the track).
-    private void SwitchWorking(Turnout turnout)
-    {
-        var source = _terrain!.Source;
-        var hand = source.Objects.FirstOrDefault(o => o.Kind == PlacedKind.HandThrow && o.Node == turnout.Node);
-        Kit.BeginCard("Worked by");
-        var working = hand is null ? 0 : 1;
-        var pick = ToolPanel.Mode("working", ["Machine", "Hand throw"], working, 2);
-        if (pick == 0 && hand is not null)
-            PlacedChange(hand, null);
-        else if (pick == 1 && hand is null)
-            PlacedChange(null, Placed(PlacedKind.HandThrow, turnout.X, turnout.Z, 0.0, turnout.Node));
-        if (hand is not null && Kit.Button("handside", "Other Side"))
-            PlacedChange(hand, hand with { Opposite = !hand.Opposite });
-        Kit.EndCard();
-    }
-
-    /// Every junction that needs fixing, with why; clicking one flies there and picks its switch.
-    private void IssueList(NetworkLines lines)
-    {
-        var issues = lines.Layouts.Where(l => l.Issue is not null).ToList();
-        if (issues.Count == 0)
-            return;
-
-        Kit.BeginCard("Needs fixing", issues.Count.ToString(CultureInfo.InvariantCulture), Stop);
-        for (var i = 0; i < issues.Count; i++)
-        {
-            var issue = issues[i];
-            if (ToolPanel.Item($"issue{i}", ToolIcon.Switches, TrackLayouts.Name(issue.Kind, issue.Number ?? 0), null, false))
-            {
-                _switch = issue.Nodes[0];
-                FlyTo(issue.X, issue.Z);
-            }
-
-            ToolPanel.Hint(issue.Issue!);
-        }
-
-        Kit.EndCard();
-    }
-
-    private static Dictionary<int, (Texture2D Texture, ImTextureRef Ref)> LoadSizePictures()
-    {
-        var pictures = new Dictionary<int, (Texture2D, ImTextureRef)>();
-        foreach (var (number, _) in Turnout.Sizes)
-        {
-            try
-            {
-                var texture = Texture2D.LoadFile(ContentPath.Model($"Track/turnout_{number}.png"), false, false);
-                pictures[number] = (texture, HighballApp.Instance.AddTexture(texture));
-            }
-            catch (Exception e)
-            {
-                Log.Warn($"Switch picture No. {number}: {e.Message}");
-            }
-        }
-
-        return pictures;
-    }
-
-    /// Saves a switch's size (null: automatic) with the route, and lays its track again. A crossover's or ladder link's
-    /// two switches go together.
-    private void PickSize(long node, int? size)
-    {
-        var layout = _terrain?.Source.Lines?.Layouts.FirstOrDefault(l => l.Nodes.Contains(node));
-        foreach (var each in layout is { Kind: JunctionKind.Crossover or JunctionKind.LadderLink } ? layout.Nodes : [node])
-        {
-            SwitchSizes.Set(_route, each, size);
-            SwitchCurves.Set(_route, each, null);
-        }
-        Log.Info($"Switch {node}: {(size is null ? "automatic" : size == SwitchSizes.AsMapped ? "as mapped" : $"No. {size}")}");
-        RebuildNetwork();
-    }
+    /// Saves a switch's size (SwitchesTool.PickSize).
+    private void PickSize(long node, int? size) => _switchTool.PickSize(node, size);
 
     public void Windows()
     {
@@ -2775,7 +2527,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
                     ? [("LMB", "End"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")]
                     : _parallelFollowing ? [("LMB", "Along a guide"), ("ENTER", "Lay tracks"), ("F", _parallel.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove click"), ("ESC", "Cancel")]
                     : [("LMB", "Point or track"), ("DRAG", "Curve"), ("ENTER", "Lay tracks"), ("F", _parallel.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")],
-                Tool.Switches => [("LMB", "Pick a switch"), ("DRAG", "Move"), ("CTRL+Z", "Undo")],
+                Tool.Switches => _switchTool.Hints,
                 Tool.Place when _place.Mode == PlaceMode.EditBridge => [("LMB", "Pick bridge, drag pier"), ("DEL", "Remove pier"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.RunFrom is not null => [("LMB", "Lay to here"), ("ESC", "End run"), ("CTRL+Z", "Undo")],
                 Tool.Place when _place.Mode == PlaceMode.Pole && _place.Drawn == PoleDraw.Fence && _place.Selected is null => [("LMB", "Start run"), ("CTRL+Z", "Undo")],
