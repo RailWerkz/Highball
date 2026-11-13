@@ -573,8 +573,8 @@ public sealed partial class EditorView
             {
                 // flattensample,lat,lon: as F over that place with Flatten in hand.
                 var (fx0, fz0) = At(1);
-                SampleFlatten(source, fx0, fz0);
-                Log.Info($"Flatten sample: {FlattenSampleText}");
+                _brushes.SampleFlatten(fx0, fz0);
+                Log.Info($"Flatten sample: {_brushes.FlattenSampleText}");
                 break;
             }
 

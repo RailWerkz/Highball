@@ -28,16 +28,6 @@ public sealed partial class EditorView : IDisposable
 {
     private enum Tool { Look, Raise, Lower, Smooth, Flatten, Paint, Track, Pen, Circuits, Switches, Shape, Follow, Place, Parallel, Road }
 
-    private static readonly (byte Class, string Name)[] PaintCovers =
-    [
-        (30, "GRASS"), (10, "FOREST"), (40, "CROPS"), (20, "SHRUB"), (50, "BUILT-UP"), (60, "BARE"), (80, "WATER"),
-    ];
-
-    private const float RaiseRate = 3f;   // metres a second at the brush's centre
-    private const float BlendRate = 4f;   // smoothing and flattening: how much of the way a second
-    private const float MinRadius = 2f;
-    private const float MaxRadius = 400f;
-
     private const float FeetPerMeter = 3.28084f;
 
     /// Straight down, all but: exactly down leaves the camera no way to tell which way is north.
@@ -72,14 +62,11 @@ public sealed partial class EditorView : IDisposable
     private bool _looking { get => _eye.Looking; set => _eye.Looking = value; }
 
     private Tool _tool;
-    private float _radius = 20f;
-    private int _paint;
-    private TerrainStroke? _stroke;
-    private Task<(int X0, int Z0, int X1, int Z1)?>? _dab;
-    private float _dabTime;
-    private float _flattenTo;
-    /// The height F sampled, which Flatten then works to until Esc; without one, a stroke goes by where it starts.
-    private float? _flattenSample;
+    /// The terrain brushes (Raise to Paint).
+    private readonly TerrainBrush _brushes;
+
+    /// What the tools are given (ToolContext).
+    private readonly ToolContext _tools;
     private double3? _hit;
     /// The ground under the pointer whatever the tool, for the status line.
     private double3? _pointerAt;
@@ -189,6 +176,8 @@ public sealed partial class EditorView : IDisposable
         _routeWorld = new RouteWorld(route);
         _view = new CameraView(_camera);
         _session = new Trains.TrainSession(_routeWorld, _camera);
+        _tools = new ToolContext(_routeWorld, _view, () => Blocked, () => _hit, Record);
+        _brushes = new TerrainBrush(_tools);
         if (DevTools.Clean)
             _overlay = TrackOverlay.Off;
         if (DevTools.Skybox is { } sky)
@@ -226,8 +215,8 @@ public sealed partial class EditorView : IDisposable
             _road.Clear();
         else if (_tool == Tool.Place && _bridgeFrom is not null)
             _bridgeFrom = null;
-        else if (_tool == Tool.Flatten && _flattenSample is not null)
-            _flattenSample = null;
+        else if (_tool == Tool.Flatten && _brushes.FlattenSample is not null)
+            SyncBrush().Escape();
         else if (_tool == Tool.Place && _place.RunFrom is not null)
             (_place.RunFrom, _place.RunFirst) = (null, null);
         else if (_tool == Tool.Place && _place.Pen.Count > 0)
@@ -463,7 +452,7 @@ public sealed partial class EditorView : IDisposable
 
     private void Edit(float dt)
     {
-        CollectDab(false);
+        _brushes.Collect();
         var source = _terrain!.Source;
         var ctrl = Input.Key(GlfwKey.LeftControl) || Input.Key(GlfwKey.RightControl);
 
@@ -487,13 +476,13 @@ public sealed partial class EditorView : IDisposable
             if (Input.KeyDown(GlfwKey.Semicolon))
                 _tool = Tool.Road;
             if (Input.KeyDown(GlfwKey.LeftBracket))
-                _radius = MathF.Max(MinRadius, _radius / 1.25f);
+                _brushes.Radius = MathF.Max(TerrainBrush.MinRadius, _brushes.Radius / 1.25f);
             if (Input.KeyDown(GlfwKey.RightBracket))
-                _radius = MathF.Min(MaxRadius, _radius * 1.25f);
+                _brushes.Radius = MathF.Min(TerrainBrush.MaxRadius, _brushes.Radius * 1.25f);
             if (Input.KeyDown(GlfwKey.P))
             {
                 if (_tool == Tool.Paint)
-                    _paint = (_paint + 1) % PaintCovers.Length;
+                    _brushes.Paint = (_brushes.Paint + 1) % TerrainBrush.PaintCovers.Length;
                 else
                     _tool = Tool.Parallel;
             }
@@ -508,8 +497,6 @@ public sealed partial class EditorView : IDisposable
 
         _pointerAt = Blocked ? null : Pick(Input.MousePosition);
         _hit = _tool == Tool.Look ? null : _pointerAt;
-        if (_tool == Tool.Flatten && !Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.F) && !ImGui.IsKeyDown(ImGuiKey.LeftShift) && _hit is { } sampled)
-            SampleFlatten(source, sampled.X, sampled.Z);
         if (_tool == Tool.Switches && source.Lines is { } picked)
             SwitchesUpdate(picked);
 
@@ -543,14 +530,15 @@ public sealed partial class EditorView : IDisposable
             if (RailWerkz.Core.Time.Time.Now > hold.Until)
             {
                 DevTools.SculptHold = null;
-                End();
+                _brushes.LetGo();
             }
             else if (Pick(_screen * 0.5f) is { } held && Enum.TryParse<Tool>(hold.Tool, true, out var holding))
             {
-                (_tool, _hit, _radius) = (holding, held, hold.Radius);
-                if (_stroke is null)
-                    Begin(source);
-                Apply(source, dt);
+                (_tool, _hit, _brushes.Radius) = (holding, held, hold.Radius);
+                SyncBrush();
+                if (!_brushes.Stroking)
+                    _brushes.Begin();
+                _brushes.Apply(dt);
             }
 
             return;
@@ -564,23 +552,26 @@ public sealed partial class EditorView : IDisposable
             {
                 _tool = tool;
                 _hit = centre;
-                Begin(source);
+                SyncBrush().Begin();
                 for (var i = 0; i < dev.Steps; i++)
-                    Apply(source, 1f / 30f);
-                var scripted = _stroke!;
-                End();
-                if (!scripted.IsEmpty)
+                    _brushes.Apply(1f / 30f);
+                if (_brushes.End() is not null)
                     DevTools.Sculpt = null;
             }
         }
 
-        var down = Input.Mouse(GlfwMouseButton.Left) && _tool != Tool.Look && !Blocked;
-        if (down && _stroke is null && _hit is not null)
-            Begin(source);
-        if (down && _stroke is not null && _hit is not null)
-            Apply(source, dt);
-        if (!down && _stroke is not null)
-            End();
+        if (IsBrush(_tool))
+            SyncBrush().Update(dt);
+        else
+            _brushes.LetGo();
+    }
+
+    /// The brushes set to the one in hand (when one is).
+    private TerrainBrush SyncBrush()
+    {
+        if (IsBrush(_tool))
+            _brushes.Mode = (BrushMode)(_tool - Tool.Raise);
+        return _brushes;
     }
 
     private void Redo(object edit, bool undo)
@@ -2027,96 +2018,6 @@ public sealed partial class EditorView : IDisposable
         }
     }
 
-    // --- Sculpting and painting. ---
-
-    private void Begin(TerrainSource source)
-    {
-        _stroke = new TerrainStroke();
-        _flattenTo = _flattenSample ?? source.HeightAt(_hit!.Value.X, _hit.Value.Z);
-    }
-
-    private void SampleFlatten(TerrainSource source, double x, double z)
-    {
-        _flattenSample = source.HeightAt(x, z);
-        _flattenTo = _flattenSample.Value; // A stroke under way goes to it too.
-    }
-
-    private string FlattenSampleText
-    {
-        get
-        {
-            if (_flattenSample is not { } height)
-                return "Sample height";
-            return Settings.Current.Units == UnitSystem.Imperial
-                ? string.Create(CultureInfo.InvariantCulture, $"Sampled {height * FeetPerMeter:#,0} ft")
-                : string.Create(CultureInfo.InvariantCulture, $"Sampled {height:#,0} m");
-        }
-    }
-
-    /// The brush works on another thread, one dab at a time: a big one takes longer than a frame. The time since the last dab goes
-    /// into the next, so the ground comes up just as fast.
-    private void Apply(TerrainSource source, float dt)
-    {
-        _dabTime += dt;
-        CollectDab(false);
-        if (_dab is not null)
-            return;
-
-        var dab = NextDab(source);
-        _dab = Task.Run(dab);
-    }
-
-    private Func<(int X0, int Z0, int X1, int Z1)?> NextDab(TerrainSource source)
-    {
-        var hit = _hit!.Value;
-        var fast = Input.Key(GlfwKey.LeftShift) ? 4f : 1f;
-        var (tool, radius, paint, flatten, stroke, time) = (_tool, _radius, PaintCovers[_paint].Class, _flattenTo, _stroke!, _dabTime);
-        _dabTime = 0f;
-        return () => tool switch
-        {
-            Tool.Raise => source.Sculpt(hit.X, hit.Z, radius, SculptMode.Raise, RaiseRate * fast * time, 0f, stroke),
-            Tool.Lower => source.Sculpt(hit.X, hit.Z, radius, SculptMode.Lower, RaiseRate * fast * time, 0f, stroke),
-            Tool.Smooth => source.Sculpt(hit.X, hit.Z, radius, SculptMode.Smooth, MathF.Min(1f, BlendRate * fast * time), 0f, stroke),
-            Tool.Flatten => source.Sculpt(hit.X, hit.Z, radius, SculptMode.Flatten, MathF.Min(1f, BlendRate * fast * time), flatten, stroke),
-            Tool.Paint => source.Paint(hit.X, hit.Z, radius, paint, stroke),
-            _ => null,
-        };
-    }
-
-    /// Takes in the last dab once it's done, or waits for it.
-    private void CollectDab(bool wait)
-    {
-        if (_dab is not { } dab || (!wait && !dab.IsCompleted))
-            return;
-
-        _dab = null;
-        try
-        {
-            Rebuild(dab.GetAwaiter().GetResult());
-        }
-        catch (Exception e)
-        {
-            Log.Error($"Brush: {e.Message}");
-        }
-    }
-
-    private void End()
-    {
-        // The stroke isn't whole until the last dab is in, and what's left of its time has gone down.
-        CollectDab(true);
-        if (_dabTime > 0f && _stroke is not null && _hit is not null)
-            Rebuild(NextDab(_terrain!.Source)());
-        _dabTime = 0f;
-
-        if (_stroke is { IsEmpty: false } stroke)
-        {
-            _undo.Push(stroke);
-            _redo.Clear();
-        }
-
-        _stroke = null;
-    }
-
     private void Rebuild((int X0, int Z0, int X1, int Z1)? rect)
     {
         if (rect is { } r)
@@ -2157,29 +2058,9 @@ public sealed partial class EditorView : IDisposable
             return;
         }
 
-        if (_hit is not { } hit || _tool is Tool.Look or Tool.Switches or Tool.Shape or Tool.Follow or Tool.Place or Tool.Road or Tool.Parallel)
+        if (_tool is Tool.Look or Tool.Switches or Tool.Shape or Tool.Follow or Tool.Place or Tool.Road or Tool.Parallel)
             return;
-
-        const int segments = 64;
-        var source = _terrain!.Source;
-        var viewProjection = ViewProjection;
-        var points = new float2?[segments];
-        for (var i = 0; i < segments; i++)
-        {
-            var a = MathF.Tau * i / segments;
-            var x = hit.X + MathF.Cos(a) * _radius;
-            var z = hit.Z + MathF.Sin(a) * _radius;
-            var relative = new float3((float)(x - _camera.X), (float)(source.HeightAt(x, z) + 0.3 - _camera.Y), (float)(z - _camera.Z));
-            var clip = MathEx.Project(relative, viewProjection);
-            if (clip.W <= 0.01f)
-                continue;
-            points[i] = new float2((clip.X / clip.W * 0.5f + 0.5f) * _screen.X, (0.5f - clip.Y / clip.W * 0.5f) * _screen.Y);
-        }
-
-        var color = _tool == Tool.Paint ? Style.Accent : Rgba.White;
-        for (var i = 0; i < segments; i++)
-            if (points[i] is { } a && points[(i + 1) % segments] is { } b)
-                draw.AddLine(a, b, color, S(1.5f));
+        SyncBrush().Draw(draw);
     }
 
     public void RenderWorld(CommandBuffer cmd, int width, int height)
@@ -2993,9 +2874,7 @@ public sealed partial class EditorView : IDisposable
                 Tool.Follow when _yard.Mode != YardMode.Follow => [("LMB", "Pick track"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")],
                 Tool.Follow => [("LMB", "Guide or track"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove click"), ("CTRL+Z", "Undo")],
                 Tool.Shape => [("LMB", "Select, drag handle"), ("SHIFT+LMB", "Mark handles"), ("L", "Straighten"), ("K", "Smooth curve"), ("DEL", "Remove handle"), ("ALT", "No snap"), ("CTRL+Z", "Undo")],
-                Tool.Flatten when _flattenSample is not null => [("LMB", "Flatten"), ("F", FlattenSampleText), ("ESC", "Clear sample"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
-                Tool.Flatten => [("LMB", "Flatten"), ("F", FlattenSampleText), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
-                Tool.Paint => [("LMB", "Paint"), ("P", "Cover"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
+                _ when IsBrush(_tool) => SyncBrush().Hints,
                 Tool.Track => [("LMB", "Select, drag"), ("SHIFT", "Add"), ("CTRL+LMB", "Insert point"), ("L", "Straighten"), ("K", "Smooth"), ("I", "Simplify"), ("J", "Join"), ("U", "Split"), ("DEL", "Delete")],
                 Tool.Circuits => [("LMB", "Select circuit"), ("SHIFT+LMB", "Add joint"), ("DRAG", "Move joint"), ("DEL", "Remove joint"), ("CTRL+Z", "Undo")],
                 Tool.Pen => [("LMB", "Point"), ("DRAG", "Curve"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")],

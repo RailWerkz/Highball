@@ -560,21 +560,7 @@ public sealed partial class EditorView
         if (pick != current && pick >= 0)
             _tool = Brushes[pick].Tool;
 
-        Kit.BeginCard("Brush");
-        var factor = imperial ? FeetPerMeter : 1f;
-        var radius = _radius * factor;
-        if (ToolPanel.Value("brushradius", imperial ? "Radius (ft)" : "Radius (m)", ref radius, MinRadius * factor, MaxRadius * factor, "0", log: true))
-            _radius = Math.Clamp(radius / factor, MinRadius, MaxRadius);
-        Kit.EndCard();
-
-        if (_tool != Tool.Paint)
-            return;
-        Kit.BeginCard("Paint");
-        var covers = PaintCovers.Select(c => c.Name[..1] + c.Name[1..].ToLowerInvariant()).ToArray();
-        var chosen = ToolPanel.Mode("paintcover", covers, _paint, 3);
-        if (chosen >= 0)
-            _paint = chosen;
-        Kit.EndCard();
+        SyncBrush().Panel(imperial);
     }
 
     /// How many tracks to lay, and how far apart: beside a track, on whichever side of it the pointer is, or on open ground.
