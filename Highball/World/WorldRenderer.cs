@@ -75,6 +75,10 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly PostProcess _post = new();
     private readonly MotionVectors _motion = new();
     private readonly ModelInstances _instances = new();
+    private readonly VehicleOutline _outline = new();
+
+    /// The glow round the driven and picked vehicles: its colours and width come from the interface.
+    public VehicleOutline Outline => _outline;
     private readonly List<ModelInstances.Batch> _seen = [];
     private readonly List<ModelInstances.Batch> _moving = [];
     private readonly TerrainHorizon _horizon = new();
@@ -214,7 +218,8 @@ public sealed unsafe class WorldRenderer : IDisposable
     private static float3 Normalize(float3 v) => v / MathF.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
 
     /// Records the world into the HDR target. Outside any render pass.
-    public void Render(CommandBuffer cmd, int2 size, Camera camera, Terrain? terrain, NetworkMeshes? network, IReadOnlyList<ModelDraw>? models = null)
+    public void Render(CommandBuffer cmd, int2 size, Camera camera, Terrain? terrain, NetworkMeshes? network, IReadOnlyList<ModelDraw>? models = null,
+        IReadOnlyList<Outlined>? outlined = null)
     {
         if (_pipelineSamples != RenderTarget.Samples)
         {
@@ -286,6 +291,29 @@ public sealed unsafe class WorldRenderer : IDisposable
             });
         }
 
+        // Plants and models first: their depth is down before the ground's expensive shader runs, so it isn't worked out for
+        // ground they hide. (The ground still goes before the track's fades, which don't write depth.)
+        if (terrain is not null && _vegetation.Enabled)
+        {
+            using var _ = Profiler.Sample("Plants and rocks", cmd);
+            cmd.BindPipeline(VkPipelineBindPoint.Graphics, _plant);
+            Sky.Bind(cmd, _modelLayout);
+            _shadows.Bind(cmd, _modelLayout);
+            _clouds.Bind(cmd, _modelLayout);
+            _vegetation.Draw(cmd, _modelLayout, camera, aspect);
+        }
+
+        _seen.Clear();
+        _moving.Clear();
+        if (models is not null)
+        {
+            using var _ = Profiler.Sample("Models", cmd);
+            _instances.Add(models, camera, (_, centre, radius) => ModelInstances.InView(camera, aspect, centre, radius), _seen);
+            _instances.Add(models, camera, (draw, centre, radius) => draw.Moving && ModelInstances.InView(camera, aspect, centre, radius), _moving);
+            DrawModels(cmd, camera, aspect);
+        }
+
+
         if (terrain is not null)
         {
             using var _ = Profiler.Sample("Terrain", cmd);
@@ -340,26 +368,6 @@ public sealed unsafe class WorldRenderer : IDisposable
             }
         }
 
-        if (terrain is not null && _vegetation.Enabled)
-        {
-            using var _ = Profiler.Sample("Plants and rocks", cmd);
-            cmd.BindPipeline(VkPipelineBindPoint.Graphics, _plant);
-            Sky.Bind(cmd, _modelLayout);
-            _shadows.Bind(cmd, _modelLayout);
-            _clouds.Bind(cmd, _modelLayout);
-            _vegetation.Draw(cmd, _modelLayout, camera, aspect);
-        }
-
-        _seen.Clear();
-        _moving.Clear();
-        if (models is not null)
-        {
-            using var _ = Profiler.Sample("Models", cmd);
-            _instances.Add(models, camera, (_, centre, radius) => ModelInstances.InView(camera, aspect, centre, radius), _seen);
-            _instances.Add(models, camera, (draw, centre, radius) => draw.Moving && ModelInstances.InView(camera, aspect, centre, radius), _moving);
-            DrawModels(cmd, camera, aspect);
-        }
-
         var tanY = MathF.Tan(camera.FieldOfView * 0.5f);
         var sky = new SkyPush
         {
@@ -385,6 +393,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         // How what moves moved, for the temporal pass to follow it.
         using (Profiler.Sample("Motion", cmd))
             _motion.Record(cmd, _target, camera, aspect, _moving);
+        _outline.Record(cmd, size, camera, aspect, outlined);
 
         if (RailWerkz.Core.Settings.Settings.Current.AmbientOcclusion)
         {
@@ -578,7 +587,11 @@ public sealed unsafe class WorldRenderer : IDisposable
     }
 
     /// Draws the finished world over the screen. Inside the present pass, before the interface.
-    public void Composite(CommandBuffer cmd) => _post.Composite(cmd);
+    public void Composite(CommandBuffer cmd)
+    {
+        _post.Composite(cmd);
+        _outline.Composite(cmd, RailWerkz.Core.Time.Time.Now);
+    }
 
     public void Dispose()
     {
@@ -597,6 +610,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         _post.Dispose();
         _motion.Dispose();
         _instances.Dispose();
+        _outline.Dispose();
         _horizon.Dispose();
         _vegetation.Dispose();
         Pipelines.Destroy(default, _layout);

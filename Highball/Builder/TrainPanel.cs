@@ -132,6 +132,8 @@ public sealed partial class TrainPanel : IDisposable
 
     private readonly VehicleOverlay _overlay = new();
     private readonly List<VehicleOverlay.Placed> _placed = [];
+
+    private readonly List<Outlined> _outlined = [];
     private ImInputString _name = new(48, ""u8);
     private TrainCar? _nameFor;
 
@@ -353,20 +355,33 @@ public sealed partial class TrainPanel : IDisposable
         return dx * dx + dy * dy + dz * dz > CouplingShown * CouplingShown;
     }
 
-    /// The picked vehicle's outline and the name tags, over the 3D view between clipMin and clipMax.
+    /// What the renderer outlines this frame (VehicleOutline): the engine driven, whether or not it's looked at, and the
+    /// picked vehicle.
+    public IReadOnlyList<Outlined> Outlines
+    {
+        get
+        {
+            _outlined.Clear();
+            var driven = _controlled?.Train is { } train && train.Body.Brakes.Control is var lead and >= 0 ? train.Cars[lead] : null;
+            var picked = Train is { } focus && Selected >= 0 && Selected < focus.Cars.Count ? focus.Cars[Selected] : null;
+            foreach (var placed in _placed)
+            {
+                if (placed.Car != driven && placed.Car != picked)
+                    continue;
+                if (_overlay.OutlineMesh(placed.Model) is { } shape)
+                    _outlined.Add(new Outlined(shape, placed.Rotation, placed.At, Driven: placed.Car == driven && placed.Car != picked));
+            }
+
+            return _outlined;
+        }
+    }
+
+    /// The name tags and coupling marks, over the 3D view between clipMin and clipMax.
     public void Overlay(ImDrawListPtr draw, VehicleOverlay.Projector project, double3 camera, float2 clipMin, float2 clipMax)
     {
-        // The engine driven, outlined green whether or not it's looked at.
-        if (_controlled?.Train is { } driven && driven.Body.Brakes.Control is var lead and >= 0)
-            foreach (var placed in _placed)
-                if (placed.Car == driven.Cars[lead])
-                    _overlay.Outline(draw, placed, project, clipMin, clipMax, Style.Clear);
         if (Train is not { } train)
             return;
         var picked = Selected >= 0 && Selected < train.Cars.Count ? train.Cars[Selected] : null;
-        foreach (var placed in _placed)
-            if (placed.Car == picked)
-                _overlay.Outline(draw, placed, project, clipMin, clipMax, Style.Accent);
         Couplings(draw, project, camera, clipMin, clipMax);
         if (!ShowTags)
             return;
@@ -1074,6 +1089,7 @@ public sealed partial class TrainPanel : IDisposable
 
     public void Dispose()
     {
+        _overlay.Dispose();
         Sounds.Stop();
         StopEngines();
         foreach (var model in _models.Values)
