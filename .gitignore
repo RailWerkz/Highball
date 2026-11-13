@@ -39,3 +39,7 @@ Content/Packs/
 # Train sound source packs: too big for git, and not all of it ours to publish
 Tools/Audio/**/*.wav
 .claude/worktrees/
+
+# Vehicle LODs: made from the assembled models by Tools/Blender/lods.py
+Content/Models/**/Assembled/LOD1/
+Content/Models/**/Assembled/LOD2/
