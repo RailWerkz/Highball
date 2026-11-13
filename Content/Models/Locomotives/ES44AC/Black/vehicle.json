@@ -24,7 +24,8 @@
   "traction": "AC",
   "adhesion": 0.36,
   "powerKw": 3281,
-  "startingTractiveEffortKn": 801,
+  // 183,000 lbf, as GE rates it (at 35% adhesion).
+  "startingTractiveEffortKn": 814,
   "continuousTractiveEffortKn": 738,
   "dynamicBrakeEffortKn": 520,
   "maxSpeedKmh": 121,
