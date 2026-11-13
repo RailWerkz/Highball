@@ -152,6 +152,7 @@ public sealed class TrainBody
         _slipping = new bool[Count];
         _slipCut = new double[Count];
         Array.Fill(_slipCut, 1.0);
+        _pull = new double[Count];
         var lightest = double.MaxValue;
         for (var i = 0; i < Count; i++)
         {
@@ -178,6 +179,23 @@ public sealed class TrainBody
     /// slip control has cut its power back to get them to (1 none, falling as it cuts).
     private bool[] _slipping = [];
     private double[] _slipCut = [];
+
+    /// What each locomotive's traction motors are pulling with (signed, before the wheels' grip), as its load has built up
+    /// or come off: see Load.
+    private double[] _pull = [];
+
+    /// The share of a locomotive's rated power each throttle notch asks for, idle to notch 8. Not a straight line: the
+    /// engine's speed and its fuel both rise with the notch, so the horsepower climbs faster than the notch number does
+    /// (as GE's and EMD's notch horsepower tables run: notch 1 a few percent, notch 4 about two fifths).
+    public static readonly double[] NotchPower = [0.0, 0.06, 0.15, 0.27, 0.40, 0.53, 0.67, 0.83, 1.0];
+
+    /// How fast the load comes on and off. The locomotive's load control raises the main generator's excitation only as
+    /// fast as the engine and its turbocharger can take on load, so from idle to full it takes some twenty seconds (a
+    /// little more each notch); taken off, it unloads in a few. The traction motors' fields build up and die away over
+    /// half a second or so on top, so it eases in and out rather than turning sharp corners.
+    private const double LoadUpSeconds = 20.0;
+    private const double LoadDownSeconds = 4.0;
+    private const double FieldLag = 0.5;
 
     /// Grip as the wheels slip rather than roll: a share of what they hold rolling. AC's control keeps the creep small.
     private const double SlidingGripDc = 0.75, SlidingGripAc = 0.90;
@@ -332,6 +350,7 @@ public sealed class TrainBody
         WheelSlip[to] = other.WheelSlip[from];
         _slipping[to] = other._slipping[from];
         _slipCut[to] = other._slipCut[from];
+        _pull[to] = turned ? -other._pull[from] : other._pull[from];
         SetMass(to, other._mass[from]);
         Starting[to] = other.Starting[from];
         HandbrakeOn[to] = other.HandbrakeOn[from];
@@ -443,12 +462,21 @@ public sealed class TrainBody
                 DynamicBraking[i] = Math.Clamp(dynamic, 0.0, 1.0) * def.DynamicBrakeEffort * DynamicCurve(v);
             else if (loco && running && def.Power > 0.0 && reverser != 0 && notch > 0 && !powerCut)
             {
+                // What the notch asks for: at a crawl, a share of its starting tractive effort (the current the notch lets the
+                // motors take); once moving, the notch's horsepower, but no more than the engine makes at the speed the
+                // governor's got it to so far.
                 var pulling = Math.Max(v * reverser, 1e-3);
-                Traction[i] = reverser * share * Math.Min(def.StartingTractiveEffort, def.Power / pulling);
+                var power = Math.Min(NotchPower[Math.Clamp(notch, 0, Train.Notches)], EnginePower(Systems[i])) * def.Power;
+                Traction[i] = reverser * Math.Min(share * def.StartingTractiveEffort, power / pulling);
             }
 
             if (loco)
-                Traction[i] = Adhere(i, Traction[i], hs);
+            {
+                // The load builds up towards that and comes off again at its own pace (Load...Seconds); with the power cut
+                // (the PC switch opened, or the engine down) it drops at once.
+                _pull[i] = running && !powerCut ? Load(_pull[i], Traction[i], def.StartingTractiveEffort, hs) : 0.0;
+                Traction[i] = Adhere(i, _pull[i], hs);
+            }
 
             // Rolling and curve resistance, Davis.
             var mph = Math.Abs(v) * MphPerMetrePerSecond;
@@ -470,6 +498,27 @@ public sealed class TrainBody
             // service, 10% of it on a car, 8% on a locomotive.
             Braking[i] = Math.Max(Brakes.Braking(i), Handbrake[i]) * (loco ? 0.08 : 0.10) * def.MassEmpty * Gravity;
         }
+    }
+
+    /// The share of its rated power the engine can make at its revs now: what the notch it's turning at would give, between
+    /// notches part way. (Without its own systems it's taken as always ready.)
+    private static double EnginePower(LocoSystems? systems)
+    {
+        if (systems is null)
+            return 1.0;
+        var at = Math.Clamp(systems.Revs, 0.0, 1.0) * Train.Notches;
+        var below = Math.Min((int)at, Train.Notches - 1);
+        return NotchPower[below] + (NotchPower[below + 1] - NotchPower[below]) * (at - below);
+    }
+
+    /// The traction motors' pull a substep on from `now` towards `wanted`: easing in over FieldLag, and never faster than
+    /// the load control lets it, full being `full` (its starting tractive effort) in LoadUpSeconds coming on and
+    /// LoadDownSeconds coming off.
+    private static double Load(double now, double wanted, double full, double hs)
+    {
+        var rising = Math.Abs(wanted) > Math.Abs(now) && (now == 0.0 || Math.Sign(wanted) == Math.Sign(now));
+        var most = full * hs / (rising ? LoadUpSeconds : LoadDownSeconds);
+        return now + Math.Clamp((wanted - now) * Math.Min(1.0, hs / FieldLag), -most, most);
     }
 
     /// What a locomotive's wheels actually pull with, asked for `wanted`: all of it while they grip; once it's more than they
