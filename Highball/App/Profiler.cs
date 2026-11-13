@@ -105,6 +105,40 @@ public static class Profiler
         }
     }
 
+    /// What each section may cost, in ms (CPU, GPU; 0 for no limit), and how many draws (0 for no limit). Set to hold
+    /// about 90 fps at 1440p on a mid-range card (an RTX 4060 Ti): the Profiler shows what's over in red, and --gputimes
+    /// marks it in the log.
+    public static readonly Dictionary<string, (float Cpu, float Gpu, int Draws)> Budgets = new()
+    {
+        ["Frame"] = (0f, 11f, 1000), // (its CPU time includes waiting for the GPU)
+        ["Update"] = (1f, 0f, 0),
+        ["UI"] = (1f, 0f, 0),
+        ["Render"] = (2f, 11f, 1000),
+        ["Sun shadows"] = (0.5f, 1.5f, 300),
+        ["Sky"] = (0f, 0.3f, 0),
+        ["Track depth"] = (0f, 0.3f, 0),
+        ["Terrain"] = (0f, 2f, 0),
+        ["Roads and rails"] = (0f, 0.5f, 0),
+        ["Ties and plates"] = (0f, 0.3f, 0),
+        ["Plants and rocks"] = (0.3f, 2f, 200),
+        ["Models"] = (0.3f, 1f, 100),
+        ["Motion"] = (0f, 0.3f, 20),
+        ["Ambient occlusion"] = (0f, 0.6f, 0),
+        ["Clouds"] = (0f, 1f, 0),
+        ["Smoke march"] = (0f, 1f, 0),
+        ["After the world"] = (0f, 1f, 0),
+    };
+
+    /// Whether a section is over its budget, on the CPU, the GPU or in draws.
+    public static (bool Cpu, bool Gpu, bool Draws) Over(Section section)
+    {
+        if (!Budgets.TryGetValue(section.Name, out var budget))
+            return default;
+        return (budget.Cpu > 0f && section.Average > budget.Cpu,
+            budget.Gpu > 0f && section.HasGpu && section.GpuAverage > budget.Gpu,
+            budget.Draws > 0 && section.DrawCalls > budget.Draws);
+    }
+
     public static Scope Sample(string name) => new(Find(name));
 
     /// A section of what's being recorded into cmd, timed on the GPU as well.
@@ -167,6 +201,9 @@ public static class Profiler
             times.Append(CultureInfo.InvariantCulture, $"\n  {new string(' ', depth * 2)}{section.Name}: CPU {section.Average:0.00} ms (worst {section.Worst:0.00})");
             if (section.HasGpu)
                 times.Append(CultureInfo.InvariantCulture, $", GPU {section.GpuAverage:0.00} ms (worst {section.GpuWorst:0.00}), {section.DrawCalls} draws, {section.Triangles / 1000f:0.0}k triangles");
+            var (cpu, gpu, draws) = Over(section);
+            if (cpu || gpu || draws)
+                times.Append($"  OVER BUDGET ({string.Join(", ", new[] { cpu ? "CPU" : null, gpu ? "GPU" : null, draws ? "draws" : null }.Where(x => x is not null))})");
         }
         return times.ToString();
     }

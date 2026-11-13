@@ -141,12 +141,28 @@ public static class DebugWindows
         ImGui.End();
     }
 
+    /// A value, red when it's over its section's budget.
+    private static void Value(string text, bool over)
+    {
+        if (over)
+            ImGui.TextColored(Style.Stop.Float4, text);
+        else
+            ImGui.Text(text);
+    }
+
+    private static string Budget((float Cpu, float Gpu, int Draws) budget) => string.Join("  ", new[]
+    {
+        budget.Cpu > 0f ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"CPU {budget.Cpu:0.#}") : null,
+        budget.Gpu > 0f ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"GPU {budget.Gpu:0.#}") : null,
+        budget.Draws > 0 ? $"{budget.Draws} draws" : null,
+    }.Where(x => x is not null));
+
     private static void ProfilerWindow(float x, float y)
     {
         ImGui.SetNextWindowPos(new float2(x, y), ImGuiCond.FirstUseEver);
         if (WindowBounds.Begin("Profiler"u8, ref _profiler, ImGuiWindowFlags.AlwaysAutoResize))
         {
-            if (ImGui.BeginTable("sections"u8, 8, ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders))
+            if (ImGui.BeginTable("sections"u8, 9, ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders))
             {
                 ImGui.TableSetupColumn("Section"u8);
                 ImGui.TableSetupColumn("CPU last ms"u8);
@@ -156,30 +172,35 @@ public static class DebugWindows
                 ImGui.TableSetupColumn("GPU worst ms"u8);
                 ImGui.TableSetupColumn("Draws"u8);
                 ImGui.TableSetupColumn("Triangles"u8);
+                ImGui.TableSetupColumn("Budget"u8);
                 ImGui.TableHeadersRow();
 
                 foreach (var (section, depth) in Profiler.Tree())
                 {
+                    var (cpuOver, gpuOver, drawsOver) = Profiler.Over(section);
                     ImGui.TableNextRow();
                     ImGui.TableNextColumn();
                     ImGui.Text(new string(' ', depth * 2) + section.Name);
                     ImGui.TableNextColumn();
-                    ImGui.Text($"{section.Last:0.00}");
+                    Value($"{section.Last:0.00}", cpuOver);
                     ImGui.TableNextColumn();
-                    ImGui.Text($"{section.Average:0.00}");
+                    Value($"{section.Average:0.00}", cpuOver);
                     ImGui.TableNextColumn();
                     ImGui.Text($"{section.Worst:0.00}");
                     ImGui.TableNextColumn();
                     if (section.HasGpu)
-                        ImGui.Text($"{section.GpuAverage:0.00}");
+                        Value($"{section.GpuAverage:0.00}", gpuOver);
                     ImGui.TableNextColumn();
                     if (section.HasGpu)
                         ImGui.Text($"{section.GpuWorst:0.00}");
                     ImGui.TableNextColumn();
-                    ImGui.Text($"{section.DrawCalls}");
+                    Value($"{section.DrawCalls}", drawsOver);
                     ImGui.TableNextColumn();
                     if (section.Triangles > 0)
                         ImGui.Text($"{section.Triangles / 1000f:0.0}k");
+                    ImGui.TableNextColumn();
+                    if (Profiler.Budgets.TryGetValue(section.Name, out var budget))
+                        ImGui.TextColored(Style.TextDim.Float4, Budget(budget));
                 }
 
                 ImGui.EndTable();
