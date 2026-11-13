@@ -3473,7 +3473,9 @@ public sealed partial class EditorView : IDisposable
             return;
         }
 
-        DrawBackground(draw);
+        using (Profiler.Sample("Background"))
+            DrawBackground(draw);
+        var overlays = Profiler.Sample("Overlays");
         if (_tool == Tool.Circuits)
             _circuitEditor?.Draw(draw, _camera.X, _camera.Z, ViewReach, ProjectGround,
                 !_topDown || _camera.Y - _terrain.Source.HeightAt(_camera.X, _camera.Z) < 5000.0);
@@ -3483,8 +3485,10 @@ public sealed partial class EditorView : IDisposable
                 _guides?.DrawClasses(draw, ProjectGround, _camera.X, _camera.Z, ViewReach, size);
             DrawGrades(draw, size);
         }
+        overlays.Dispose();
         DrawBrush(draw);
-        _trains.Overlay(draw, Project, new double3(_camera.X, _camera.Y, _camera.Z), new float2(0f, _headerBottom), new float2(size.X, MathF.Min(size.Y, _footerTop)));
+        using (Profiler.Sample("Train overlay"))
+            _trains.Overlay(draw, Project, new double3(_camera.X, _camera.Y, _camera.Z), new float2(0f, _headerBottom), new float2(size.X, MathF.Min(size.Y, _footerTop)));
         if (_tool == Tool.Switches)
             DrawSwitches(draw);
         if (_tool == Tool.Switches && _terrain?.Source.Lines is { } handled && _switch is { } handledNode && handled.Turnouts.FirstOrDefault(t => t.Node == handledNode) is { } handledSwitch)
@@ -4284,8 +4288,10 @@ public sealed partial class EditorView : IDisposable
 
     public void Windows()
     {
-        ToolStrip();
-        _trains.Window(_headerBottom);
+        using (Profiler.Sample("Tool strip"))
+            ToolStrip();
+        using (Profiler.Sample("Train window"))
+            _trains.Window(_headerBottom);
         AuditWindow();
         _audioEditor.Window(_trains);
         _audioEditor.Gizmos(_trains, Project, _camera, _screen.Y, Blocked);

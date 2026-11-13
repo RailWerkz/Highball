@@ -17,12 +17,21 @@ public sealed class VehicleOverlay
     /// Projects a world point to the screen, or null when it's behind the camera.
     public delegate float2? Projector(double x, double y, double z);
 
-    private sealed class Shape(float3[] corners, float3 min, float3 max)
+    /// A vehicle's outline shape: its model welded onto a coarse grid (vertex clustering), so the silhouette keeps its form
+    /// to a few centimetres with a small fraction of the full model's points.
+    private sealed class Shape(float3[] points, int[] triangles, float3 min, float3 max)
     {
-        /// Every triangle's three corners, in the model's own axes (front +z, up +y).
-        public readonly float3[] Corners = corners;
+        /// The welded points, in the model's own axes (front +z, up +y).
+        public readonly float3[] Points = points;
+
+        /// Three indices into Points a triangle.
+        public readonly int[] Triangles = triangles;
+
         public readonly float3 Min = min, Max = max;
     }
+
+    /// The size of the grid models are welded onto for their outlines.
+    private const float OutlineCell = 0.04f;
 
     private readonly Dictionary<string, Shape?> _shapes = [];
 
@@ -32,19 +41,52 @@ public sealed class VehicleOverlay
             return shape;
         try
         {
-            var corners = new List<float3>();
-            foreach (var part in RailWerkz.Vulkan.Model.LoadParts(model).Values)
-                foreach (var index in part.Indices)
-                    corners.Add(part.Vertices[index].Position);
+            var points = new List<float3>();
+            var sums = new List<(float3 Sum, int Count)>();
+            var cells = new Dictionary<(int, int, int), int>();
+            var triangles = new List<int>();
+            var seen = new HashSet<(int, int, int)>();
             var min = new float3(float.MaxValue);
             var max = new float3(float.MinValue);
-            foreach (var c in corners)
+            Span<int> corner = stackalloc int[3];
+            foreach (var part in RailWerkz.Vulkan.Model.LoadParts(model).Values)
             {
-                min = float3.Min(min, c);
-                max = float3.Max(max, c);
+                for (var t = 0; t + 2 < part.Indices.Length; t += 3)
+                {
+                    for (var k = 0; k < 3; k++)
+                    {
+                        var p = part.Vertices[part.Indices[t + k]].Position;
+                        min = float3.Min(min, p);
+                        max = float3.Max(max, p);
+                        var key = ((int)MathF.Floor(p.X / OutlineCell), (int)MathF.Floor(p.Y / OutlineCell), (int)MathF.Floor(p.Z / OutlineCell));
+                        if (!cells.TryGetValue(key, out var index))
+                        {
+                            cells[key] = index = sums.Count;
+                            sums.Add((default, 0));
+                        }
+
+                        sums[index] = (sums[index].Sum + p, sums[index].Count + 1);
+                        corner[k] = index;
+                    }
+
+                    // Collapsed onto one or two cells, it covers nothing; the same three cells again add nothing.
+                    if (corner[0] == corner[1] || corner[1] == corner[2] || corner[0] == corner[2])
+                        continue;
+                    var (a, b, c) = (corner[0], corner[1], corner[2]);
+                    if (a > b) (a, b) = (b, a);
+                    if (b > c) (b, c) = (c, b);
+                    if (a > b) (a, b) = (b, a);
+                    if (!seen.Add((a, b, c)))
+                        continue;
+                    triangles.Add(corner[0]);
+                    triangles.Add(corner[1]);
+                    triangles.Add(corner[2]);
+                }
             }
 
-            shape = corners.Count >= 3 ? new Shape([.. corners], min, max) : null;
+            foreach (var (sum, count) in sums)
+                points.Add(sum / count);
+            shape = triangles.Count >= 3 ? new Shape([.. points], [.. triangles], min, max) : null;
         }
         catch (Exception e)
         {
@@ -161,18 +203,19 @@ public sealed class VehicleOverlay
         if (ShapeOf(placed.Model) is not { } shape)
             return;
 
-        var corners = shape.Corners;
-        if (_projected.Length < corners.Length)
+        var points = shape.Points;
+        var triangles = shape.Triangles;
+        if (_projected.Length < points.Length)
         {
-            _projected = new float2[corners.Length];
-            _visible = new bool[corners.Length];
+            _projected = new float2[points.Length];
+            _visible = new bool[points.Length];
         }
 
         var min = new float2(float.MaxValue);
         var max = new float2(float.MinValue);
-        for (var i = 0; i < corners.Length; i++)
+        for (var i = 0; i < points.Length; i++)
         {
-            var s = Screen(placed, corners[i], project);
+            var s = Screen(placed, points[i], project);
             _visible[i] = s is not null;
             if (s is not { } p)
                 continue;
@@ -197,11 +240,12 @@ public sealed class VehicleOverlay
             _mask = new bool[w * h];
         Array.Clear(_mask, 0, w * h);
 
-        for (var t = 0; t + 2 < corners.Length; t += 3)
+        for (var t = 0; t + 2 < triangles.Length; t += 3)
         {
-            if (!_visible[t] || !_visible[t + 1] || !_visible[t + 2])
+            var (a, b, c) = (triangles[t], triangles[t + 1], triangles[t + 2]);
+            if (!_visible[a] || !_visible[b] || !_visible[c])
                 continue;
-            Fill((_projected[t] - origin) / cell, (_projected[t + 1] - origin) / cell, (_projected[t + 2] - origin) / cell, w, h);
+            Fill((_projected[a] - origin) / cell, (_projected[b] - origin) / cell, (_projected[c] - origin) / cell, w, h);
         }
 
         // Nothing on the grid's outer ring, so every outline closes.
@@ -233,10 +277,10 @@ public sealed class VehicleOverlay
                 continue;
             Smooth(_loop, _smooth);
             Smooth(_smooth, _loop);
-            var points = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_loop);
-            draw.AddPolyline(points, color.WithAlpha(0.07f * breathe), ImDrawFlags.Closed, S(7f));
-            draw.AddPolyline(points, color.WithAlpha(0.16f * breathe), ImDrawFlags.Closed, S(3.5f));
-            draw.AddPolyline(points, color.WithAlpha(0.6f * breathe), ImDrawFlags.Closed, S(1.25f));
+            var line = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_loop);
+            draw.AddPolyline(line, color.WithAlpha(0.07f * breathe), ImDrawFlags.Closed, S(7f));
+            draw.AddPolyline(line, color.WithAlpha(0.16f * breathe), ImDrawFlags.Closed, S(3.5f));
+            draw.AddPolyline(line, color.WithAlpha(0.6f * breathe), ImDrawFlags.Closed, S(1.25f));
         }
 
         draw.PopClipRect();

@@ -163,8 +163,11 @@ public static class Profiler
         var times = new StringBuilder();
         times.Append(CultureInfo.InvariantCulture, $"Frame {FrameTimes.Average():0.00} ms ({1000f / MathF.Max(0.01f, FrameTimes.Average()):0} fps), GPU {GpuFrameTimes.Average():0.00} ms, {DrawCalls} draw calls, {Triangles / 1000f:0.0}k triangles");
         foreach (var (section, depth) in Tree())
+        {
+            times.Append(CultureInfo.InvariantCulture, $"\n  {new string(' ', depth * 2)}{section.Name}: CPU {section.Average:0.00} ms (worst {section.Worst:0.00})");
             if (section.HasGpu)
-                times.Append(CultureInfo.InvariantCulture, $"\n  {new string(' ', depth * 2)}{section.Name}: {section.GpuAverage:0.00} ms, worst {section.GpuWorst:0.00}, {section.DrawCalls} draws, {section.Triangles / 1000f:0.0}k triangles");
+                times.Append(CultureInfo.InvariantCulture, $", GPU {section.GpuAverage:0.00} ms (worst {section.GpuWorst:0.00}), {section.DrawCalls} draws, {section.Triangles / 1000f:0.0}k triangles");
+        }
         return times.ToString();
     }
 }

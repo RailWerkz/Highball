@@ -297,15 +297,18 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         WindowBounds.Top = _headerBottom;
         WindowBounds.Bottom = _footerTop;
         if (_showPanel && (_mode == Mode.Planner || _editor?.HasPanel == true))
-            Panel();
+            using (Profiler.Sample("Side panel"))
+                Panel();
         if (_mode != Mode.Planner)
         {
-            _editor?.Windows();
+            using (Profiler.Sample("Editor windows"))
+                _editor?.Windows();
             World.MaterialsWindow.Instance.Draw();
         }
 
         var left = (_mode == Mode.Planner ? 0f : EditorView.StripWidth) + (_showPanel ? PanelWidth : 0f) + 12f;
         Action lines = _mode == Mode.Planner || _editor is null ? _planner.DebugStats : _editor.DebugStats;
+        using var debug = Profiler.Sample("Debug windows");
         DebugWindows.Draw(left, _headerBottom + 12f, lines, _planner.BuildJob, _mode == Mode.Planner || _editor is null ? null : _editor.CameraInfo);
         WindowBounds.Reset();
     }

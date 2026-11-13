@@ -348,17 +348,20 @@ public sealed class HighballApp : IDisposable
                 first--;
 
             for (var i = Math.Max(0, first); i < _screens.Count; i++)
-                _screens[i].Draw(draw, display);
+                using (Profiler.Sample(_screens[i].GetType().Name))
+                    _screens[i].Draw(draw, display);
 
             ImGui.End();
             ImGui.PopStyleVar(2);
-            top?.DrawWindows();
+            using (Profiler.Sample("Windows"))
+                top?.DrawWindows();
 
             var fade = 1f - Tween.Progress(_transitionAt, 0.35f, Ease.OutCubic);
             if (fade > 0.001f)
                 ImGui.GetForegroundDrawList().AddRectFilled(new float2(0f, 0f), display, Style.Background.WithAlpha(fade * 0.6f));
 
-            ImGui.Render();
+            using (Profiler.Sample("ImGui render"))
+                ImGui.Render();
             ui.Dispose();
 
             // The image is acquired as late as possible, once the interface is built.
