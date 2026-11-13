@@ -101,7 +101,6 @@ public sealed class DriveScreen : Screen, IWorldScreen
 
     public void RenderWorld(CommandBuffer cmd, int width, int height)
     {
-        _view.Lighting.Apply();
         _view.RenderWorld(cmd, width, height);
     }
 

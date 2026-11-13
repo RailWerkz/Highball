@@ -47,14 +47,15 @@ public sealed partial class EditorView : IDisposable
 
     private readonly RouteInfo _route;
     private readonly Task<TerrainSource> _opening;
-    private readonly WorldRenderer _renderer = new();
+    private readonly WorldDisplay _world;
+    private WorldRenderer _renderer => _world.Renderer;
 
     /// Puts the sky, time of day and exposure from Settings onto the renderer.
-    public LightingPanel Lighting { get; }
+    public LightingPanel Lighting => _world.Lighting;
     private readonly EditorCamera _eye = new();
 
     /// What the renderer draws this frame, filled in by RenderWorld.
-    private readonly FrameScene _scene = new();
+    private FrameScene _scene => _world.Scene;
     private readonly DriveCamera _drive = new();
 
     /// The camera everything draws from and picks with: the editor's own (EditorCamera), which the drive cameras move too.
@@ -180,7 +181,7 @@ public sealed partial class EditorView : IDisposable
         _route = route;
         _start = start;
         var place = new GeoPoint(route.Origin.Latitude, route.Origin.Longitude);
-        Lighting = new LightingPanel(_renderer, place.Lat, place.Lon, route.Projection?.GridNorth(place) ?? 0.0);
+        _world = new WorldDisplay(place.Lat, place.Lon, route.Projection?.GridNorth(place) ?? 0.0);
         _opening = TerrainSource.Open(route);
         if (DevTools.Clean)
             _overlay = TrackOverlay.Off;
@@ -210,7 +211,7 @@ public sealed partial class EditorView : IDisposable
         _trains.Dispose();
         _terrain?.Dispose();
         _network?.Dispose();
-        _renderer.Dispose();
+        _world.Dispose();
     }
 
     /// Saves any edits not yet saved. True when that included track, so a copy of the network read before is stale.
@@ -2453,10 +2454,10 @@ public sealed partial class EditorView : IDisposable
         _scene.OutlineStyle = new OutlineStyle(Style.Clear.Float4, Style.Accent.Float4, S(1f));
         _scene.Lights = _trains.Lamps;
         (_scene.Smoke, _scene.Haze) = (_trains.Smoke, _trains.Haze);
-        _renderer.Render(cmd, new int2(width, height), _scene);
+        _world.Render(cmd, width, height);
     }
 
-    public void CompositeWorld(CommandBuffer cmd) => _renderer.Composite(cmd);
+    public void CompositeWorld(CommandBuffer cmd) => _world.Composite(cmd);
 
     /// The brush or the track being edited, over the world; until the terrain's open, a note that it's loading.
     public void Draw(ImDrawListPtr draw, float2 size)

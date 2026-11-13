@@ -164,7 +164,6 @@ public sealed class BuilderScreen : Screen, IWorldScreen
 
     public void RenderWorld(CommandBuffer cmd, int width, int height)
     {
-        _editor?.Lighting.Apply();
         _editor?.RenderWorld(cmd, width, height);
     }
 

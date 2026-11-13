@@ -23,15 +23,16 @@ public sealed class LightingScreen : Screen, IWorldScreen
         ("source", "Old SD40 source (PBR maps)"),
     ];
 
-    private readonly WorldRenderer _renderer = new();
-    private readonly LightingPanel _panel;
+    private readonly WorldDisplay _world = new();
+    private WorldRenderer _renderer => _world.Renderer;
+    private LightingPanel _panel => _world.Lighting;
     private readonly Camera _camera = new();
     private readonly List<IDisposable> _owned = [];
     private readonly List<ModelDraw> _scene = [];
     private readonly Dictionary<string, RenderModel> _engines = [];
     private readonly List<ModelDraw> _draws = [];
     private readonly List<LocalLight> _lamps = [];
-    private readonly FrameScene _frame = new();
+    private FrameScene _frame => _world.Scene;
 
     private string _engine = Engines[0].Id;
     private bool _showSpheres = true;
@@ -42,7 +43,6 @@ public sealed class LightingScreen : Screen, IWorldScreen
 
     public override WorldView View => WorldView.World;
 
-    public LightingScreen() => _panel = new LightingPanel(_renderer);
 
     public override void Enter()
     {
@@ -77,7 +77,7 @@ public sealed class LightingScreen : Screen, IWorldScreen
             engine.Dispose();
         foreach (var owned in _owned)
             owned.Dispose();
-        _renderer.Dispose();
+        _world.Dispose();
     }
 
     private T Own<T>(T thing) where T : IDisposable
@@ -172,14 +172,13 @@ public sealed class LightingScreen : Screen, IWorldScreen
 
     public void RenderWorld(CommandBuffer cmd, int width, int height)
     {
-        _panel.Apply();
         _frame.Camera = _camera;
         _frame.Models = _draws;
         _frame.Lights = _lamps;
-        _renderer.Render(cmd, new int2(width, height), _frame);
+        _world.Render(cmd, width, height);
     }
 
-    public void CompositeWorld(CommandBuffer cmd) => _renderer.Composite(cmd);
+    public void CompositeWorld(CommandBuffer cmd) => _world.Composite(cmd);
 
     public override void Draw(ImDrawListPtr draw, float2 size) { }
 

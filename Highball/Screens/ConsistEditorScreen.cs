@@ -19,11 +19,12 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
 {
     private const int MaxUndo = 200;
 
-    private readonly WorldRenderer _renderer = new();
-    private readonly LightingPanel _lighting;
+    private readonly WorldDisplay _world = new();
+    private WorldRenderer _renderer => _world.Renderer;
+    private LightingPanel _lighting => _world.Lighting;
     private readonly Camera _camera = new();
     private readonly List<ModelDraw> _draws = [];
-    private readonly FrameScene _scene = new();
+    private FrameScene _scene => _world.Scene;
     private readonly Dictionary<string, VehicleModel?> _models = [];
     private DisplayTrack? _track;
 
@@ -68,7 +69,6 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
 
     public ConsistEditorScreen(Consist? consist = null)
     {
-        _lighting = new LightingPanel(_renderer);
         _consist = consist ?? new Consist { Name = UnusedName() };
         _vehicle = VehicleCatalog.OfKind(_kind).FirstOrDefault();
     }
@@ -93,7 +93,7 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
             model?.Dispose();
         _models.Clear();
         _track?.Dispose();
-        _renderer.Dispose();
+        _world.Dispose();
     }
 
     /// Back from the list of saved consists, with one picked or not.
@@ -633,11 +633,10 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
 
     public void RenderWorld(CommandBuffer cmd, int width, int height)
     {
-        _lighting.Apply();
         _scene.Camera = _camera;
         _scene.Models = _draws;
-        _renderer.Render(cmd, new int2(width, height), _scene);
+        _world.Render(cmd, width, height);
     }
 
-    public void CompositeWorld(CommandBuffer cmd) => _renderer.Composite(cmd);
+    public void CompositeWorld(CommandBuffer cmd) => _world.Composite(cmd);
 }
