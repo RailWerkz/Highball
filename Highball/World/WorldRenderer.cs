@@ -233,7 +233,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             _horizon.Update(terrain.Source, terrain.Epoch, camera.X, camera.Z);
             _shadows.UseHorizon(_horizon);
             _vegetation.Enabled = RailWerkz.Core.Settings.Settings.Current.Vegetation;
-            _vegetation.Update(terrain, camera);
+            _vegetation.Update(cmd, terrain, camera);
         }
 
         _weather.Update();

@@ -43,6 +43,12 @@ public static unsafe class Gpu
     /// Which of the FramesInFlight slots this frame records into: data written per slot is safe from frames still in flight.
     public static int FrameSlot => _frame;
 
+    /// The frame being recorded, counted from the first: changes every BeginFrame.
+    public static long FrameNumber => _frameNumber;
+
+    /// Whether one indirect call can make many draws (multiDrawIndirect).
+    public static bool MultiDraw { get; private set; }
+
     /// FIFO when on; mailbox (or immediate) when off. Takes effect on the next frame.
     public static bool VSync
     {
@@ -232,7 +238,15 @@ public static unsafe class Gpu
             DescriptorBindingSampledImageUpdateAfterBind = new Bool32(true),
             ShaderSampledImageArrayNonUniformIndexing = new Bool32(true),
         };
-        var features = new VkPhysicalDeviceFeatures2 { Next = &v12 };
+        // gl_DrawID, for draws that read what each of a multi-draw's commands is for (Vegetation).
+        var v11 = new VkPhysicalDeviceVulkan11Features { Next = &v12, ShaderDrawParameters = new Bool32(true) };
+        var features = new VkPhysicalDeviceFeatures2 { Next = &v11 };
+        // Many draws from one call, each with its own first instance (Vegetation); without them each is drawn on its own.
+        features.Features.MultiDrawIndirect = supported.MultiDrawIndirect;
+        features.Features.DrawIndirectFirstInstance = supported.DrawIndirectFirstInstance;
+        MultiDraw = (bool)supported.MultiDrawIndirect;
+        if (!(bool)supported.DrawIndirectFirstInstance)
+            throw new InvalidOperationException("Vulkan: the GPU can't start indirect draws at an instance (drawIndirectFirstInstance)");
         features.Features.SamplerAnisotropy = supported.SamplerAnisotropy;
         features.Features.FillModeNonSolid = supported.FillModeNonSolid; // wireframe views
         features.Features.ShaderClipDistance = supported.ShaderClipDistance; // track cut off at a distance, exactly, without a discard

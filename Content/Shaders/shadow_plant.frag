@@ -9,10 +9,8 @@ layout(set = 0, binding = 1) uniform sampler2D opacityMap;
 layout(push_constant) uniform Push
 {
     mat4 light;
-    vec4 offset;
     vec4 shape;
-    vec4 shift;
-    vec4 wind;
+    vec4 shift; // w: the camera's height
 } pc;
 
 void main()

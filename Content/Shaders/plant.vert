@@ -1,4 +1,5 @@
-#version 450
+#version 460
+#extension GL_EXT_buffer_reference : require
 // Plants and rocks, one mesh drawn many times. Each shrinks away with distance, its own random number saying how soon, so a far
 // hillside thins out without any of them popping.
 
@@ -16,21 +17,30 @@ layout(location = 2) out vec2 vUv;
 layout(location = 3) out vec3 vTint;
 layout(location = 4) out float vHeight;
 
+// Each indirect draw's cell (Vegetation): xy where it is relative to the camera, zw its place on the ground, wrapped.
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Cells
+{
+    vec4 cell[];
+};
+
 layout(push_constant) uniform Push
 {
     mat4 viewProjection;
-    vec4 offset; // the cell relative to the camera; w: the flutter's phase
-    vec4 shape;  // how much the wind moves it, how much its normal leans up, how far away it's gone, where its cut-out comes from
-    vec4 shift;  // moves the mesh to stand on its base; w: the camera's height
-    vec4 wind;   // xy: the cell's place, wrapped; zw: the gusts' phases
+    vec4 shape;   // how much the wind moves it, how much its normal leans up, how far away it's gone, where its cut-out comes from
+    vec4 shift;   // moves the mesh to stand on its base; w: the camera's height
+    vec4 globals; // x: the ground's origin below the camera (minus its height), y: the flutter's phase, zw: the gusts' phases
+    Cells cells;
+    uint base;    // the first of this call's cells
 } pc;
 
 void main()
 {
+    vec4 cell = pc.cells.cell[pc.base + gl_DrawID];
+    vec3 offset = vec3(cell.x, pc.globals.x, cell.y);
     float size = inPlace.w;
     float random = inTint.w;
 
-    vec3 standing = inPlace.xyz + pc.offset.xyz;
+    vec3 standing = inPlace.xyz + offset;
     float away = length(standing);
     size *= 1.0 - smoothstep(0.75, 1.0, away / (pc.shape.z * mix(0.25, 1.0, random)));
 
@@ -45,7 +55,7 @@ void main()
     if (pc.shape.x > 0.0)
     {
         float up = max(inPosition.y + pc.shift.y, 0.0);
-        turned.xz += windPush(pc.wind.xy + inPlace.xz, away, vec3(pc.wind.zw, pc.offset.w), up * up * pc.shape.x * size);
+        turned.xz += windPush(cell.zw + inPlace.xz, away, vec3(pc.globals.zw, pc.globals.y), up * up * pc.shape.x * size);
     }
 
     vec3 relative = standing + turned;

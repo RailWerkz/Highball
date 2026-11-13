@@ -73,14 +73,23 @@ public sealed unsafe class Vegetation : IDisposable
 
     /// Exactly what plant.vert's push constants hold.
     [StructLayout(LayoutKind.Sequential)]
+    /// plant.vert's and shadow_plant.vert's push constants. Where each draw's cell is comes from Cells, a table on the GPU,
+    /// indexed by Base plus the draw's place in its indirect call.
     private struct Push
     {
         public float4x4 Matrix;
-        public float4 Offset;
         public float4 Shape;
         public float4 Shift;
-        public float4 Wind;
+        /// x: minus the camera's height; y: the flutter's phase; zw: the gusts' phases.
+        public float4 Globals;
+        public VkDeviceAddress Cells;
+        public uint Base;
+        private uint _pad;
     }
+
+    /// A cell drawn in this pass: its row in the cell table (where it is, relative to the camera, and its wrapped place),
+    /// and its instances of the kind being drawn.
+    private readonly record struct Visible(float4 Cell, int First, int Count);
 
     /// The gusts' and flutter's phases now: (gust, gust, flutter). A gust 69 m long passing at 4 m/s, one 37.5 m long at 4.5 m/s.
     private static float3 WindPhases()
@@ -101,20 +110,22 @@ public sealed unsafe class Vegetation : IDisposable
     private sealed class Cell
     {
         public required Key Key;
-        public required BufferEx Buffer;
+
+        /// Where its instances start in the shared arena.
+        public required int Offset;
         public required int[] Starts;
         public required float Low;
         public required float High;
         public required int Total;
-
-        /// Made this frame: its buffer's copy goes in at the top of the next (Buffers.UploadLater), and Update runs after
-        /// this frame's went in, so until then it holds whatever was last in that memory. What it replaced draws meanwhile.
-        public bool Fresh = true;
-        public Cell? Replaced;
-
-        /// What to draw for this cell this frame, if anything.
-        public Cell? Drawn => Fresh ? Replaced : this;
     }
+
+    /// Every cell's instances, in one buffer, so a kind's cells are drawn from one binding in one indirect call.
+    private readonly BufferArena _arena = new(Marshal.SizeOf<PlantInstance>(), 1 << 18, VkBufferUsageFlags.VertexBufferBit, "vegetation.instances");
+    private readonly FrameRing<VkDrawIndexedIndirectCommand> _commands = new(VkBufferUsageFlags.IndirectBufferBit, "vegetation.commands");
+    private readonly FrameRing<float4> _cellTable = new(VkBufferUsageFlags.StorageBufferBit | VkBufferUsageFlags.ShaderDeviceAddressBit, "vegetation.cells");
+    private readonly List<Visible> _visible = [];
+    private VkDrawIndexedIndirectCommand[] _scratch = new VkDrawIndexedIndirectCommand[256];
+    private float4[] _rows = new float4[256];
 
     private readonly Kind[] _kinds = new Kind[KindCount];
     private readonly List<IDisposable> _owned = [];
@@ -176,7 +187,7 @@ public sealed unsafe class Vegetation : IDisposable
     // --- Streaming. ---
 
     /// Brings the cells round the camera up to date. Before the frame's world is recorded.
-    public void Update(Terrain terrain, Camera camera)
+    public void Update(CommandBuffer cmd, Terrain terrain, Camera camera)
     {
         var source = terrain.Source;
         if (!Enabled)
@@ -218,17 +229,6 @@ public sealed unsafe class Vegetation : IDisposable
             _terrainEpoch = terrain.Epoch;
         }
 
-        // Last frame's cells have their data now; what they stood in for can go.
-        foreach (var cell in _cells.Values)
-        {
-            if (!cell.Fresh)
-                continue;
-            cell.Fresh = false;
-            if (cell.Replaced is { } old)
-                Release(old);
-            cell.Replaced = null;
-        }
-
         for (var n = 0; n < UploadsPerFrame && _built.TryDequeue(out var built); n++)
         {
             _inFlight.Remove(built.Key);
@@ -237,20 +237,15 @@ public sealed unsafe class Vegetation : IDisposable
 
             if (_stale.TryGetValue(built.Key, out var marked) && marked <= built.Stamp)
                 _stale.Remove(built.Key);
-            Cell? stand = null;
+            // Uploaded into the arena in this frame's commands, so it draws at once in place of what it replaces.
             if (_cells.Remove(built.Key, out var replaced))
-            {
-                // (Rebuilt twice in a frame: the one never drawn goes, the one on screen stays standing in.)
-                stand = replaced.Fresh ? replaced.Replaced : replaced;
-                if (replaced.Fresh)
-                    Release(replaced, keepReplaced: true);
-            }
-
-            var buffer = Buffers.UploadLater(
-                MemoryMarshal.AsBytes(built.Instances.Length > 0 ? built.Instances.AsSpan() : new PlantInstance[1].AsSpan()), VkBufferUsageFlags.VertexBufferBit, "vegetation.cell");
-            _cells[built.Key] = new Cell { Key = built.Key, Buffer = buffer, Starts = built.Starts, Low = built.Low, High = built.High, Total = built.Instances.Length, Replaced = stand };
+                Release(replaced);
+            var offset = _arena.Upload(cmd, MemoryMarshal.AsBytes(built.Instances.AsSpan()), built.Instances.Length);
+            _cells[built.Key] = new Cell { Key = built.Key, Offset = offset, Starts = built.Starts, Low = built.Low, High = built.High, Total = built.Instances.Length };
             Instances += built.Instances.Length;
         }
+
+        _arena.EndUploads(cmd);
 
         Evict(camera);
 
@@ -347,15 +342,11 @@ public sealed unsafe class Vegetation : IDisposable
         }
     }
 
-    /// Lets a cell's buffer go once the GPU's done with it, and what it was standing in for unless that's kept.
-    private void Release(Cell cell, bool keepReplaced = false)
+    /// Gives a cell's instances back to the arena, once the GPU's done with them.
+    private void Release(Cell cell)
     {
         Instances -= cell.Total;
-        var buffer = cell.Buffer;
-        Gpu.Defer(buffer.Dispose);
-        if (!keepReplaced && cell.Replaced is { } old)
-            Release(old);
-        cell.Replaced = null;
+        _arena.Free(cell.Offset, cell.Total);
     }
 
     private void ClearCells()
@@ -675,51 +666,34 @@ public sealed unsafe class Vegetation : IDisposable
             return;
 
         var view = camera.View(aspect);
-        var push = new Push { Matrix = camera.JitteredViewProjection(aspect) };
-        var phases = WindPhases();
-
+        var push = new Push { Matrix = camera.JitteredViewProjection(aspect), Globals = Globals(camera) };
         for (var k = 0; k < KindCount; k++)
         {
             var kind = _kinds[k];
-            if (kind.Mesh is null)
+            if (kind.Mesh is null || !Gather(k, camera, kind, (centre, radius) => view.Sees(centre, radius)))
                 continue;
 
-            var bound = false;
-            foreach (var entry in _cells.Values)
+            push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, kind.Cutout);
+            push.Shift = new float4(kind.Shift, (float)camera.Y);
+            if (kind.Parts is null)
             {
-                if (entry.Drawn is not { } cell)
-                    continue;
-                var count = cell.Starts[k + 1] - cell.Starts[k];
-                if (count == 0)
-                    continue;
-
-                var size = cell.Key.Far ? FarCell : NearCell;
-                var (ox, oz) = (cell.Key.X * (double)size - camera.X, cell.Key.Z * (double)size - camera.Z);
-                var centre = new float3((float)ox + size * 0.5f, (cell.Low + cell.High) * 0.5f - (float)camera.Y, (float)oz + size * 0.5f);
-                var radius = MathF.Sqrt(size * size * 0.5f + (cell.High - cell.Low) * (cell.High - cell.Low) * 0.25f) + 12f;
-
-                if (!view.Sees(centre, radius))
-                    continue;
-
-                var nearest = MathF.Max(MathEx.Length(centre) - radius, 0f);
-                var showing = Showing(count, nearest, kind.Fade * Quality.PlantReach);
-                if (showing == 0)
-                    continue;
-
-                if (!bound && (kind.Parts is null || kind.Parts.Count == 1))
-                {
-                    kind.Textures!.Bind(cmd, layout);
-                    bound = true;
-                }
-
-                push.Offset = new float4((float)ox, -(float)camera.Y, (float)oz, phases.Z);
-                push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, kind.Cutout);
-                push.Shift = new float4(kind.Shift, (float)camera.Y);
-                push.Wind = new float4(WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size), phases.X, phases.Y);
-                cmd.PushConstants(layout, Stages, ByteSize.Zero, push);
-                DrawPlants(cmd, layout, kind, kind.Mesh, cell.Buffer, showing, cell.Starts[k]);
-                DrawnInstances += showing;
+                kind.Textures!.Bind(cmd, layout);
+                DrawVisible(cmd, layout, ref push, kind.Mesh, 0, kind.Mesh.IndexCount);
             }
+            else
+            {
+                if (kind.Parts.Count == 1)
+                    kind.Textures!.Bind(cmd, layout);
+                foreach (var part in kind.Parts)
+                {
+                    if (kind.Parts.Count > 1)
+                        part.Textures.Bind(cmd, layout);
+                    DrawVisible(cmd, layout, ref push, kind.Mesh, part.FirstIndex, part.IndexCount);
+                }
+            }
+
+            foreach (var visible in _visible)
+                DrawnInstances += visible.Count;
         }
     }
 
@@ -729,54 +703,110 @@ public sealed unsafe class Vegetation : IDisposable
         if (!Enabled)
             return;
 
-        var push = new Push { Matrix = light };
-        var phases = WindPhases();
+        var push = new Push { Matrix = light, Globals = Globals(camera) };
         var last = cascade >= FarCasterFrom;
         for (var k = 0; k < KindCount; k++)
         {
             var kind = _kinds[k];
-            if (kind.Mesh is null || cascade > kind.LastCascade || (last && kind.NoFarCaster))
+            if (kind.Mesh is null || cascade > kind.LastCascade || (last && kind.NoFarCaster) || !Gather(k, camera, kind, reaches))
                 continue;
 
             var standIn = last && kind.FarCaster is not null;
-            var mesh = standIn ? kind.FarCaster! : kind.Mesh;
-
-            var bound = false;
-            foreach (var entry in _cells.Values)
+            push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, standIn ? 2f : kind.Cutout);
+            push.Shift = new float4(kind.Shift, (float)camera.Y);
+            if (standIn || kind.Parts is null)
             {
-                if (entry.Drawn is not { } cell)
-                    continue;
-                var count = cell.Starts[k + 1] - cell.Starts[k];
-                if (count == 0)
-                    continue;
-
-                var size = cell.Key.Far ? FarCell : NearCell;
-                var (ox, oz) = (cell.Key.X * (double)size - camera.X, cell.Key.Z * (double)size - camera.Z);
-                var centre = new float3((float)ox + size * 0.5f, (cell.Low + cell.High) * 0.5f - (float)camera.Y, (float)oz + size * 0.5f);
-                var radius = MathF.Sqrt(size * size * 0.5f + (cell.High - cell.Low) * (cell.High - cell.Low) * 0.25f) + 12f;
-                if (!reaches(centre, radius))
-                    continue;
-
-                var showing = Showing(count, MathF.Max(MathEx.Length(centre) - radius, 0f), kind.Fade * Quality.PlantReach);
-                if (showing == 0)
-                    continue;
-
-                if (!bound && (standIn || kind.Parts is null || kind.Parts.Count == 1))
-                {
-                    kind.Textures!.Bind(cmd, layout);
-                    bound = true;
-                }
-
-                push.Offset = new float4((float)ox, -(float)camera.Y, (float)oz, phases.Z);
-                push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, standIn ? 2f : kind.Cutout);
-                push.Shift = new float4(kind.Shift, (float)camera.Y);
-                push.Wind = new float4(WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size), phases.X, phases.Y);
-                cmd.PushConstants(layout, Stages, ByteSize.Zero, push);
-                if (standIn)
-                    mesh.DrawInstanced(cmd, cell.Buffer, showing, cell.Starts[k]);
-                else
-                    DrawPlants(cmd, layout, kind, mesh, cell.Buffer, showing, cell.Starts[k]);
+                var mesh = standIn ? kind.FarCaster! : kind.Mesh;
+                kind.Textures!.Bind(cmd, layout);
+                DrawVisible(cmd, layout, ref push, mesh, 0, mesh.IndexCount);
+                continue;
             }
+
+            if (kind.Parts.Count == 1)
+                kind.Textures!.Bind(cmd, layout);
+            foreach (var part in kind.Parts)
+            {
+                if (kind.Parts.Count > 1)
+                    part.Textures.Bind(cmd, layout);
+                DrawVisible(cmd, layout, ref push, kind.Mesh, part.FirstIndex, part.IndexCount);
+            }
+        }
+    }
+
+    /// What every cell drawn this frame shares: the ground below the camera and the wind's phases.
+    private static float4 Globals(Camera camera)
+    {
+        var phases = WindPhases();
+        return new float4(-(float)camera.Y, phases.Z, phases.X, phases.Y);
+    }
+
+    /// The cells with any of kind k to draw in this pass (those keep takes, by their sphere relative to the camera), and how
+    /// many of it each shows at its distance, into _visible. False if there are none.
+    private bool Gather(int k, Camera camera, Kind kind, Func<float3, float, bool> keep)
+    {
+        _visible.Clear();
+        foreach (var cell in _cells.Values)
+        {
+            var count = cell.Starts[k + 1] - cell.Starts[k];
+            if (count == 0)
+                continue;
+
+            var size = cell.Key.Far ? FarCell : NearCell;
+            var (ox, oz) = (cell.Key.X * (double)size - camera.X, cell.Key.Z * (double)size - camera.Z);
+            var centre = new float3((float)ox + size * 0.5f, (cell.Low + cell.High) * 0.5f - (float)camera.Y, (float)oz + size * 0.5f);
+            var radius = MathF.Sqrt(size * size * 0.5f + (cell.High - cell.Low) * (cell.High - cell.Low) * 0.25f) + 12f;
+            if (!keep(centre, radius))
+                continue;
+
+            var showing = Showing(count, MathF.Max(MathEx.Length(centre) - radius, 0f), kind.Fade * Quality.PlantReach);
+            if (showing == 0)
+                continue;
+            _visible.Add(new Visible(new float4((float)ox, (float)oz, WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size)), cell.Offset + cell.Starts[k], showing));
+        }
+
+        return _visible.Count > 0;
+    }
+
+    /// The gathered cells' instances of a range of mesh's index buffer, in one indirect call: a command and a cell-table row
+    /// for each, written for this frame. Drawn one at a time where the GPU can't make many draws from one call.
+    private void DrawVisible(CommandBuffer cmd, VkPipelineLayout layout, ref Push push, Mesh mesh, int firstIndex, int indexCount)
+    {
+        var n = _visible.Count;
+        if (_scratch.Length < n)
+        {
+            _scratch = new VkDrawIndexedIndirectCommand[Math.Max(n, _scratch.Length * 2)];
+            _rows = new float4[_scratch.Length];
+        }
+
+        long triangles = 0;
+        for (var i = 0; i < n; i++)
+        {
+            var visible = _visible[i];
+            _scratch[i] = new VkDrawIndexedIndirectCommand
+            {
+                IndexCount = indexCount, InstanceCount = visible.Count, FirstIndex = firstIndex, VertexOffset = 0, FirstInstance = visible.First,
+            };
+            _rows[i] = visible.Cell;
+            triangles += indexCount / 3 * (long)visible.Count;
+        }
+
+        var (commands, first) = _commands.Append(_scratch.AsSpan(0, n));
+        var (table, row) = _cellTable.Append(_rows.AsSpan(0, n));
+        push.Cells = table.GetDeviceAddress();
+        const int stride = 20; // a VkDrawIndexedIndirectCommand
+        if (Gpu.MultiDraw)
+        {
+            push.Base = (uint)row;
+            cmd.PushConstants(layout, Stages, ByteSize.Zero, push);
+            mesh.DrawIndexedIndirect(cmd, _arena.Buffer, commands, (long)first * stride, n, triangles);
+            return;
+        }
+
+        for (var i = 0; i < n; i++)
+        {
+            push.Base = (uint)(row + i);
+            cmd.PushConstants(layout, Stages, ByteSize.Zero, push);
+            mesh.DrawIndexedIndirect(cmd, _arena.Buffer, commands, (long)(first + i) * stride, 1, indexCount / 3 * (long)_visible[i].Count);
         }
     }
 
@@ -787,29 +817,6 @@ public sealed unsafe class Vegetation : IDisposable
         var list = parts.OrderBy(p => p.FirstIndex).ToList();
         var end = list.Max(p => p.FirstIndex + p.IndexCount);
         return list[0] with { IndexCount = end - list[0].FirstIndex };
-    }
-
-    /// A kind's instances: its whole mesh, its one material of it (its textures already bound), or each of its materials with
-    /// its own textures.
-    private static void DrawPlants(CommandBuffer cmd, VkPipelineLayout layout, Kind kind, Mesh mesh, BufferEx buffer, int count, int first)
-    {
-        if (kind.Parts is null)
-        {
-            mesh.DrawInstanced(cmd, buffer, count, first);
-            return;
-        }
-
-        if (kind.Parts.Count == 1)
-        {
-            mesh.DrawRangeInstanced(cmd, buffer, kind.Parts[0].FirstIndex, kind.Parts[0].IndexCount, count, first);
-            return;
-        }
-
-        foreach (var part in kind.Parts)
-        {
-            part.Textures.Bind(cmd, layout);
-            mesh.DrawRangeInstanced(cmd, buffer, part.FirstIndex, part.IndexCount, count, first);
-        }
     }
 
     // --- Meshes and textures made here. ---
@@ -1034,6 +1041,9 @@ public sealed unsafe class Vegetation : IDisposable
     {
         _jobs.Dispose();
         ClearCells();
+        _arena.Dispose();
+        _commands.Dispose();
+        _cellTable.Dispose();
         foreach (var thing in Enumerable.Reverse(_owned))
             thing.Dispose();
     }
