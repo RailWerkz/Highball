@@ -76,7 +76,9 @@ public sealed partial class EditorView : IDisposable
     private readonly Stack<object> _redo = new();
 
     private TrackEditor? _tracks;
-    private CircuitEditor? _circuitEditor;
+    /// The Track Circuits tool, and the route's circuits (made once the route's open).
+    private CircuitsTool? _circuits;
+    private CircuitEditor? _circuitEditor => _circuits?.Editor;
     private long? _hover;
     // Editing track: the selected control points, the one grabbed to drag them and how far they've been dragged, and
     // where a box being dragged out to select began.
@@ -176,7 +178,7 @@ public sealed partial class EditorView : IDisposable
         _routeWorld = new RouteWorld(route);
         _view = new CameraView(_camera);
         _session = new Trains.TrainSession(_routeWorld, _camera);
-        _tools = new ToolContext(_routeWorld, _view, () => Blocked, () => _hit, Record);
+        _tools = new ToolContext(_routeWorld, _view, () => Blocked, () => _hit, Record, () => _topDown, () => ViewReach);
         _brushes = new TerrainBrush(_tools);
         if (DevTools.Clean)
             _overlay = TrackOverlay.Off;
@@ -312,7 +314,7 @@ public sealed partial class EditorView : IDisposable
                 Log.Info(report.Split('#')[1]);
             }
             _tracks = new TrackEditor(_route, _routeWorld.Read.Network);
-            _circuitEditor = new CircuitEditor(_route);
+            _circuits = new CircuitsTool(_tools, new CircuitEditor(_route));
             if (DevTools.ProfileStats)
                 Log.Info(ProfileReport.Of(_routeWorld.Read.Lines!, _route.Projection!));
             if (DevTools.Tool is { } first)
@@ -1924,21 +1926,11 @@ public sealed partial class EditorView : IDisposable
         ("Delete", "Del", (t, s) => t.DeleteMany(s)),
     ];
 
-    /// The track circuits tool (see CircuitEditor).
+    /// The track circuits tool (CircuitsTool).
     private void EditCircuits()
     {
-        if (_tool != Tool.Circuits || Blocked || _circuitEditor is null)
-            return;
-
-        var mouse = Input.MousePosition;
-        var pixel = 2.0 * Math.Tan(_camera.FieldOfView * 0.5) / _screen.Y;
-        var metresPerPixel = _hit is { } h
-            ? Math.Sqrt((h.X - _camera.X) * (h.X - _camera.X) + (h.Y - _camera.Y) * (h.Y - _camera.Y) + (h.Z - _camera.Z) * (h.Z - _camera.Z)) * pixel
-            : 1.0;
-        var edit = _circuitEditor.Update(mouse, _hit is { } g ? (g.X, g.Z) : null, metresPerPixel, ProjectGround,
-            Input.MouseDown(GlfwMouseButton.Left), Input.Mouse(GlfwMouseButton.Left),
-            Input.Key(GlfwKey.LeftShift) || Input.Key(GlfwKey.RightShift), Input.KeyDown(GlfwKey.Delete) && !Keyboard.KeysBlocked);
-        Record(edit);
+        if (_tool == Tool.Circuits)
+            _circuits?.Update(0f);
     }
 
     /// Keeps an edit (of any kind) for undoing.
@@ -2092,8 +2084,7 @@ public sealed partial class EditorView : IDisposable
         var overlays = Profiler.Sample("Overlays");
         _gradeAt = null;
         if (_tool == Tool.Circuits)
-            _circuitEditor?.Draw(draw, _camera.X, _camera.Z, ViewReach, ProjectGround,
-                !_topDown || _camera.Y - _terrain.Source.HeightAt(_camera.X, _camera.Z) < 5000.0);
+            _circuits?.Draw(draw);
         else if (_overlay != TrackOverlay.Off)
         {
             if (_overlay == TrackOverlay.ClassMap)
@@ -2441,7 +2432,7 @@ public sealed partial class EditorView : IDisposable
         if (_tool == Tool.Pen)
             PenPanel(imperial);
         if (_tool == Tool.Circuits)
-            Record(_circuitEditor?.Panel(imperial));
+            _circuits?.Panel(imperial);
         if (_tool == Tool.Switches)
             SwitchPanel();
         if (_tool == Tool.Shape)
@@ -2876,7 +2867,7 @@ public sealed partial class EditorView : IDisposable
                 Tool.Shape => [("LMB", "Select, drag handle"), ("SHIFT+LMB", "Mark handles"), ("L", "Straighten"), ("K", "Smooth curve"), ("DEL", "Remove handle"), ("ALT", "No snap"), ("CTRL+Z", "Undo")],
                 _ when IsBrush(_tool) => SyncBrush().Hints,
                 Tool.Track => [("LMB", "Select, drag"), ("SHIFT", "Add"), ("CTRL+LMB", "Insert point"), ("L", "Straighten"), ("K", "Smooth"), ("I", "Simplify"), ("J", "Join"), ("U", "Split"), ("DEL", "Delete")],
-                Tool.Circuits => [("LMB", "Select circuit"), ("SHIFT+LMB", "Add joint"), ("DRAG", "Move joint"), ("DEL", "Remove joint"), ("CTRL+Z", "Undo")],
+                Tool.Circuits => _circuits?.Hints ?? [],
                 Tool.Pen => [("LMB", "Point"), ("DRAG", "Curve"), ("ENTER", "Lay track"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")],
                 _ => [("LMB", _tool.ToString()), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
             };

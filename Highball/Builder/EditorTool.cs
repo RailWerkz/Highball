@@ -24,7 +24,8 @@ public interface IEditorTool
 
 /// What the editor gives its tools: the route as loaded, the camera on the screen, the ground under the pointer, and
 /// the undo history.
-public sealed class ToolContext(RouteWorld world, CameraView view, Func<bool> blocked, Func<double3?> hit, Action<object?> record)
+public sealed class ToolContext(RouteWorld world, CameraView view, Func<bool> blocked, Func<double3?> hit, Action<object?> record,
+    Func<bool> topDown, Func<double> reach)
 {
     public TerrainSource Source => world.Source!;
     public Terrain Terrain => world.Terrain!;
@@ -36,6 +37,12 @@ public sealed class ToolContext(RouteWorld world, CameraView view, Func<bool> bl
 
     /// The ground under the pointer, with a tool in hand.
     public double3? Hit => hit();
+
+    /// Seen straight down (the 2D Editor).
+    public bool TopDown => topDown();
+
+    /// How far round the camera there's anything to draw, metres.
+    public double Reach => reach();
 
     /// Keeps an edit (of any kind) for undoing.
     public void Record(object? edit) => record(edit);
