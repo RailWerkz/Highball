@@ -514,12 +514,30 @@ public sealed class Train
             var car = Cars[i];
             Walk(ref at, car.LeadingOverhang, memory);
             var front = Graph.PositionOf(at);
-            var frontFacing = facings is null ? default : Graph.FacingOf(at);
+            var frontFacing = facings is null ? default : TruckFacing(at);
             Walk(ref at, car.TruckCentres, memory);
             into.Add((front, Graph.PositionOf(at)));
-            facings?.Add((frontFacing, Graph.FacingOf(at)));
+            facings?.Add((frontFacing, TruckFacing(at)));
             Walk(ref at, car.TrailingOverhang + (i < Body.Extension.Length ? Body.Extension[i] : 0.0), memory);
         }
+    }
+
+    /// How far either side of a truck's middle its wheels hold it to the rail, metres: about half a truck's wheelbase.
+    private const double TruckReach = 2.0;
+
+    /// The way a truck at a place faces: along the rail from TruckReach behind it to TruckReach ahead, as its wheels hold it,
+    /// on the plan. (Not the track's own heading at the one place: a line drawn as straights between points turns at each
+    /// point all at once, and a truck would jump with it.)
+    private (double X, double Z) TruckFacing(TrackPosition at)
+    {
+        var (ahead, behind) = (at, at);
+        Graph.Move(ref ahead, TruckReach);
+        Graph.Move(ref behind, -TruckReach);
+        var (ax, _, az) = Graph.PositionOf(ahead);
+        var (bx, _, bz) = Graph.PositionOf(behind);
+        var (dx, dz) = (ax - bx, az - bz);
+        var length = Math.Sqrt(dx * dx + dz * dz);
+        return length < 1e-6 ? Graph.FacingOf(at) : (dx / length, dz / length);
     }
 
     /// Back along the rail by a length measured along it, as Back does, with no account kept of the track running out.
