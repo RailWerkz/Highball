@@ -312,15 +312,6 @@ public sealed partial class NetworkMeshes : IDisposable
             }
     }
 
-    /// Every grade crossing's hole in the terrain (where its surface is solid), with how far it is from (x, z).
-    public IEnumerable<(CrossingHole Hole, double Distance)> CrossingHoles(double x, double z)
-    {
-        foreach (var list in _objectsByChunk.Values)
-            foreach (var placed in list)
-                if (placed.Deck?.Mesh is { Hole.Columns: > 0 } mesh)
-                    yield return (mesh.Hole, Math.Sqrt((placed.X - x) * (placed.X - x) + (placed.Z - z) * (placed.Z - z)));
-    }
-
     public SignalLamps LampsOf(long signal) => _lamps.GetValueOrDefault(signal, App.DevTools.Lamps ?? SignalLamps.Red);
 
     /// Lights a signal's lamps (any of them, all, or none), and builds its chunk again to show it.

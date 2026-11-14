@@ -471,7 +471,8 @@ void main()
             // not, never see-through, until it's too far off to make out one.
             float ground = mix(1.05, 0.1, rise) + (0.5 - drift) * 0.5;
             float soft = 0.03 + 0.04 * log2(max(footprint, 1.0));
-            coverage = smoothstep(ground - soft, ground + soft, stones) * smoothstep(0.0, 0.15, rise);
+            // Wholly covering at its solid end, as the rock it runs on from is.
+            coverage = max(smoothstep(ground - soft, ground + soft, stones) * smoothstep(0.0, 0.15, rise), smoothstep(0.85, 1.0, rise));
         }
 
         float patches = fbm(tex * 0.35, pixel * 0.35);

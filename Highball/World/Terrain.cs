@@ -407,10 +407,10 @@ public sealed class Terrain : IDisposable
 
     /// How much further one way across a quad has to climb than the other, per metre of vertex spacing, before the quad's
     /// split is turned to the gentler one.
-    private const float FlipGain = 0.5f;
+    public const float FlipGain = 0.5f;
 
     /// Fewer quads than this needing it isn't worth the patch its own index list.
-    private const int FewestFlips = 16;
+    public const int FewestFlips = 16;
 
     /// Which quads to split along their gentler diagonal. Split the same way everywhere, a steep slope running across the
     /// diagonals comes out as a sawtooth. Null when no quad needs it, so the patch can share the common index list.
