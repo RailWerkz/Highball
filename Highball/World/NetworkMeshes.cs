@@ -2176,6 +2176,21 @@ public sealed partial class NetworkMeshes : IDisposable
             return;
         var from = new float3((float)(placed.X - builder.Origin.X), 0f, (float)(placed.Z - builder.Origin.Z));
         var surface = Code(LineMaterial.Asphalt);
+        // The rock mound it stands in.
+        if (deck.Apron is { } apron)
+        {
+            var rock = Code(LineMaterial.Gravel);
+            var start = (uint)builder.Vertices.Count;
+            for (var i = 0; i < apron.Points.Length; i++)
+            {
+                var p = from + apron.Points[i];
+                builder.Add(p, apron.Normals[i], new float4(p.X, p.X + p.Z, rock, 0f));
+            }
+
+            foreach (var index in apron.Indices)
+                builder.Indices.Add(start + index);
+        }
+
         foreach (var q in deck.Quads)
         {
             if (q.Paint >= 0f)
