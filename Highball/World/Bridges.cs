@@ -119,8 +119,20 @@ public static class BridgePlanner
 
     /// Every bridge on the lines: each line's bridged stretch, put together with any others beside it going the same way over the
     /// same gap at much the same height. A guide's bridge is one until track's laid across it, when the track's bridge takes its place.
-    public static List<BridgeGroup> Find(NetworkLines lines)
+    /// previous: the last lines, for a local rebuild (LocalRebuild): a bridge all of whose lines were kept as they were is the
+    /// last one's, taken as it was rather than found again.
+    public static List<BridgeGroup> Find(NetworkLines lines, NetworkLines? previous = null)
     {
+        Dictionary<(NetworkLine Line, int First), BridgeGroup>? before = null;
+        if (previous?.Bridges is { } had)
+        {
+            before = [];
+            foreach (var group in had)
+                foreach (var m in group.Members)
+                    before.TryAdd((m.Line, m.First), group);
+        }
+
+        var reused = new HashSet<BridgeGroup>();
         var spans = new List<(NetworkLine Line, int First, int Last, double Mx, double Mz, double Fx, double Fz, float Y, float Half, float Length)>();
         foreach (var line in lines.Lines)
         {
@@ -173,8 +185,29 @@ public static class BridgePlanner
         foreach (var set in Enumerable.Range(0, spans.Count).GroupBy(Root))
         {
             var members = set.Select(i => spans[i]).ToList();
+            // (All its lines kept as they were: the bridge is as it was.)
+            if (before is not null && members.All(m => m.Line.Frozen) && before.TryGetValue((members[0].Line.Origin!, members[0].First), out var was) &&
+                was.Members.Count == members.Count)
+            {
+                var map = new Dictionary<NetworkLine, NetworkLine>();
+                foreach (var m in members)
+                    map.TryAdd(m.Line.Origin!, m.Line);
+                if (map.ContainsKey(was.Reference) && was.Members.All(w => map.ContainsKey(w.Line)))
+                {
+                    var copy = new BridgeGroup
+                    {
+                        Key = was.Key, Reference = map[was.Reference], First = was.First, Last = was.Last, Rail = was.Rail, X = was.X, Z = was.Z,
+                        Members = [.. was.Members.Select(w => (map[w.Line], w.First, w.Last, w.Offset, w.Half))], Spread = was.Spread, Covered = was.Covered,
+                    };
+                    copy.Under.AddRange(was.Under);
+                    groups.Add(copy);
+                    reused.Add(copy);
+                    continue;
+                }
+            }
+
             var reference = members.OrderByDescending(m => m.Line.Rail).ThenByDescending(m => m.Line.Mark).ThenByDescending(m => m.Length).First();
-            foreach (var m in members.Where(m => m.Line.Mark && m.Line != reference.Line))
+            foreach (var m in members.Where(m => m.Line.Mark && m.Line != reference.Line && !m.Line.Frozen))
                 LevelTo(m.Line, m.First, m.Last, reference.Line, reference.First, reference.Last);
             var (rx, rz) = (-reference.Fz, reference.Fx);
             // Its key stays the same as track's added to it: a guide's place, if it's over one (guides have no nodes); otherwise the
@@ -254,21 +287,36 @@ public static class BridgePlanner
 
         // Every line's segments, filed by the grid cells they cross, so each bridge only looks at what's near it. (A long line's bounds
         // take in most of the route: going through all of its points for every bridge was most of finding them.)
+        // (Only where a bridge found again will look: a kept one knows what's under it.)
+        var wanted = new HashSet<(int X, int Z)>();
+        foreach (var group in groups.Where(g => !reused.Contains(g)))
+        {
+            var (minX, maxX, minZ, maxZ) = (double.MaxValue, double.MinValue, double.MaxValue, double.MinValue);
+            for (var p = group.First; p <= group.Last; p++)
+                (minX, maxX, minZ, maxZ) = (Math.Min(minX, group.Reference.X[p]), Math.Max(maxX, group.Reference.X[p]), Math.Min(minZ, group.Reference.Z[p]), Math.Max(maxZ, group.Reference.Z[p]));
+            foreach (var cell in UnderCells(minX, minZ, maxX, maxZ))
+                wanted.Add(cell);
+        }
+
         var order = new Dictionary<NetworkLine, int>();
         var cells = new Dictionary<(int X, int Z), List<(NetworkLine Line, int I)>>();
         foreach (var line in lines.Lines)
         {
             order[line] = order.Count;
+            if (wanted.Count == 0)
+                continue;
             for (var i = 0; i + 1 < line.Count; i++)
                 foreach (var cell in UnderCells(line.X[i], line.Z[i], line.X[i + 1], line.Z[i + 1]))
                 {
+                    if (!wanted.Contains(cell))
+                        continue;
                     if (!cells.TryGetValue(cell, out var list))
                         cells[cell] = list = [];
                     list.Add((line, i));
                 }
         }
 
-        foreach (var group in groups)
+        foreach (var group in groups.Where(g => !reused.Contains(g)))
             FindUnder(group, cells, order);
         return groups;
     }

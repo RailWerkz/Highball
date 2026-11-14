@@ -40,7 +40,7 @@ internal struct StableHash
 public sealed partial class NetworkLines
 {
     /// Bumped when the file's layout changes; an older file is solved again.
-    private const int SolvedVersion = 27;
+    private const int SolvedVersion = 28;
 
     private static string SolvedPath(RouteInfo route) => Path.Combine(route.Folder, "Track.bin.gz");
 
@@ -128,6 +128,7 @@ public sealed partial class NetworkLines
             w.Write(line.Rail);
             w.Write(line.Class);
             w.Write(line.Key);
+            w.Write(line.Chain);
             w.Write(line.Count);
             Numbers(w, line.X);
             Numbers(w, line.Z);
@@ -203,6 +204,11 @@ public sealed partial class NetworkLines
         w.Write(Links.Count);
         foreach (var node in Links)
             w.Write(node);
+
+        // Every chain laid from, so the first edit after the route's opened can be a local rebuild (LocalRebuild).
+        w.Write(_seenChains.Count);
+        foreach (var chain in _seenChains)
+            w.Write(chain);
     }
 
     private static void Numbers<T>(BinaryWriter w, ReadOnlySpan<T> values) where T : unmanaged => w.Write(MemoryMarshal.AsBytes(values));
@@ -266,6 +272,8 @@ public sealed partial class NetworkLines
             var links = new HashSet<long>();
             for (var n = r.ReadInt32(); n > 0; n--)
                 links.Add(r.ReadInt64());
+            for (var n = r.ReadInt32(); n > 0; n--)
+                _seenChains.Add(r.ReadInt64());
 
             _lines.AddRange(lines);
             Fitted = fitted;
@@ -284,7 +292,7 @@ public sealed partial class NetworkLines
 
     private static NetworkLine ReadLine(BinaryReader r, int index)
     {
-        var (rail, kind, key, count) = (r.ReadBoolean(), r.ReadInt32(), r.ReadInt64(), r.ReadInt32());
+        var (rail, kind, key, chain, count) = (r.ReadBoolean(), r.ReadInt32(), r.ReadInt64(), r.ReadInt64(), r.ReadInt32());
         var x = Numbers<double>(r, count);
         var z = Numbers<double>(r, count);
         var s = Numbers<float>(r, count);
@@ -318,6 +326,10 @@ public sealed partial class NetworkLines
         line.MaxX = x.Max();
         line.MinZ = z.Min();
         line.MaxZ = z.Max();
+        line.Chain = chain;
+        // (Saved as solved, before the roads are shaped: their points as laid.)
+        if (!line.Rail)
+            (line.RawX, line.RawZ) = ((double[])x.Clone(), (double[])z.Clone());
         return line;
     }
 }

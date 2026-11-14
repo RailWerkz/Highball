@@ -30,7 +30,29 @@ public sealed partial class NetworkLines
         var order = new Dictionary<NetworkLine, int>();
         foreach (var line in lines)
             order[line] = order.Count;
-        var made = (Cells(lines, null), order);
+        // (In a local rebuild, only where a bridge laid again looks: a kept one's lifted already.)
+        HashSet<(int X, int Z)>? wanted = null;
+        if (lines.Any(l => l.Frozen))
+        {
+            wanted = [];
+            foreach (var line in lines.Where(l => !l.Frozen))
+                for (var p = 0; p < line.Structures.Length; p++)
+                {
+                    if (line.Structures[p] != Structure.Bridge)
+                        continue;
+                    var to = p;
+                    while (to + 1 < line.Structures.Length && line.Structures[to + 1] == Structure.Bridge)
+                        to++;
+                    var (bx0, bx1, bz0, bz1) = (double.MaxValue, double.MinValue, double.MaxValue, double.MinValue);
+                    for (var q = p; q <= to + 1; q++)
+                        (bx0, bx1, bz0, bz1) = (Math.Min(bx0, line.X[q]), Math.Max(bx1, line.X[q]), Math.Min(bz0, line.Z[q]), Math.Max(bz1, line.Z[q]));
+                    foreach (var cell in CellsOf(bx0, bz0, bx1, bz1))
+                        wanted.Add(cell);
+                    p = to;
+                }
+        }
+
+        var made = (Cells(lines, null, wanted), order);
         _liftCells = made;
         return made;
     }
@@ -47,6 +69,9 @@ public sealed partial class NetworkLines
         var lifts = new List<(NetworkLine Line, List<(float S, float Height, float Half)> Needs)>();
         foreach (var line in lines)
         {
+            // (A kept line, in a local rebuild, is lifted already.)
+            if (line.Frozen)
+                continue;
             var depth = BridgePlanner.DeckDepth(line);
             var deckHalf = BridgePlanner.DeckHalf(line);
             var needs = new List<(float S, float Height, float Half)>();
@@ -191,6 +216,8 @@ public sealed partial class NetworkLines
         var (lifted, most) = (0, 0f);
         bool Lift(NetworkLine line, List<(float S, float Height, float Half)> needs)
         {
+            if (line.Frozen)
+                return false;
             var changed = false;
             var raised = new bool[line.Count];
             var wanted = new float[line.Count];
@@ -296,6 +323,8 @@ public sealed partial class NetworkLines
         var dipped = 0;
         foreach (var (line, needs) in dips)
         {
+            if (line.Frozen)
+                continue;
             var changed = false;
             for (var p = 0; p < line.Count; p++)
             {
@@ -321,7 +350,7 @@ public sealed partial class NetworkLines
     /// Every road deck one profile from end to end: straight, or a single crest, never a wave.
     private void CrestDecks()
     {
-        Parallel.ForEach(_lines.Where(l => !l.Rail && !l.Mark), line =>
+        Parallel.ForEach(_lines.Where(l => !l.Rail && !l.Mark && !l.Frozen), line =>
         {
             var touched = false;
             for (var p = 0; p < line.Structures.Length; p++)

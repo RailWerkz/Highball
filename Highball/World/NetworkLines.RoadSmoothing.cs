@@ -123,6 +123,9 @@ public sealed partial class NetworkLines
 
         Parallel.ForEach(chains, chain =>
         {
+            // (A chain of kept roads, in a local rebuild, is finished already.)
+            if (chain.All(c => runs[c.Run].Line.Frozen))
+                return;
             // The chain's points in order, each with the line points it is (a join is the end of one line and the start of the next).
             var xs = new List<double>();
             var zs = new List<double>();
@@ -165,6 +168,8 @@ public sealed partial class NetworkLines
             for (var i = 1; i + 1 < refs.Count; i++)
                 foreach (var (line, p) in refs[i])
                 {
+                    if (line.Frozen)
+                        continue;
                     if (nodeAt[line].TryGetValue(p, out var node) && p > 0 && p < line.Count - 1 && Soft(node))
                         moved[node] = (smooth[i].X - xs[i], smooth[i].Z - zs[i]);
                     (line.X[p], line.Z[p]) = smooth[i];

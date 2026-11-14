@@ -23,6 +23,10 @@ public sealed partial class NetworkLines
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
         var roads = _lines.Where(l => !l.Rail && !l.Mark && l.Count >= 3).ToList();
+        // (In a local rebuild the kept roads are shaped already, and are left be; but the roads near the edit are shaped against
+        // them as they were laid, as in a full rebuild, so they come out the same. They're put back after.)
+        foreach (var road in roads.Where(r => r.Frozen))
+            road.Unshaped();
 
         // Nodes more than one line runs through (junctions, level crossings), which stay put.
         var uses = new Dictionary<long, int>();
@@ -31,7 +35,8 @@ public sealed partial class NetworkLines
                 uses[node] = uses.GetValueOrDefault(node) + 1;
 
         EvenWidths(roads, uses);
-        var before = roads.ToDictionary(r => r, r => ((double[])r.X.Clone(), (double[])r.Z.Clone()));
+        // (Kept lines, in a local rebuild, are finished already: they're there to be met, not shaped again.)
+        var before = roads.Where(r => !r.Frozen).ToDictionary(r => r, r => ((double[])r.X.Clone(), (double[])r.Z.Clone()));
         SmoothRoads(roads, uses);
         double Moved(NetworkLine r)
         {
@@ -41,9 +46,9 @@ public sealed partial class NetworkLines
                 most = Math.Max(most, (r.X[p] - x[p]) * (r.X[p] - x[p]) + (r.Z[p] - z[p]) * (r.Z[p] - z[p]));
             return Math.Sqrt(most);
         }
-        var fitted = roads.Select(Moved).ToList();
+        var fitted = before.Keys.Select(Moved).ToList();
         var fitMoved = (fitted.Count(m => m > 0.5), fitted.DefaultIfEmpty(0).Max());
-        foreach (var r in roads)
+        foreach (var r in before.Keys.ToList())
             before[r] = ((double[])r.X.Clone(), (double[])r.Z.Clone());
         var users = new Dictionary<long, List<(NetworkLine Line, int Point)>>();
         foreach (var line in _lines.Where(l => !l.Mark))
@@ -58,17 +63,20 @@ public sealed partial class NetworkLines
         KeepCarriagewaysApart(roads, uses, users);
         // What moving the carriageways and their ends left uneven, smoothed out lightly.
         SmoothRoads(roads, uses, FinalSmoothing);
-        var apart = roads.Select(Moved).ToList();
+        var apart = before.Keys.Select(Moved).ToList();
         RailWerkz.Core.Logging.Log.Info($"Roads: fitting moved {fitMoved.Item1} roads over 0.5 m (most {fitMoved.Item2:0.0} m); {_spreadNodes.Count} carriageway pairs spread at their ends; medians moved {apart.Count(m => m > 0.25)} (most {apart.DefaultIfEmpty(0).Max():0.0} m)");
 
-        foreach (var road in roads)
+        foreach (var road in roads.Where(r => !r.Frozen))
         {
             for (var p = 1; p < road.Count; p++)
                 road.S[p] = road.S[p - 1] + (float)Math.Sqrt((road.X[p] - road.X[p - 1]) * (road.X[p] - road.X[p - 1]) + (road.Z[p] - road.Z[p - 1]) * (road.Z[p] - road.Z[p - 1]));
             (road.MinX, road.MaxX, road.MinZ, road.MaxZ) = (road.X.Min(), road.X.Max(), road.Z.Min(), road.Z.Max());
         }
 
+        foreach (var road in roads.Where(r => r.Frozen))
+            road.Shaped();
         StretchBridges(uses);
+
 
         RailWerkz.Core.Logging.Log.Info($"Roads: {roads.Count} shaped in {watch.ElapsedMilliseconds} ms");
     }
@@ -92,12 +100,32 @@ public sealed partial class NetworkLines
             railNodes.Contains(node) || _spreadNodes.Contains(node) ||
             (!Continues(node, road) && users[node].Any(u => u.Line != road && isDivided.Contains(u.Line)));
 
-        // Their segments by square, PairReach a side, so each point looks only at those near it.
+        // Their segments by square, PairReach a side, so each point looks only at those near it. (In a local rebuild, only the
+        // squares round the roads laid again: a kept road's kept apart already.)
+        // (A kept carriageway meeting one laid again is worked out too, as it moves the node they share; it isn't moved itself.)
+        var laidNodes = divided.Where(r => !r.Frozen).SelectMany(r => r.Nodes.Select(n => n.Node)).ToHashSet();
+        bool Worked(NetworkLine road) => !road.Frozen || road.Nodes.Any(n => laidNodes.Contains(n.Node));
+        HashSet<(int, int)>? wanted = null;
+        if (divided.Any(r => r.Frozen))
+        {
+            wanted = [];
+            foreach (var road in divided.Where(Worked))
+                for (var p = 0; p < road.Count; p++)
+                {
+                    var (cx, cz) = ((int)Math.Floor(road.X[p] / PairReach), (int)Math.Floor(road.Z[p] / PairReach));
+                    for (var gz = cz - 1; gz <= cz + 1; gz++)
+                        for (var gx = cx - 1; gx <= cx + 1; gx++)
+                            wanted.Add((gx, gz));
+                }
+        }
+
         var grid = new Dictionary<(int, int), List<(NetworkLine Line, int Segment)>>();
         foreach (var road in divided)
             for (var q = 0; q + 1 < road.Count; q++)
             {
                 var cell = ((int)Math.Floor((road.X[q] + road.X[q + 1]) * 0.5 / PairReach), (int)Math.Floor((road.Z[q] + road.Z[q + 1]) * 0.5 / PairReach));
+                if (wanted is not null && !wanted.Contains(cell))
+                    continue;
                 if (!grid.TryGetValue(cell, out var list))
                     grid[cell] = list = [];
                 list.Add((road, q));
@@ -106,7 +134,7 @@ public sealed partial class NetworkLines
         var shifts = new Dictionary<NetworkLine, (double X, double Z)[]>();
         Parallel.ForEach(divided, () => new List<(NetworkLine, (double, double)[])>(), (road, _, found) =>
         {
-            if (Shift(road, grid, uses, Pinned) is { } shift)
+            if (Worked(road) && Shift(road, grid, uses, Pinned) is { } shift)
                 found.Add((road, shift));
             return found;
         }, found =>
@@ -116,7 +144,7 @@ public sealed partial class NetworkLines
                     shifts[road] = shift;
         });
 
-        foreach (var (road, shift) in shifts)
+        foreach (var (road, shift) in shifts.Where(s => !s.Key.Frozen))
             for (var p = 0; p < road.Count; p++)
                 (road.X[p], road.Z[p]) = (road.X[p] + shift[p].X, road.Z[p] + shift[p].Z);
 
@@ -149,6 +177,8 @@ public sealed partial class NetworkLines
     /// which stays put).
     private static void Drag(NetworkLine line, int point, (double X, double Z) by, float reach, Dictionary<long, int> uses)
     {
+        if (line.Frozen)
+            return;
         var from = line.S[point];
         foreach (var (node, at) in line.Nodes)
             if (at != point && uses.GetValueOrDefault(node) > 1)
@@ -245,6 +275,8 @@ public sealed partial class NetworkLines
     private static void Spread((NetworkLine Line, int Point) end, (double X, double Z) onward, (double X, double Z) side, float by, Dictionary<long, int> uses)
     {
         var (line, point) = end;
+        if (line.Frozen)
+            return;
         var (nx, nz) = (line.X[point], line.Z[point]);
         var from = line.S[point];
         var reach = MathF.Min(TaperLength(line, by), line.S[line.Count - 1] * 0.8f);
@@ -470,7 +502,7 @@ public sealed partial class NetworkLines
                 continue;
             if (a.Class != road.Class || b.Class != road.Class || a.Oneway != road.Oneway || b.Oneway != road.Oneway)
                 continue;
-            if (MathF.Abs(a.Width - b.Width) < 0.01f && MathF.Abs(a.Width - road.Width) >= 0.01f)
+            if (!road.Frozen && MathF.Abs(a.Width - b.Width) < 0.01f && MathF.Abs(a.Width - road.Width) >= 0.01f)
                 changes.Add((road, a.Width));
         }
 

@@ -46,8 +46,15 @@ public sealed partial class NetworkLines
     public CrossingPad? PadOf(long id) => _pads.FirstOrDefault(p => p.Id == id);
 
     /// The grade crossings placed on the route, for FinishProfiles to make pads of.
+    /// The crossings these lines were laid with, to tell an edit to them.
+    private List<PlacedObject> _crossingObjects = [];
+
+    /// Whether these lines were laid with these same crossings.
+    internal bool SameCrossings(IReadOnlyList<PlacedObject> crossings) => _crossingObjects.SequenceEqual(crossings);
+
     public void SetCrossings(IEnumerable<PlacedObject> objects, RouteProjection projection)
     {
+        _crossingObjects = [.. objects.Where(o => o.Kind == PlacedKind.GradeCrossing)];
         _crossings.Clear();
         foreach (var o in objects.Where(o => o.Kind == PlacedKind.GradeCrossing))
         {
@@ -154,7 +161,7 @@ public sealed partial class NetworkLines
     {
         if (_pads.Count == 0)
             return;
-        Parallel.ForEach(_lines.Where(l => !l.Rail && !l.Mark && l.Count >= 2), road =>
+        Parallel.ForEach(_lines.Where(l => !l.Rail && !l.Mark && l.Count >= 2 && !l.Frozen), road =>
         {
             var length = road.S[road.Count - 1];
             foreach (var (point, inward) in new[] { (0, 1), (road.Count - 1, -1) })

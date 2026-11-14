@@ -91,9 +91,13 @@ public sealed partial class NetworkLines
     }
 
     /// The segments of these lines that are of one kind (on the ground, a bridge; null, any), filed by the grid cells they cross (CellsOf).
-    private static Dictionary<(int X, int Z), List<(NetworkLine Line, int I)>> Cells(IEnumerable<NetworkLine> lines, Structure? kind)
+    /// wanted: only these cells (null: all), when only some will be looked in.
+    private static Dictionary<(int X, int Z), List<(NetworkLine Line, int I)>> Cells(IEnumerable<NetworkLine> lines, Structure? kind,
+        HashSet<(int X, int Z)>? wanted = null)
     {
         var cells = new Dictionary<(int X, int Z), List<(NetworkLine Line, int I)>>();
+        if (wanted is { Count: 0 })
+            return cells;
         foreach (var line in lines)
             for (var i = 0; i + 1 < line.Count; i++)
             {
@@ -101,6 +105,8 @@ public sealed partial class NetworkLines
                     continue;
                 foreach (var cell in CellsOf(line.X[i], line.Z[i], line.X[i + 1], line.Z[i + 1]))
                 {
+                    if (wanted is not null && !wanted.Contains(cell))
+                        continue;
                     if (!cells.TryGetValue(cell, out var list))
                         cells[cell] = list = [];
                     list.Add((line, i));
@@ -119,13 +125,16 @@ public sealed partial class NetworkLines
         // line's bounds take in most of the route: going through all of its points for every bridge was most of shaping the roads.)
         // A segment can only go from the ground to a bridge as bridges are stretched, never back, so the cells stay good for the
         // whole pass as long as each one's still checked to be on the ground.
-        var cells = Cells(lines, Structure.Ground);
+        // (In a local rebuild, only where a bridge laid again will look: a kept one's stretched already.)
+        var cells = Cells(lines, Structure.Ground, lines.Any(l => l.Frozen) ? StretchLooks(lines) : null);
         var looked = new HashSet<(NetworkLine, int)>();
         var joins = new Dictionary<NetworkLine, bool>();
         var stretched = 0;
         var most = 0f;
         foreach (var line in lines)
         {
+            if (line.Frozen)
+                continue;
             var junctions = line.Nodes.Where(n => uses.GetValueOrDefault(n.Node) > 1).Select(n => n.Point).ToHashSet();
             var deckHalf = BridgePlanner.DeckHalf(line);
             for (var p = 0; p < line.Structures.Length; p++)
@@ -206,6 +215,36 @@ public sealed partial class NetworkLines
 
         var lined = LineUpBridges(lines, uses);
         RailWerkz.Core.Logging.Log.Info($"Bridges: {stretched} lengthened to clear what's under them (most {most:0} m at one end), {_sideBySide.Count} pairs side by side");
+    }
+
+    /// The cells StretchBridges will look in for the lines laid again (see StretchBridges: each bridge's points within BridgeStretch
+    /// either side, boxed).
+    private static HashSet<(int X, int Z)> StretchLooks(List<NetworkLine> lines)
+    {
+        var wanted = new HashSet<(int X, int Z)>();
+        foreach (var line in lines.Where(l => !l.Frozen))
+            for (var p = 0; p < line.Structures.Length; p++)
+            {
+                if (line.Structures[p] != Structure.Bridge)
+                    continue;
+                var to = p;
+                while (to + 1 < line.Structures.Length && line.Structures[to + 1] == Structure.Bridge)
+                    to++;
+                var (first, last) = (p, to + 1);
+                p = to;
+                var (q0, q1) = (first, last);
+                while (q0 > 0 && line.S[q0] > line.S[first] - BridgeStretch)
+                    q0--;
+                while (q1 < line.Count - 1 && line.S[q1] < line.S[last] + BridgeStretch)
+                    q1++;
+                var (bx0, bx1, bz0, bz1) = (double.MaxValue, double.MinValue, double.MaxValue, double.MinValue);
+                for (var q = q0; q <= q1; q++)
+                    (bx0, bx1, bz0, bz1) = (Math.Min(bx0, line.X[q]), Math.Max(bx1, line.X[q]), Math.Min(bz0, line.Z[q]), Math.Max(bz1, line.Z[q]));
+                foreach (var cell in CellsOf(bx0, bz0, bx1, bz1))
+                    wanted.Add(cell);
+            }
+
+        return wanted;
     }
 
     /// Bridges side by side over the same gap (a divided road's carriageways, a slip road beside them) start and end together, as one

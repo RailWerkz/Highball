@@ -128,6 +128,98 @@ public sealed class NetworkLine
 
     /// Half the ballast top's width.
     public float BallastHalfTop => (Tracks - 1) * 0.5f * TrackSpacing + BallastShoulder;
+
+    /// The chain of ways it was laid from (its nodes, kind and tags, hashed): the same line comes from the same chain.
+    public long Chain { get; set; }
+
+    /// A road's or mark's points as laid, before the roads were shaped: what a local rebuild shapes the roads near the edit
+    /// against, as a full one would (see ShapeRoads).
+    public double[] RawX { get; set; } = [];
+    public double[] RawZ { get; set; } = [];
+
+    /// Taken as it was from the last rebuild, finished, because the edit was too far off to change it (a local rebuild, see
+    /// NetworkLines.Build). The passes leave it be, reading it as the lines round it are worked out; and whatever one does to it
+    /// anyway is undone when they're done (Restore), so it comes out exactly as it was.
+    public bool Frozen => _origin is not null && !_halo;
+
+    /// Laid again round the lines near an edit, for them to be worked out against, and put back as it was after (see
+    /// LocalRebuild.Halo): every pass works on it as on any line.
+    public bool Halo => _halo;
+
+    private bool _halo;
+
+    /// Marks a line laid again as part of a local rebuild's halo, to be put back as previous is once the passes are done.
+    public void HaloOf(NetworkLine previous) => (_origin, _halo) = (previous, true);
+
+    /// The last rebuild's line this one's a frozen copy of.
+    private NetworkLine? _origin;
+
+    /// The last rebuild's line this one's a frozen copy of, if it is one.
+    public NetworkLine? Origin => _origin;
+
+    /// This line, finished, as one of a new set of lines at index: frozen (see Frozen), with arrays of its own (the last lines'
+    /// are still shown meanwhile, and mustn't change under them).
+    public NetworkLine FrozenAt(int index)
+    {
+        static T[] Own<T>(T[] array) => array.Length == 0 ? array : (T[])array.Clone();
+        var copy = new NetworkLine
+        {
+            Index = index, Rail = Rail, Class = Class, X = Own(X), Z = Own(Z), Y = Own(Y), Ground = Own(Ground), Key = Key, S = Own(S),
+            Structures = Own(Structures), Nodes = Nodes, Junction = Own(Junction), MappedX = MappedX, MappedZ = MappedZ, Alignment = Alignment,
+            Tracks = Tracks, Gauge = Gauge, Disused = Disused, Embedded = Embedded, Exact = Exact, Mark = Mark, Drape = Own(Drape),
+            Width = Width, Lanes = Lanes, Oneway = Oneway, Unpaved = Unpaved, Layers = Layers, Shift = Own(Shift), Formation = Formation,
+            MinX = MinX, MinZ = MinZ, MaxX = MaxX, MaxZ = MaxZ, Bed = Bed, BedHeight = BedHeight, Sink = Own(Sink), Chain = Chain, _origin = this,
+            RawX = RawX, RawZ = RawZ,
+        };
+        copy.TurnoutZones.AddRange(TurnoutZones);
+        copy.RailCuts.AddRange(RailCuts);
+        copy.TieCuts.AddRange(TieCuts);
+        return copy;
+    }
+
+    /// A frozen road taken back to its points as laid, for the roads near an edit to be shaped against (see ShapeRoads); Shaped
+    /// puts it back.
+    public void Unshaped()
+    {
+        if (!Frozen || RawX.Length != Count)
+            return;
+        Array.Copy(RawX, X, Count);
+        Array.Copy(RawZ, Z, Count);
+        for (var p = 1; p < Count; p++)
+            S[p] = S[p - 1] + (float)Math.Sqrt((X[p] - X[p - 1]) * (X[p] - X[p - 1]) + (Z[p] - Z[p - 1]) * (Z[p] - Z[p - 1]));
+    }
+
+    public void Shaped()
+    {
+        if (!Frozen || _origin is not { } o)
+            return;
+        Array.Copy(o.X, X, Count);
+        Array.Copy(o.Z, Z, Count);
+        Array.Copy(o.S, S, Count);
+    }
+
+    /// A frozen line put back exactly as the line it's a copy of, whatever's been done to it. Returns whether anything had.
+    public bool Restore()
+    {
+        if (_origin is not { } o || o.Count != Count)
+            return false;
+        var changed = !X.AsSpan().SequenceEqual(o.X) || !Z.AsSpan().SequenceEqual(o.Z) || !Y.AsSpan().SequenceEqual(o.Y) || !S.AsSpan().SequenceEqual(o.S) ||
+                      !Structures.AsSpan().SequenceEqual(o.Structures) || Width != o.Width || Formation != o.Formation ||
+                      !Shift.AsSpan().SequenceEqual(o.Shift) || !Sink.AsSpan().SequenceEqual(o.Sink) || !Junction.AsSpan().SequenceEqual(o.Junction);
+        Array.Copy(o.X, X, X.Length);
+        Array.Copy(o.Z, Z, Z.Length);
+        Array.Copy(o.Y, Y, Y.Length);
+        Array.Copy(o.S, S, S.Length);
+        Array.Copy(o.Ground, Ground, Ground.Length);
+        Array.Copy(o.Structures, Structures, Structures.Length);
+        (Width, Formation) = (o.Width, o.Formation);
+        Shift = o.Shift.Length == 0 ? o.Shift : (float[])o.Shift.Clone();
+        Sink = o.Sink.Length == 0 ? o.Sink : (float[])o.Sink.Clone();
+        Junction = o.Junction.Length == 0 ? o.Junction : (float[])o.Junction.Clone();
+        Drape = o.Drape.Length == 0 ? o.Drape : (float[])o.Drape.Clone();
+        (MinX, MinZ, MaxX, MaxZ) = (o.MinX, o.MinZ, o.MaxX, o.MaxZ);
+        return changed;
+    }
 }
 
 /// The route's roads and rails as NetworkLines, and the ground reshaped to carry them: every built tile's heights
@@ -225,6 +317,8 @@ public sealed partial class NetworkLines
 
     private sealed class Chain
     {
+        /// Its nodes, kind and tags, hashed (NetworkLine.Chain).
+        public long Id;
         public required bool Rail;
         public required int Class;
         public required Dictionary<string, string> Tags;
@@ -240,21 +334,37 @@ public sealed partial class NetworkLines
     /// The lines for the network's ways on the built tiles: the track as saved with the route, if it was solved from these
     /// same ways (solved and saved if not), with the lines shaped by hand laid over it. Heights come later, from SampleGround
     /// and FinishProfiles.
-    public static NetworkLines Build(IEnumerable<NetworkWay> network, RouteInfo route, HashSet<TileId> built, IReadOnlyDictionary<long, Alignment> shapes)
+    /// local: a local rebuild after an edit to track only (see LocalRebuild): roads and marks far enough from it are taken
+    /// finished from the last lines rather than laid again. It's done in full if anything else has changed since.
+    public static NetworkLines Build(IEnumerable<NetworkWay> network, RouteInfo route, HashSet<TileId> built, IReadOnlyDictionary<long, Alignment> shapes,
+        LocalRebuild? local = null)
     {
         var grid = route.Grid!;
         var lines = new NetworkLines((float)grid.Spacing, grid.Samples - 1);
         var chosen = SwitchSizes.Load(route);
         var watch = System.Diagnostics.Stopwatch.StartNew();
         var curves = SwitchCurves.Load(route);
-        var stamp = StampOf(network, built, chosen, curves, grid.Spacing);
-        if (lines.LoadSolved(route, stamp))
-            RailWerkz.Core.Logging.Log.Info($"Track: {lines._lines.Count} lines loaded as saved in {watch.ElapsedMilliseconds} ms");
+        network = network as IReadOnlyCollection<NetworkWay> ?? network.ToList();
+        (lines.Ways, lines.Shapes, lines.BuiltTiles, lines.Sizes, lines.Curves) = (network.ToDictionary(w => w.Id), shapes, built, chosen, curves);
+        if (local is not null && !local.Previous.SameInputs(shapes, built, chosen, curves))
+            local = null;
+        if (local is not null)
+        {
+            Solve(lines, network, route, built, chosen, curves, local);
+            lines.MarkHalo(local);
+            RailWerkz.Core.Logging.Log.Info($"Track: {lines._lines.Count} lines laid again near the edit in {watch.ElapsedMilliseconds} ms ({lines._lines.Count(l => l.Frozen)} kept as they were)");
+        }
         else
         {
-            Solve(lines, network, route, built, chosen, curves);
-            RailWerkz.Core.Logging.Log.Info($"Track: {lines._lines.Count} lines solved in {watch.ElapsedMilliseconds} ms");
-            lines.SaveSolved(route, stamp);
+            var stamp = StampOf(network, built, chosen, curves, grid.Spacing);
+            if (lines.LoadSolved(route, stamp))
+                RailWerkz.Core.Logging.Log.Info($"Track: {lines._lines.Count} lines loaded as saved in {watch.ElapsedMilliseconds} ms");
+            else
+            {
+                Solve(lines, network, route, built, chosen, curves, null);
+                RailWerkz.Core.Logging.Log.Info($"Track: {lines._lines.Count} lines solved in {watch.ElapsedMilliseconds} ms");
+                lines.SaveSolved(route, stamp);
+            }
         }
 
         lines.ShapeRoads();
@@ -265,7 +375,8 @@ public sealed partial class NetworkLines
     }
 
     /// Joins, smooths and cuts the network's ways to the built tiles, and lays out its track and switches.
-    private static void Solve(NetworkLines lines, IEnumerable<NetworkWay> network, RouteInfo route, HashSet<TileId> built, IReadOnlyDictionary<long, int> chosen, IReadOnlyDictionary<long, float> curves)
+    private static void Solve(NetworkLines lines, IEnumerable<NetworkWay> network, RouteInfo route, HashSet<TileId> built, IReadOnlyDictionary<long, int> chosen, IReadOnlyDictionary<long, float> curves,
+        LocalRebuild? local)
     {
         var projection = route.Projection!;
         var tileSize = route.Grid!.TileSize;
@@ -288,6 +399,8 @@ public sealed partial class NetworkLines
         // (Marks don't join anything: each keeps to its own mapped line, at the height of the ground under it.)
         foreach (var chain in Chains(marks))
         {
+            if (lines.Keep(chain, local))
+                continue;
             var (mx, mz, ms, mn) = Resample(chain, projection);
             var at = -1;
             for (var i = 0; i <= mx.Count; i++)
@@ -314,6 +427,8 @@ public sealed partial class NetworkLines
 
         foreach (var chain in chains)
         {
+            if (lines.Keep(chain, local))
+                continue;
             var (xs, zs, structures, nodes) = Resample(chain, projection);
             // (Yard tracks stand a few metres apart, closer than this could move them: they keep the line they were mapped on.)
             if (chain.Rail && chain.Class != (int)RailClass.Yard && !chain.Tags.ContainsKey(RouteNetwork.ExactTag))
@@ -910,7 +1025,120 @@ public sealed partial class NetworkLines
         line.MaxX = x.Max();
         line.MinZ = z.Min();
         line.MaxZ = z.Max();
+        line.Chain = chain.Id;
+        if (!line.Rail)
+            (line.RawX, line.RawZ) = ((double[])x.Clone(), (double[])z.Clone());
         _lines.Add(line);
+    }
+
+    // --- Local rebuilds. ---
+
+    /// What these lines were laid from, to tell what an edit changed: the ways (by id), the shapes laid by hand, the built tiles,
+    /// the switch sizes and curves picked. Null for lines read as saved.
+    internal Dictionary<long, NetworkWay>? Ways;
+    private IReadOnlyDictionary<long, Alignment>? Shapes;
+    private HashSet<TileId>? BuiltTiles;
+    private IReadOnlyDictionary<long, int>? Sizes;
+    private IReadOnlyDictionary<long, float>? Curves;
+
+    /// Every chain these lines were laid from (whether or not it gave a line on the built tiles), and the lines each gave.
+    private readonly HashSet<long> _seenChains = [];
+    private Dictionary<long, List<NetworkLine>>? _byChain;
+
+    /// Whether these lines were laid from the same shapes, tiles, switch sizes and curves.
+    private bool SameInputs(IReadOnlyDictionary<long, Alignment> shapes, HashSet<TileId> built, IReadOnlyDictionary<long, int> sizes, IReadOnlyDictionary<long, float> curves) =>
+        Shapes is { } was && was.Count == shapes.Count && shapes.All(s => was.TryGetValue(s.Key, out var a) && ReferenceEquals(a, s.Value)) &&
+        BuiltTiles is { } tiles && tiles.SetEquals(built) &&
+        Sizes is { } sz && sz.Count == sizes.Count && sizes.All(s => sz.TryGetValue(s.Key, out var v) && v == s.Value) &&
+        Curves is { } cv && cv.Count == curves.Count && curves.All(c => cv.TryGetValue(c.Key, out var v) && v == c.Value);
+
+    /// The chains laid from (see _seenChains) that gave a line near any of these places (world metres, within reach), for a
+    /// local rebuild to lay again.
+    internal HashSet<long> ChainsNear(IReadOnlyList<(double X, double Z)> places, double reach)
+    {
+        var cells = new HashSet<(int, int)>();
+        foreach (var (x, z) in places)
+            foreach (var cell in new GridCells(x - reach, z - reach, x + reach, z + reach, LocalCell))
+                cells.Add(cell);
+        var near = new HashSet<long>();
+        foreach (var line in _lines)
+        {
+            if (line.Rail || near.Contains(line.Chain))
+                continue;
+            for (var p = 0; p < line.Count; p++)
+                if (cells.Contains(((int)Math.Floor(line.X[p] / LocalCell), (int)Math.Floor(line.Z[p] / LocalCell))))
+                {
+                    near.Add(line.Chain);
+                    break;
+                }
+        }
+
+        return near;
+    }
+
+    /// Every frozen line put back exactly as it was (see NetworkLine.Restore), once the passes are done. Returns how many a pass
+    /// had changed (each such is a pass that should leave frozen lines be).
+    public int RestoreFrozen()
+    {
+        var touched = 0;
+        foreach (var line in _lines)
+            if (line.Restore() && line.Frozen)
+                touched++;
+        return touched;
+    }
+
+    /// The chains meeting (sharing a node with) these chains' lines, but not them: a local rebuild's halo (LocalRebuild.Halo).
+    internal HashSet<long> ChainsMeeting(HashSet<long> chains)
+    {
+        var nodes = _lines.Where(l => chains.Contains(l.Chain) && !l.Rail).SelectMany(l => l.Nodes.Select(n => n.Node)).ToHashSet();
+        var meeting = new HashSet<long>();
+        foreach (var line in _lines)
+            if (!line.Rail && !chains.Contains(line.Chain) && line.Nodes.Any(n => nodes.Contains(n.Node)))
+                meeting.Add(line.Chain);
+        return meeting;
+    }
+
+    /// Once a local rebuild's lines are made: each one laid again in its halo told which of the last lines to be put back as.
+    internal void MarkHalo(LocalRebuild local)
+    {
+        var before = local.Previous._lines.GroupBy(l => l.Key).ToDictionary(g => g.Key, g => g.First());
+        foreach (var line in _lines)
+            if (!line.Rail && local.Halo.Contains(line.Chain) && before.TryGetValue(line.Key, out var was) && was.Count == line.Count)
+                line.HaloOf(was);
+    }
+
+    /// The size of the cells ChainsNear marks what's near in, metres.
+    private const double LocalCell = 100.0;
+
+    /// Whether a chain's lines are taken finished from the last lines instead of laid (a local rebuild, a road or mark the last
+    /// lines were laid from too, not near the edit). Notes the chain as laid from either way.
+    private bool Keep(Chain chain, LocalRebuild? local)
+    {
+        chain.Id = ChainIdOf(chain);
+        _seenChains.Add(chain.Id);
+        if (local is null || chain.Rail || local.Near.Contains(chain.Id) || local.Halo.Contains(chain.Id) || !local.Previous._seenChains.Contains(chain.Id))
+            return false;
+        var previous = local.Previous;
+        previous._byChain ??= previous._lines.GroupBy(l => l.Chain).ToDictionary(g => g.Key, g => g.ToList());
+        foreach (var line in previous._byChain.GetValueOrDefault(chain.Id) ?? [])
+            _lines.Add(line.FrozenAt(_lines.Count));
+        return true;
+    }
+
+    private static long ChainIdOf(Chain chain)
+    {
+        var hash = new StableHash();
+        hash.Add(chain.Rail ? 1L : 0L);
+        hash.Add(chain.Class);
+        foreach (var node in chain.Nodes)
+            hash.Add(node);
+        foreach (var (key, value) in chain.Tags.OrderBy(t => t.Key, StringComparer.Ordinal))
+        {
+            hash.Add(key);
+            hash.Add(value);
+        }
+
+        return (long)hash.Value;
     }
 
     // --- Profiles. ---
@@ -983,8 +1211,11 @@ public sealed partial class NetworkLines
     public void FinishProfiles()
     {
         _liftCells = null;
+        _junctionRounds.Clear();
 
-        Parallel.ForEach(_lines, line =>
+        // (Kept lines, in a local rebuild, are finished: every pass leaves them be, and reads them as the lines round them are
+        // worked out.)
+        Parallel.ForEach(_lines.Where(l => !l.Frozen), line =>
         {
             Array.Copy(line.Ground, line.Y, line.Count);
             if (line.Mark)
@@ -1074,11 +1305,12 @@ public sealed partial class NetworkLines
         foreach (var road in _lines.Where(l => !l.Rail && !l.Mark))
             foreach (var (node, _) in road.Nodes)
                 _widestAt[node] = MathF.Max(_widestAt.GetValueOrDefault(node), road.Width * 0.5f);
-        Parallel.ForEach(_lines, line => line.Junction = JunctionDistances(line));
+        Parallel.ForEach(_lines.Where(l => !l.Frozen), line => line.Junction = JunctionDistances(line));
         Watch("crest");
         Layer();
         Turnouts = Turnout.Find(_lines, Fitted);
         LevelRoutes();
+        Before = null;
 
     }
 
@@ -1471,10 +1703,22 @@ public sealed partial class NetworkLines
         }
 
         var targets = new Dictionary<long, float>();
+        // (In a local rebuild, a node a kept line runs through is held where the last rebuild had it at this same round: what a
+        // full rebuild would make of it, the edit being too far off to change it. The lines laid again meet it there.)
+        var round = _junctionRounds.Count;
+        var before = _previous?._junctionRounds.ElementAtOrDefault(round);
+        var held = new HashSet<long>();
         foreach (var (node, list) in uses)
         {
             if (list.Count < 2)
                 continue;
+
+            if (list.Any(u => u.Line.Frozen))
+            {
+                targets[node] = before is not null && before.TryGetValue(node, out var was) ? was : (float)list.Where(u => u.Line.Frozen).Average(u => u.Line.Y[u.Point]);
+                held.Add(node);
+                continue;
+            }
 
             double sum = 0, weights = 0;
             foreach (var (line, point) in list)
@@ -1509,9 +1753,13 @@ public sealed partial class NetworkLines
                 var excess = MathF.Abs(difference) - climb;
                 if (excess <= 0.001f)
                     continue;
+                var (holdA, holdB) = (held.Contains(a), held.Contains(b));
+                if (holdA && holdB)
+                    continue;
                 var half = MathF.CopySign(excess * 0.5f, difference);
-                targets[a] -= half;
-                targets[b] += half;
+                // (One end held: the other moves the whole way.)
+                targets[a] -= holdA ? 0f : holdB ? half * 2f : half;
+                targets[b] += holdB ? 0f : holdA ? half * 2f : half;
                 moved = true;
             }
 
@@ -1519,10 +1767,11 @@ public sealed partial class NetworkLines
                 break;
         }
 
+        _junctionRounds.Add(targets);
         Parallel.ForEach(_lines, line =>
         {
             var nodes = along[line];
-            if (nodes.Count == 0)
+            if (nodes.Count == 0 || line.Frozen)
                 return;
 
             var deltas = nodes.Select(n => targets[n.Node] - line.Y[n.Point]).ToArray();
@@ -1544,6 +1793,13 @@ public sealed partial class NetworkLines
                 line.Y[point] = targets[node];
         });
     }
+
+    /// Each round of Junctions' heights at the nodes, in order, for a local rebuild after this one to hold its kept nodes to.
+    private readonly List<Dictionary<long, float>> _junctionRounds = [];
+
+    /// The last lines, during a local rebuild's FinishProfiles (let go after, so old lines don't pile up).
+    internal NetworkLines? Before;
+    private NetworkLines? _previous => Before;
 
     /// How many times the nodes along the lines are pulled together; it stops early once none needs it.
     private const int JunctionPasses = 400;
@@ -1575,6 +1831,8 @@ public sealed partial class NetworkLines
         foreach (var group in _surfaceShifts.GroupBy(f => f.Line))
         {
             var line = group.Key;
+            if (line.Frozen)
+                continue;
             var shift = new float[line.Count];
             var at = group.ToDictionary(f => f.Point, f => f.By);
             var length = line.S[^1];
@@ -1670,7 +1928,8 @@ public sealed partial class NetworkLines
 
             var (through, peel, peelSide) = Straightness(a) >= Straightness(b) ? (a, b, sideB > sideA ? 1f : -1f) : (b, a, sideA > sideB ? 1f : -1f);
             var surface = (width - through.Line.Width) * 0.5f;
-            MoveOver(peel, (ox, oz), (sx, sz), peelSide * (width - (through.Line.Width + peel.Line.Width) * 0.5f));
+            if (!peel.Line.Frozen)
+                MoveOver(peel, (ox, oz), (sx, sz), peelSide * (width - (through.Line.Width + peel.Line.Width) * 0.5f));
             var (_, mainRight) = (0, RightAt(main.Line, main.Point));
             _surfaceShifts.Add((main.Line, main.Point, surface * peelSide * (float)(sx * mainRight.X + sz * mainRight.Z)));
             if (Environment.GetEnvironmentVariable("HB_WATCH") == main.Line.Index.ToString())
@@ -1755,7 +2014,7 @@ public sealed partial class NetworkLines
                 }
             }
 
-        Parallel.ForEach(_lines.Where(l => !l.Rail && !l.Mark), road =>
+        Parallel.ForEach(_lines.Where(l => !l.Rail && !l.Mark && !l.Frozen), road =>
         {
             var hits = new List<(float S, float Y)>();
             var looked = new HashSet<int>();
