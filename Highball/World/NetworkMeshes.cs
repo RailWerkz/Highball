@@ -1532,6 +1532,18 @@ public sealed partial class NetworkMeshes : IDisposable
         var (center, right) = WideFrame(line, p, origin);
         if (p < line.Shift.Length)
             center += right * line.Shift[p];
+        // An end on a grade crossing's pad end is squared to the crossing's deck, whose ramp ends there square across the pad: the
+        // road's own heading, averaged back along it, can lie a degree or so off that and leave a wedge between the two.
+        if ((p == 0 || p == line.Count - 1) && !line.Rail && !line.Mark)
+            foreach (var pad in lines.Pads)
+            {
+                var (t, w) = pad.Local(line.X[p], line.Z[p]);
+                if (MathF.Abs(w) > pad.Half + 1f || MathF.Min(MathF.Abs(t - pad.From), MathF.Abs(t - pad.To)) > 0.05f)
+                    continue;
+                var across = new float3((float)-pad.Dz, 0f, (float)pad.Dx);
+                return (center, Dot(across, right) < 0f ? across * -1f : across);
+            }
+
         if ((p != 0 && p != line.Count - 1) || lines.Continuing(line, p) is not { } other)
             return (center, right);
 

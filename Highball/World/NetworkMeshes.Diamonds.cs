@@ -545,9 +545,32 @@ public sealed partial class NetworkMeshes
             edges.Add([.. row]);
         }
 
+        // Where the roads running on from each ramp actually end, across it: the deck's middle is the road's line through the pad, and on
+        // a long road that drifts a little from where the road's own end lies (centimetres), which would leave the two edges stepped
+        // where they meet. Each ramp's foot is moved across to the road's end, the ramp taking up the difference.
+        float EndOffset(float end)
+        {
+            var (best, found) = (0.25f, 0f);
+            foreach (var l in _lines.Lines)
+            {
+                if (l.Rail || l.Mark || l.Count < 2)
+                    continue;
+                foreach (var p in (int[])[0, l.Count - 1])
+                {
+                    var t = (float)((l.X[p] - cx) * dx + (l.Z[p] - cz) * dz);
+                    var w = (float)((l.X[p] - cx) * nx + (l.Z[p] - cz) * nz) + (p < l.Shift.Length ? l.Shift[p] : 0f);
+                    if (MathF.Abs(t - end) < best && MathF.Abs(w) < 1f)
+                        (best, found) = (MathF.Abs(t - end), w);
+                }
+            }
+
+            return found;
+        }
+
+        var (offLow, offHigh) = (EndOffset(edges[0][0].T), EndOffset(edges[0][^1].T));
         float3 Point(int k, int e, float drop = 0f)
         {
-            var w = -half + width * k / rows;
+            var w = -half + width * k / rows + (e == 0 ? offLow : e == edges[k].Length - 1 ? offHigh : 0f);
             var (t, y) = edges[k][e];
             return new float3((float)(nx * w + dx * t) + shiftX, y - drop, (float)(nz * w + dz * t) + shiftZ);
         }
@@ -591,7 +614,7 @@ public sealed partial class NetworkMeshes
                     c += roadWay * (feet[e / 2].Low - edges[k][e + 1].T);
                 if (e > 0)
                     d += roadWay * (feet[(e - 2) / 2].High - edges[k][e].T);
-                (c, d) = (Sunk(c), Sunk(d));
+                // (The road's own shoulder's drop exactly, not sunk to the ground: where the road runs on from the ramp the two are one.)
                 var middle = (a + b + c + d) * 0.25f + new float3((float)(nx * toward), -1f, (float)(nz * toward));
                 quads.Add(new DeckQuad(a, b, c, d, middle, true));
             }
@@ -724,6 +747,17 @@ public sealed partial class NetworkMeshes
                 // Level with the road nearer the road, with the panels nearer them; falling away with the two together.
                 var share = fromPanels / MathF.Max(fromPanels + fromRoad, 1e-3f);
                 var y = panelTop + (edge - panelTop) * share - Fall(MathF.Max(0f, SoftMin(fromRoad, fromPanels, Fillet)));
+
+                // Beside the road, away from the panels, no higher than the road's shoulder (as the road's own edge and the deck's are
+                // both shaped: down RoadShoulderSlope from just under its edge), so the shoulder shows the same along the deck as along
+                // the road that runs on from it, and they join as one. Near the panels the mound fills the corner up to them instead.
+                if (MathF.Abs(w) >= half)
+                {
+                    var shoulder = edge - 0.04f - (MathF.Abs(w) - half + 0.05f) * (ShoulderDrop / (ShoulderOut + 0.05f));
+                    var away = Math.Clamp((fromPanels - 1f) / 2f, 0f, 1f);
+                    away = away * away * (3f - 2f * away);
+                    y += (MathF.Min(y, shoulder) - y) * away;
+                }
 
                 var hidden = false;
                 if (MathF.Abs(w) < half)
