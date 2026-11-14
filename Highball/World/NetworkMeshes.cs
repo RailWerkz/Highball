@@ -2180,6 +2180,8 @@ public sealed partial class NetworkMeshes : IDisposable
         {
             if (q.Paint >= 0f)
                 Face(builder, [from + q.A, from + q.B, from + q.C, from + q.D], from + q.Inside, q.Paint, 0f);
+            else if (q.Plain)
+                Face(builder, [from + q.A, from + q.B, from + q.C], from + q.Inside, deck.Road?.Plain ?? surface, 0f);
             else if (deck.Road is not { } road)
                 Face(builder, [from + q.A, from + q.B, from + q.C, from + q.D], from + q.Inside, surface, 0f);
             else if (q.Shoulder)

@@ -320,11 +320,11 @@ public sealed partial class NetworkMeshes
     private const float ShoulderDrop = 0.41f;
 
     /// One quad of a deck, relative to the crossing's place, and whether it's a side (else it faces up). Paint: a panel's own
-    /// material code (else it's road).
-    private readonly record struct DeckQuad(float3 A, float3 B, float3 C, float3 D, float3 Inside, bool Shoulder = false, float Paint = -1f);
+    /// material code (else it's road). Plain: road surface without its markings (a corner past the road's edge).
+    private readonly record struct DeckQuad(float3 A, float3 B, float3 C, float3 D, float3 Inside, bool Shoulder = false, float Paint = -1f, bool Plain = false);
 
     /// The road a deck's a part of: what its surface is, and how a place on the deck maps to the road's own coordinates across and along.
-    private readonly record struct DeckRoad(float Code, float3 Across, float AcrossAt, float3 Along, float AlongAt);
+    private readonly record struct DeckRoad(float Code, float3 Across, float AcrossAt, float3 Along, float AlongAt, float Plain);
 
     /// What a grade crossing's made of: its deck, and its masts in world metres. Covered: each track's stretch under its panels
     /// (by line and distance along it), where it lays no ties.
@@ -563,16 +563,39 @@ public sealed partial class NetworkMeshes
                 quads.Add(new DeckQuad(a, b, c, d, (a + b + c + d) * 0.25f - new float3(0f, 1f, 0f)));
             }
 
+        // A shoulder's foot, relative to the base: ShoulderDrop under its top, or into the ground if the ground's lower there (the
+        // ballast beside a track, which the ground under the deck is kept off), so no slot's left under it.
+        float3 Sunk(float3 foot) => new(foot.X, MathF.Min(foot.Y, _source.HeightAt(foot.X + baseX, foot.Z + baseZ) - 0.08f), foot.Z);
+
         // The asphalt's edges: a gravel shoulder sloping down into the ground, as the road's own does, so the two run on as one.
+        // Where it meets a track's panels its foot runs on to their side, along the shoulder's own outer edge: on a skew the panels'
+        // side crosses that further along (or short of) where it crosses the road's edge, and a foot cut off square there would leave
+        // a hole looking in under the deck.
+        var roadWay = new float3((float)dx, 0f, (float)dz);
         foreach (var (k, toward) in new[] { (0, 1f), (rows, -1f) })
+        {
+            var wOut = (k == 0 ? -half : half) + (k == 0 ? -ShoulderOut : ShoulderOut);
+            var feet = tracks.Select(track =>
+            {
+                var (l, h) = (Meet(track, wOut, -reach).T, Meet(track, wOut, reach).T);
+                return (Low: MathF.Min(l, h), High: MathF.Max(l, h));
+            }).ToArray();
             for (var e = 0; e + 1 < count; e += 2)
             {
                 var outward = new float3((float)(nx * toward), 0f, (float)(nz * toward)) * -ShoulderOut;
                 var (a, b) = (Point(k, e), Point(k, e + 1));
                 var (c, d) = (Point(k, e + 1, ShoulderDrop) + outward, Point(k, e, ShoulderDrop) + outward);
+                // Edge e + 1 is track (e + 1 - 1) / 2's near side, unless it's the far ramp's foot; edge e track (e - 2) / 2's far side,
+                // unless it's the near ramp's foot.
+                if (e + 1 < count - 1)
+                    c += roadWay * (feet[e / 2].Low - edges[k][e + 1].T);
+                if (e > 0)
+                    d += roadWay * (feet[(e - 2) / 2].High - edges[k][e].T);
+                (c, d) = (Sunk(c), Sunk(d));
                 var middle = (a + b + c + d) * 0.25f + new float3((float)(nx * toward), -1f, (float)(nz * toward));
                 quads.Add(new DeckQuad(a, b, c, d, middle, true));
             }
+        }
 
         // The panels, track by track: whole panels from past one edge of the road to past the other, centred on it.
         var paint = PanelPaint(style);
@@ -599,6 +622,67 @@ public sealed partial class NetworkMeshes
                 foreach (var (u0, u1) in pieces)
                     Panel(quads, track, s0, s1, u0, u1, bevel, railTop, paint, baseX, baseZ);
             }
+        }
+
+        // The corners. Each track's panels run on past the road's edges along the track, square to it; on a skew, between a panel's
+        // long side and the road's edge, out to the panel's end, that leaves a wedge open down to the ballast. Each is filled with road
+        // surface level with the panels' tops where it meets them and with the deck at the road's edge, a hair under the panels so
+        // they win where it runs under them, and a gravel shoulder sloping down from its open edge, as the road's own edges do.
+        float EdgeHeight(int k, float t)
+        {
+            var row = edges[k];
+            if (t <= row[0].T)
+                return row[0].Y;
+            for (var e = 0; e + 1 < row.Length; e++)
+                if (t <= row[e + 1].T)
+                {
+                    var span = row[e + 1].T - row[e].T;
+                    return span < 1e-4f ? row[e + 1].Y : row[e].Y + (row[e + 1].Y - row[e].Y) * (t - row[e].T) / span;
+                }
+
+            return row[^1].Y;
+        }
+
+        float3 Relative(double x, double z, float y) => new((float)(x - baseX), y, (float)(z - baseZ));
+        for (var j = 0; j < tracks.Count; j++)
+        {
+            var track = tracks[j];
+            var (first, last) = (covered[j].From, covered[j].To);
+            foreach (var (k, w) in new[] { (0, -half), (rows, half) })
+                foreach (var lateral in (float[])[-reach, reach])
+                {
+                    // Where the panel's long side crosses the road's edge, and the end of it that lies out past that edge.
+                    var a = Meet(track, w, lateral);
+                    (double X, double Z, float Y, float W, float T)? Corner(float s)
+                    {
+                        var (px, pz, py, _, _, rx, rz) = track.Leg.At(s);
+                        var (qx, qz) = (px + rx * (track.Offset + lateral), pz + rz * (track.Offset + lateral));
+                        var across = (float)((qx - cx) * nx + (qz - cz) * nz);
+                        return MathF.Sign(across) == MathF.Sign(w) && MathF.Abs(across) > half + 0.02f
+                            ? (qx, qz, py + railTop, across, (float)((qx - cx) * dx + (qz - cz) * dz))
+                            : null;
+                    }
+
+                    if ((Corner(first) ?? Corner(last)) is not { } b || MathF.Abs(b.T - a.T) < 0.05f)
+                        continue;
+                    var (fx, fz) = (cx + nx * w + dx * b.T, cz + nz * w + dz * b.T);
+                    var pa = Relative(cx + nx * w + dx * a.T, cz + nz * w + dz * a.T, a.Y - 0.004f);
+                    var pb = Relative(b.X, b.Z, b.Y - 0.004f);
+                    var pf = Relative(fx, fz, MathF.Min(EdgeHeight(k, b.T), b.Y) - 0.002f);
+                    var up = new float3(0f, 1f, 0f);
+                    quads.Add(new DeckQuad(pa, pb, pf, pf, (pa + pb + pf) * (1f / 3f) - up, Plain: true));
+
+                    // Its open edge, from the panel's end to the road's edge, square across the road: a shoulder down from it.
+                    var sense = MathF.Sign(b.T - a.T);
+                    var outward = new float3((float)dx * sense, 0f, (float)dz * sense) * ShoulderOut;
+                    var drop = up * ShoulderDrop;
+                    var (sb, sf) = (Sunk(pb + outward - drop), Sunk(pf + outward - drop));
+                    quads.Add(new DeckQuad(pb, pf, sf, sb, (pb + pf + sf + sb) * 0.25f - outward - up, true));
+                    // And where that shoulder meets the road's own, at the road's edge, the corner between them.
+                    var aside = new float3((float)nx, 0f, (float)nz) * (MathF.Sign(w) * ShoulderOut);
+                    var sr = Sunk(pf + aside - drop);
+                    quads.Add(new DeckQuad(pf, sf, sr, sr, (pf + sf + sr) * (1f / 3f) - outward - aside - up, true));
+                }
         }
 
         // A mast each end, on the right of the road's traffic coming to it (or the left, if it's set so), beside the kerb and
@@ -642,7 +726,8 @@ public sealed partial class NetworkMeshes
             var (ax, az) = (-on.Dz, on.Dx);
             var (runs, sideways) = (new float3((float)on.Dx, 0f, (float)on.Dz), new float3((float)ax, 0f, (float)az));
             var foot = new float3((float)(on.X - baseX), 0f, (float)(on.Z - baseZ));
-            road = new DeckRoad(RoadSurface(line, marks), sideways, Dot(foot, sideways), runs, line.S[segment] + (line.S[segment + 1] - line.S[segment]) * on.T - Dot(foot, runs));
+            road = new DeckRoad(RoadSurface(line, marks), sideways, Dot(foot, sideways), runs, line.S[segment] + (line.S[segment + 1] - line.S[segment]) * on.T - Dot(foot, runs),
+                RoadSurface(line, 0));
         }
 
         return new CrossingDeck(quads, [.. masts], road, stretch, covered);
