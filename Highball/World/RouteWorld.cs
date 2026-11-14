@@ -62,7 +62,52 @@ public sealed class RouteWorld : IDisposable
     {
         var step = Paced(dt);
         Railway.Step(step, awake);
+        UpdateCrossings(step);
         return step;
+    }
+
+    /// Every grade crossing's warning, worked from where the trains are (CrossingWarnings).
+    public CrossingWarnings Crossings { get; } = new();
+
+    private List<CrossingSite> _crossingSites = [];
+
+    /// The crossings' track circuits laid out again if the graph or the crossings have changed, then their warnings stepped on,
+    /// and any that came on or went off shown so.
+    private void UpdateCrossings(double dt)
+    {
+        if (Graph is not { } graph || Source is not { Lines: { } lines } source || Network is not { } network || Route.Projection is not { } projection)
+            return;
+        var crossings = source.Objects.Where(o => o.Kind == PlacedKind.GradeCrossing).ToList();
+        var sites = new List<CrossingSite>(crossings.Count);
+        foreach (var o in crossings)
+        {
+            // On its pad (along its road, as wide as it) if it has one, else as it was placed.
+            if (lines.PadOf(o.Id) is { } pad)
+                sites.Add(new CrossingSite(o.Id, pad.X, pad.Z, pad.Dx, pad.Dz, pad.Half, o.ApproachLength));
+            else
+            {
+                var p = projection.Forward(new GeoPoint(o.Lat, o.Lon));
+                var angle = o.Heading * Math.PI / 180.0;
+                sites.Add(new CrossingSite(o.Id, p.East, -p.North, Math.Cos(angle), Math.Sin(angle), o.Width * 0.5, o.ApproachLength));
+            }
+        }
+
+        if (!ReferenceEquals(graph, Crossings.Graph) || !sites.SequenceEqual(_crossingSites))
+        {
+            _crossingSites = sites;
+            Crossings.Build(graph, sites);
+            // A crossing taken out, or its warning carried over: shown as the warnings now stand.
+            foreach (var o in crossings)
+                network.SetCrossingActive(o, Crossings.IsActive(o.Id));
+        }
+
+        foreach (var id in Crossings.Update(dt, Railway.Cuts.Select(c => c.Train)))
+            if (crossings.FirstOrDefault(o => o.Id == id) is { } changed)
+            {
+                var on = Crossings.IsActive(id);
+                network.SetCrossingActive(changed, on);
+                Log.Info($"Grade crossing {id}: warning {(on ? "on" : "off")}");
+            }
     }
 
     // Frame times as measured wobble from one frame to the next by more than the screen's do: the picture is shown at the

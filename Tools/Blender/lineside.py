@@ -225,9 +225,11 @@ def crossing_mast():
     # The bell and the crossarm with two flashers.
     m.post("Fixed_Black", 0.0, -0.09, 3.35, 3.47, 0.11, 10)
     m.box("Fixed_Galv", (0.0, -0.05, 2.9), (0.55, 0.024, 0.024))
-    for x in (-0.43, 0.43):
+    # Each flasher's lens is a part of its own (FlashA_, FlashB_), so the game can light the two in turn while the crossing's
+    # working (NetworkMeshes.PlacedModel); dark, they're red glass.
+    for x, lens in ((-0.43, "FlashA_LensRed"), (0.43, "FlashB_LensRed")):
         m.disc("Fixed_Black", x, -0.08, 2.9, 0.26, 0.02)
-        m.disc("Fixed_Red", x, -0.1, 2.9, 0.12, 0.022, 12)
+        m.lens(lens, x, -0.1, 2.9, 0.12, bulge=0.025)
         m.hood(x, -0.1, 2.9, 0.14)
     # The gate's case, and its arm raised, red and white: behind the crossarm and the flashers' backs, clear of them.
     m.box("Fixed_Black", (0.0, -0.05, 1.1), (0.17, 0.14, 0.4))

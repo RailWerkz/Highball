@@ -414,7 +414,7 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
                 PlacedChange(o, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, signal.Node, id: o.Id) with { Toward = signal.Toward });
                 break;
             case PlacedKind.GradeCrossing when PlaceTool.CrossingAt(lines, x, z) is { } crossing:
-                PlacedChange(o, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, o.Opposite, id: o.Id) with { Turn = o.Turn, Style = o.Style });
+                PlacedChange(o, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, o.Opposite, id: o.Id) with { Turn = o.Turn, Style = o.Style, Approach = o.Approach });
                 break;
             case PlacedKind.HandThrow when PlaceTool.SwitchAt(lines, x, z) is { } turnout && _terrain!.Source.Objects.All(p => p.Node != turnout.Node):
                 PlacedChange(o, Placed(PlacedKind.HandThrow, turnout.X, turnout.Z, 0.0, turnout.Node, opposite: o.Opposite, id: o.Id));
@@ -538,6 +538,8 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
 
     /// The gate turn being dragged on the slider, until it's let go (then it's one edit, for undo).
     private float? _crossingTurn;
+    private float? _crossingApproach;
+    private const float MetresPerMile = 1609.344f;
 
     /// A grade crossing's surface, and its masts: turned on their posts, and which side of the road they stand.
     private void CrossingPanel(PlacedObject picked)
@@ -562,6 +564,15 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
             var by = nudges[hit].Item2;
             PlacedChange(picked, picked with { Turn = by == 0f ? 0f : ((picked.Turn + by + 540f) % 360f) - 180f });
         }
+
+        // How far out along each track the approach circuits reach: a train coming in starts the warning about WarningTime
+        // seconds before it reaches the road, if it's within this far.
+        Kit.Caption("Approach circuits");
+        var miles = _crossingApproach ?? picked.ApproachLength / MetresPerMile;
+        ToolPanel.Value("approach", "Approach (miles)", ref miles, PlacedObject.MinApproach / MetresPerMile, PlacedObject.MaxApproach / MetresPerMile, "0.00", out var released);
+        _crossingApproach = ImGui.IsItemActive() ? miles : null;
+        if (released)
+            PlacedChange(picked, picked with { Approach = miles * MetresPerMile });
 
         if (_terrain?.Source.Lines is { } lines && Kit.Button("cutroads", "Cut context.Roads"))
             CrossingPlace(lines, picked, picked);

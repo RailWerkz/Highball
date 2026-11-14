@@ -34,7 +34,8 @@ public sealed unsafe class WorldRenderer : IDisposable
     private static float4 TexOriginOf(Camera camera)
     {
         static double Wrap(double v) => v - Math.Floor(v / TexturePeriod) * TexturePeriod;
-        return new float4((float)Wrap(camera.X), 0f, (float)Wrap(camera.Z), 0f);
+        // w: the clock grade crossings' flashers keep time by (line.frag).
+        return new float4((float)Wrap(camera.X), 0f, (float)Wrap(camera.Z), NetworkMeshes.FlashTime);
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -244,6 +245,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         if (network is not null)
         {
             AddSignals(network);
+            AddCrossingFlashers(network);
             AddLightPoles(network, camera, lampsOn);
         }
         foreach (var light in scene.Lights)
@@ -485,6 +487,19 @@ public sealed unsafe class WorldRenderer : IDisposable
                     s.GlowSize, color * s.GlowBrightness));
             }
         }
+    }
+
+    /// Every working grade crossing's flashers: a red light from each lamp as it flashes, as a signal's lit lens throws one.
+    private void AddCrossingFlashers(NetworkMeshes network)
+    {
+        var index = Array.FindIndex(TrackMaterials.Lamps, l => l.Name == "Red");
+        var s = TrackMaterials.Current.LampOf(Math.Max(index, 0));
+        var color = new float3(s.Color[0], s.Color[1], s.Color[2]);
+        var outer = MathF.Cos(Math.Clamp(s.Beam, 1f, 179f) * MathF.PI / 180f);
+        var inner = MathF.Cos(Math.Clamp(s.Beam, 1f, 179f) * 0.65f * MathF.PI / 180f);
+        foreach (var (x, y, z, face, on) in network.CrossingFlashers())
+            if (on > 0.01f)
+                _lights.Add(new LocalLight(x, y, z, s.Range, color * s.Intensity * on, face, inner, outer, s.GlowSize, color * s.GlowBrightness * on));
     }
 
     /// How far from the camera placed light poles are lit, in metres.

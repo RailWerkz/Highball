@@ -196,6 +196,81 @@ public sealed partial class NetworkMeshes : IDisposable
         (SignalLamps.Red, "Fixed_LensRed", "LensRed", 4.35f, new float3(3f, 0.12f, 0.05f)),
     ];
 
+    /// A grade crossing's flashers while it's working (line.frag, FlashLensPaint): the left lens's code and the right's after it,
+    /// lit in turn by the shader as the clock goes, at FlashRate.
+    public const int FlashLens = 15;
+
+    /// Each flasher's flashes a second (about 54 a minute, inside the 35 to 65 the rules ask for).
+    public const float FlashRate = 0.9f;
+
+    /// What the flashers keep time by: the shader and the lights they throw (WorldRenderer) read the same.
+    private static readonly System.Diagnostics.Stopwatch FlashClock = System.Diagnostics.Stopwatch.StartNew();
+    public static float FlashTime => (float)(FlashClock.Elapsed.TotalSeconds % 3600.0);
+
+    /// How bright one of a crossing's two flashers is now, 0 to 1: lamp 0 (left) then 1 (right) half a beat apart, each easing on and
+    /// off a little as a lamp's filament does. As line.frag's.
+    public static float FlashOf(int lamp)
+    {
+        var phase = FlashTime * FlashRate + lamp * 0.5f;
+        phase -= MathF.Floor(phase);
+        static float Smooth(float a, float b, float x)
+        {
+            var t = Math.Clamp((x - a) / (b - a), 0f, 1f);
+            return t * t * (3f - 2f * t);
+        }
+
+        return Smooth(0f, 0.06f, phase) * (1f - Smooth(0.44f, 0.52f, phase));
+    }
+
+    /// The grade crossings whose warning is working (CrossingWarnings), by id. Read by the chunk builders on worker threads.
+    private readonly ConcurrentDictionary<long, bool> _crossingsOn = new();
+
+    public bool CrossingActive(long crossing) => _crossingsOn.ContainsKey(crossing);
+
+    /// Starts or stops a grade crossing's flashers, and builds its chunk again to show it.
+    public void SetCrossingActive(PlacedObject crossing, bool on)
+    {
+        if (CrossingActive(crossing.Id) == on || _objectProjection is null)
+            return;
+        if (on)
+            _crossingsOn[crossing.Id] = true;
+        else
+            _crossingsOn.TryRemove(crossing.Id, out _);
+        var p = _objectProjection.Forward(new GeoPoint(crossing.Lat, crossing.Lon));
+        var key = KeyAt(p.East, -p.North);
+        _stale.Add((key, false));
+        _stale.Add((key, true));
+    }
+
+    /// Every working crossing's flashers: where each lamp is (just in front of its lens), the way it shines, and how bright it
+    /// is now, as PlacedModel stands the masts.
+    public IEnumerable<(double X, double Y, double Z, float3 Face, float On)> CrossingFlashers()
+    {
+        if (_crossingsOn.IsEmpty)
+            yield break;
+        foreach (var list in _objectsByChunk.Values)
+            foreach (var placed in list)
+            {
+                if (placed.Object.Kind != PlacedKind.GradeCrossing || placed.Deck is not { } deck || !CrossingActive(placed.Object.Id))
+                    continue;
+                var spin = placed.Object.Turn * MathF.PI / 180f;
+                var (cos, sin) = (MathF.Cos(spin), MathF.Sin(spin));
+                foreach (var (mx, mz, y, face) in deck.Masts)
+                {
+                    var right = new float3(face.Z, 0f, -face.X);
+                    var shines = right * -sin + face * cos;
+                    for (var lamp = 0; lamp < 2; lamp++)
+                    {
+                        // Tools/Blender/lineside.py: the lenses 0.43 m either side of the mast, 2.9 m up, 0.1 m in front.
+                        var (px, pz) = (lamp == 0 ? -0.43f : 0.43f, 0.25f);
+                        var (rx, rz) = (px * cos - pz * sin, px * sin + pz * cos);
+                        var at = right * rx + face * rz;
+                        yield return (mx + at.X, y + 2.9, mz + at.Z, shines, FlashOf(lamp));
+                    }
+                }
+            }
+    }
+
     public SignalLamps LampsOf(long signal) => _lamps.GetValueOrDefault(signal, App.DevTools.Lamps ?? SignalLamps.Red);
 
     /// Lights a signal's lamps (any of them, all, or none), and builds its chunk again to show it.
@@ -1934,11 +2009,20 @@ public sealed partial class NetworkMeshes : IDisposable
         // A grade crossing's masts. (Its deck's in the far mesh, as the road it takes the place of is.)
         if (placed.Deck is not { } deck)
             return;
+        // Working, its flashers' lenses (FlashA_ left, FlashB_ right) take the flashing codes the shader lights in turn.
+        var working = CrossingActive(o.Id);
         foreach (var (mx, mz, y, toward) in deck.Masts)
         {
             var mast = new float3((float)(mx - builder.Origin.X), y, (float)(mz - builder.Origin.Z));
             foreach (var (name, part) in parts)
-                Upright(builder, part, mast, toward, PaintOf(name), o.Turn * MathF.PI / 180f);
+            {
+                var paint = PaintOf(name);
+                if (working && name.StartsWith("FlashA_", StringComparison.Ordinal))
+                    paint = Code(LineMaterial.Painted, FlashLens);
+                else if (working && name.StartsWith("FlashB_", StringComparison.Ordinal))
+                    paint = Code(LineMaterial.Painted, FlashLens + 1);
+                Upright(builder, part, mast, toward, paint, o.Turn * MathF.PI / 180f);
+            }
         }
     }
 

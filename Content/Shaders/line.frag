@@ -98,6 +98,10 @@ const int WoodPaint = 7;
 // shining its own colour whatever lights it.
 const int LensPaint = 9;
 const int LitLensPaint = 12;
+// A grade crossing's flashers while it's working (NetworkMeshes.FlashLens): the left lens, then the right, lit red in turn at
+// FlashRate flashes a second on the clock in texOrigin.w, each easing on and off as a lamp's filament does (NetworkMeshes.FlashOf).
+const int FlashLensPaint = 15;
+const float FlashRate = 0.9;
 
 // NetworkMeshes: how far the tie models reach (TieReach), how far apart they lie (TieSpacing, 19.5 in), and half a tie's width.
 const float TieReach = 1000.0;
@@ -504,7 +508,14 @@ void main()
         albedo = vec3(0.012);
         roughness = 0.08;
         specular = 1.0;
-        if (style >= LitLensPaint)
+        if (style >= FlashLensPaint)
+        {
+            float phase = fract(pc.texOrigin.w * FlashRate + float(style - FlashLensPaint) * 0.5);
+            float on = smoothstep(0.0, 0.06, phase) * (1.0 - smoothstep(0.44, 0.52, phase));
+            vec4 lens = texelFetch(paintPalette, ivec2(0, 2), 0);
+            emit = lens.rgb * lens.rgb * lens.a * 32.0 * on;
+        }
+        else if (style >= LitLensPaint)
         {
             // TrackMaterials.Lamps: the lens's colour (square-rooted) and its brightness over TrackTextures.LensScale.
             vec4 lens = texelFetch(paintPalette, ivec2(clamp(style - LitLensPaint, 0, 2), 2), 0);

@@ -11,9 +11,19 @@ public enum PlacedKind { Signal, HandThrow, GradeCrossing, PoleTelegraph, PoleDi
 /// grade crossing's road. Opposite: a hand throw on the switch's other side; a grade crossing's masts on the left of the road's
 /// traffic rather than the right. Run: what it was laid along with (the id they share). Turn: a grade crossing's masts turned on
 /// their posts, degrees. Style: a grade crossing's surface (CrossingStyle). A signal's Node and Toward: the track nodes it stands
-/// between, governing trains that pass Node and then come to it on their way to Toward.
+/// between, governing trains that pass Node and then come to it on their way to Toward. Approach: how far out along each track a
+/// grade crossing's approach circuits reach, metres (0 for DefaultApproach).
 public sealed record PlacedObject(long Id, PlacedKind Kind, double Lat, double Lon, double Heading, long? Node = null, float Width = 0f, bool Opposite = false, long? Run = null,
-    float Turn = 0f, int Style = 0, long? Toward = null);
+    float Turn = 0f, int Style = 0, long? Toward = null, float Approach = 0f)
+{
+    /// A grade crossing's approach circuits: half a mile out by default, a mile at most.
+    public const float DefaultApproach = 804.672f;
+    public const float MaxApproach = 1609.344f;
+    public const float MinApproach = 160.9344f;
+
+    /// How far its approach circuits reach, metres: as set, or the default.
+    public float ApproachLength => Approach > 0f ? Math.Clamp(Approach, MinApproach, MaxApproach) : DefaultApproach;
+}
 
 /// What a grade crossing's laid with: precast concrete panels, rubber panels, timber planks, or asphalt poured level with the rails.
 public enum CrossingStyle { Concrete, Rubber, Timber, Asphalt }
