@@ -22,6 +22,7 @@ public sealed record PlacedObject(long Id, PlacedKind Kind, double Lat, double L
     public const float MinApproach = 160.9344f;
 
     /// How far its approach circuits reach, metres: as set, or the default.
+    [System.Text.Json.Serialization.JsonIgnore]
     public float ApproachLength => Approach > 0f ? Math.Clamp(Approach, MinApproach, MaxApproach) : DefaultApproach;
 }
 

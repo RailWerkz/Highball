@@ -37,6 +37,10 @@ public sealed partial class NetworkLines
     private const float PadSearch = 40f;
     private const float PadTrackGap = 12f;
 
+    /// A road shorter than this has come to nothing (a scrap whose ends were both snapped to the same pad end): it isn't drawn,
+    /// and meets no other road.
+    public const float MinRoadLength = 0.05f;
+
     private readonly List<(long Id, double X, double Z, double Heading, float Width)> _crossings = [];
     private readonly List<CrossingPad> _pads = [];
 
@@ -154,6 +158,52 @@ public sealed partial class NetworkLines
         }
 
         return found;
+    }
+
+    /// Roads ending near a pad's end are made to end on it, so the road runs straight onto the deck's ramp with no gap or overlap
+    /// between them. A road is cut at a pad's ends when it's fitted, but a pad's ends move when it changes (its width, its tracks),
+    /// leaving the road's end short of the ramp (bare ground between them) or running onto it. A road's free end (one no other road
+    /// meets: a junction's ends are left where the junction was worked out) on the road (within its half width and a metre) and
+    /// within PadJoin of a pad's end, before or past it, is moved along the pad to that end, keeping how far across the road it
+    /// was. A scrap left over from an earlier cut that runs onto the pad from a junction just short of it is so cut back to the
+    /// pad's end, and carries the road on to the ramp.
+    private void SnapRoadsToPads()
+    {
+        if (_pads.Count == 0)
+            return;
+        var roads = _lines.Where(l => !l.Rail && !l.Mark && l.Count >= 2).ToList();
+        var uses = new Dictionary<long, int>();
+        foreach (var road in roads)
+            foreach (var (node, _) in road.Nodes)
+                uses[node] = uses.GetValueOrDefault(node) + 1;
+
+        foreach (var road in roads.Where(l => !l.Frozen))
+        {
+            var moved = false;
+            foreach (var point in (int[])[0, road.Count - 1])
+            {
+                if (road.Nodes.Any(n => n.Point == point && uses.GetValueOrDefault(n.Node) > 1))
+                    continue;
+                foreach (var pad in _pads)
+                {
+                    var (t, w) = pad.Local(road.X[point], road.Z[point]);
+                    if (MathF.Abs(w) > pad.Half + 1f)
+                        continue;
+                    var end = MathF.Abs(t - pad.From) <= PadJoin ? pad.From : MathF.Abs(t - pad.To) <= PadJoin ? pad.To : float.NaN;
+                    if (float.IsNaN(end) || MathF.Abs(t - end) < 1e-3f)
+                        continue;
+                    (road.X[point], road.Z[point]) = pad.At(end, w);
+                    moved = true;
+                    break;
+                }
+            }
+
+            if (!moved)
+                continue;
+            for (var p = 1; p < road.Count; p++)
+                road.S[p] = road.S[p - 1] + (float)Math.Sqrt((road.X[p] - road.X[p - 1]) * (road.X[p] - road.X[p - 1]) + (road.Z[p] - road.Z[p - 1]) * (road.Z[p] - road.Z[p - 1]));
+            (road.MinX, road.MaxX, road.MinZ, road.MaxZ) = (road.X.Min(), road.X.Max(), road.Z.Min(), road.Z.Max());
+        }
     }
 
     /// Roads ending at a pad's end come up to its level there, easing back to their own grade further along.

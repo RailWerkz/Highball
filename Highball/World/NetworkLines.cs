@@ -537,6 +537,9 @@ public sealed partial class NetworkLines
         var found = new Dictionary<(long, bool), List<(NetworkLine, int)>>();
         foreach (var line in _lines.Where(l => !l.Rail).OrderBy(l => l.Index))
         {
+            // A scrap of road come to nothing (SnapRoadsToPads) meets nothing.
+            if (line.Count >= 2 && line.S[line.Count - 1] - line.S[0] < MinRoadLength)
+                continue;
             foreach (var (node, point) in line.Nodes)
             {
                 if (point != 0 && point != line.Count - 1)
@@ -1297,6 +1300,7 @@ public sealed partial class NetworkLines
         LetDownBeds();
         LevelRoadsAtRails();
         MakePads();
+        SnapRoadsToPads();
         LevelRoadsAtPads();
         Watch("pads");
         CrestDecks();

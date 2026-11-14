@@ -1405,6 +1405,9 @@ public sealed partial class NetworkMeshes : IDisposable
     /// A road, but for the stretches a crossing's deck takes the place of.
     private void Road(Builder builder, NetworkLines lines, NetworkLine line, int first, int last, bool bridge)
     {
+        // A scrap of road come to nothing at a crossing's end (NetworkLines.SnapRoadsToPads).
+        if (line.S[line.Count - 1] - line.S[0] < NetworkLines.MinRoadLength)
+            return;
         var start = first;
         if (!bridge && _crossingGaps.TryGetValue(line.Index, out var gaps))
             foreach (var (from, to) in gaps)

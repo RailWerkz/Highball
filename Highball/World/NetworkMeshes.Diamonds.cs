@@ -412,7 +412,9 @@ public sealed partial class NetworkMeshes
             }
         }
 
-        return (found ?? _source.HeightAt(x, z)) + 0.015f;
+        // On a road, which now ends just where the ramp does (NetworkLines.SnapRoadsToPads), level with it, barely proud; on the
+        // ground, enough over it not to fight it.
+        return found is { } y ? y + 0.002f : _source.HeightAt(x, z) + 0.015f;
     }
 
     /// The material a crossing's panels are made of.
