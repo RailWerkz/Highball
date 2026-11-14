@@ -624,10 +624,12 @@ public sealed partial class NetworkMeshes
             }
         }
 
-        // The corners. Each track's panels run on past the road's edges along the track, square to it; on a skew, between a panel's
-        // long side and the road's edge, out to the panel's end, that leaves a wedge open down to the ballast. Each is filled with road
-        // surface level with the panels' tops where it meets them and with the deck at the road's edge, a hair under the panels so
-        // they win where it runs under them, and a gravel shoulder sloping down from its open edge, as the road's own edges do.
+        // The corners. Each track's panels run on past the road's edges along the track, square to it, so on a skew the road's edge and
+        // the panels leave wedges between them. A real crossing is one raised pad there: on each side of the road, everything out to the
+        // panels' outer corners is one level surface, and only round its outside does the fill slope down to the ground. So on each side
+        // the pad's outline is the hull of the panels' corners past the road's edge and the stretch of road edge they stand off; it's
+        // surfaced (road surface without markings) but for the panels' own strips, which stay theirs, level with the panels where it meets
+        // them and with the deck along the road's edge; and one gravel edge runs round its outside, but across the tracks.
         float EdgeHeight(int k, float t)
         {
             var row = edges[k];
@@ -643,46 +645,196 @@ public sealed partial class NetworkMeshes
             return row[^1].Y;
         }
 
-        float3 Relative(double x, double z, float y) => new((float)(x - baseX), y, (float)(z - baseZ));
-        for (var j = 0; j < tracks.Count; j++)
+        // Each track's panels as a strip in its own frame where it crosses the road: across it and along it are linear in the road's
+        // t (along) and w (across), as Lat and Along (a, b, c: a t + b w + c); From and To, how far along it the panels run each way.
+        var strips = tracks.Select((track, j) =>
         {
-            var track = tracks[j];
-            var (first, last) = (covered[j].From, covered[j].To);
-            foreach (var (k, w) in new[] { (0, -half), (rows, half) })
-                foreach (var lateral in (float[])[-reach, reach])
+            var (px, pz, _, fx, fz, rx, rz) = track.Leg.At(track.S);
+            var (ox, oz) = (px + rx * track.Offset, pz + rz * track.Offset);
+            (double A, double B, double C) Frame(double ux, double uz) => (dx * ux + dz * uz, nx * ux + nz * uz, (cx - ox) * ux + (cz - oz) * uz);
+            return (Lat: Frame(rx, rz), Along: Frame(fx, fz), From: covered[j].From - track.S, To: covered[j].To - track.S, Track: track);
+        }).ToList();
+        static double Apply((double A, double B, double C) f, (double T, double W) p) => f.A * p.T + f.B * p.W + f.C;
+
+        // Keeps the part of a convex outline where f(t, w) <= limit (or >= it, if above).
+        static List<(double T, double W)> Clip(List<(double T, double W)> outline, (double A, double B, double C) f, double limit, bool above)
+        {
+            var kept = new List<(double T, double W)>();
+            for (var i = 0; i < outline.Count; i++)
+            {
+                var (p, q) = (outline[i], outline[(i + 1) % outline.Count]);
+                var (vp, vq) = (Apply(f, p) - limit, Apply(f, q) - limit);
+                if (above)
+                    (vp, vq) = (-vp, -vq);
+                if (vp <= 0.0)
+                    kept.Add(p);
+                if ((vp <= 0.0) != (vq <= 0.0))
                 {
-                    // Where the panel's long side crosses the road's edge, and the end of it that lies out past that edge.
-                    var a = Meet(track, w, lateral);
-                    (double X, double Z, float Y, float W, float T)? Corner(float s)
+                    var u = vp / (vp - vq);
+                    kept.Add((p.T + (q.T - p.T) * u, p.W + (q.W - p.W) * u));
+                }
+            }
+
+            return kept;
+        }
+
+        static double Area(List<(double T, double W)> outline)
+        {
+            var sum = 0.0;
+            for (var i = 0; i < outline.Count; i++)
+            {
+                var (p, q) = (outline[i], outline[(i + 1) % outline.Count]);
+                sum += p.T * q.W - q.T * p.W;
+            }
+
+            return sum * 0.5;
+        }
+
+        var up = new float3(0f, 1f, 0f);
+        var drop = up * ShoulderDrop;
+        foreach (var (k, side) in new[] { (0, -1f), (rows, 1f) })
+        {
+            var edgeW = side * half;
+            // The panels' corners out past this edge of the road, and where they and the panels' sides stand off along it.
+            var points = new List<(double T, double W)>();
+            for (var j = 0; j < tracks.Count; j++)
+            {
+                var track = tracks[j];
+                var any = false;
+                foreach (var s in (float[])[covered[j].From, covered[j].To])
+                    foreach (var lateral in (float[])[-reach, reach])
                     {
-                        var (px, pz, py, _, _, rx, rz) = track.Leg.At(s);
+                        var (px, pz, _, _, _, rx, rz) = track.Leg.At(s);
                         var (qx, qz) = (px + rx * (track.Offset + lateral), pz + rz * (track.Offset + lateral));
-                        var across = (float)((qx - cx) * nx + (qz - cz) * nz);
-                        return MathF.Sign(across) == MathF.Sign(w) && MathF.Abs(across) > half + 0.02f
-                            ? (qx, qz, py + railTop, across, (float)((qx - cx) * dx + (qz - cz) * dz))
-                            : null;
+                        var (t, w) = ((qx - cx) * dx + (qz - cz) * dz, (qx - cx) * nx + (qz - cz) * nz);
+                        if (w * side <= half + 0.02)
+                            continue;
+                        points.Add((t, w));
+                        points.Add((t, edgeW));
+                        any = true;
                     }
 
-                    if ((Corner(first) ?? Corner(last)) is not { } b || MathF.Abs(b.T - a.T) < 0.05f)
-                        continue;
-                    var (fx, fz) = (cx + nx * w + dx * b.T, cz + nz * w + dz * b.T);
-                    var pa = Relative(cx + nx * w + dx * a.T, cz + nz * w + dz * a.T, a.Y - 0.004f);
-                    var pb = Relative(b.X, b.Z, b.Y - 0.004f);
-                    var pf = Relative(fx, fz, MathF.Min(EdgeHeight(k, b.T), b.Y) - 0.002f);
-                    var up = new float3(0f, 1f, 0f);
-                    quads.Add(new DeckQuad(pa, pb, pf, pf, (pa + pb + pf) * (1f / 3f) - up, Plain: true));
+                if (!any)
+                    continue;
+                // Where its panels' sides meet the road's edge, and the pad's stretch of road edge: as far either side of the track as
+                // its corners stand off along it, so the obtuse corner (where the panels' side leaves the road at a wide angle, with
+                // nothing to close it) is part of the pad as much as the acute one.
+                var (sideA, sideB) = (Meet(track, edgeW, -reach).T, Meet(track, edgeW, reach).T);
+                var crossesAt = (sideA + sideB) * 0.5;
+                var reachAlong = points.Where(p => Math.Abs(p.W - edgeW) < 1e-3).Select(p => Math.Abs(p.T - crossesAt)).Append(Math.Abs(sideA - crossesAt)).Max();
+                points.Add((sideA, edgeW));
+                points.Add((sideB, edgeW));
+                points.Add((crossesAt - reachAlong, edgeW));
+                points.Add((crossesAt + reachAlong, edgeW));
+            }
 
-                    // Its open edge, from the panel's end to the road's edge, square across the road: a shoulder down from it.
-                    var sense = MathF.Sign(b.T - a.T);
-                    var outward = new float3((float)dx * sense, 0f, (float)dz * sense) * ShoulderOut;
-                    var drop = up * ShoulderDrop;
-                    var (sb, sf) = (Sunk(pb + outward - drop), Sunk(pf + outward - drop));
-                    quads.Add(new DeckQuad(pb, pf, sf, sb, (pb + pf + sf + sb) * 0.25f - outward - up, true));
-                    // And where that shoulder meets the road's own, at the road's edge, the corner between them.
-                    var aside = new float3((float)nx, 0f, (float)nz) * (MathF.Sign(w) * ShoulderOut);
-                    var sr = Sunk(pf + aside - drop);
-                    quads.Add(new DeckQuad(pf, sf, sr, sr, (pf + sf + sr) * (1f / 3f) - outward - aside - up, true));
+            if (points.Count < 3)
+                continue;
+
+            // Their hull, anticlockwise in (t, w).
+            points.Sort((a, b) => a.T != b.T ? a.T.CompareTo(b.T) : a.W.CompareTo(b.W));
+            static double Turn((double T, double W) o, (double T, double W) a, (double T, double W) b) => (a.T - o.T) * (b.W - o.W) - (a.W - o.W) * (b.T - o.T);
+            var hull = new List<(double T, double W)>();
+            foreach (var pass in (int[])[0, 1])
+            {
+                var start = hull.Count;
+                foreach (var p in pass == 0 ? points : Enumerable.Reverse(points))
+                {
+                    while (hull.Count >= start + 2 && Turn(hull[^2], hull[^1], p) <= 1e-9)
+                        hull.RemoveAt(hull.Count - 1);
+                    hull.Add(p);
                 }
+
+                hull.RemoveAt(hull.Count - 1);
+            }
+
+            if (hull.Count < 3 || Math.Abs(Area(hull)) < 0.01)
+                continue;
+
+            bool OnEdge((double T, double W) p) => Math.Abs(p.W - edgeW) < 1e-3;
+            // Level with the deck along the road's edge; elsewhere with the panels' tops (a hair under, so they win where it meets them).
+            float3 At((double T, double W) p)
+            {
+                var (x, z) = (cx + dx * p.T + nx * p.W, cz + dz * p.T + nz * p.W);
+                float y;
+                if (OnEdge(p))
+                    y = EdgeHeight(k, (float)p.T);
+                else
+                {
+                    var near = strips.MinBy(st => Math.Abs(Apply(st.Lat, p)));
+                    var along = Math.Clamp(Apply(near.Along, p), near.From, near.To);
+                    y = near.Track.Leg.At((float)(near.Track.S + along)).Y + railTop - 0.004f;
+                }
+
+                return new float3((float)(x - baseX), y, (float)(z - baseZ));
+            }
+
+            // The surface: the hull, but for each track's strip.
+            var surface = new List<List<(double T, double W)>> { hull };
+            foreach (var st in strips)
+            {
+                var next = new List<List<(double T, double W)>>();
+                foreach (var piece in surface)
+                {
+                    var inside = Clip(Clip(piece, st.Lat, -reach, true), st.Lat, reach, false);
+                    next.Add(Clip(piece, st.Lat, -reach, false));
+                    next.Add(Clip(piece, st.Lat, reach, true));
+                    next.Add(Clip(inside, st.Along, st.To, true));
+                    next.Add(Clip(inside, st.Along, st.From, false));
+                }
+
+                surface = [.. next.Where(p => p.Count >= 3 && Math.Abs(Area(p)) > 1e-4)];
+            }
+
+            foreach (var piece in surface)
+            {
+                var corners = piece.Select(At).ToArray();
+                for (var i = 1; i + 1 < corners.Length; i++)
+                    quads.Add(new DeckQuad(corners[0], corners[i], corners[i + 1], corners[i + 1], (corners[0] + corners[i] + corners[i + 1]) * (1f / 3f) - up, Plain: true));
+            }
+
+            // Its edge: a gravel slope down from each side of the hull but the road's edge, and those that cross a track (its panels' ends,
+            // where the ballast runs on); with the corners between them filled, and where it meets the road's own shoulder.
+            var tops = hull.Select(At).ToArray();
+            var middle = tops.Aggregate(new float3(0f, 0f, 0f), (a, b) => a + b) * (1f / tops.Length);
+            var feet = new (float3 From, float3 To)?[hull.Count];
+            for (var i = 0; i < hull.Count; i++)
+            {
+                var (p, q) = (hull[i], hull[(i + 1) % hull.Count]);
+                if (OnEdge(p) && OnEdge(q))
+                    continue;
+                var mid = ((p.T + q.T) * 0.5, (p.W + q.W) * 0.5);
+                if (strips.Any(st => Math.Abs(Apply(st.Lat, mid)) <= reach + 0.05))
+                    continue;
+                var (a, b) = (tops[i], tops[(i + 1) % hull.Count]);
+                var run = b - a;
+                var outward = new float3(run.Z, 0f, -run.X);
+                var length = MathF.Sqrt(outward.X * outward.X + outward.Z * outward.Z);
+                if (length < 1e-4f)
+                    continue;
+                outward *= ShoulderOut / length;
+                if (Dot(outward, (a + b) * 0.5f - middle) < 0f)
+                    outward *= -1f;
+                var (fa, fb) = (Sunk(a + outward - drop), Sunk(b + outward - drop));
+                quads.Add(new DeckQuad(a, b, fb, fa, (a + b + fa + fb) * 0.25f - outward - up, true));
+                feet[i] = (fa, fb);
+            }
+
+            var aside = new float3((float)nx, 0f, (float)nz) * (side * ShoulderOut);
+            for (var i = 0; i < hull.Count; i++)
+            {
+                var (before, after) = (feet[(i + hull.Count - 1) % hull.Count], feet[i]);
+                var top = tops[i];
+                if (before is { } b && after is { } a)
+                    quads.Add(new DeckQuad(top, b.To, a.From, a.From, (top + b.To + a.From) * (1f / 3f) - up, true));
+                else if (OnEdge(hull[i]) && (before ?? after) is { } one)
+                {
+                    // At the road's edge: on to the road's own shoulder.
+                    var foot = before is not null ? one.To : one.From;
+                    var shoulder = Sunk(top + aside - drop);
+                    quads.Add(new DeckQuad(top, foot, shoulder, shoulder, (top + foot + shoulder) * (1f / 3f) - aside - up, true));
+                }
+            }
         }
 
         // A mast each end, on the right of the road's traffic coming to it (or the left, if it's set so), beside the kerb and
