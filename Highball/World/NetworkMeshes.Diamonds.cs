@@ -329,7 +329,7 @@ public sealed partial class NetworkMeshes
     /// What a grade crossing's made of: its deck, and its masts in world metres. Covered: each track's stretch under its panels
     /// (by line and distance along it), where it lays no ties.
     private sealed record CrossingDeck(List<DeckQuad> Quads, (double X, double Z, float Y, float3 Face)[] Masts, DeckRoad? Road = null, (int Line, float From, float To)? Gap = null,
-        List<(int Line, float From, float To)>? Covered = null, (float3[] Points, float3[] Normals, uint[] Indices)? Apron = null);
+        List<(int Line, float From, float To)>? Covered = null, CrossingMesh? Mesh = null, List<(int Line, float From, float To)>? BedCuts = null);
 
     /// The road running along a crossing here, if there is one: the nearest place on it to (x, z), and the way it runs there.
     private (NetworkLine Line, int Segment, float T, double X, double Z, double Dx, double Dz)? RoadAlong(double x, double z, double dx, double dz)
@@ -453,7 +453,6 @@ public sealed partial class NetworkMeshes
         }
 
         var (nx, nz) = (-dz, dx);
-        var (shiftX, shiftZ) = ((float)(cx - baseX), (float)(cz - baseZ));
         var across = TracksAcross(cx, cz, dx, dz);
         var quads = new List<DeckQuad>();
         if (across.Count == 0)
@@ -568,64 +567,10 @@ public sealed partial class NetworkMeshes
         }
 
         var (offLow, offHigh) = (EndOffset(edges[0][0].T), EndOffset(edges[0][^1].T));
-        float3 Point(int k, int e, float drop = 0f)
-        {
-            var w = -half + width * k / rows + (e == 0 ? offLow : e == edges[k].Length - 1 ? offHigh : 0f);
-            var (t, y) = edges[k][e];
-            return new float3((float)(nx * w + dx * t) + shiftX, y - drop, (float)(nz * w + dz * t) + shiftZ);
-        }
-
-        // The asphalt: the ramps, and between tracks. One quad a row a stretch, no more.
-        var count = edges[0].Length;
-        for (var k = 0; k < rows; k++)
-            for (var e = 0; e + 1 < count; e += 2)
-            {
-                if (MathF.Abs(edges[k][e + 1].T - edges[k][e].T) < 0.01f && MathF.Abs(edges[k + 1][e + 1].T - edges[k + 1][e].T) < 0.01f)
-                    continue;
-                var (a, b, c, d) = (Point(k, e), Point(k, e + 1), Point(k + 1, e + 1), Point(k + 1, e));
-                quads.Add(new DeckQuad(a, b, c, d, (a + b + c + d) * 0.25f - new float3(0f, 1f, 0f)));
-            }
-
-        // A shoulder's foot, relative to the base: ShoulderDrop under its top, or into the ground if the ground's lower there (the
-        // ballast beside a track, which the ground under the deck is kept off), so no slot's left under it.
-        float3 Sunk(float3 foot) => new(foot.X, MathF.Min(foot.Y, _source.HeightAt(foot.X + baseX, foot.Z + baseZ) - 0.08f), foot.Z);
-
-        // The asphalt's edges: a gravel shoulder sloping down into the ground, as the road's own does, so the two run on as one.
-        // Where it meets a track's panels its foot runs on to their side, along the shoulder's own outer edge: on a skew the panels'
-        // side crosses that further along (or short of) where it crosses the road's edge, and a foot cut off square there would leave
-        // a hole looking in under the deck.
-        var roadWay = new float3((float)dx, 0f, (float)dz);
-        foreach (var (k, toward) in new[] { (0, 1f), (rows, -1f) })
-        {
-            var wOut = (k == 0 ? -half : half) + (k == 0 ? -ShoulderOut : ShoulderOut);
-            var feet = tracks.Select(track =>
-            {
-                var (l, h) = (Meet(track, wOut, -reach).T, Meet(track, wOut, reach).T);
-                return (Low: MathF.Min(l, h), High: MathF.Max(l, h));
-            }).ToArray();
-            for (var e = 0; e + 1 < count; e += 2)
-            {
-                var outward = new float3((float)(nx * toward), 0f, (float)(nz * toward)) * -ShoulderOut;
-                var (a, b) = (Point(k, e), Point(k, e + 1));
-                var (c, d) = (Point(k, e + 1, ShoulderDrop) + outward, Point(k, e, ShoulderDrop) + outward);
-                // Edge e + 1 is track (e + 1 - 1) / 2's near side, unless it's the far ramp's foot; edge e track (e - 2) / 2's far side,
-                // unless it's the near ramp's foot.
-                if (e + 1 < count - 1)
-                    c += roadWay * (feet[e / 2].Low - edges[k][e + 1].T);
-                if (e > 0)
-                    d += roadWay * (feet[(e - 2) / 2].High - edges[k][e].T);
-                // (The road's own shoulder's drop exactly, not sunk to the ground: where the road runs on from the ramp the two are one.)
-                var middle = (a + b + c + d) * 0.25f + new float3((float)(nx * toward), -1f, (float)(nz * toward));
-                quads.Add(new DeckQuad(a, b, c, d, middle, true));
-            }
-        }
 
         // The panels, track by track: whole panels from past one edge of the road to past the other, centred on it.
         var paint = PanelPaint(style);
-        var (joint, bevel) = style == CrossingStyle.Asphalt ? (0f, 0f) : (PanelJoint, PanelBevel);
         var covered = new List<(int Line, float From, float To)>();
-        var flange = RailHeadHalf + PanelFlangeway;
-        (float From, float To)[] pieces = [(-reach, -g - RailHeadHalf - PanelGapOutside), (-g + flange, g - flange), (g + RailHeadHalf + PanelGapOutside, reach)];
         foreach (var track in tracks)
         {
             var (from, to) = (float.MaxValue, float.MinValue);
@@ -639,20 +584,10 @@ public sealed partial class NetworkMeshes
             var panels = Math.Max(1, (int)MathF.Ceiling((to - from + 2f * PanelMargin) / PanelLength));
             var first = (from + to) * 0.5f - panels * PanelLength * 0.5f;
             covered.Add((track.Leg.Line.Index, first, first + panels * PanelLength));
-            for (var i = 0; i < panels; i++)
-            {
-                var (s0, s1) = (first + i * PanelLength + joint * 0.5f, first + (i + 1) * PanelLength - joint * 0.5f);
-                foreach (var (u0, u1) in pieces)
-                    Panel(quads, track, s0, s1, u0, u1, bevel, railTop, paint, baseX, baseZ);
-            }
         }
 
-        // The ground round the crossing, as it's built: one mound of rock that the road, the panels and the track's ballast all stand
-        // in. Its height anywhere comes from how far it is from the road's paving (out past the ramps' ends too) and from the panels'
-        // strips, taken together softly, so where the road and the track meet the mound fills the corner between them with a rounded
-        // fillet, and round the outside it eases down into the ground. It's level with the road along the road's edge and with the
-        // panels' tops beside them, and past the panels' ends it keeps under the ballast's own heap, so the bed shows and the mound
-        // rises out of its flank as one rock. Under the road and the panels it's kept just below them, out of sight.
+        var count = edges[0].Length;
+
         float EdgeHeight(int k, float t)
         {
             var row = edges[k];
@@ -675,152 +610,6 @@ public sealed partial class NetworkMeshes
             var k0 = Math.Min((int)f, rows - 1);
             return EdgeHeight(k0, t) + (EdgeHeight(k0 + 1, t) - EdgeHeight(k0, t)) * (f - k0);
         }
-
-        // Each track's panels as a strip in its own frame where it crosses the road: across it and along it, linear in the road's t
-        // and w (a t + b w + c); how far along it the panels run each way; and its line, for its ballast.
-        var strips = tracks.Select((track, j) =>
-        {
-            var (px, pz, _, fx, fz, rx, rz) = track.Leg.At(track.S);
-            var (ox, oz) = (px + rx * track.Offset, pz + rz * track.Offset);
-            (double A, double B, double C) Frame(double ux, double uz) => (dx * ux + dz * uz, nx * ux + nz * uz, (cx - ox) * ux + (cz - oz) * uz);
-            return (Lat: Frame(rx, rz), Along: Frame(fx, fz), From: covered[j].From - track.S, To: covered[j].To - track.S, Track: track);
-        }).ToList();
-        static double Apply((double A, double B, double C) f, double t, double w) => f.A * t + f.B * w + f.C;
-
-        // How far it reaches: round the ramps and every panel's corners, and Spread on out.
-        const float Spread = 7f;
-        const float Cell = 0.5f;
-        var (tLow, tHigh, wFar) = (rampLow, rampHigh, half);
-        foreach (var st in strips)
-            foreach (var s in (double[])[st.From, st.To])
-                foreach (var lateral in (float[])[-reach, reach])
-                {
-                    var (px, pz, _, _, _, rx, rz) = st.Track.Leg.At((float)(st.Track.S + s));
-                    var (qx, qz) = (px + rx * (st.Track.Offset + lateral), pz + rz * (st.Track.Offset + lateral));
-                    var (t, w) = ((float)((qx - cx) * dx + (qz - cz) * dz), (float)((qx - cx) * nx + (qz - cz) * nz));
-                    (tLow, tHigh, wFar) = (MathF.Min(tLow, t), MathF.Max(tHigh, t), MathF.Max(wFar, MathF.Abs(w)));
-                }
-
-        (tLow, tHigh, wFar) = (tLow - Spread, tHigh + Spread, wFar + Spread);
-        var wide = (int)MathF.Ceiling(2f * wFar / Cell) + 1;
-        var lengthways = (int)MathF.Ceiling((tHigh - tLow) / Cell) + 1;
-
-        // How the mound falls away: level out to Flat past what it holds up, then down at Slope, rounded over between the two.
-        const float Flat = 0.6f, Slope = 0.45f, Round = 1.2f, Fillet = 3f;
-        static float Fall(float x)
-        {
-            x -= Flat;
-            return x <= -Round ? 0f : x >= Round ? Slope * x : Slope * (x + Round) * (x + Round) / (4f * Round);
-        }
-
-        static float SoftMin(float a, float b, float k)
-        {
-            var h = MathF.Max(k - MathF.Abs(a - b), 0f) / k;
-            return MathF.Min(a, b) - h * h * k * 0.25f;
-        }
-
-        var heights = new float[lengthways * wide];
-        var shown = new bool[lengthways * wide];
-        var places = new (double X, double Z)[lengthways * wide];
-        for (var i = 0; i < lengthways; i++)
-            for (var j = 0; j < wide; j++)
-            {
-                var (t, w) = (tLow + i * Cell, -wFar + j * Cell);
-                var (x, z) = (cx + dx * t + nx * w, cz + dz * t + nz * w);
-                var beyond = MathF.Max(0f, MathF.Max(t - rampHigh, rampLow - t));
-                var fromRoad = MathF.Sqrt(MathF.Pow(MathF.Max(0f, MathF.Abs(w) - half), 2f) + beyond * beyond);
-
-                // The nearest panels, and where on their track this lies.
-                var (fromPanels, lat, along, near) = (float.MaxValue, 0f, 0f, strips[0]);
-                foreach (var st in strips)
-                {
-                    var (l, a) = ((float)Apply(st.Lat, t, w), (float)Apply(st.Along, t, w));
-                    var (lo, ao) = (MathF.Max(0f, MathF.Abs(l) - reach), MathF.Max(0f, MathF.Max(a - (float)st.To, (float)st.From - a)));
-                    var d = MathF.Sqrt(lo * lo + ao * ao);
-                    if (d < fromPanels)
-                        (fromPanels, lat, along, near) = (d, l, a, st);
-                }
-
-                var trackAt = near.Track.Leg.At((float)(near.Track.S + Math.Clamp(along, near.From, near.To)));
-                var panelTop = trackAt.Y + railTop;
-                var edge = EdgeHeight(w < 0f ? 0 : rows, t);
-                // Level with the road nearer the road, with the panels nearer them; falling away with the two together.
-                var share = fromPanels / MathF.Max(fromPanels + fromRoad, 1e-3f);
-                var y = panelTop + (edge - panelTop) * share - Fall(MathF.Max(0f, SoftMin(fromRoad, fromPanels, Fillet)));
-
-                // Beside the road, away from the panels, no higher than the road's shoulder (as the road's own edge and the deck's are
-                // both shaped: down RoadShoulderSlope from just under its edge), so the shoulder shows the same along the deck as along
-                // the road that runs on from it, and they join as one. Near the panels the mound fills the corner up to them instead.
-                if (MathF.Abs(w) >= half)
-                {
-                    var shoulder = edge - 0.04f - (MathF.Abs(w) - half + 0.05f) * (ShoulderDrop / (ShoulderOut + 0.05f));
-                    var away = Math.Clamp((fromPanels - 1f) / 2f, 0f, 1f);
-                    away = away * away * (3f - 2f * away);
-                    y += (MathF.Min(y, shoulder) - y) * away;
-                }
-
-                var hidden = false;
-                if (MathF.Abs(w) < half)
-                {
-                    // Under the road: out of sight below the deck, or the road on past it.
-                    y = MathF.Min(y, (beyond > 0f ? edge : DeckHeight(t, w)) - 0.05f);
-                    hidden = true;
-                }
-                else if (MathF.Abs(lat) < reach && along >= near.From && along <= near.To)
-                {
-                    y = MathF.Min(y, panelTop - 0.03f);
-                    hidden = true;
-                }
-                else
-                {
-                    // Past the panels' ends, under the ballast's heap.
-                    var bed = near.Track.Leg.Line;
-                    var heap = near.Track.Leg.At((float)(near.Track.S + along)).Y + NetworkLine.BallastHeight
-                        - MathF.Max(0f, MathF.Abs(lat) - bed.BallastHalfTop) / NetworkLine.BallastSlope - 0.03f;
-                    // (Rising steeply away from the bed's footprint, so out past it the mound goes its own way.)
-                    if (along < near.From || along > near.To)
-                        y = MathF.Min(y, heap + MathF.Max(0f, MathF.Abs(lat) - bed.BallastHalfTop - 1f) * 2f);
-                }
-
-                var ground = _source.HeightAt(x, z);
-                var cell = i * wide + j;
-                places[cell] = (x, z);
-                // On down a little under the ground, so the ground itself cuts its edge, smoothly, rather than the cells it's built of.
-                heights[cell] = MathF.Max(y, ground - 0.4f);
-                shown[cell] = !hidden && y > ground - 0.35f;
-            }
-
-        // Its triangles, where any corner of a cell shows; smooth across, from the heights about each point.
-        var apronPoints = new List<float3>();
-        var apronNormals = new List<float3>();
-        var apronIndices = new List<uint>();
-        var index = new int[lengthways * wide];
-        Array.Fill(index, -1);
-        var (runT, runW) = (new float3((float)dx, 0f, (float)dz), new float3((float)nx, 0f, (float)nz));
-        int Point2(int i, int j)
-        {
-            var cell = i * wide + j;
-            if (index[cell] >= 0)
-                return index[cell];
-            float H(int a, int b) => heights[Math.Clamp(a, 0, lengthways - 1) * wide + Math.Clamp(b, 0, wide - 1)];
-            var (gt, gw) = ((H(i + 1, j) - H(i - 1, j)) / (2f * Cell), (H(i, j + 1) - H(i, j - 1)) / (2f * Cell));
-            var normal = MathEx.Normalize(new float3(0f, 1f, 0f) - runT * gt - runW * gw);
-            index[cell] = apronPoints.Count;
-            apronPoints.Add(new float3((float)(places[cell].X - baseX), heights[cell], (float)(places[cell].Z - baseZ)));
-            apronNormals.Add(normal);
-            return index[cell];
-        }
-
-        for (var i = 0; i + 1 < lengthways; i++)
-            for (var j = 0; j + 1 < wide; j++)
-            {
-                if (!shown[i * wide + j] && !shown[(i + 1) * wide + j] && !shown[i * wide + j + 1] && !shown[(i + 1) * wide + j + 1])
-                    continue;
-                var (a, b, c, d) = ((uint)Point2(i, j), (uint)Point2(i + 1, j), (uint)Point2(i + 1, j + 1), (uint)Point2(i, j + 1));
-                apronIndices.AddRange([a, b, c, a, c, d]);
-            }
-
-        var apron = (Points: apronPoints.ToArray(), Normals: apronNormals.ToArray(), Indices: apronIndices.ToArray());
 
         // A mast each end, on the right of the road's traffic coming to it (or the left, if it's set so), beside the kerb and
         // facing square along the road. It stands back CrossingMastBack from the nearest track's panels, measured square to that
@@ -867,7 +656,10 @@ public sealed partial class NetworkMeshes
                 RoadSurface(line, 0));
         }
 
-        return new CrossingDeck(quads, [.. masts], road, stretch, covered, apron);
+        // The surface, all of it one mesh: road, ramps, panels, the ballast running into it and the fill round it.
+        var (mesh, bedCuts) = BuildCrossingMesh(o.Id, cx, cz, dx, dz, half, rampLow, rampHigh, DeckHeight, offLow, offHigh, tracks, covered, reach, g, railTop,
+            paint, style != CrossingStyle.Asphalt, road, baseX, baseZ);
+        return new CrossingDeck(quads, [.. masts], road, stretch, covered, mesh, bedCuts);
     }
 
     /// One panel: from s0 to s1 along a track and from u0 to u1 across it (from its centre, to its right), its top level with the

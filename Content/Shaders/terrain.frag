@@ -31,6 +31,34 @@ layout(set = 0, binding = 14) uniform sampler2D beachSurface;
 layout(set = 0, binding = 15) uniform sampler2D grassHeight;
 layout(set = 0, binding = 16) uniform sampler2D earthHeight;
 
+// Where grade crossings' surfaces take the terrain's place (TerrainHoles, CrossingHole): the count, a header per hole, then their
+// cells and edges, as words.
+layout(std430, set = 4, binding = 0) readonly buffer Holes { uint holeData[]; };
+
+float holeFloat(uint i) { return uintBitsToFloat(holeData[i]); }
+
+// Whether a place (from the camera, on the plan) is in a crossing's hole: one lookup on the hole's grid.
+bool inHole(vec2 place)
+{
+    uint count = holeData[0];
+    for (uint i = 0u; i < count; i++)
+    {
+        uint h = 4u + i * 12u;
+        vec2 d = place - vec2(holeFloat(h), holeFloat(h + 1u));
+        vec2 runs = vec2(holeFloat(h + 2u), holeFloat(h + 3u));
+        vec2 local = vec2(dot(d, runs), dot(d, vec2(-runs.y, runs.x)));
+        vec2 at = (local - vec2(holeFloat(h + 4u), holeFloat(h + 5u))) / holeFloat(h + 6u);
+        uint columns = holeData[h + 8u], rows = holeData[h + 9u];
+        if (at.x < 0.0 || at.y < 0.0 || at.x >= float(columns) || at.y >= float(rows))
+            continue;
+        uvec2 c = uvec2(at);
+        if (holeData[holeData[h + 10u] + (c.y * columns + c.x) * 2u] == 1u)
+            return true;
+    }
+
+    return false;
+}
+
 layout(push_constant) uniform Push
 {
     mat4 viewProjection;
@@ -88,6 +116,9 @@ const float GroundSpecular = 0.25;
 
 void main()
 {
+    if (inHole(vRelative.xz))
+        discard;
+
     // world: where this is, for broad patterns only. Far out the camera's position is coarse as a float (centimetres, 100 km
     // from the origin), which a pattern tens of metres across doesn't show. local: the same place within the texture period,
     // exact to under a millimetre anywhere, for everything finer; the period is a whole number of every texture's repeat, so

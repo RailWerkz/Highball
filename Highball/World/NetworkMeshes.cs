@@ -191,6 +191,9 @@ public sealed partial class NetworkMeshes : IDisposable
     /// The stretches of each track (by line) under crossings' panels, along it, where it lays no ties.
     private Dictionary<int, List<(float From, float To)>> _crossingCovers = [];
 
+    /// The stretches of each line's bed (by line) that crossings' surfaces take over, along it: the bed leaves them out.
+    private Dictionary<int, List<(float From, float To)>> _crossingBeds = [];
+
     /// Through a crossover (two switches on side-by-side tracks joined by one track between them), long timbers span both
     /// tracks the whole way from one switch to the other, as they're laid: on one track (Spans, by line: its distances, the
     /// other track, and which side of it that is) its ties reach on under the other, and the other track's own ties and the
@@ -307,6 +310,15 @@ public sealed partial class NetworkMeshes : IDisposable
                     }
                 }
             }
+    }
+
+    /// Every grade crossing's hole in the terrain (where its surface is solid), with how far it is from (x, z).
+    public IEnumerable<(CrossingHole Hole, double Distance)> CrossingHoles(double x, double z)
+    {
+        foreach (var list in _objectsByChunk.Values)
+            foreach (var placed in list)
+                if (placed.Deck?.Mesh is { Hole.Columns: > 0 } mesh)
+                    yield return (mesh.Hole, Math.Sqrt((placed.X - x) * (placed.X - x) + (placed.Z - z) * (placed.Z - z)));
     }
 
     public SignalLamps LampsOf(long signal) => _lamps.GetValueOrDefault(signal, App.DevTools.Lamps ?? SignalLamps.Red);
@@ -478,8 +490,10 @@ public sealed partial class NetworkMeshes : IDisposable
     {
         var gaps = new Dictionary<int, List<(float From, float To)>>();
         var covers = new Dictionary<int, List<(float From, float To)>>();
+        var beds = new Dictionary<int, List<(float From, float To)>>();
         (_objects, _objectProjection) = (objects, projection);
         _objectsByChunk.Clear();
+        _groundless.Clear();
         _handThrows.Clear();
         foreach (var gate in _gates.Values)
             gate.Arms?.Dispose();
@@ -500,6 +514,8 @@ public sealed partial class NetworkMeshes : IDisposable
             var deck = o.Kind == PlacedKind.GradeCrossing ? Deck(o, x, z) : null;
             var placedAt = new PlacedAt(o, x, z, _source.HeightAt(x, z), deck);
             list.Add(placedAt);
+            if (deck is not null && !GroundReady(x, z))
+                _groundless.Add(o.Id);
             if (deck is { Masts.Length: > 0 })
                 _gates[o.Id] = new Gate { Placed = placedAt, Key = key };
             if (deck?.Gap is { } gap)
@@ -516,10 +532,18 @@ public sealed partial class NetworkMeshes : IDisposable
                     covers[line] = ofLine = [];
                 ofLine.Add((from, to));
             }
+
+            foreach (var (line, from, to) in deck?.BedCuts ?? [])
+            {
+                if (!beds.TryGetValue(line, out var ofLine))
+                    beds[line] = ofLine = [];
+                ofLine.Add((from, to));
+            }
         }
 
         _crossingGaps = gaps;
         _crossingCovers = covers;
+        _crossingBeds = beds;
         foreach (var sw in _switches.Values)
             sw.BuiltAt = -1f;
         foreach (var (x, z) in changed)
@@ -548,9 +572,44 @@ public sealed partial class NetworkMeshes : IDisposable
 
     // --- Choosing chunks. ---
 
+    /// Grade crossings built before the ground round them was in at full detail (only its coarse heights, which don't follow a road's
+    /// embankment or a track's bed): built again once it is, when the terrain drawn there turns to full detail too.
+    private readonly HashSet<long> _groundless = [];
+    private const double CrossingGround = 45.0;
+
+    private bool GroundReady(double x, double z)
+    {
+        var spacing = _source.Spacing;
+        return _source.FullReady((int)Math.Floor((x - CrossingGround) / spacing), (int)Math.Floor((z - CrossingGround) / spacing),
+            (int)Math.Ceiling((x + CrossingGround) / spacing), (int)Math.Ceiling((z + CrossingGround) / spacing));
+    }
+
+    private void RebuildGroundless()
+    {
+        if (_groundless.Count == 0)
+            return;
+        foreach (var (key, list) in _objectsByChunk)
+            for (var i = 0; i < list.Count; i++)
+            {
+                var old = list[i];
+                if (!_groundless.Contains(old.Object.Id) || !GroundReady(old.X, old.Z))
+                    continue;
+                _groundless.Remove(old.Object.Id);
+                var placed = old with { Y = _source.HeightAt(old.X, old.Z), Deck = Deck(old.Object, old.X, old.Z) };
+                list[i] = placed;
+                if (_gates.Remove(old.Object.Id, out var gate))
+                    gate.Arms?.Dispose();
+                if (placed.Deck is { Masts.Length: > 0 })
+                    _gates[old.Object.Id] = new Gate { Placed = placed, Key = key };
+                _stale.Add((key, false));
+                _stale.Add((key, true));
+            }
+    }
+
     public void Update(double cx, double cy, double cz)
     {
         _frame++;
+        RebuildGroundless();
         var now = _clock.Elapsed.TotalSeconds;
         var dt = (float)Math.Min(0.25, now - _lastUpdate);
         _lastUpdate = now;
@@ -1089,7 +1148,7 @@ public sealed partial class NetworkMeshes : IDisposable
                     continue;
 
                 if (line.Rail)
-                    FarRail(builder, lines, line, first, last, structure == Structure.Bridge);
+                    FarRail(builder, lines, line, first, last, structure == Structure.Bridge, _crossingBeds.GetValueOrDefault(line.Index));
                 else if (line.Mark && structure != Structure.Bridge)
                     Mark(builder, lines, line, first, last);
                 else if (line.Mark)
@@ -1112,7 +1171,53 @@ public sealed partial class NetworkMeshes : IDisposable
         return new Built(key, false, [.. builder.Vertices], indices, fades, [], [], [], []);
     }
 
-    private static void FarRail(Builder builder, NetworkLines lines, NetworkLine line, int first, int last, bool bridge)
+    /// A ballast bed's cross-section, across from its centre (to its right) and up from its formation: from the far edge of its fade
+    /// into the ground, under the taper, up its left slope rounded over onto its top, and down its right the same way. Widened left and
+    /// right (through a turnout), dropped (under another bed), and sunk into the ground as the line's bed is there. FarRail sweeps it;
+    /// a grade crossing builds the same shape where the bed runs into it.
+    private static (float U, float Y)[] BedSection(NetworkLine line, bool bridge, float left, float right, float drop, float sink)
+    {
+        var sunken = line.Bed == TrackBed.Sunken && !bridge;
+        var w = sunken ? line.BallastHalfTop - 0.7f : line.BallastHalfTop;
+        var fading = sunken ? Fading * 1.4f : Fading;
+        var h = NetworkLine.BallastHeight;
+        const float walk = 0.02f;
+        const int curve = BedCurve;
+        const float tapers = 0.6f;
+        static float Fall(float t)
+        {
+            var eased = MathF.Pow(t, 0.72f);
+            return 1f - eased * eased * (3f - 2f * eased);
+        }
+
+        var toeY = sink + walk;
+        var run = MathF.Max(0.35f, (h - drop - toeY) * NetworkLine.BallastSlope * NetworkLine.BedRun);
+        // Under what Conform leaves the ground at.
+        var underY = sink - MathF.Min(sink * 0.3f, 0.06f) - 0.03f;
+        var points = new (float, float)[curve * 2 + 6];
+        var n = 0;
+        points[n++] = (-w - left - run - fading, sink + GivesOut);
+        points[n++] = (-w - left - run - tapers, underY);
+        points[n++] = (-w - left - run, toeY);
+        for (var i = curve - 1; i >= 0; i--)
+        {
+            var t = i / (float)curve;
+            points[n++] = (-w - left - run * t, toeY + (h - drop - toeY) * Fall(t));
+        }
+
+        for (var i = 0; i < curve; i++)
+        {
+            var t = i / (float)curve;
+            points[n++] = (w + right + run * t, toeY + (h - drop - toeY) * Fall(t));
+        }
+
+        points[n++] = (w + right + run, toeY);
+        points[n++] = (w + right + run + tapers, underY);
+        points[n] = (w + right + run + fading, sink + GivesOut);
+        return points;
+    }
+
+    private static void FarRail(Builder builder, NetworkLines lines, NetworkLine line, int first, int last, bool bridge, List<(float From, float To)>? crossings = null)
     {
         if (line.Embedded)
         {
@@ -1150,41 +1255,17 @@ public sealed partial class NetworkMeshes : IDisposable
                 return 1f - eased * eased * (3f - 2f * eased);
             }
 
-            (float U, float Y)[] Section(float left, float right, float drop, float sink)
-            {
-                var toeY = sink + walk;
-                var run = MathF.Max(0.35f, (h - drop - toeY) * NetworkLine.BallastSlope * NetworkLine.BedRun);
-                // Under what Conform leaves the ground at.
-                var underY = sink - MathF.Min(sink * 0.3f, 0.06f) - 0.03f;
-                var points = new (float, float)[curve * 2 + 6];
-                var n = 0;
-                points[n++] = (-w - left - run - fading, sink + GivesOut);
-                points[n++] = (-w - left - run - tapers, underY);
-                points[n++] = (-w - left - run, toeY);
-                for (var i = curve - 1; i >= 0; i--)
-                {
-                    var t = i / (float)curve;
-                    points[n++] = (-w - left - run * t, toeY + (h - drop - toeY) * Fall(t));
-                }
-
-                for (var i = 0; i < curve; i++)
-                {
-                    var t = i / (float)curve;
-                    points[n++] = (w + right + run * t, toeY + (h - drop - toeY) * Fall(t));
-                }
-
-                points[n++] = (w + right + run, toeY);
-                points[n++] = (w + right + run + tapers, underY);
-                points[n] = (w + right + run + fading, sink + GivesOut);
-                return points;
-            }
+            (float U, float Y)[] Section(float left, float right, float drop, float sink) => BedSection(line, bridge, left, right, drop, sink);
 
             // Through a turnout the normal route's bed widens out to the reverse route's far side. The reverse route lays its own
             // bed all the same, just under it where they overlap, so whatever the turnouts around do there's always ballast
             // under the track.
             // (A switch with a surface of its own takes its routes' beds over instead: see SwitchBed.)
             var zones = line.TurnoutZones.Where(z => z.Ballast.To > z.Ballast.From && !SwitchBedOf(z.Turnout).Ok).ToList();
+            // (And where a grade crossing's surface takes over.)
             var cuts = SwitchBedCuts(line);
+            if (crossings is not null)
+                cuts.AddRange(crossings);
             var widen = zones.Where(z => z.Normal).ToList();
             var under = zones.Where(z => !z.Normal).Select(z => z.Ballast).ToList();
             var depth = 0.003f * (1 + line.Index % 5);
@@ -2182,48 +2263,17 @@ public sealed partial class NetworkMeshes : IDisposable
         }
     }
 
+    /// A grade crossing's surface: one mesh (NetworkMeshes.CrossingMesh), placed.
     private static void CrossingSurface(Builder builder, PlacedAt placed)
     {
-        if (placed.Deck is not { } deck)
+        if (placed.Deck?.Mesh is not { } mesh)
             return;
         var from = new float3((float)(placed.X - builder.Origin.X), 0f, (float)(placed.Z - builder.Origin.Z));
-        var surface = Code(LineMaterial.Asphalt);
-        // The rock mound it stands in.
-        if (deck.Apron is { } apron)
-        {
-            var rock = Code(LineMaterial.Gravel);
-            var start = (uint)builder.Vertices.Count;
-            for (var i = 0; i < apron.Points.Length; i++)
-            {
-                var p = from + apron.Points[i];
-                builder.Add(p, apron.Normals[i], new float4(p.X, p.X + p.Z, rock, 0f));
-            }
-
-            foreach (var index in apron.Indices)
-                builder.Indices.Add(start + index);
-        }
-
-        foreach (var q in deck.Quads)
-        {
-            if (q.Paint >= 0f)
-                Face(builder, [from + q.A, from + q.B, from + q.C, from + q.D], from + q.Inside, q.Paint, 0f);
-            else if (q.Plain)
-                Face(builder, [from + q.A, from + q.B, from + q.C], from + q.Inside, deck.Road?.Plain ?? surface, 0f);
-            else if (deck.Road is not { } road)
-                Face(builder, [from + q.A, from + q.B, from + q.C, from + q.D], from + q.Inside, surface, 0f);
-            else if (q.Shoulder)
-                Face(builder, [from + q.A, from + q.B, from + q.C, from + q.D], from + q.Inside, Code(LineMaterial.Gravel), 0f);
-            else
-            {
-                // The road's own surface carries on over it, markings and all.
-                var normal = Cross(q.B - q.A, q.D - q.A);
-                normal *= (normal.Y < 0f ? -1f : 1f) / MathF.Max(MathF.Sqrt(Dot(normal, normal)), 1e-6f);
-                var start = (uint)builder.Vertices.Count;
-                foreach (var corner in (float3[])[q.A, q.B, q.C, q.D])
-                    builder.Add(from + corner, normal, new float4(Dot(corner, road.Across) - road.AcrossAt, (Dot(corner, road.Along) + road.AlongAt) % Wrap, road.Code, 1000f));
-                builder.Indices.AddRange([start, start + 1, start + 2, start, start + 2, start + 3]);
-            }
-        }
+        var start = (uint)builder.Vertices.Count;
+        for (var i = 0; i < mesh.Points.Length; i++)
+            builder.Add(from + mesh.Points[i], mesh.Normals[i], mesh.Data[i]);
+        foreach (var index in mesh.Indices)
+            builder.Indices.Add(start + index);
     }
 
     /// A part stood as it is on a turnout's normal route: its across (model x) along the route's right, its along (model -z)

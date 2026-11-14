@@ -72,6 +72,8 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly Smoke _smoke = new();
     private readonly HeatHaze _haze = new();
     private readonly Clouds _clouds = new();
+    /// Where grade crossings' surfaces take the terrain's place (TerrainHoles).
+    private readonly TerrainHoles _holes = new();
     private readonly AmbientOcclusion _occlusion = new();
     private readonly PostProcess _post = new();
     private readonly MotionVectors _motion = new();
@@ -114,7 +116,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         _shadows = new SunShadows(_lights);
         // One layout for every world pipeline: push constants, and a texture at set 0 for those that sample one.
         _layout = Pipelines.Layout(128, TextureBinding.SetLayout, Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout, TrackTextures.SetLayout);
-        _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
+        _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout, TerrainHoles.SetLayout);
         _modelLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(3), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
         CreateWorldPipelines();
     }
@@ -262,6 +264,8 @@ public sealed unsafe class WorldRenderer : IDisposable
         using (Profiler.Sample("Cloud shade", cmd))
             _clouds.Prepare(cmd, _target, camera, aspect, Sky);
 
+        // (Outside the pass: it writes its buffer in the command stream.)
+        _holes.Update(cmd, network, camera);
         _target.Begin(cmd, new float4(0f, 0f, 0f, 1f));
 
 
@@ -295,6 +299,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             _shadows.Bind(cmd, _terrainLayout);
             _clouds.Bind(cmd, _terrainLayout);
             _ground.Binding.Bind(cmd, _terrainLayout);
+            _holes.Bind(cmd, _terrainLayout);
             terrain.Draw(cmd, camera.X, camera.Y, camera.Z, view, offset =>
             {
                 push.Offset = new float4(offset, 0f);
@@ -608,6 +613,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         _ground.Dispose();
         _shadows.Dispose();
         _clouds.Dispose();
+        _holes.Dispose();
         _occlusion.Dispose();
         _precipitation.Dispose();
         _smoke.Dispose();
