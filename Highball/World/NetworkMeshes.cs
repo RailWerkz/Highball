@@ -244,17 +244,33 @@ public sealed partial class NetworkMeshes : IDisposable
         return Smooth(0f, 0.06f, phase) * (1f - Smooth(0.44f, 0.52f, phase));
     }
 
-    /// The grade crossings whose warning is working (CrossingWarnings), by id. Read by the chunk builders on worker threads.
+    /// The grade crossings whose warning is working (CrossingWarnings), by id: what brings their arms down.
+    private readonly HashSet<long> _warning = [];
+
+    /// The grade crossings whose flashers are flashing (and bells ringing), by id: while the warning's working, and on until its
+    /// arms are back up. Read by the chunk builders on worker threads.
     private readonly ConcurrentDictionary<long, bool> _crossingsOn = new();
 
-    public bool CrossingActive(long crossing) => _crossingsOn.ContainsKey(crossing);
+    public bool CrossingLit(long crossing) => _crossingsOn.ContainsKey(crossing);
 
-    /// Starts or stops a grade crossing's flashers, and builds its chunk again to show it.
+    /// Starts or stops a grade crossing's warning: its flashers start at once, and stop once its arms are back up (SwingGates).
     public void SetCrossingActive(PlacedObject crossing, bool on)
     {
-        if (CrossingActive(crossing.Id) == on || _objectProjection is null)
+        if (_warning.Contains(crossing.Id) == on)
             return;
         if (on)
+            _warning.Add(crossing.Id);
+        else
+            _warning.Remove(crossing.Id);
+        Relight(crossing, on || _gateMotion.GetValueOrDefault(crossing.Id).Down > 0f);
+    }
+
+    /// Lights or puts out a crossing's flashers, and builds its chunk again to show it.
+    private void Relight(PlacedObject crossing, bool lit)
+    {
+        if (CrossingLit(crossing.Id) == lit || _objectProjection is null)
+            return;
+        if (lit)
             _crossingsOn[crossing.Id] = true;
         else
             _crossingsOn.TryRemove(crossing.Id, out _);
@@ -273,7 +289,7 @@ public sealed partial class NetworkMeshes : IDisposable
         foreach (var list in _objectsByChunk.Values)
             foreach (var placed in list)
             {
-                if (placed.Object.Kind != PlacedKind.GradeCrossing || placed.Deck is not { } deck || !CrossingActive(placed.Object.Id))
+                if (placed.Object.Kind != PlacedKind.GradeCrossing || placed.Deck is not { } deck || !CrossingLit(placed.Object.Id))
                     continue;
                 var spin = placed.Object.Turn * MathF.PI / 180f;
                 var (cos, sin) = (MathF.Cos(spin), MathF.Sin(spin));
@@ -636,7 +652,7 @@ public sealed partial class NetworkMeshes : IDisposable
         foreach (var (id, gate) in _gates)
         {
             var (down, working) = _gateMotion.GetValueOrDefault(id);
-            if (CrossingActive(id))
+            if (_warning.Contains(id))
             {
                 working += dt;
                 if (working >= GateDelay)
@@ -645,6 +661,9 @@ public sealed partial class NetworkMeshes : IDisposable
             else
                 (working, down) = (0f, MathF.Max(0f, down - dt / GateRaise));
             _gateMotion[id] = (down, working);
+            // The warning's stopped and the arms are back up: the flashers go out.
+            if (down <= 0f && !_warning.Contains(id))
+                Relight(gate.Placed.Object, false);
 
             if (!_nearKeys.Contains(gate.Key))
             {
@@ -2129,7 +2148,7 @@ public sealed partial class NetworkMeshes : IDisposable
         if (placed.Deck is not { } deck)
             return;
         // Working, its flashers' lenses (FlashA_ left, FlashB_ right) take the flashing codes the shader lights in turn.
-        var working = CrossingActive(o.Id);
+        var working = CrossingLit(o.Id);
         foreach (var (mx, mz, y, toward) in deck.Masts)
         {
             var mast = new float3((float)(mx - builder.Origin.X), y, (float)(mz - builder.Origin.Z));

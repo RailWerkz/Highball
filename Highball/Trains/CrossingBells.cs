@@ -5,7 +5,7 @@ using RailWerkz.Core.Utils;
 
 namespace Highball.Trains;
 
-/// Rings every working grade crossing's bell where it stands: when its warning comes on, one of its kind's recordings
+/// Rings every working grade crossing's bell where it stands: when its warning comes on (and until its arms are back up), one of its kind's recordings
 /// (Audio/Crossings: xing_ebell*.wav electronic, xing_mbell*.wav mechanical) picked at random, looped until it goes off. Each
 /// recording is one ring of the bell, so looped it rings on at its own beat. Heard as the trains are, from the camera.
 public sealed class CrossingBells : IDisposable
@@ -50,7 +50,8 @@ public sealed class CrossingBells : IDisposable
         var objects = source.Objects;
         foreach (var site in world.CrossingSites)
         {
-            var on = world.Crossings.IsActive(site.Id);
+            // Ringing while its flashers flash: from when its warning starts until its arms are back up.
+            var on = world.Network?.CrossingLit(site.Id) ?? false;
             var y = source.HeightAt(site.X, site.Z) + Height;
             var at = new AudioEngine.Placement(new float3((float)(site.X - camera.X), (float)(y - camera.Y), (float)(site.Z - camera.Z)), default, Reference, Range);
             if (_ringing.TryGetValue(site.Id, out var handle))

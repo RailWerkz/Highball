@@ -20,7 +20,7 @@ public sealed class CrossingWarnings
     public const double WarningTime = 25.0;
 
     /// How far past the road's edges (across the road, so further along a track crossing it on the skew) the island runs.
-    public const double IslandMargin = 3.0;
+    public const double IslandMargin = 5.0;
 
     /// Slower than this (m/s) a train's thought standing.
     public const double Creep = 0.3;
