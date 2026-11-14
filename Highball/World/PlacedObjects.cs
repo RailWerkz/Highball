@@ -12,9 +12,9 @@ public enum PlacedKind { Signal, HandThrow, GradeCrossing, PoleTelegraph, PoleDi
 /// traffic rather than the right. Run: what it was laid along with (the id they share). Turn: a grade crossing's masts turned on
 /// their posts, degrees. Style: a grade crossing's surface (CrossingStyle). A signal's Node and Toward: the track nodes it stands
 /// between, governing trains that pass Node and then come to it on their way to Toward. Approach: how far out along each track a
-/// grade crossing's approach circuits reach, metres (0 for DefaultApproach).
+/// grade crossing's approach circuits reach, metres (0 for DefaultApproach). Bell: a grade crossing's bell (CrossingBell).
 public sealed record PlacedObject(long Id, PlacedKind Kind, double Lat, double Lon, double Heading, long? Node = null, float Width = 0f, bool Opposite = false, long? Run = null,
-    float Turn = 0f, int Style = 0, long? Toward = null, float Approach = 0f)
+    float Turn = 0f, int Style = 0, long? Toward = null, float Approach = 0f, int Bell = 0)
 {
     /// A grade crossing's approach circuits: half a mile out by default, a mile at most.
     public const float DefaultApproach = 804.672f;
@@ -27,6 +27,10 @@ public sealed record PlacedObject(long Id, PlacedKind Kind, double Lat, double L
 
 /// What a grade crossing's laid with: precast concrete panels, rubber panels, timber planks, or asphalt poured level with the rails.
 public enum CrossingStyle { Concrete, Rubber, Timber, Asphalt }
+
+/// What a grade crossing rings while it works: an electronic bell (a speaker), or a mechanical one (a gong struck by a hammer).
+/// Each time it starts it rings one of that kind's recordings, picked at random (Trains.CrossingBells).
+public enum CrossingBell { Electronic, Mechanical }
 
 public static class PlacedKinds
 {

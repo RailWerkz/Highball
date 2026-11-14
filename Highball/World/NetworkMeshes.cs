@@ -154,6 +154,28 @@ public sealed partial class NetworkMeshes : IDisposable
     }
 
     private readonly Dictionary<long, Switch> _switches = [];
+
+    // Grade crossings' gate arms: each crossing's (both masts') a mesh of its own, made again while they swing, as switch blades
+    // are; and how far down each crossing's arms are (0 up, 1 down) and how long it's been working, by id, kept through rebuilds.
+    private sealed class Gate
+    {
+        public required PlacedAt Placed { get; init; }
+        public required ChunkKey Key { get; init; }
+        public Mesh? Arms;
+        public float BuiltAt = -1f;
+    }
+
+    private readonly Dictionary<long, Gate> _gates = [];
+    private readonly Dictionary<long, (float Down, float Working)> _gateMotion = [];
+
+    /// A crossing's arms start down GateDelay seconds after its flashers start, take GateLower seconds to come down and GateRaise
+    /// to go back up once it stops.
+    private const float GateDelay = 4f;
+    private const float GateLower = 10f;
+    private const float GateRaise = 8f;
+
+    /// Where the arm swings about, in the mast model (Tools/Blender/lineside.py: x across, y up, z out of its front).
+    private static readonly float3 GatePivot = new(-0.26f, 1.6f, -0.13f);
     private readonly Dictionary<ChunkKey, List<Turnout>> _turnoutsByChunk = [];
     private readonly Dictionary<ChunkKey, List<CrossingAssembly>> _assembliesByChunk = [];
     private IReadOnlyList<PlacedObject> _objects = [];
@@ -443,6 +465,9 @@ public sealed partial class NetworkMeshes : IDisposable
         (_objects, _objectProjection) = (objects, projection);
         _objectsByChunk.Clear();
         _handThrows.Clear();
+        foreach (var gate in _gates.Values)
+            gate.Arms?.Dispose();
+        _gates.Clear();
         foreach (var o in objects)
         {
             var p = projection.Forward(new GeoPoint(o.Lat, o.Lon));
@@ -457,7 +482,10 @@ public sealed partial class NetworkMeshes : IDisposable
             if (!_objectsByChunk.TryGetValue(key, out var list))
                 _objectsByChunk[key] = list = [];
             var deck = o.Kind == PlacedKind.GradeCrossing ? Deck(o, x, z) : null;
-            list.Add(new PlacedAt(o, x, z, _source.HeightAt(x, z), deck));
+            var placedAt = new PlacedAt(o, x, z, _source.HeightAt(x, z), deck);
+            list.Add(placedAt);
+            if (deck is { Masts.Length: > 0 })
+                _gates[o.Id] = new Gate { Placed = placedAt, Key = key };
             if (deck?.Gap is { } gap)
             {
                 if (!gaps.TryGetValue(gap.Line, out var ofLine))
@@ -601,6 +629,95 @@ public sealed partial class NetworkMeshes : IDisposable
     /// Whether a switch is set (or going) for its reverse route.
     public bool Reversed(long node) => Switches.Reversed(node);
 
+    /// Moves every crossing's arms on (down while it works, after GateDelay; up once it's stopped), and makes the arms of those in
+    /// near chunks that need it. After Swing has found the near chunks.
+    private void SwingGates(float dt)
+    {
+        foreach (var (id, gate) in _gates)
+        {
+            var (down, working) = _gateMotion.GetValueOrDefault(id);
+            if (CrossingActive(id))
+            {
+                working += dt;
+                if (working >= GateDelay)
+                    down = MathF.Min(1f, down + dt / GateLower);
+            }
+            else
+                (working, down) = (0f, MathF.Max(0f, down - dt / GateRaise));
+            _gateMotion[id] = (down, working);
+
+            if (!_nearKeys.Contains(gate.Key))
+            {
+                if (gate.Arms is not null && !_chunks.ContainsKey(gate.Key))
+                {
+                    gate.Arms.Dispose();
+                    gate.Arms = null;
+                    gate.BuiltAt = -1f;
+                }
+
+                continue;
+            }
+
+            if (gate.Arms is not null && gate.BuiltAt == down)
+                continue;
+            gate.Arms?.Dispose();
+            gate.Arms = null;
+            gate.BuiltAt = down;
+            if (!_objectModels.TryGetValue(PlacedKind.GradeCrossing, out var parts) || gate.Placed.Deck is not { } deck)
+                continue;
+            var builder = new Builder { Origin = OriginOf(gate.Key) };
+            GateArms(builder, gate.Placed.Object, deck, parts, down);
+            if (builder.Indices.Count == 0)
+                continue;
+            gate.Arms = Mesh.Create<LineVertex>([.. builder.Vertices], LineVertex.Layout, [.. builder.Indices], later: true);
+            SetBounds(gate.Arms, builder.Vertices);
+        }
+    }
+
+    /// A crossing's gate arms on each of its masts, `down` of the way from standing up to lying level across the road: swung about
+    /// GatePivot towards the model's -x (the road's side of a mast on the right of the traffic; +x, mirrored, on the left of it),
+    /// easing in and out.
+    private static void GateArms(Builder builder, PlacedObject o, CrossingDeck deck, Dictionary<string, Model.Part> parts, float down)
+    {
+        var eased = down * down * (3f - 2f * down);
+        var angle = eased * MathF.PI * 0.5f;
+        var (cos, sin) = (MathF.Cos(angle), MathF.Sin(angle));
+        var mirror = o.Opposite;
+        Model.Part Swung(Model.Part part)
+        {
+            var vertices = new Vertex[part.Vertices.Length];
+            for (var i = 0; i < vertices.Length; i++)
+            {
+                var (p, n) = (part.Vertices[i].Position, part.Vertices[i].Normal);
+                var (dx, dy) = (p.X - GatePivot.X, p.Y - GatePivot.Y);
+                var position = new float3(GatePivot.X + dx * cos - dy * sin, GatePivot.Y + dx * sin + dy * cos, p.Z);
+                var normal = new float3(n.X * cos - n.Y * sin, n.X * sin + n.Y * cos, n.Z);
+                if (mirror)
+                    (position.X, normal.X) = (-position.X, -normal.X);
+                vertices[i] = new Vertex(position, normal, part.Vertices[i].Uv);
+            }
+
+            var indices = part.Indices;
+            if (mirror)
+            {
+                // Mirrored, each triangle's wound the other way, so it still faces out.
+                indices = (uint[])indices.Clone();
+                for (var i = 0; i + 2 < indices.Length; i += 3)
+                    (indices[i + 1], indices[i + 2]) = (indices[i + 2], indices[i + 1]);
+            }
+
+            return part with { Vertices = vertices, Indices = indices };
+        }
+
+        var arms = parts.Where(p => p.Key.StartsWith("Gate_", StringComparison.Ordinal)).Select(p => (p.Key, Swung(p.Value))).ToList();
+        foreach (var (mx, mz, y, toward) in deck.Masts)
+        {
+            var mast = new float3((float)(mx - builder.Origin.X), y, (float)(mz - builder.Origin.Z));
+            foreach (var (name, part) in arms)
+                Upright(builder, part, mast, toward, PaintOf(name), o.Turn * MathF.PI / 180f);
+        }
+    }
+
     /// Moves every moving switch's blades on, and makes the blades of the switches in near chunks that need it.
     private void Swing(float dt)
     {
@@ -643,6 +760,8 @@ public sealed partial class NetworkMeshes : IDisposable
             SetBounds(sw.Blades, builder.Vertices);
             sw.BuiltAt = position;
         }
+
+        SwingGates(dt);
     }
 
     private static double Distance(ChunkKey k, double cx, double cy, double cz)
@@ -2016,6 +2135,9 @@ public sealed partial class NetworkMeshes : IDisposable
             var mast = new float3((float)(mx - builder.Origin.X), y, (float)(mz - builder.Origin.Z));
             foreach (var (name, part) in parts)
             {
+                // The gate arms are a mesh of their own, swung (GateArms).
+                if (name.StartsWith("Gate_", StringComparison.Ordinal))
+                    continue;
                 var paint = PaintOf(name);
                 if (working && name.StartsWith("FlashA_", StringComparison.Ordinal))
                     paint = Code(LineMaterial.Painted, FlashLens);
@@ -2334,6 +2456,15 @@ public sealed partial class NetworkMeshes : IDisposable
             push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
             sw.Blades.Draw(cmd);
         }
+
+        foreach (var gate in _gates.Values)
+        {
+            if (gate.Arms is null || !_nearKeys.Contains(gate.Key))
+                continue;
+            var origin = OriginOf(gate.Key);
+            push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
+            gate.Arms.Draw(cmd);
+        }
     }
 
     /// Where a mesh's vertices reach, for leaving it out of the shadow cascades it can't touch.
@@ -2389,6 +2520,15 @@ public sealed partial class NetworkMeshes : IDisposable
             var origin = OriginOf(sw.Key);
             push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
             sw.Blades.Draw(cmd);
+        }
+
+        foreach (var gate in _gates.Values)
+        {
+            if (gate.Arms is null || !_nearKeys.Contains(gate.Key))
+                continue;
+            var origin = OriginOf(gate.Key);
+            push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
+            gate.Arms.Draw(cmd);
         }
     }
 
@@ -2611,6 +2751,8 @@ public sealed partial class NetworkMeshes : IDisposable
         _jobs.Dispose();
         foreach (var sw in _switches.Values)
             sw.Blades?.Dispose();
+        foreach (var gate in _gates.Values)
+            gate.Arms?.Dispose();
         foreach (var chunk in _chunks.Values)
         {
             chunk.Far?.Dispose();

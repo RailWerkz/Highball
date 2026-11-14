@@ -231,11 +231,13 @@ def crossing_mast():
         m.disc("Fixed_Black", x, -0.08, 2.9, 0.26, 0.02)
         m.lens(lens, x, -0.1, 2.9, 0.12, bulge=0.025)
         m.hood(x, -0.1, 2.9, 0.14)
-    # The gate's case, and its arm raised, red and white: behind the crossarm and the flashers' backs, clear of them.
+    # The gate's case, and its arm raised, red and white: behind the crossarm and the flashers' backs, clear of them. The arm's
+    # parts are Gate_, which the game swings down about (-0.26, 0.13, 1.6) towards -X, the road's side, while the crossing works
+    # (NetworkMeshes.GateArms).
     m.box("Fixed_Black", (0.0, -0.05, 1.1), (0.17, 0.14, 0.4))
     m.box("Fixed_Black", (-0.22, 0.1, 1.42), (0.09, 0.05, 0.14))
     for k in range(6):
-        paint = "Fixed_Red" if k % 2 == 0 else "Fixed_White"
+        paint = "Gate_Red" if k % 2 == 0 else "Gate_White"
         m.box(paint, (-0.26, 0.13, 1.6 + k * 0.85 + 0.42), (0.05, 0.025, 0.42))
     return m, 6.8
 

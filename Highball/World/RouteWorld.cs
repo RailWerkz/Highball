@@ -71,6 +71,9 @@ public sealed class RouteWorld : IDisposable
 
     private List<CrossingSite> _crossingSites = [];
 
+    /// The crossings the warnings were last laid out for: where each is.
+    public IReadOnlyList<CrossingSite> CrossingSites => _crossingSites;
+
     /// The crossings' track circuits laid out again if the graph or the crossings have changed, then their warnings stepped on,
     /// and any that came on or went off shown so.
     private void UpdateCrossings(double dt)

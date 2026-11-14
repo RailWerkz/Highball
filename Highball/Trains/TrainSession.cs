@@ -23,6 +23,7 @@ public sealed class TrainSession : IDisposable
     private (double X, double Y, double Z)? _followed;
     private DriveView _view = DriveView.Free;
     private bool _placeOrbit;
+    private readonly CrossingBells _bells = new();
 
     /// The route's saved stock has been put back on the track (once, on the first rail graph). Until then nothing's saved
     /// over it, so a save before the track's ready doesn't lose it.
@@ -137,6 +138,7 @@ public sealed class TrainSession : IDisposable
         }
 
         Panel.Hear(_camera, dt);
+        _bells.Update(_world, _camera);
     }
 
     /// --train: the named consist placed where it says, facing the way the camera does, and set going.
@@ -216,5 +218,9 @@ public sealed class TrainSession : IDisposable
             });
     }
 
-    public void Dispose() => Panel.Dispose();
+    public void Dispose()
+    {
+        _bells.Dispose();
+        Panel.Dispose();
+    }
 }
