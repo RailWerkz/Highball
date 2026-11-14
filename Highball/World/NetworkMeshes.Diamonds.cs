@@ -599,15 +599,28 @@ public sealed partial class NetworkMeshes
             }
         }
 
-        // A mast each end, back from the deck on the right of the road's traffic coming to it (or the left, if it's set so).
+        // A mast each end, on the right of the road's traffic coming to it (or the left, if it's set so), beside the kerb and
+        // facing square along the road. It stands back CrossingMastBack from the nearest track's panels, measured square to that
+        // track along the mast's own line beside the road: on a skewed crossing the track cuts across that line further along
+        // than across the road's middle, and a mast set back from the middle would stand on the rails.
         var centre = edges[rows / 2];
         var masts = new List<(double X, double Z, float Y, float3 Face)>();
         var hand = o.Opposite ? -1.0 : 1.0;
-        foreach (var (sign, t) in new[] { (1f, centre[count - 2].T + CrossingMastBack), (-1f, centre[1].T - CrossingMastBack) })
+        var kerb = half + 1.5f;
+        foreach (var sign in (float[])[1f, -1f])
         {
             var toward = new float3((float)dx * sign, 0f, (float)dz * sign);
-            var right = new float3(toward.Z, 0f, -toward.X);
-            var (mx, mz) = (cx + dx * t + right.X * (half + 1.5) * hand, cz + dz * t + right.Z * (half + 1.5) * hand);
+            // The road's across (nx, nz) is to its left as it runs; the mast stands to the right of traffic running toward.
+            var w = (float)(-kerb * hand * sign);
+            var t = sign > 0f ? centre[count - 2].T + CrossingMastBack : centre[1].T - CrossingMastBack;
+            foreach (var track in tracks)
+                foreach (var lateral in (float[])[-(reach + CrossingMastBack), reach + CrossingMastBack])
+                {
+                    var clear = Meet(track, w, lateral).T;
+                    t = sign > 0f ? MathF.Max(t, clear) : MathF.Min(t, clear);
+                }
+
+            var (mx, mz) = (cx + nx * w + dx * t, cz + nz * w + dz * t);
             masts.Add((mx, mz, _source.HeightAt(mx, mz), toward));
         }
 
