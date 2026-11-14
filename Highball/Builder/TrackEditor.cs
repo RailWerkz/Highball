@@ -601,7 +601,9 @@ public sealed class TrackEditor
     /// that track, so the new one branches off there: a switch. lead: put in a turnout's lead where it leaves or joins a
     /// track (for points clicked one by one; a drawn curve already says how it leaves).
     /// exact: yard track laid along a guide, as it's given, and left as it is by the fitting.
-    public NetworkEdit? Lay(IReadOnlyList<LayPoint> laid, bool lead = true, bool exact = false)
+    /// along: the class of the mapped track it's laid along, if any: what it's laid as with no class in hand (exact track
+    /// is yard otherwise).
+    public NetworkEdit? Lay(IReadOnlyList<LayPoint> laid, bool lead = true, bool exact = false, RailClass? along = null)
     {
         if (laid.Count < 2)
             return null;
@@ -665,6 +667,8 @@ public sealed class TrackEditor
         // yard track is yard, not main.
         if (NewClass is { } chosen)
             track = WithClass(track, chosen);
+        else if (exact && along is { } mapped && mapped != RailClass.Yard && Settable.Contains(mapped))
+            track = WithClass(track, mapped);
         else if (!exact && (ClassAt(laid[0]) ?? ClassAt(laid[^1])) is { } joined && joined != RailClass.Main)
             track = WithClass(track, joined);
         changes[id] = (null, track);

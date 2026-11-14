@@ -49,7 +49,7 @@ public sealed class LayYardTool(ToolContext context, RouteInfo route) : IEditorT
         Follow.Update(context.Guides!, null, wait: true);
         if (Follow.Points() is { } points)
         {
-            context.Commit(context.Tracks.Lay(points, lead: false, exact: true));
+            context.Commit(context.Tracks.Lay(points, lead: false, exact: true, along: Follow.GuideClass(context.Guides!)));
             Follow.Clear();
         }
     }

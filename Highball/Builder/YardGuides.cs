@@ -61,6 +61,8 @@ public sealed class YardGuides
         public readonly List<(long A, long B, bool Done)> Segments = [];
         /// Every guide segment's class, and whether any built track (hand-laid or drawn) already runs along it.
         public readonly List<(int Class, bool Covered)> Classes = [];
+        /// Each guide segment's class, by its two nodes (either way round).
+        public readonly Dictionary<(long, long), int> SegmentClass = [];
         public readonly List<YardArea> Areas = [];
         public double GuideLength, DoneLength;
     }
@@ -196,6 +198,7 @@ public sealed class YardGuides
                     if (NearBuilt(pa.X + (pb.X - pa.X) * k / tries, pa.Z + (pb.Z - pa.Z) * k / tries))
                         covered++;
                 found.Classes.Add((way.Class, covered > tries * 0.7));
+                found.SegmentClass[(a, b)] = found.SegmentClass[(b, a)] = way.Class;
                 found.GuideLength += length;
                 if (done)
                     found.DoneLength += length;
@@ -204,6 +207,10 @@ public sealed class YardGuides
 
         return found;
     }
+
+    /// The class of the mapped track a place on a guide is on, if known.
+    public RailClass? ClassAt(GuidePlace place) =>
+        _found.SegmentClass.TryGetValue((place.A, place.B), out var c) ? (RailClass)c : null;
 
     private static void Link(Found found, long from, long to, double length)
     {
@@ -527,6 +534,11 @@ public sealed class FollowTool
     }
 
     public void Add(Click click) => _clicks.Add(click);
+
+    /// The class of the mapped track the clicks are on, most of them (null: none on a guide): what Auto lays along it as.
+    public RailClass? GuideClass(YardGuides guides) =>
+        _clicks.Select(c => c.Guide is { } g ? guides.ClassAt(g) : null).OfType<RailClass>().GroupBy(c => c)
+            .OrderByDescending(g => g.Count()).Select(g => (RailClass?)g.Key).FirstOrDefault();
 
     public void RemoveLast()
     {

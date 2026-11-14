@@ -681,7 +681,7 @@ public sealed partial class EditorView
                 }
 
                 _follow.Update(_guides!, null, wait: true);
-                Log.Info(string.Create(CultureInfo.InvariantCulture, $"Follow: {_follow.Length:0} m, tightest curve {_follow.Radius:0} m, fitted {!_follow.Unfitted}, {_follow.Preview?.Count} pieces"));
+                Log.Info(string.Create(CultureInfo.InvariantCulture, $"Follow: {_follow.Length:0} m, tightest curve {_follow.Radius:0} m, fitted {!_follow.Unfitted}, {_follow.Preview?.Count} pieces, along {_follow.GuideClass(_guides!)?.ToString() ?? "no guide"}"));
                 FollowLay();
                 break;
             }
