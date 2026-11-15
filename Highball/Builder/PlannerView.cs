@@ -533,6 +533,43 @@ public sealed class PlannerView : IDisposable
         Kit.EndCard();
 
         Key();
+        FactoryResetCard();
+    }
+
+    /// Asked for by the Factory Reset card once confirmed; the Route Builder does it (it holds the editors to close first).
+    public bool ResetRequested { get; private set; }
+
+    private bool _confirmReset;
+
+    /// Wiping the route back to nothing, as if it had never been started: every built tile, the track, the roads, the
+    /// scenery, the terrain edits and the stock left on it. Two clicks, the second spelling out what goes.
+    private void FactoryResetCard()
+    {
+        var possible = _route.Pack is null && !_generator.Running;
+        Kit.BeginCard("Factory Reset", null, Stop);
+        if (!_confirmReset)
+        {
+            Kit.Note("Delete everything in this route and start again from an empty map.", TextDim);
+            if (Kit.Button("factoryreset", "Factory Reset...", 0f, ButtonKind.Secondary, possible, Stop))
+                _confirmReset = true;
+        }
+        else
+        {
+            Kit.Note($"This permanently deletes all {_built.Count} built tiles, all track, roads, crossings, signals, scenery, terrain edits " +
+                     "and placed trains, and clears the route's origin. It can't be undone.", Stop);
+            switch (Kit.Buttons("factoryresetconfirm", ["Cancel", "Delete Everything"], [true, possible]))
+            {
+                case 0:
+                    _confirmReset = false;
+                    break;
+                case 1:
+                    _confirmReset = false;
+                    ResetRequested = true;
+                    break;
+            }
+        }
+
+        Kit.EndCard();
     }
 
     /// A kind of heights: picks what a drag marks, with how many tiles are selected and built that way.

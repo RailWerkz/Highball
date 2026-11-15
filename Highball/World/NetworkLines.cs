@@ -239,6 +239,23 @@ public sealed partial class NetworkLines
 
     private readonly List<NetworkLine> _lines = [];
     private readonly Dictionary<TileId, List<int>> _byTile = [];
+
+    /// How much of each sample near a track is its ballast run out over the ground (0 to 255), by tile: from the bed's toe,
+    /// where it's all stone, out across the fade to none. Worked out as each tile's ground is shaped (Conform).
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<TileId, Dictionary<int, byte>> _ballast = new();
+    private int _ballastSamples;
+
+    /// How much of sample (sx, sz) of a tile is ballast run out over the ground, 0 to 1.
+    public float BallastAt(TileId tile, int sx, int sz) =>
+        _ballast.TryGetValue(tile, out var map) && map.TryGetValue(sz * _ballastSamples + sx, out var b) ? b / 255f : 0f;
+
+    /// Takes on the ballast worked out by the lines this replaces, for the tiles whose ground isn't being shaped again.
+    public void InheritBallast(NetworkLines previous)
+    {
+        _ballastSamples = previous._ballastSamples;
+        foreach (var (tile, map) in previous._ballast)
+            _ballast.TryAdd(tile, map);
+    }
     private readonly Dictionary<TileId, List<(int Line, int Point)>> _pointsByTile = [];
     private readonly float _spacing;
     private readonly int _quads;
@@ -425,6 +442,40 @@ public sealed partial class NetworkLines
                 seen[node] = seen.GetValueOrDefault(node) + 1;
         var pinned = seen.Where(n => n.Value > 1).Select(n => n.Key).ToHashSet();
 
+        // Where each rail chain ends, so a line laid by hand can carry on into the track it meets there.
+        var endsAt = new Dictionary<long, List<(Chain Chain, bool AtStart)>>();
+        foreach (var chain in chains)
+            if (chain.Rail && chain.Nodes.Count >= 2)
+                foreach (var (node, atStart) in (ReadOnlySpan<(long, bool)>)[(chain.Nodes[0], true), (chain.Nodes[^1], false)])
+                {
+                    if (!endsAt.TryGetValue(node, out var list))
+                        endsAt[node] = list = [];
+                    list.Add((chain, atStart));
+                }
+
+        // Which way the track runs on past an end of a line, away from it: the chain ending there that carries straight on
+        // (within about 25 degrees), if one does.
+        (double X, double Z)? Beyond(Chain self, long node, (double X, double Z) at, (double X, double Z) inward)
+        {
+            (double X, double Z)? best = null;
+            var straightest = -0.9;
+            foreach (var (other, atStart) in endsAt.GetValueOrDefault(node) ?? [])
+            {
+                if (other == self)
+                    continue;
+                var next = projection.Forward(atStart ? other.Points[1] : other.Points[^2]);
+                var (dx, dz) = (next.East - at.X, -next.North - at.Z);
+                var length = Math.Sqrt(dx * dx + dz * dz);
+                if (length < 1e-6)
+                    continue;
+                var dot = (dx * inward.X + dz * inward.Z) / length;
+                if (dot < straightest)
+                    (straightest, best) = (dot, (dx / length, dz / length));
+            }
+
+            return best;
+        }
+
         foreach (var chain in chains)
         {
             if (lines.Keep(chain, local))
@@ -433,6 +484,20 @@ public sealed partial class NetworkLines
             // (Yard tracks stand a few metres apart, closer than this could move them: they keep the line they were mapped on.)
             if (chain.Rail && chain.Class != (int)RailClass.Yard && !chain.Tags.ContainsKey(RouteNetwork.ExactTag))
                 EvenOut(xs, zs, nodes, pinned);
+            // Track laid by hand goes through its control points as they are, but without the spline's wobble between them.
+            else if (chain.Rail && chain.Tags.ContainsKey(RouteNetwork.ExactTag) && xs.Count >= 2)
+            {
+                static (double X, double Z) Unit(double x, double z)
+                {
+                    var length = Math.Max(Math.Sqrt(x * x + z * z), 1e-9);
+                    return (x / length, z / length);
+                }
+
+                var inStart = Unit(xs[1] - xs[0], zs[1] - zs[0]);
+                var inEnd = Unit(xs[^2] - xs[^1], zs[^2] - zs[^1]);
+                ExactFairing.Fair(xs, zs, nodes.Select(n => n.Item2),
+                    Beyond(chain, chain.Nodes[0], (xs[0], zs[0]), inStart), Beyond(chain, chain.Nodes[^1], (xs[^1], zs[^1]), inEnd));
+            }
 
             // Cut into runs over built tiles.
             var start = -1;
@@ -1304,6 +1369,9 @@ public sealed partial class NetworkLines
         LevelRoadsAtPads();
         Watch("pads");
         CrestDecks();
+        // Cresting a bridge smooths its whole road, which can pull a road's end on a pad back down off the pad's level (leaving a
+        // step where it meets the crossing's deck): they're brought back up to it.
+        LevelRoadsAtPads();
 
         _widestAt.Clear();
         foreach (var road in _lines.Where(l => !l.Rail && !l.Mark))
@@ -2313,6 +2381,31 @@ public sealed partial class NetworkLines
             heights[sample] = h + (shaped - h) * fade;
         });
 
+        // How much of each sample is ballast run out over the ground: all of it out to the bed's toe, none past its fade.
+        {
+            var map = new Dictionary<int, byte>();
+            for (var sample = 0; sample < heights.Length; sample++)
+            {
+                var n = near[sample];
+                if (n.Line < 0)
+                    continue;
+                var rail = _lines[n.Line];
+                if (rail.Embedded)
+                    continue;
+                var flank = MathF.Max(0.35f, rail.BedHeight * NetworkLine.BallastSlope * NetworkLine.BedRun);
+                var toe = rail.BallastHalfTop + flank;
+                var amount = Math.Clamp(1f - (n.D - toe) / NetworkLine.BedFade, 0f, 1f);
+                if (amount > 0f)
+                    map[sample] = (byte)MathF.Round(amount * 255f);
+            }
+
+            _ballastSamples = samples;
+            if (map.Count > 0)
+                _ballast[tile] = map;
+            else
+                _ballast.TryRemove(tile, out _);
+        }
+
         // The nearest rail line on the far side of each sample from its nearest one.
         var across = new (float D, float Y)[heights.Length];
         Array.Fill(across, (float.MaxValue, 0f));
@@ -2375,11 +2468,15 @@ public sealed partial class NetworkLines
         // At a level crossing the road rises to the rails, but the track keeps its own flat ground beside it lower down, so the road
         // and its deck would stand on a slab. Lift that ground to the road and run fill slopes out from it; but never over the
         // ballast's own surface (so the gravel still shows), dipping to the bed's toe and rising from there at the fill slope.
+        // Each sample takes its lift from the stretch of the road nearest it alone: a stretch's end reaches past it, and on a road
+        // falling away from the crossing the higher stretch's end would heap the ground up through the lower one's surface.
+        var lifts = new Dictionary<int, (float D, float Target)>();
         foreach (var index in list)
         {
             var line = _lines[index];
             if (line.Rail || line.Mark)
                 continue;
+            lifts.Clear();
             var r = (line.Formation + CrossingFillReach) / _spacing;
             for (var p = 0; p + 1 < line.Count; p++)
             {
@@ -2415,19 +2512,17 @@ public sealed partial class NetworkLines
                             continue;
                         var lift = line.Y[p] + (line.Y[p + 1] - line.Y[p]) * (float)t - RoadClearance - MathF.Max(0f, d - line.Formation) * FillSlope;
 
-                        var flank = MathF.Max(0.35f, rail.BedHeight * NetworkLine.BallastSlope * NetworkLine.BedRun);
-                        var toe = rail.BallastHalfTop + flank;
-                        var bed = rail.BedHeight * Math.Clamp(1f - (n.D - rail.BallastHalfTop) / flank, 0f, 1f);
-                        var cap = n.Y - CrossingUnderBallast + MathF.Max(bed, (n.D - toe) * FillSlope);
-                        // Under the road itself, off the ballast's top (which the crossing's panels cover), the road's fill buries
-                        // the ballast's shoulders, as it's built: no wedge of gravel shows beside the road.
-                        if (d <= line.Formation && n.D >= rail.BallastHalfTop + CrossingBuryFrom)
-                            cap = float.MaxValue;
-                        var target = MathF.Min(lift, cap);
-                        if (target > heights[sample])
-                            heights[sample] = target;
+                        // The track's bed runs on through the crossing, the crossing's surface built on it: the road's fill comes up
+                        // to it, never over it, its shoulders nor its fade (the crossing's own embankment covers what's between).
+                        var cap = UnderBed(rail, n.D, n.Y);
+                        if (!lifts.TryGetValue(sample, out var best) || d < best.D)
+                            lifts[sample] = (d, MathF.Min(lift, cap));
                     }
             }
+
+            foreach (var (sample, (_, target)) in lifts)
+                if (target > heights[sample])
+                    heights[sample] = target;
         }
 
         ConformPads(heights, samples, gx0, gz0, near);
@@ -2533,8 +2628,87 @@ public sealed partial class NetworkLines
     /// under the ballast's surface that ground stays.
     private const float CrossingFillReach = 6f;
     private const float CrossingUnderBallast = 0.04f;
-    /// How far past a track's ballast top a road's fill may bury the ballast at a level crossing.
-    private const float CrossingBuryFrom = 0.25f;
+
+    /// The highest the ground may come at d across from a track's centre (its formation at y): just under its ballast bed, out
+    /// over its top and down its shoulders to the toe, the shoulder rounded as the bed's own (NetworkMeshes.BedSection), then
+    /// level on under the bed's fade and a grid square's diagonal (or `level` grid squares) past it, and only then rising, no
+    /// steeper than a fill's
+    /// slope. (Round a crossing, whose own embankment covers the ground there, half that: a wider level stretch leaves a pit
+    /// between the ballast and the road's fill.) The ground's drawn
+    /// as flat triangles between samples a grid square apart: a sample let rise right from the toe would carry the triangle from
+    /// it up through the bed's shoulder, nearer in. Whatever's built up round a track (a crossing's road and fill) comes up to the
+    /// bed, never over it, so the bed shows whole wherever it runs.
+    private float UnderBed(NetworkLine rail, float d, float y, float level = 1.42f)
+    {
+        var flank = MathF.Max(0.35f, rail.BedHeight * NetworkLine.BallastSlope * NetworkLine.BedRun);
+        var toe = rail.BallastHalfTop + flank;
+        // (Taken half a grid square further out than d, where the shoulder's lower: so a triangle from a sample on the shoulder to
+        // one further out stays under the shoulder's hollow toward its toe, between them.)
+        var t = Math.Clamp((d + _spacing * 0.71f - rail.BallastHalfTop) / flank, 0f, 1f);
+        var eased = MathF.Pow(t, 0.72f);
+        var bed = rail.BedHeight * (1f - eased * eased * (3f - 2f * eased));
+        // (Level on out under the whole of the bed's fade too, the loose stone laid over the ground past its toe: ground come up
+        // through it buries it, and the fade, its shadow looked up a little under its surface, goes dark.)
+        return y - CrossingUnderBallast + MathF.Max(bed, (d - toe - NetworkLine.BedFade - _spacing * level) * FillSlope);
+    }
+
+    /// How far under a track's drawn ballast bed (its rock and the fade past it) the ground's kept, where it's kept off it: more
+    /// than the fade looks its shadow up under its surface (line.frag), or ground just under it still shades it.
+    public const float BedClear = 0.08f;
+
+    /// The highest the ground may come at (x, z) and stay BedClear under the nearest track's ballast bed as it's drawn
+    /// (NetworkMeshes.BedSection: its rock, its shoulders and the fade past them), or null where no track's bed reaches.
+    public float? BedClearance(double x, double z)
+    {
+        float? best = null;
+        var bestD = float.MaxValue;
+        foreach (var line in _lines)
+        {
+            if (!line.Rail || line.Embedded || line.Count < 2 || x < line.MinX - 12 || x > line.MaxX + 12 || z < line.MinZ - 12 || z > line.MaxZ + 12)
+                continue;
+            for (var p = 0; p + 1 < line.Count; p++)
+            {
+                if (line.Structures[p] != Structure.Ground)
+                    continue;
+                var (ax, az, bx, bz) = (line.X[p], line.Z[p], line.X[p + 1], line.Z[p + 1]);
+                var (dx, dz) = (bx - ax, bz - az);
+                var length2 = dx * dx + dz * dz;
+                if (length2 < 1e-9)
+                    continue;
+                var t = Math.Clamp(((x - ax) * dx + (z - az) * dz) / length2, 0.0, 1.0);
+                var (ex, ez) = (x - (ax + dx * t), z - (az + dz * t));
+                var d = (float)Math.Sqrt(ex * ex + ez * ez);
+                if (d >= bestD || d > 12f)
+                    continue;
+                var length = Math.Sqrt(length2);
+                // Across it to its right, as the bed's swept (Leg.At: right is (-fz, fx)).
+                var u = (float)((ex * -dz + ez * dx) / length);
+                var s = line.S[p] + (line.S[p + 1] - line.S[p]) * (float)t;
+                var section = NetworkMeshes.BedSection(line, false, 0f, 0f, 0f, line.SinkAt(s));
+                var n = section.Length;
+                if (u <= section[0].U || u >= section[n - 1].U)
+                    continue;
+                var h = section[n - 1].Y;
+                for (var i = 0; i + 1 < n; i++)
+                    if (u <= section[i + 1].U)
+                    {
+                        var span = section[i + 1].U - section[i].U;
+                        h = span < 1e-5f ? section[i + 1].Y : section[i].Y + (section[i + 1].Y - section[i].Y) * (u - section[i].U) / span;
+                        break;
+                    }
+
+                // (The fade's laid over the taper, which goes in under it: the surface is the higher of the two there.)
+                if (u < section[2].U)
+                    h = MathF.Max(h, section[0].Y + (section[2].Y - section[0].Y) * (u - section[0].U) / (section[2].U - section[0].U));
+                else if (u > section[n - 3].U)
+                    h = MathF.Max(h, section[n - 3].Y + (section[n - 1].Y - section[n - 3].Y) * (u - section[n - 3].U) / (section[n - 1].U - section[n - 3].U));
+                bestD = d;
+                best = line.Y[p] + (line.Y[p + 1] - line.Y[p]) * (float)t + h - BedClear;
+            }
+        }
+
+        return best;
+    }
 
     /// How far apart two rail lines can be for the ground between them to be graded as one.
     private const float YardGap = 45f;

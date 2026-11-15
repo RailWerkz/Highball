@@ -115,6 +115,12 @@ public sealed class BuilderScreen : Screen, IWorldScreen
     public override void Update(float dt)
     {
         _planner.Update();
+        if (_planner.ResetRequested)
+        {
+            FactoryReset();
+            return;
+        }
+
         DebugWindows.Keys();
 
         if (!Keyboard.KeysBlocked)
@@ -154,6 +160,46 @@ public sealed class BuilderScreen : Screen, IWorldScreen
             _editor = null;
             _mode = Mode.Planner;
         }
+    }
+
+    /// The route wiped back to nothing (the Planner's Factory Reset): the editors closed (saving whatever they had, so nothing
+    /// writes into the folder after it's gone), the route's folder deleted whole, and the builder opened again on a new,
+    /// empty route of the same name, its origin and grid unset till the first area's picked.
+    private void FactoryReset()
+    {
+        _editor?.Dispose();
+        _editor = null;
+        _mode = Mode.Planner;
+
+        var folder = _route.Folder;
+        Exception? failure = null;
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                if (Directory.Exists(folder))
+                    Directory.Delete(folder, recursive: true);
+                failure = null;
+                break;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // (A tile still being read in the background lets go of its file in a moment.)
+                failure = e;
+                Thread.Sleep(200);
+            }
+        }
+
+        if (failure is not null)
+        {
+            RailWerkz.Core.Logging.Log.Warn($"Factory reset: {folder} not wholly deleted ({failure.Message})");
+            Notify("Factory reset couldn't delete everything; close anything using the route and try again");
+        }
+        else
+            RailWerkz.Core.Logging.Log.Info($"Factory reset: {folder} deleted");
+
+        var fresh = _route.Fresh();
+        HighballApp.Instance.Replace(new BuilderScreen(fresh));
     }
 
     public override void UpdateBehind()

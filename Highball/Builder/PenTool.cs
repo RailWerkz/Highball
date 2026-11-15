@@ -1,5 +1,6 @@
 using System.Globalization;
 using Brutal.ImGuiApi;
+using Highball.World;
 using RailWerkz.UI;
 using static RailWerkz.UI.Style;
 
@@ -93,6 +94,75 @@ public sealed class PenTool
             return;
         var (dx, dz) = (g.X - anchor2.Point.X, g.Z - anchor2.Point.Z);
         (anchor2.OutX, anchor2.OutZ) = part == 1 ? (dx, dz) : (-dx, -dz);
+    }
+
+    /// The line Shift holds the next point to, while it's held: from the last point, on the way the path runs there.
+    public ((double X, double Z) From, (double X, double Z) Way, bool Either)? Guide { get; private set; }
+
+    /// Which way the path runs on from its last point: along the track when that's the only point and it's on one (out of
+    /// a track's end; either way along it partway, Either), otherwise on along the last stretch (or the last handle).
+    private ((double X, double Z) Way, bool Either)? Ahead(TrackEditor tracks, NetworkLines? lines)
+    {
+        static (double X, double Z)? Unit(double x, double z)
+        {
+            var length = Math.Sqrt(x * x + z * z);
+            return length < 1e-6 ? null : (x / length, z / length);
+        }
+
+        if (_anchors.Count == 0)
+            return null;
+        var last = _anchors[^1];
+        if (_anchors.Count >= 2 || last.Smooth)
+        {
+            if (last.Smooth)
+                return Unit(last.OutX, last.OutZ) is { } handle ? (handle, false) : null;
+            var before = _anchors[^2].Point;
+            return Unit(last.Point.X - before.X, last.Point.Z - before.Z) is { } stretch ? (stretch, false) : null;
+        }
+
+        if (last.Point.Node is { } node && tracks.Has(node))
+        {
+            // Out of a track's end: its heading there, read off its last stretch (so a curving track's tangent, not the chord
+            // to its last control point).
+            if (tracks.IsLooseEnd(node))
+            {
+                if (BuiltTrack.EndPose(lines, tracks, node, 30.0) is { } end)
+                    return ((Math.Cos(end.Heading), Math.Sin(end.Heading)), false);
+                if (tracks.LeavingEnd(node) is { } outward)
+                    return (outward, false);
+            }
+
+            return tracks.RunsAt(node) is { } runs ? (runs, true) : null;
+        }
+
+        if (last.Point.Split is { } split && tracks.Network.Ways.TryGetValue(split.Way, out var way) && split.Segment + 1 < way.Nodes.Length &&
+            tracks.Has(way.Nodes[split.Segment]) && tracks.Has(way.Nodes[split.Segment + 1]))
+        {
+            var (ax, az) = tracks.PositionOf(way.Nodes[split.Segment]);
+            var (bx, bz) = tracks.PositionOf(way.Nodes[split.Segment + 1]);
+            return Unit(bx - ax, bz - az) is { } along ? (along, true) : null;
+        }
+
+        return null;
+    }
+
+    /// Shift held: where the next point goes is pulled onto the line straight on from the last point (see Ahead), so
+    /// track carries on exactly in line with what it leaves. Off (or with nothing to carry on from), snap as it is.
+    public LayPoint? Straighten(LayPoint? snap, TrackEditor tracks, bool shift, NetworkLines? lines = null)
+    {
+        Guide = null;
+        if (!shift || Busy || snap is not { } point || Ahead(tracks, lines) is not { } ahead)
+            return snap;
+
+        var from = (_anchors[^1].Point.X, _anchors[^1].Point.Z);
+        var (wx, wz) = ahead.Way;
+        var t = (point.X - from.Item1) * wx + (point.Z - from.Item2) * wz;
+        if (!ahead.Either)
+            t = Math.Max(t, 1.0);
+        else if (Math.Abs(t) < 1.0)
+            t = t < 0 ? -1.0 : 1.0;
+        Guide = (from, ahead.Way, ahead.Either);
+        return new LayPoint(from.Item1 + wx * t, from.Item2 + wz * t);
     }
 
     private (Anchor, int)? Pick(float2 mouse, Func<double, double, float2?> project)
@@ -223,6 +293,17 @@ public sealed class PenTool
                     draw.AddLine(a, b, color, S(width));
         }
 
+        if (Guide is { } guide)
+        {
+            // The line Shift holds to, faint, a long way on (both ways when either will do).
+            var (fx, fz) = guide.From;
+            var (wx, wz) = guide.Way;
+            const double reach = 600.0, piece = 15.0;
+            for (var s = guide.Either ? -reach : 0.0; s < reach; s += piece * 2)
+                if (project(fx + wx * s, fz + wz * s) is { } a && project(fx + wx * (s + piece), fz + wz * (s + piece)) is { } b)
+                    draw.AddLine(a, b, Accent.WithAlpha(0.6f), S(1.5f));
+        }
+
         if (preview is not null && _dragging is null && _anchors.Count > 0)
             Path(Points(preview), Rgba.White.WithAlpha(0.35f), 2f);
         Path(Points(), Rgba.White, 2.5f);
@@ -259,6 +340,67 @@ public sealed class PenTool
         var min = at + new float2(S(16f), S(12f));
         draw.AddRectFilled(min - new float2(S(6f), S(4f)), min + new float2(width + S(6f), size + S(5f)), Surface, S(3f));
         Canvas.Text(draw, Medium, size, min, color, text);
+    }
+
+    /// How far the track built through the thinned points may stray from the path drawn, metres: well inside what the
+    /// mouse places a point to.
+    private const double ThinTolerance = 0.15;
+
+    /// Turns sharper than this at a point are corners, kept as they are, degrees.
+    private const double CornerDegrees = 5.0;
+
+    /// Drawn track with as few control points as lay the same track: the path's sampled every few metres to be drawn, but
+    /// a straight needs only its ends and a curve a point every few degrees (FollowTool.ControlPoints: where the spline the
+    /// track's built as would stray more than a few centimetres, it gets more). Points on track (joins, branches) and
+    /// corners are kept as they are.
+    public static List<LayPoint> Thin(IReadOnlyList<LayPoint> points)
+    {
+        if (points.Count < 3)
+            return [.. points];
+
+        bool Kept(int i)
+        {
+            if (i == 0 || i == points.Count - 1 || points[i].Node is not null || points[i].Split is not null)
+                return true;
+            // A corner turns more than the curve it's on: than the points either side turn, on average.
+            var here = Turn(i);
+            var aside = 0.5 * ((i > 1 ? Turn(i - 1) : here) + (i < points.Count - 2 ? Turn(i + 1) : here));
+            return Math.Abs(here - aside) > CornerDegrees * Math.PI / 180.0;
+        }
+
+        double Turn(int i)
+        {
+            var (a, b, c) = (points[i - 1], points[i], points[i + 1]);
+            var turn = Math.Atan2(c.Z - b.Z, c.X - b.X) - Math.Atan2(b.Z - a.Z, b.X - a.X);
+            return Math.Atan2(Math.Sin(turn), Math.Cos(turn));
+        }
+
+        var result = new List<LayPoint> { points[0] };
+        var from = 0;
+        for (var i = 1; i < points.Count; i++)
+        {
+            if (!Kept(i))
+                continue;
+            // The run from the last kept point to this one, thinned.
+            if (i - from >= 2)
+            {
+                var run = new List<(double X, double Z)>();
+                for (var k = from; k <= i; k++)
+                    run.Add((points[k].X, points[k].Z));
+                var pieces = GuideSmoothing.Pieces(run);
+                if (pieces.Count > 0)
+                    foreach (var u in FollowTool.ControlPoints(pieces, merge: true, tolerance: ThinTolerance).Skip(1).SkipLast(1))
+                    {
+                        var (x, z) = Alignment.Position(pieces, u);
+                        result.Add(new LayPoint(x, z));
+                    }
+            }
+
+            result.Add(points[i]);
+            from = i;
+        }
+
+        return result;
     }
 
     public static string Describe(Measure m, bool imperial)

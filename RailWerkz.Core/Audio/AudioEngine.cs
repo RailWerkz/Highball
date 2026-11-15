@@ -71,6 +71,9 @@ public static class AudioEngine
     private const int StreamBuffers = 4;
     private const int StreamFrames = 8192;
 
+    /// The most a source's gain can be (24 dB over as recorded), well above anything the mix asks for.
+    private const float MaxSourceGain = 16f;
+
     /// How long a sustained sound's loop seam and its let-go crossfade last, in seconds.
     private const float SustainFade = 0.08f;
 
@@ -103,8 +106,14 @@ public static class AudioEngine
             return false;
         }
 
+        // OpenAL holds every source's gain to its MaxGain, 1 unless it's told otherwise: with the bus compressor's makeup gain over
+        // the world's sounds (12 dB as tuned), every loud one (a horn, an engine working hard) came out pinned at that same 1,
+        // flattening the mix so a horn was no louder than the engine under it. The output limiter catches what's over full scale.
         for (var i = 0; i < VoiceCount; i++)
+        {
             Voices[i].Source = Al.GenSource();
+            Voices[i].Source.MaxGain = MaxSourceGain;
+        }
 
         // Placed sounds fall off as reference / distance, the way sound does in open air.
         Al.DistanceModel = AlDistanceModel.InverseDistanceClamped;

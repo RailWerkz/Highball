@@ -310,7 +310,6 @@ public sealed partial class NetworkMeshes
     /// past the road's edges (along the track) the panels run on.
     private const float PanelLength = 2.4384f;
     private const float PanelJoint = 0.012f;
-    private const float PanelMargin = 0.6f;
     /// The flangeway left inside each rail, the gap left outside its head, and the bevel round a panel's top.
     private const float PanelFlangeway = 0.064f;
     private const float PanelGapOutside = 0.012f;
@@ -329,7 +328,7 @@ public sealed partial class NetworkMeshes
     /// What a grade crossing's made of: its deck, and its masts in world metres. Covered: each track's stretch under its panels
     /// (by line and distance along it), where it lays no ties.
     private sealed record CrossingDeck(List<DeckQuad> Quads, (double X, double Z, float Y, float3 Face)[] Masts, DeckRoad? Road = null, (int Line, float From, float To)? Gap = null,
-        List<(int Line, float From, float To)>? Covered = null, CrossingMesh? Mesh = null, List<(int Line, float From, float To)>? BedCuts = null);
+        List<(int Line, float From, float To)>? Covered = null, CrossingMesh? Mesh = null);
 
     /// The road running along a crossing here, if there is one: the nearest place on it to (x, z), and the way it runs there.
     private (NetworkLine Line, int Segment, float T, double X, double Z, double Dx, double Dz)? RoadAlong(double x, double z, double dx, double dz)
@@ -418,13 +417,20 @@ public sealed partial class NetworkMeshes
     }
 
     /// The material a crossing's panels are made of.
-    private static float PanelPaint(CrossingStyle style) => style switch
+    /// A crossing's panels: laid as a paved surface (line.frag's asphalt, without markings) in its kind's texture.
+    /// Its texture's brought into use, to be loaded.
+    private static float PanelPaint(long id, CrossingStyle style, string? surface)
     {
-        CrossingStyle.Rubber => Code(LineMaterial.Painted, Array.IndexOf(Paints, "Black")),
-        CrossingStyle.Timber => Code(LineMaterial.Painted, Array.IndexOf(Paints, "Wood")),
-        CrossingStyle.Asphalt => Code(LineMaterial.Asphalt),
-        _ => Code(LineMaterial.Painted, Array.IndexOf(Paints, "Concrete")),
-    };
+        var kind = style switch
+        {
+            CrossingStyle.Timber => SurfaceTextures.Kind.Wood,
+            CrossingStyle.Asphalt => SurfaceTextures.Kind.Asphalt,
+            _ => SurfaceTextures.Kind.Concrete,
+        };
+        var number = SurfaceTextures.Number(kind, surface);
+        SurfaceTextures.Use(id, number);
+        return Code(LineMaterial.Asphalt, SurfaceBits(1 + number));
+    }
 
     /// The deck across every track the road meets here, built as a crossing is: standard panels laid along each track over the
     /// road's width (a field panel between the rails, a gauge panel outside each, level with the rail tops), with asphalt between
@@ -526,21 +532,49 @@ public sealed partial class NetworkMeshes
         if (pad is not null)
             (rampLow, rampHigh) = (MathF.Min(pad.From, spans.Min(r => r[0].Low) - 1f), MathF.Max(pad.To, spans.Max(r => r[^1].High) + 1f));
 
+        // A road that stops a little short of the deck's end (one ending at a junction there isn't moved onto it) has the deck
+        // run on out to meet it, so there's never a strip of ground between the two.
+        float ReachOut(float end, int way)
+        {
+            var best = end;
+            foreach (var l in _lines.Lines)
+            {
+                if (l.Rail || l.Mark || l.Count < 2)
+                    continue;
+                foreach (var p in (int[])[0, l.Count - 1])
+                {
+                    var t = (float)((l.X[p] - cx) * dx + (l.Z[p] - cz) * dz);
+                    var w = (float)((l.X[p] - cx) * nx + (l.Z[p] - cz) * nz);
+                    var past = (t - end) * way;
+                    if (past > 0.05f && past < 6f && MathF.Abs(w) < half && (t - best) * way > 0f)
+                        best = t;
+                }
+            }
+
+            return best;
+        }
+
+        (rampLow, rampHigh) = (ReachOut(rampLow, -1), ReachOut(rampHigh, 1));
+
         // Along each row: every edge's distance along the road, and its height: the ramp's foot, then each track's panels' near
         // and far edges, then the far ramp's foot. Between a far edge and the next near edge it's asphalt; within, panels.
+        // (On a pad, its roads are brought to its level where they end, and its ground shaped to it (NetworkLines.LevelRoadsAtPads,
+        // ConformPads): each ramp's foot is at that level right across, not at whatever road's point happens to lie nearest each
+        // row's end, which can be another road's, and leave a corner of the deck down under the ground shaped for it.)
+        float Foot(double x, double z) => pad is not null ? pad.Level : RampEnd(x, z);
         var edges = new List<(float T, float Y)[]>();
         for (var k = 0; k <= rows; k++)
         {
             var w = -half + width * k / rows;
             var (ox, oz) = (cx + nx * w, cz + nz * w);
-            var row = new List<(float T, float Y)> { (rampLow, RampEnd(ox + dx * rampLow, oz + dz * rampLow)) };
+            var row = new List<(float T, float Y)> { (rampLow, Foot(ox + dx * rampLow, oz + dz * rampLow)) };
             foreach (var (low, lowY, high, highY) in spans[k])
             {
                 row.Add((low, lowY));
                 row.Add((high, highY));
             }
 
-            row.Add((rampHigh, RampEnd(ox + dx * rampHigh, oz + dz * rampHigh)));
+            row.Add((rampHigh, Foot(ox + dx * rampHigh, oz + dz * rampHigh)));
             edges.Add([.. row]);
         }
 
@@ -568,22 +602,20 @@ public sealed partial class NetworkMeshes
 
         var (offLow, offHigh) = (EndOffset(edges[0][0].T), EndOffset(edges[0][^1].T));
 
-        // The panels, track by track: whole panels from past one edge of the road to past the other, centred on it.
-        var paint = PanelPaint(style);
+        // The panels, track by track: square to the track, as they're laid, and long enough to reach right across the crossing (out
+        // to its shoulders' edges) at every rail. Over a skewed track each end stands out past the road on one side; no tie's laid
+        // under any of it.
+        var paint = PanelPaint(o.Id, style, o.Surface);
+        var panels = new List<(int Line, float From, float To)>();
         var covered = new List<(int Line, float From, float To)>();
+        var edge = half + ShoulderOut;
         foreach (var track in tracks)
         {
-            var (from, to) = (float.MaxValue, float.MinValue);
-            foreach (var w in (float[])[-half, half])
-                foreach (var lateral in (float[])[-reach, 0f, reach])
-                {
-                    var s = Meet(track, w, lateral).S;
-                    (from, to) = (MathF.Min(from, s), MathF.Max(to, s));
-                }
-
-            var panels = Math.Max(1, (int)MathF.Ceiling((to - from + 2f * PanelMargin) / PanelLength));
-            var first = (from + to) * 0.5f - panels * PanelLength * 0.5f;
-            covered.Add((track.Leg.Line.Index, first, first + panels * PanelLength));
+            var ends = ((float[])[-reach, 0f, reach]).Select(lateral => (A: Meet(track, -edge, lateral).S, B: Meet(track, edge, lateral).S)).ToList();
+            var lows = ends.Select(e => MathF.Min(e.A, e.B)).ToList();
+            var highs = ends.Select(e => MathF.Max(e.A, e.B)).ToList();
+            panels.Add((track.Leg.Line.Index, lows.Min(), highs.Max()));
+            covered.Add((track.Leg.Line.Index, lows.Min(), highs.Max()));
         }
 
         var count = edges[0].Length;
@@ -645,7 +677,9 @@ public sealed partial class NetworkMeshes
             var footT = (float)((on.X - cx) * dx + (on.Z - cz) * dz);
             var runsSign = on.Dx * dx + on.Dz * dz < 0.0 ? -1f : 1f;
             var (s0, s1) = (footS + runsSign * (centre[0].T - footT), footS + runsSign * (centre[^1].T - footT));
-            stretch = (on.Line.Index, MathF.Min(s0, s1), MathF.Max(s0, s1));
+            // (On a pad its roads are already cut back to its ends: cutting the road it's found on again would take a bite
+            // out of the road running on from it, leaving a strip of ground between the two.)
+            stretch = pad is not null ? null : (on.Line.Index, MathF.Min(s0, s1), MathF.Max(s0, s1));
             var (line, segment) = (on.Line, on.Segment);
             var marks = line.Unpaved ? 0 : (RoadClass)line.Class switch { RoadClass.Highway => 3, RoadClass.Major => 2, RoadClass.Minor => 1, _ => 0 };
             // The road's across is to its right as it runs.
@@ -656,10 +690,10 @@ public sealed partial class NetworkMeshes
                 RoadSurface(line, 0));
         }
 
-        // The surface, all of it one mesh: road, ramps, panels, the ballast running into it and the fill round it.
-        var (mesh, bedCuts) = BuildCrossingMesh(o.Id, cx, cz, dx, dz, half, rampLow, rampHigh, DeckHeight, offLow, offHigh, tracks, covered, reach, g, railTop,
+        // The surface, all of it one mesh: road, ramps, panels and the fill round them, lying on the track's own bed.
+        var mesh = BuildCrossingMesh(o.Id, cx, cz, dx, dz, half, rampLow, rampHigh, DeckHeight, offLow, offHigh, tracks, panels, reach, g, railTop,
             paint, style != CrossingStyle.Asphalt, road, baseX, baseZ);
-        return new CrossingDeck(quads, [.. masts], road, stretch, covered, mesh, bedCuts);
+        return new CrossingDeck(quads, [.. masts], road, stretch, covered, mesh);
     }
 
     /// One panel: from s0 to s1 along a track and from u0 to u1 across it (from its centre, to its right), its top level with the

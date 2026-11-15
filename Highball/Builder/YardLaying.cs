@@ -28,19 +28,21 @@ public static class YardLaying
 
     /// What a click at this place would be: on a guide (right at its node, if that's on built track, it joins there), or
     /// on built track.
-    public static FollowTool.Click? Click(YardGuides guides, TrackEditor tracks, GuidePlace? guide, (long Way, int Segment, double X, double Z)? segment)
+    public static FollowTool.Click? Click(YardGuides guides, TrackEditor tracks, GuidePlace? guide, (long Way, int Segment, double X, double Z)? segment, NetworkLines? lines = null)
     {
+        JoinCurve.Pose? EndPose(TrackEditor tracks, long? node) => node is { } end ? BuiltTrack.EndPose(lines, tracks, end, FollowTool.Sample) : null;
+
         if (guide is { } place)
         {
             if (guides.NodeAt(place, FollowSnap) is { } node && tracks.Has(node))
             {
                 var (nx, nz) = tracks.PositionOf(node);
-                return new FollowTool.Click(nx, nz, place, new LayPoint(nx, nz, Node: node), tracks.RunsAt(node));
+                return new FollowTool.Click(nx, nz, place, new LayPoint(nx, nz, Node: node), tracks.RunsAt(node), EndPose(tracks, node));
             }
 
             // A guide's place on built track joins it there: a branch off it.
             if (tracks.TrackNear(place.X, place.Z, FollowOnTrack, FollowAtPoint) is { } track)
-                return new FollowTool.Click(track.Point.X, track.Point.Z, place, track.Point, track.Runs);
+                return new FollowTool.Click(track.Point.X, track.Point.Z, place, track.Point, track.Runs, EndPose(tracks, track.Point.Node));
 
             return new FollowTool.Click(place.X, place.Z, place, new LayPoint(place.X, place.Z));
         }
@@ -48,7 +50,7 @@ public static class YardLaying
         if (segment is not { } s)
             return null;
         return tracks.TrackNear(s.X, s.Z, FollowOnTrack, FollowAtPoint) is { } on
-            ? new FollowTool.Click(on.Point.X, on.Point.Z, null, on.Point, on.Runs)
+            ? new FollowTool.Click(on.Point.X, on.Point.Z, null, on.Point, on.Runs, EndPose(tracks, on.Point.Node))
             : new FollowTool.Click(s.X, s.Z, null, new LayPoint(s.X, s.Z, Split: (s.Way, s.Segment)));
     }
 
@@ -59,7 +61,7 @@ public static class YardLaying
             return null;
         var camera = context.Camera;
         return Click(guides, context.Tracks, guides.PlaceAt(mouse, context.ProjectGround, camera.X, camera.Z, context.Reach, RailWerkz.UI.Style.S(12f)),
-                   context.Tracks.SegmentAt(mouse, camera.X, camera.Z, context.ProjectGround))
+                   context.Tracks.SegmentAt(mouse, camera.X, camera.Z, context.ProjectGround), context.Source.Lines)
                ?? (context.Hit is { } ground ? new FollowTool.Click(ground.X, ground.Z, null, new LayPoint(ground.X, ground.Z)) : null);
     }
 

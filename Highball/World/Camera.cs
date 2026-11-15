@@ -19,7 +19,7 @@ public sealed class Camera
 
     /// Radians, from the setting and the zoom.
     public float FieldOfView => 2f * MathF.Atan(MathF.Tan(RailWerkz.Core.Settings.Settings.Current.FieldOfView * MathF.PI / 360f) / Zoom);
-    public float Near = 0.5f;
+    public float Near = 0.1f;
 
     /// How far off, in clip space, the world is drawn this frame for temporal anti-aliasing.
     public float2 Jitter;

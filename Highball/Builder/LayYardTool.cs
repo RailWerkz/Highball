@@ -57,6 +57,8 @@ public sealed class LayYardTool(ToolContext context, RouteInfo route) : IEditorT
     public void Draw(ImDrawListPtr draw)
     {
         Follow.Draw(draw, context.ProjectGround, Input.MousePosition);
+        context.Kinks.Update(context);
+        context.Kinks.Draw(draw, context.ProjectGround);
         Yard.Draw(draw, context.ProjectGround, S(1f));
     }
 
@@ -67,8 +69,10 @@ public sealed class LayYardTool(ToolContext context, RouteInfo route) : IEditorT
         string Near(double metres) => imperial ? string.Create(CultureInfo.InvariantCulture, $"{metres * FeetPerMeter:0} ft") : string.Create(CultureInfo.InvariantCulture, $"{metres:0} m");
 
         Controls(imperial);
+        context.Kinks.Panel();
         if (Follow.Preview is not null)
-            ToolPanel.Line($"{Near(Follow.Length)}{(Follow.Unfitted ? ", as mapped: no clean fit" : Follow.Radius < double.MaxValue ? $", tightest curve {Near(Follow.Radius)}" : ", straight")}");
+            ToolPanel.Line($"{Near(Follow.Length)}{(Follow.Unfitted ? ", as mapped: no clean fit" : Follow.Radius < double.MaxValue ? $", tightest curve {Near(Follow.Radius)}" : ", straight")}" +
+                           (Follow.Offset > 0.0 ? string.Create(CultureInfo.InvariantCulture, $", max {(imperial ? Follow.Offset * FeetPerMeter : Follow.Offset):0.0} {(imperial ? "ft" : "m")} off guide") : ""));
 
         if (context.Guides is { GuideLength: > 0.0 } guides)
         {
@@ -90,7 +94,10 @@ public sealed class LayYardTool(ToolContext context, RouteInfo route) : IEditorT
         }
 
         if (Yard.Mode == YardMode.Follow)
+        {
+            SmoothingCard(imperial);
             return;
+        }
 
         Kit.BeginCard(Yard.Mode == YardMode.Ladder ? "Ladder" : "Crossover");
         if (Yard.Mode != YardMode.Crossover)
@@ -130,6 +137,31 @@ public sealed class LayYardTool(ToolContext context, RouteInfo route) : IEditorT
                 ToolPanel.Line(plan.Summary);
         }
 
+        Kit.EndCard();
+    }
+
+    /// How much the guide's wobbles are smoothed out of the track laid along it (FollowTool.Smoothing), how near the guide it's
+    /// kept, and how far back a track it carries on from is read.
+    private static void SmoothingCard(bool imperial)
+    {
+        var unit = imperial ? FeetPerMeter : 1f;
+        var suffix = imperial ? "ft" : "m";
+        Kit.BeginCard("Smoothing", FollowTool.Smoothing <= 0f ? "off" : null);
+        var over = FollowTool.Smoothing * unit;
+        if (ToolPanel.Value("follow.smooth", $"Smooth over ({suffix}, 0 off)", ref over, 0f, 400f * unit, "0"))
+            FollowTool.Smoothing = over / unit < 5f ? 0f : over / unit;
+        if (FollowTool.Smoothing > 0f)
+        {
+            var off = FollowTool.MaxOffset * unit;
+            if (ToolPanel.Value("follow.offset", $"Stay within ({suffix}, 0 any)", ref off, 0f, 10f * unit, "0.0"))
+                FollowTool.MaxOffset = off / unit < 0.2f ? 0f : off / unit;
+            var sample = FollowTool.Sample * unit;
+            if (ToolPanel.Value("follow.sample", $"Sample back ({suffix})", ref sample, 10f * unit, 400f * unit, "0", log: true))
+                FollowTool.Sample = sample / unit;
+            ToolPanel.Hint("Takes the hand-traced wobble out of the guide, easing into curves; carries on from a track end's heading and curve.");
+        }
+        else
+            ToolPanel.Hint("Off: fitted to straights and curves within a metre of the guide.");
         Kit.EndCard();
     }
 

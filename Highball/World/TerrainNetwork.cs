@@ -113,6 +113,7 @@ public sealed partial class TerrainSource
                             tiles.Add(new TileId(i, j));
             }
 
+            lines.InheritBallast(previous);
             var heights = new ConcurrentDictionary<TileId, float[]>();
             Parallel.ForEach(tiles, id =>
             {

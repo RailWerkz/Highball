@@ -41,6 +41,7 @@ public sealed class ParallelTool(ToolContext context, RouteInfo route) : IEditor
             Yard.Side = -Yard.Side;
         if (context.Blocked || context.Rebuilding)
         {
+            Pen.Straighten(null, tracks, false);
             Yard.Show(null, null);
             return;
         }
@@ -66,6 +67,7 @@ public sealed class ParallelTool(ToolContext context, RouteInfo route) : IEditor
         LayPoint? snap = node is { } on
             ? new LayPoint(tracks.PositionOf(on).X, tracks.PositionOf(on).Z, Node: on)
             : hit is { } ground ? new LayPoint(ground.X, ground.Z) : null;
+        snap = Pen.Straighten(snap, tracks, Input.Key(GlfwKey.LeftShift) || Input.Key(GlfwKey.RightShift), context.Source.Lines);
         Pen.Update(mouse, snap, hit is { } h ? (h.X, h.Z) : null, context.ProjectGround,
             Input.MouseDown(GlfwMouseButton.Left), Input.Mouse(GlfwMouseButton.Left));
         if (!Keyboard.KeysBlocked && Input.KeyDown(GlfwKey.Backspace))
@@ -161,5 +163,5 @@ public sealed class ParallelTool(ToolContext context, RouteInfo route) : IEditor
     public (string Key, string Action)[] Hints => Yard.Anchor is not null
         ? [("LMB", "End"), ("BACKSPACE", "Start over"), ("CTRL+Z", "Undo")]
         : Following ? [("LMB", "Along a guide"), ("ENTER", "Lay tracks"), ("F", Yard.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove click"), ("ESC", "Cancel")]
-        : [("LMB", "Point or track"), ("DRAG", "Curve"), ("ENTER", "Lay tracks"), ("F", Yard.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")];
+        : [("LMB", "Point or track"), ("DRAG", "Curve"), ("SHIFT", "Straight on"), ("ENTER", "Lay tracks"), ("F", Yard.Side > 0 ? "Others right" : "Others left"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel")];
 }

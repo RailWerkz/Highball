@@ -507,6 +507,58 @@ public sealed partial class EditorView
                 break;
             }
 
+            case "paddump":
+            {
+                // paddump,LAT,LON: the crossing pad nearest there and every road end within 40 m of it, in the pad's frame, logged.
+                var (px, pz) = At(1);
+                if (lines.Pads.MinBy(p => (p.X - px) * (p.X - px) + (p.Z - pz) * (p.Z - pz)) is not { } pad)
+                {
+                    Log.Info("Pad dump: no pads");
+                    break;
+                }
+
+                Log.Info(string.Create(CultureInfo.InvariantCulture, $"Pad {pad.Id}: half {pad.Half:0.00}, low {pad.Low:0.00}, high {pad.High:0.00}, from {pad.From:0.00}, to {pad.To:0.00}, level {pad.Level:0.00}, dir ({pad.Dx:0.000},{pad.Dz:0.000})"));
+                foreach (var l in lines.Lines.Where(l => !l.Rail && !l.Mark && l.Count >= 2))
+                    for (var p = 0; p < l.Count; p++)
+                    {
+                        var (t, w) = pad.Local(l.X[p], l.Z[p]);
+                        if (MathF.Abs(t) > 40f || MathF.Abs(w) > 20f)
+                            continue;
+                        var node = l.Nodes.FirstOrDefault(n => n.Point == p).Node;
+                        var users = node == 0 ? 0 : lines.Lines.Count(o => o.Nodes.Any(n => n.Node == node));
+                        var isEnd = p == 0 || p == l.Count - 1;
+                        if (!isEnd && node == 0 && MathF.Abs(t) > 25f)
+                            continue;
+                        Log.Info(string.Create(CultureInfo.InvariantCulture, $"  road {l.Index} pt {p}/{l.Count - 1}{(isEnd ? " END" : "")}: t {t:0.00} w {w:0.00} y {l.Y[p]:0.00} (pad level-surface {pad.Level - 0.06f:0.00}) node {node} users {users} frozen {l.Frozen} width {l.Width:0.0} len {l.S[^1]:0.0}"));
+                    }
+
+                float RoadY(float at)
+                {
+                    var (bx, bz) = pad.At(at);
+                    var (bestD, bestY) = (double.MaxValue, float.NaN);
+                    foreach (var l in lines.Lines.Where(l => !l.Rail && !l.Mark))
+                        for (var i = 0; i + 1 < l.Count; i++)
+                        {
+                            var (sx, sz) = (l.X[i + 1] - l.X[i], l.Z[i + 1] - l.Z[i]);
+                            var len2 = Math.Max(sx * sx + sz * sz, 1e-9);
+                            var u = Math.Clamp(((bx - l.X[i]) * sx + (bz - l.Z[i]) * sz) / len2, 0, 1);
+                            var d = Math.Pow(l.X[i] + sx * u - bx, 2) + Math.Pow(l.Z[i] + sz * u - bz, 2);
+                            if (d < bestD)
+                                (bestD, bestY) = (d, l.Y[i] + (l.Y[i + 1] - l.Y[i]) * (float)u);
+                        }
+
+                    return bestD < 4 ? bestY : float.NaN;
+                }
+
+                Log.Info(string.Create(CultureInfo.InvariantCulture, $"  terrain spacing {source.Spacing:0.00}"));
+                // The ground beside and under the road round each end: centre, edge, shoulder's edge and past it, each side.
+                foreach (var side in (float[])[-1f, 1f])
+                    for (var t = pad.To - 3f; t <= pad.To + 30f; t += 1.5f)
+                        Log.Info(string.Create(CultureInfo.InvariantCulture, $"  ground side {side} t {t:0.0} (+{t - pad.To:0}): {string.Join(" ", ((float[])[0f, pad.Half, pad.Half + 0.6f, pad.Half + 1.5f, pad.Half + 3f]).Select(w => { var q = pad.At(t, side * w); return $"{w:0.0}:{source.HeightAt(q.X, q.Z):0.00}"; }))} road {RoadY(t):0.00}"));
+
+                break;
+            }
+
             case "linesdump":
             {
                 // Every built track's line, with its junctions, for working out a hand re-lay.

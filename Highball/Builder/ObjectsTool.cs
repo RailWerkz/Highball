@@ -152,7 +152,14 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
         var x = PlacedAtWorld(after);
         NetworkEdit? roads = null;
         if (lines.PadFor(after.Id, x.X, x.Z, after.Heading, after.Width) is { } pad)
+        {
             roads = context.Roads.CutAt(pad);
+            // Along its road from now on, as its pad is: once the road's cut back there's nothing at the crossing to find it by.
+            var along = Math.Atan2(pad.Dz, pad.Dx) * 180.0 / Math.PI;
+            if (Math.Cos((along - after.Heading) * Math.PI / 180.0) < 0.0)
+                along += 180.0;
+            after = after with { Heading = along };
+        }
         if (before is not null && roads is null && before == after)
             return;
         ApplyPlaced(before, after);
@@ -414,7 +421,7 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
                 PlacedChange(o, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, signal.Node, id: o.Id) with { Toward = signal.Toward });
                 break;
             case PlacedKind.GradeCrossing when PlaceTool.CrossingAt(lines, x, z) is { } crossing:
-                PlacedChange(o, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, o.Opposite, id: o.Id) with { Turn = o.Turn, Style = o.Style, Approach = o.Approach, Bell = o.Bell });
+                PlacedChange(o, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, o.Opposite, id: o.Id) with { Turn = o.Turn, Style = o.Style, Approach = o.Approach, Bell = o.Bell, Surface = o.Surface });
                 break;
             case PlacedKind.HandThrow when PlaceTool.SwitchAt(lines, x, z) is { } turnout && _terrain!.Source.Objects.All(p => p.Node != turnout.Node):
                 PlacedChange(o, Placed(PlacedKind.HandThrow, turnout.X, turnout.Z, 0.0, turnout.Node, opposite: o.Opposite, id: o.Id));
@@ -545,12 +552,22 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
     private void CrossingPanel(PlacedObject picked)
     {
         Kit.Caption("Surface");
-        var style = (int)picked.Style;
-        var styles = Enum.GetValues<CrossingStyle>();
-        var names = styles.Select(CrossingStyleName).ToArray();
-        var chosen = ToolPanel.Mode("surface", names, style, 2);
+        var styles = (CrossingStyle[])[CrossingStyle.Concrete, CrossingStyle.Timber, CrossingStyle.Asphalt];
+        var style = Math.Max(0, Array.IndexOf(styles, (CrossingStyle)picked.Style));
+        var chosen = ToolPanel.Mode("surface", styles.Select(CrossingStyleName).ToArray(), style, 3);
         if (chosen != style)
-            PlacedChange(picked, picked with { Style = chosen });
+            PlacedChange(picked, picked with { Style = (int)styles[chosen], Surface = null });
+
+        // Which of that kind's textures (whatever's in its folder under Content/Textures).
+        var textures = SurfaceTextures.Of(SurfaceKind(styles[style]));
+        if (textures.Count > 1)
+        {
+            Kit.Caption("Texture");
+            var texture = Math.Max(0, textures.ToList().FindIndex(t => string.Equals(t, picked.Surface, StringComparison.OrdinalIgnoreCase)));
+            var picks = ToolPanel.Mode("surfacetexture", textures.Select(SurfaceTextures.Label).ToArray(), texture, 2);
+            if (picks != texture)
+                PlacedChange(picked, picked with { Surface = textures[picks] });
+        }
 
         var turn = _crossingTurn ?? picked.Turn;
         ToolPanel.Value("gateturn", "Gate turn (degrees)", ref turn, -180f, 180f, "0", out var let);
@@ -588,10 +605,16 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
 
     private static string CrossingStyleName(CrossingStyle style) => style switch
     {
-        CrossingStyle.Concrete => "Concrete",
-        CrossingStyle.Rubber => "Rubber",
-        CrossingStyle.Timber => "Timber",
-        _ => "Asphalt",
+        CrossingStyle.Timber => "Wood",
+        CrossingStyle.Asphalt => "Asphalt",
+        _ => "Concrete",
+    };
+
+    private static SurfaceTextures.Kind SurfaceKind(CrossingStyle style) => style switch
+    {
+        CrossingStyle.Timber => SurfaceTextures.Kind.Wood,
+        CrossingStyle.Asphalt => SurfaceTextures.Kind.Asphalt,
+        _ => SurfaceTextures.Kind.Concrete,
     };
 
 

@@ -505,7 +505,18 @@ public sealed class YardGuides
 public sealed class FollowTool
 {
     /// A click: where, on which guide if any, and what it joins.
-    public readonly record struct Click(double X, double Z, GuidePlace? Guide, LayPoint Point, (double X, double Z)? Runs = null);
+    /// Pose: at a track's loose end, which way that track runs out of it and how it's curving (read back Sample metres).
+    public readonly record struct Click(double X, double Z, GuidePlace? Guide, LayPoint Point, (double X, double Z)? Runs = null, JoinCurve.Pose? Pose = null);
+
+    /// Smooth over: wobbles in the guide shorter than this many metres are smoothed out (0: fitted to straights and curves
+    /// within a metre of it, as before). See GuideSmoothing.
+    public static float Smoothing = 100f;
+
+    /// Kept within about this many metres of the guide (0: wherever the smoothing puts it).
+    public static float MaxOffset = 3f;
+
+    /// How far back along a track a path carrying on from its end reads its heading and curvature, metres.
+    public static float Sample = 60f;
 
     /// The tightest a branch is led off a track, if there's room; and how far along the laid path it looks for it.
     private const double BranchRadius = 80.0;
@@ -516,7 +527,8 @@ public sealed class FollowTool
 
     /// The last path fitted, and its fit.
     private List<(double X, double Z)>? _lastPath;
-    private (List<TrackPiece> Pieces, double Radius, bool Fitted) _lastFit;
+    private (List<TrackPiece> Pieces, double Radius, bool Fitted, double Offset) _lastFit;
+    private (float Smoothing, float MaxOffset, JoinCurve.Pose? Start, JoinCurve.Pose? End) _lastSettings;
 
     public int Count => _clicks.Count;
     public IReadOnlyList<TrackPiece>? Preview { get; private set; }
@@ -526,10 +538,16 @@ public sealed class FollowTool
     /// The path as drawn couldn't be fitted, so it would be laid as the map has it.
     public bool Unfitted { get; private set; }
 
+    /// The most the smoothed track strays from the guide, metres (0 when it isn't smoothed).
+    public double Offset { get; private set; }
+
+    /// The guide path as traced, shown faintly under the smoothed track.
+    public List<(double X, double Z)>? Traced { get; private set; }
+
     public void Clear()
     {
         _clicks.Clear();
-        (Preview, Radius, Length, Unfitted) = (null, double.MaxValue, 0.0, false);
+        (Preview, Radius, Length, Unfitted, Offset, Traced) = (null, double.MaxValue, 0.0, false, 0.0, null);
         (_lastPath, _lastFit, _fitting) = (null, default, null);
     }
 
@@ -550,7 +568,7 @@ public sealed class FollowTool
 
     /// Works out the fit through the clicks and on to where the pointer is, if it's somewhere.
     /// The fit of a path being worked out in the background, for the preview while the pointer moves.
-    private (List<(double X, double Z)> Path, Task<(List<TrackPiece> Pieces, double Radius, bool Fitted)> Fit)? _fitting;
+    private (List<(double X, double Z)> Path, (float, float, JoinCurve.Pose?, JoinCurve.Pose?) Settings, Task<(List<TrackPiece> Pieces, double Radius, bool Fitted, double Offset)> Fit)? _fitting;
 
     /// The path through the clicks (and the pointer, as the next) along the guides, fitted. wait: fitted now, as laying needs;
     /// otherwise a path that's changed is fitted in the background and the last fit shown until it's done, so the pointer
@@ -575,20 +593,24 @@ public sealed class FollowTool
             path.AddRange(piece.Skip(1));
         }
 
-        // (Fitted again only when the path's changed: a long one takes a while, and this runs every frame.)
+        // Where it carries on from a track (or on to one), that track's line, turned to run the way the path does there.
+        var settings = (Smoothing, MaxOffset, EndPose(all[0], path, true), EndPose(all[^1], path, false));
+        Traced = Smoothing > 0f ? path : null;
+
+        // (Fitted again only when the path or the settings have changed: a long one takes a while, and this runs every frame.)
         if (_fitting is { Fit.IsCompleted: true } done)
         {
             _fitting = null;
             if (done.Fit.IsCompletedSuccessfully)
-                (_lastPath, _lastFit) = (done.Path, done.Fit.Result);
+                (_lastPath, _lastSettings, _lastFit) = (done.Path, done.Settings, done.Fit.Result);
         }
 
-        if (_lastPath is null || !_lastPath.SequenceEqual(path))
+        if (_lastPath is null || !_lastPath.SequenceEqual(path) || _lastSettings != settings)
         {
             if (wait)
-                (_lastPath, _lastFit) = (path, TrackAlignment.FitPath(path));
+                (_lastPath, _lastSettings, _lastFit) = (path, settings, Fit(path, settings));
             else if (_fitting is null)
-                _fitting = (path, Task.Run(() => TrackAlignment.FitPath(path)));
+                _fitting = (path, settings, Task.Run(() => Fit(path, settings)));
         }
 
         var fit = _lastFit;
@@ -604,12 +626,53 @@ public sealed class FollowTool
             return;
         }
 
+        // (Smoothed, the path already runs on from the track it leaves or joins: GuideSmoothing carries that track's line on.)
         var (pieces, radius) = (fit.Pieces, fit.Radius);
-        if (all[0].Runs is { } leaving && Led(pieces, leaving) is { } led)
+        if (all[0].Runs is { } leaving && !(Smoothing > 0f && settings.Item3 is not null) && Led(pieces, leaving) is { } led)
             (pieces, radius) = (led.Pieces, Math.Min(radius, led.Radius));
-        if (all[^1].Runs is { } arriving && Led(Alignment.Reversed(pieces), arriving) is { } back)
+        if (all[^1].Runs is { } arriving && !(Smoothing > 0f && settings.Item4 is not null) && Led(Alignment.Reversed(pieces), arriving) is { } back)
             (pieces, radius) = (Alignment.Reversed(back.Pieces), Math.Min(radius, back.Radius));
-        (Preview, Radius, Length, Unfitted) = (pieces, radius, Alignment.LengthOf(pieces), !fit.Fitted);
+        (Preview, Radius, Length, Unfitted, Offset) = (pieces, radius, Alignment.LengthOf(pieces), !fit.Fitted, fit.Offset);
+    }
+
+    /// The path smoothed (GuideSmoothing) into track pieces, or with Smoothing off, fitted to straights and curves.
+    private static (List<TrackPiece> Pieces, double Radius, bool Fitted, double Offset) Fit(List<(double X, double Z)> path,
+        (float Smoothing, float MaxOffset, JoinCurve.Pose? Start, JoinCurve.Pose? End) settings)
+    {
+        if (settings.Smoothing > 0f && GuideSmoothing.Smooth(path, settings.Smoothing, settings.MaxOffset, settings.Start, settings.End) is { } smooth)
+        {
+            var pieces = GuideSmoothing.Pieces(smooth.Points);
+            var radius = pieces.Where(p => Math.Abs(p.Curvature) > 1e-9).Select(p => 1.0 / Math.Abs(p.Curvature)).DefaultIfEmpty(double.MaxValue).Min();
+            return (pieces, radius, true, smooth.MaxOffset);
+        }
+
+        var fit = TrackAlignment.FitPath(path);
+        return (fit.Pieces, fit.Radius, fit.Fitted, 0.0);
+    }
+
+    /// The line of the track a click joins at an end of the path, heading the way the path runs there (into it at the start,
+    /// arriving at the end): from its loose end's pose if it has one, else the way the track runs there, straight.
+    private static JoinCurve.Pose? EndPose(Click click, List<(double X, double Z)> path, bool start)
+    {
+        var pose = click.Pose ?? (click.Runs is { } runs ? new JoinCurve.Pose(click.X, click.Z, Math.Atan2(runs.Z, runs.X), 0.0) : null);
+        if (pose is not { } p || path.Count < 2)
+            return null;
+
+        // The way the path runs over its first (or last) twenty metres or so.
+        var (from, to) = start ? (path[0], path[0]) : (path[^1], path[^1]);
+        var walked = 0.0;
+        for (var k = 1; k < path.Count && walked < 20.0; k++)
+        {
+            var (a, b) = start ? (path[k - 1], path[k]) : (path[^k], path[^(k + 1)]);
+            walked += Math.Sqrt((b.X - a.X) * (b.X - a.X) + (b.Z - a.Z) * (b.Z - a.Z));
+            to = b;
+        }
+
+        var (dx, dz) = start ? (to.X - from.X, to.Z - from.Z) : (from.X - to.X, from.Z - to.Z);
+        var flip = Math.Cos(p.Heading) * dx + Math.Sin(p.Heading) * dz < 0.0;
+        // (At the path's own end, exactly: the track's end is where the path is held.)
+        var end = start ? path[0] : path[^1];
+        return new JoinCurve.Pose(end.X, end.Z, flip ? p.Heading + Math.PI : p.Heading, flip ? -p.Curvature : p.Curvature);
     }
 
     /// The path made to leave along the track it starts on, so it can be a switch: a curve from there onto the path, as near
@@ -701,16 +764,48 @@ public sealed class FollowTool
     private const double PointSpan = 400.0;
     private const double PointMinSpan = 4.0;
 
+    /// Curving less than this (a 5 km radius), a sampled path's piece is straight.
+    private const double StraightCurvature = 0.0002;
+
     /// As few control points (distances along the fit) as lay the same track: one where each straight and curve meets the
     /// next, enough on each curve that no span turns more than PointTurn, then more only where the track laid through them
     /// (a centripetal Catmull-Rom spline, as an exact way is built) would stray from the fit by more than PointTolerance.
-    internal static List<double> ControlPoints(IReadOnlyList<TrackPiece> pieces)
+    /// merge: every piece is taken as one of a sampled path's, however long, and gets no point of its own. tolerance: how far
+    /// the spline may stray (PointTolerance if not given).
+    internal static List<double> ControlPoints(IReadOnlyList<TrackPiece> pieces, bool merge = false, double tolerance = PointTolerance)
     {
         var total = Alignment.LengthOf(pieces);
         var keep = new List<double> { 0.0 };
         var u = 0.0;
+        var turned = 0.0;
+        var wasCurving = false;
         foreach (var piece in pieces)
         {
+            // A short piece (a smoothed path is made of them, a couple of metres each) doesn't get a point of its own: one
+            // goes where the turning or length since the last adds up, and the spline check below adds any more needed.
+            if (merge || piece.Length < 2.0 * PointMinSpan)
+            {
+                // (And one where a straight turns into a curve or a curve straightens: the spline bends either side of it.)
+                var curving = Math.Abs(piece.Curvature) > StraightCurvature;
+                if (curving != wasCurving && u - keep[^1] >= PointMinSpan * 0.5)
+                {
+                    keep.Add(u);
+                    turned = 0.0;
+                }
+
+                wasCurving = curving;
+                turned += Math.Abs(piece.Curvature) * piece.Length;
+                u += piece.Length;
+                if (turned >= PointTurn || u - keep[^1] >= PointSpan)
+                {
+                    keep.Add(u);
+                    turned = 0.0;
+                }
+
+                continue;
+            }
+
+            turned = 0.0;
             var parts = Math.Max(1, (int)Math.Max(Math.Ceiling(Math.Abs(piece.Curvature) * piece.Length / PointTurn), Math.Ceiling(piece.Length / PointSpan)));
             for (var i = 1; i <= parts; i++)
                 if (u + piece.Length * i / parts - keep[^1] >= PointMinSpan * 0.5)
@@ -738,7 +833,7 @@ public sealed class FollowTool
             var added = false;
             for (var i = 0; i + 1 < keep.Count; i++)
             {
-                if (keep[i + 1] - keep[i] >= 2.0 * PointMinSpan && Strays(at, i, fine, keep[i], keep[i + 1], step) > PointTolerance)
+                if (keep[i + 1] - keep[i] >= 2.0 * PointMinSpan && Strays(at, i, fine, keep[i], keep[i + 1], step) > tolerance)
                 {
                     next.Add((keep[i] + keep[i + 1]) * 0.5);
                     added = true;
@@ -805,6 +900,11 @@ public sealed class FollowTool
 
     public void Draw(ImDrawListPtr draw, Func<double, double, float2?> project, float2? mouse)
     {
+        if (Traced is { } traced && Preview is not null)
+            for (var i = 1; i < traced.Count; i++)
+                if (project(traced[i - 1].X, traced[i - 1].Z) is { } a && project(traced[i].X, traced[i].Z) is { } b)
+                    draw.AddLine(a, b, Rgba.White.WithAlpha(0.3f), Style.S(1.5f));
+
         if (Preview is { } pieces)
         {
             var total = Alignment.LengthOf(pieces);

@@ -37,6 +37,10 @@ class Car:
     truck_spec: TruckSpec = running_gear.TRUCK_100T
     truck_centre = 6.0
     over_couplers = 16.0
+    # Levels of detail it can be built at: 0 the full car; each higher one plainer, for drawing further off. lod is the one being
+    # built now, which body() and parts() read.
+    lods = (0,)
+    lod = 0
     liveries: dict = {}
     coupler: shared_coupler.Coupler = None  # set by build() from Models/Couplers
 
@@ -77,10 +81,29 @@ def cargo_path(content, name):
 
 
 def out_folder(content, car):
-    return os.path.join(content, "Models", "RollingStock", car.folder)
+    """Its folder; a lower level of detail's under it in LODs/LOD<n>, which the game doesn't read (until they're moved into
+    Assembled/LOD<n> beside the full model, where VehicleModel looks for them)."""
+    base = os.path.join(content, "Models", "RollingStock", car.folder)
+    return os.path.join(base, "LODs", f"LOD{car.lod}") if car.lod else base
 
 
-def build(car: Car, content, preview=None, assembled=True):
+# How much of the shared coupler's triangles to keep at LOD1; LOD2 has its own blocks (coupler_far), which cutting it down that
+# far tears apart.
+COUPLER_KEEP = {1: .15}
+
+
+def coupler_far(c: shared_coupler.Coupler) -> Kit:
+    """The coupler from 220 m on: a shank from the pivot and a head, the pulling face towards -Y as the shared one's."""
+    m = Kit()
+    m.box("Coupler", (-.06, 0, -.06), (.06, -(c.reach - .22), .06))
+    m.box("Coupler", (-.17, -(c.reach - .25), -.14), (.15, -c.reach, .14))
+    return m
+
+
+def build(car: Car, content, preview=None, assembled=True, lod=0):
+    if lod not in car.lods:
+        raise SystemExit(f"{car.key} has no level of detail {lod}; it has {', '.join(map(str, car.lods))}")
+    car.lod = lod
     out = out_folder(content, car)
     car.coupler = shared_coupler.load(content)
     report = {}
@@ -89,8 +112,10 @@ def build(car: Car, content, preview=None, assembled=True):
         for name, kit in car.parts(livery).items():
             report[f"{name}_{key}"] = kit.export(os.path.join(out, f"{name}_{key}.glb"), livery["paint"])
     t = car.truck_spec
-    for name, kit in (("truck", running_gear.truck(t)), ("wheelset", running_gear.wheelset(t))):
+    for name, kit in (("truck", running_gear.TRUCKS[lod](t)), ("wheelset", running_gear.WHEELSETS[lod](t))):
         report[name] = kit.export(os.path.join(out, f"{name}.glb"), {})
+    if lod == 2:
+        report["coupler"] = coupler_far(car.coupler).export(os.path.join(out, "coupler.glb"), {})
     for name, (make, colours) in car.cargo().items():
         report[name] = make().export(cargo_path(content, name), colours)
     car.content = content
@@ -110,9 +135,10 @@ def build(car: Car, content, preview=None, assembled=True):
                   "the loads' models, which are under Models and shared",
         "axes": AXES,
     }
-    with open(os.path.join(out, "assembly.json"), "w") as f:
-        json.dump(assembly, f, indent=2)
-    print("wrote", os.path.join(out, "assembly.json"))
+    if not lod:  # (the game reads a lower level's whole car, not its parts)
+        with open(os.path.join(out, "assembly.json"), "w") as f:
+            json.dump(assembly, f, indent=2)
+        print("wrote", os.path.join(out, "assembly.json"))
 
     if assembled:
         for key in car.liveries:
@@ -162,7 +188,17 @@ def assemble(car: Car, folder, livery, open_parts=False, spin=0.0, carrying=None
             w.rotation_euler = (spin, 0, 0)
             load("wheelset.glb", w, f"Wheelset_{label}_{k}")
     for label, y, yaw in (("A", -car.coupler_pivot, 0.0), ("B", car.coupler_pivot, math.pi)):
-        load(car.coupler.path, _holder(f"Coupler_{label}", (0, y, car.coupler_z), yaw, root), f"Coupler_{label}")
+        before = set(bpy.data.objects)
+        load(car.coupler.path if car.lod != 2 else "coupler.glb", _holder(f"Coupler_{label}", (0, y, car.coupler_z), yaw, root), f"Coupler_{label}")
+        if car.lod == 1:
+            for obj in set(bpy.data.objects) - before:
+                if obj.type == "MESH":
+                    obj.data = obj.data.copy()  # (the two couplers' meshes are their own, not the shared file's)
+                    modifier = obj.modifiers.new("lod", "DECIMATE")
+                    modifier.ratio = COUPLER_KEEP[car.lod]
+                    modifier.use_collapse_triangulate = True
+                    with bpy.context.temp_override(object=obj):
+                        bpy.ops.object.modifier_apply(modifier="lod")
     for name, places in car.places().items():
         for k, place in enumerate(places, 1):
             yaw = math.radians(place.get("yaw", 0))
@@ -191,7 +227,7 @@ def combined(car: Car, out, livery, carrying=None):
     assemble(car, out, livery, carrying=carrying)
     # Overlapping faces flicker in the game: warn about any, as the whole car's put together.
     check.report(f"{car.key}_{livery}" + (f"_{carrying}" if carrying else ""))
-    folder = os.path.join(out, "Assembled")
+    folder = os.path.join(out, "Assembled") if not car.lod else out
     os.makedirs(folder, exist_ok=True)
     for obj in bpy.data.objects:
         obj.select_set(True)

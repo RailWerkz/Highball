@@ -1,4 +1,4 @@
-"""An enclosed bi-level autorack: an 89 ft flatcar carrying a steel rack with screened sides, a galvanized roof and doors at each end.
+"""An enclosed bi-level autorack: a 90 ft flatcar carrying a steel rack with screened sides, a galvanized roof and doors at each end.
 
 The flatcar is the usual long-car underframe: a fish-belly centre sill between the bolsters, straight side sills, the draft
 sills round the coupler beyond the trucks, 70-ton trucks. The rack stands on its deck, as on a modern TTX car: a solid panel
@@ -10,6 +10,13 @@ that open outward and fold back against the sides; the platform beyond carries t
 The doors are moving parts: door_r_<livery>.glb is the leaf on the right-hand side of the B end looking at it from outside
 (+X), door_l_<livery>.glb the other, each with its origin on its hinge; assembly.json puts each at the B end (yaw 0) and
 again turned to the A end (yaw 180), and gives the swing that opens it.
+
+LOD1 (--lod 1) is the car seen from 60 m or so: the same outline, posts, panels and doors, a third of the screens' ribs and half
+the roof's, without what can't be made out there (stencils, ladders, grabs, hinges, lock rods, plates, the brake rigging), in
+about an eighth of the triangles.
+
+LOD2 (--lod 2) is the car from 220 m on: a block for the flatcar, the rack's sides with their screens and posts, the roof without
+ribs, plain doors and a blank name plate, a few hundred triangles.
 """
 import math
 from dataclasses import dataclass
@@ -22,27 +29,28 @@ from .running_gear import TRUCK_70T, TruckSpec
 
 @dataclass(frozen=True)
 class AutorackSpec:
-    deck: float = 1.06  # top of the flatcar's deck
-    flat_side: float = 1.43  # outside of the flatcar's side sills
-    rack_side: float = 1.615  # outside of the rack's side sheets: 10 ft 7 in wide over them
-    post_depth: float = .06  # how far the flat posts stand out from the screens
+    # Dimensions from TTX/BNSF diagrams of the Thrall bi-level (TTGX, built 1998-2000).
+    deck: float = 1.003  # top of the flatcar's deck: 39 1/2 in
+    flat_side: float = 1.49  # outside of the flatcar's side sills: 9 ft 9 3/8 in over them
+    rack_side: float = 1.50  # outside of the rack's side sheets: 9 ft 10 in over the eaves
+    post_depth: float = .04  # how far the flat posts stand out from the screens
     post_width: float = .17
-    eave: float = 4.88  # where the sides stop, at a corner, and the roof turns in
-    crown: float = 5.84  # 19 ft 2 in over the rail
+    eave: float = 4.84  # where the sides stop, at a corner, and the roof turns in
+    crown: float = 5.79  # 19 ft 0 in over the rail
     # The roof's facets, from the eave in to the middle, as (out from the middle over half the width, up from the eave over
     # the roof's height): a steep facet from the wall's corner, a shallower one, then flat across the top.
     roof_facets: tuple = ((1.0, 0.0), (.865, .64), (.595, 1.0), (0.0, 1.0))
-    upper_deck: float = 3.34  # the rack's second deck inside, which the side's lettering is placed by
+    upper_deck: float = 3.277  # 89 1/2 in over the lower deck; the rack's second deck inside, which the side's lettering is placed by
     screen_bottom: float = .24  # the screens' bottom over the deck, and their top under the eave
     screen_top: float = .17
     end_panel: float = 1.45  # the solid panel at each end of each side, where the ladder is and the doors fold back
-    platform: float = .62  # from the doors' face to the end sill's
+    platform: float = .40  # from the doors' face to the end sill's: the rack runs nearly the car's whole length
     panels: int = 13  # screen panels down each side, between the end panels
-    truck_centre: float = 9.755  # half of 64 ft
+    truck_centre: float = 10.058  # half of 66 ft
     over_strikers: float = 27.43  # 90 ft
-    over_couplers: float = 28.35  # 93 ft
+    over_couplers: float = 28.60  # 93 ft 10 in
     truck: TruckSpec = TRUCK_70T
-    data: tuple = ("BI-LEVEL", "LD LMT 104800", "LT WT 115200", "BLT 7-02", "EXCESS HEIGHT CAR")
+    data: tuple = ("BI-LEVEL", "LD LMT 80000", "LT WT 100000", "BLT 7-02", "EXCESS HEIGHT CAR")
 
 
 GALV = ("#a3a7aa", .6, .42)
@@ -67,6 +75,8 @@ LIVERIES = {
 
 
 class Autorack(Car):
+    lods = (0, 1, 2)
+
     def __init__(self, key="autorack_89", folder="Autorack_89ft", title="89ft Autorack", spec=AutorackSpec(), liveries=None):
         self.key, self.folder, self.title, self.c = key, folder, title, spec
         self.truck_spec = spec.truck
@@ -79,8 +89,8 @@ class Autorack(Car):
         self.R = c.rack_side
         self.F = c.flat_side
         # Each leaf's hinge, on a bracket standing out past the posts, so that folded back against the side the leaf and its
-        # stiffeners clear them; and the leaf's width, hinge to the middle.
-        self.hinge = (self.R + .11, self.E + .03)
+        # stiffeners clear them; and the leaf's width, hinge to the middle. The brackets are the car's extreme width, 10 ft 8 in.
+        self.hinge = (self.R + c.post_depth + .05, self.E + .03)
         self.leaf = self.hinge[0] - .006
 
     # ------------------------------------------------------------ the doors' places
@@ -103,6 +113,8 @@ class Autorack(Car):
     # ------------------------------------------------------------ the body
 
     def body(self, lv):
+        if self.lod == 2:
+            return self.body_far()
         m = Kit()
         self.underframe(m)
         self.rack(m)
@@ -140,7 +152,7 @@ class Autorack(Car):
         m.box("Deck", (-(F - .1), -self.E, c.deck - .04), (F - .1, self.E, c.deck))
         # The centre sill: a fish belly between the bolsters, deepest in the middle.
         stations = []
-        n = 14
+        n = 14 if not self.lod else 6
         for k in range(n + 1):
             y = -tc + 2 * tc * k / n
             bottom = .72 - .30 * math.sin(math.pi * k / n) ** .8
@@ -159,13 +171,15 @@ class Autorack(Car):
         bolster = [(-F, .82), (-.34, .70), (.34, .70), (F, .82), (F, c.deck - .04), (-F, c.deck - .04)]
         for y in (-tc, tc):
             m.prism("Frame", bolster, "y", y - .2, y + .2)
+            if self.lod:
+                continue
             m.cyl("Steel", (0, y, c.truck.centre_plate), (0, y, .70), .19, 24)
             for s in (-1, 1):
                 x = s * c.truck.side_bearing
                 m.box("Frame", (x - .08, y - .1, .705), (x + .08, y + .1, .78))
         # Cross bearers between the bolsters, tapering out to the side sills.
         crossbearer = [(-F, .84), (-.32, .78), (.32, .78), (F, .84), (F, c.deck - .04), (-F, c.deck - .04)]
-        k = 4
+        k = 4 if not self.lod else 0
         for j in range(1, k + 1):
             y = tc * j / (k + 1)
             for q in (-1, 1):
@@ -181,20 +195,22 @@ class Autorack(Car):
         for s in (-1, 1):
             for e in (-1, 1):
                 m.box("Rack", (s * (R - .006), e * S, c.deck), (s * R, e * E, top))
-            m.box("Screen", (s * (R - .027), -S, z0), (s * (R - .024), S, z1))  # its inner face clear of the rack's
+            # The sheet set well back, and its ribs standing 3 cm proud of it: shallower relief than that is finer than the sun's
+            # shadow map, and the shadows on it flicker.
+            m.box("Screen", (s * (R - .052), -S, z0), (s * (R - .046), S, z1))
             # The screens' pressed ribs, across the whole length (the posts cover their joints).
-            n = int((z1 - z0) / .1)
+            n = int((z1 - z0) / (.1 if not self.lod else .3))  # (a third of them further off, to keep the screens' look)
             for k in range(1, n):
                 z = z0 + (z1 - z0) * k / n
-                m.box("ScreenRib", (s * (R - .024), -S, z - .016), (s * (R - .012), S, z + .016))
+                m.box("ScreenRib", (s * (R - .049), -(S - .01), z - .018), (s * (R - .014), S - .01, z + .018))  # (their ends under the end posts)
             # The rack's sill under the screens and the eave rail over them; each screen is one sheet between them.
-            m.box("Rack", (s * (R - .03), -E, c.deck), (s * (R + .02), E, z0))
-            m.box("Rack", (s * (R - .03), -E - .02, z1), (s * (R + .05), E + .02, top))
+            m.box("Rack", (s * (R - .056), -E, c.deck), (s * (R + .02), E, z0))
+            m.box("Rack", (s * (R - .056), -E - .02, z1), (s * (R + .05), E + .02, top))
             # Flat posts over the screens' joints, the two at the end panels' edges a little wider.
             for k in range(c.panels + 1):
                 y = -S + 2 * S * k / c.panels
                 w = c.post_width * (1.3 if k in (0, c.panels) else 1.0)
-                m.box("Rack", (s * (R - .03), y - w / 2, c.deck + .02), (s * (R + c.post_depth), y + w / 2, top))
+                m.box("Rack", (s * (R - .056), y - w / 2, c.deck + .02), (s * (R + c.post_depth), y + w / 2, top))  # back into the sheet
             # Corner posts, wrapping round to the end.
             for e in (-1, 1):
                 m.box("Rack", (s * (R - .1), e * (E - .14), c.deck), (s * (R + .06), e * E, top))
@@ -205,6 +221,8 @@ class Autorack(Car):
             m.prism("Rack", arch, "y", e * (E - .14), e * (E + .005))
             m.box("Rack", (-R, e * (E - .14), c.deck), (R, e * E, c.deck + .05))
             # The doors' hinge brackets, out from the corner posts to the pins.
+            if self.lod:
+                continue
             hx, hy = self.hinge
             for s in (-1, 1):
                 for z in self.hinge_heights():
@@ -220,7 +238,7 @@ class Autorack(Car):
         top = [(x, self.roof_z(x)) for x in xs]
         m.prism("Roof", top + [(x, z - self.ROOF) for x, z in reversed(top)], "y", -E - .05, E + .05)
         # Ribs across it, a sheet's width apart.
-        n = int(2 * E / .62)
+        n = int(2 * E / .62) // (1 if not self.lod else 2)
         cap = [(x, self.roof_z(x) + .02) for x in xs[1:-1]] + [(x, self.roof_z(x) - .005) for x in reversed(xs[1:-1])]
         for k in range(n + 1):
             y = -E + 2 * E * k / n
@@ -235,13 +253,17 @@ class Autorack(Car):
         post = s * (R + c.post_depth + .001)
 
         def put(yv, z, words, h, w, role="Lettering", kind="narrow", at=x):
-            m.text(role, words, kind, (at, Y(yv), z), (0, s, 0), (0, 0, 1), h, w)
+            m.text(role, words, kind, (at, Y(yv), z), (0, s, 0), (0, 0, 1), h, w, resolution=4 if not self.lod else 1)
 
         # The owner's name on a plate on the middle posts, up in the top level.
         pz = (c.upper_deck + c.eave - c.screen_top) / 2
         pw = bay * 1.9
         m.box("Plate", (s * (R + c.post_depth), Y(-pw / 2), pz - .3), (s * (R + c.post_depth + .012), Y(pw / 2), pz + .3))
         put(0, pz, lv["name"], .34, pw - .25, role="PlateText", kind="sans", at=s * (R + c.post_depth + .013))
+        fy = -(OS - 4.2)
+        if self.lod:  # the name and the flatcar's black patch; nothing smaller
+            m.box("Patch", (s * F, Y(fy) - .7, .84), (s * (F + .006), Y(fy) + .7, 1.0))
+            return
         # On the end panels: marks and number at the A end, the data at the B end, as stencils.
         ya, yb = -(E - c.end_panel / 2 - .1), E - c.end_panel / 2 - .1
         put(ya, c.upper_deck + .9, lv["marks"], .12, c.end_panel - .4)
@@ -251,7 +273,6 @@ class Autorack(Car):
             put(yb, c.upper_deck + .65 - .09 * k, line, .06, c.end_panel - .4)
         put(yb, c.upper_deck - .4, c.data[4], .07, c.end_panel - .4)
         # The flatcar's marks, white on a black patch on its side sill.
-        fy = -(OS - 4.2)
         m.box("Patch", (s * F, Y(fy) - .7, .84), (s * (F + .006), Y(fy) + .7, 1.0))
         put(fy, .92, lv["flat"], .1, 1.3, role="PatchText", at=s * (F + .007))
         # Reflective strips on the side sill and the posts.
@@ -274,20 +295,32 @@ class Autorack(Car):
         # The platform: grating from the doors to the end sill.
         # Between the side sills, whose tops are at the deck's height too.
         m.box("Grating", (-(F - .1), e * E, c.deck - .04), (F - .1, e * (OS - .3), c.deck))
-        for k in range(13):
+        for k in range(13 if not self.lod else 0):
             xx = -(F - .13) + 2 * (F - .13) * k / 12
             m.box("Grating", (xx - .006, e * (E + .06), c.deck), (xx + .006, e * (OS - .3), c.deck + .012))
         # The end sill, with the coupler's opening, and the striker.
         for s in (-1, 1):
             m.box("Frame", (s * .24, e * (OS - .3), .80), (s * F, e * OS, c.deck))
         lo, hi = cz - .17, cz + .17
-        m.box("Frame", (-.24, e * (OS - .3), hi + .02), (.24, e * OS, c.deck))
+        if c.deck - (hi + .02) > .01:  # the sill over the coupler's opening, where the deck stands high enough above it
+            m.box("Frame", (-.24, e * (OS - .3), hi + .02), (.24, e * OS, c.deck))
         m.box("Frame", (-.32, e * OS, hi), (.32, e * (OS + .03), hi + .08))
         m.box("Frame", (-.32, e * (OS - .1), lo - .06), (.32, e * (OS + .03), lo))
         for s in (-1, 1):
             m.box("Frame", (s * .24, e * OS, lo), (s * .32, e * (OS + .03), hi))
+            if self.lod:
+                continue
             # A grab across each corner of the end sill.
             details.grab(m, "Grab", (s * (F - .1), e * OS, .95), (s * (F - .55), e * OS, .95), (0, e, 0), .06)
+        if self.lod:  # the hand brake's stand and housing, and its wheel as a disc
+            if e > 0:
+                face = OS - .28
+                m.box("Frame", (.42, face - .03, c.deck + .012), (1.1, face, c.deck + 1.2))
+                wz = c.deck + .8
+                m.box("Frame", (.76 - .27, face, wz - .32), (.76 + .28, face + .12, wz + .24))
+                m.cyl("Dark", (.76, face + .2, wz), (.76, face + .24, wz), .27, 10)
+                m.cyl("Dark", (.76, face + .12, wz), (.76, face + .2, wz), .04, 6)
+            return
         # The reporting marks across the end sill.
         m.text("Lettering", f"{lv['marks']} {lv['number']}", "narrow", (-e * .85, e * (OS + .001), .93), (-e, 0, 0), (0, 0, 1), .06, .9)
         # The hand brake on the B end, on a stand at the platform's outer edge, facing out.
@@ -302,7 +335,12 @@ class Autorack(Car):
     def brakes(self, m):
         """The AB brake set under the deck between the bolsters: reservoir, valve, cylinder, rods to the trucks, the train line."""
         c, OS, tc = self.c, self.OS, self.truck_centre
-        x, z, r = .86, .82, .16
+        x, z, r = .86, c.deck - .24, .16
+        if self.lod:  # the reservoir and cylinder as plain drums
+            m.cyl("Brake", (x, -5.6, z), (x, -4.5, z), r, 8)
+            m.cyl("Brake", (-.72, 4.0, z), (-.72, 4.52, z), .13, 8)
+            m.box("Frame", (x - .2, -5.35, z + r - .01), (x + .2, -4.75, c.deck - .04))
+            return
         m.cyl("Brake", (x, -5.6, z), (x, -4.5, z), r, 22)
         for y, d in ((-5.6, -1), (-4.5, 1)):
             m.lathe("Brake", (x, y, z), (0, d, 0), [(0, r), (.05, r * .85), (.08, r * .45), (.09, .02), (0, .02)], 22)
@@ -316,6 +354,39 @@ class Autorack(Car):
         m.tube("Brake", [(cx, 4.55, z), (.08, 4.9, z), (.08, tc - .9, .74)], .016, .1, 8)
         m.tube("Brake", [(cx, 3.95, z), (.08, 3.6, z), (.08, -tc + .9, .74)], .016, .1, 8)
         m.tube("Steel", [(.42, -OS + .02, .74), (.42, -OS + .3, .78), (.4, -tc, .79), (.4, tc, .79), (.42, OS - .3, .78), (.42, OS - .02, .74)], .02, .1, 8)
+
+    def body_far(self):
+        """LOD2: the flatcar a block with a shallow belly, the rack a box with its screens and posts on the sides, the roof's
+        arch, a grating and the end sill at each end, the name plate blank."""
+        m = Kit()
+        c, R, E, F, OS, tc = self.c, self.R, self.E, self.F, self.OS, self.truck_centre
+        S = E - c.end_panel
+        top = c.eave - self.UNDER
+        m.box("Frame", (-F, -OS, .80), (F, OS, c.deck))
+        belly = lambda z: [(-.32, z), (.32, z), (.32, .81), (-.32, .81)]  # noqa: E731  (its top inside the block)
+        m.loft("Frame", [(-tc, belly(.72)), (0, belly(.42)), (tc, belly(.72))], "y")
+        for e in (-1, 1):
+            m.box("Grating", (-(F - .1), e * E, c.deck - .01), (F - .1, e * (OS - .3), c.deck + .01))
+        # The rack: its sides and ends one box in its own colour, the screens standing just proud of it, the posts over them.
+        m.box("Rack", (-R, -E, c.deck - .01), (R, E, top))
+        z0, z1 = c.deck + c.screen_bottom, c.eave - c.screen_top
+        for s in (-1, 1):
+            m.box("Screen", (s * (R - .01), -S, z0), (s * (R + .02), S, z1))
+            for k in range(c.panels + 1):
+                y = -S + 2 * S * k / c.panels
+                w = c.post_width * (1.3 if k in (0, c.panels) else 1.0)
+                m.box("Rack", (s * (R - .005), y - w / 2, c.deck + .02), (s * (R + c.post_depth), y + w / 2, top))
+            pz = (c.upper_deck + c.eave - c.screen_top) / 2
+            pw = 2 * S / c.panels * 1.9
+            m.box("Plate", (s * (R + c.post_depth), -pw / 2, pz - .3), (s * (R + c.post_depth + .012), pw / 2, pz + .3))
+            fy = -(OS - 4.2)
+            m.box("Patch", (s * F, s * fy - .7, .84), (s * (F + .006), s * fy + .7, 1.0))
+        xs = self.across(1)
+        for e in (-1, 1):  # the gable over the doors, up under the roof
+            m.prism("Rack", [(x, self.roof_z(x) - self.UNDER) for x in xs] + [(xs[-1], top - .3), (xs[0], top - .3)], "y", e * (E - .14), e * (E + .005))
+        arch = [(x, self.roof_z(x)) for x in xs]
+        m.prism("Roof", arch + [(x, z - self.ROOF) for x, z in reversed(arch)], "y", -E - .05, E + .05)
+        return m
 
     # ------------------------------------------------------------ the doors
 
@@ -332,15 +403,19 @@ class Autorack(Car):
         top = lambda d: self.roof_z(hx - d) - self.HEADER - .01  # noqa: E731  its top, under the arched header
         z0 = c.deck + .03
         band = c.eave - .85  # where the white gives way to the rack's colour
-        ds = sorted({min(max(hx - abs(x), 0.0), w) for x in self.across()} | {0.0, w})
+        ds = sorted({min(max(hx - abs(x), 0.0), w) for x in self.across(2 if self.lod < 2 else 1)} | {0.0, w})
         # The leaf, white below and the rack's colour above, its top following the arch.
         m.box("Door", (X(0), -.012, z0), (X(w), .012, band))
         m.prism("DoorTop", [(X(0), band), (X(w), band)] + [(X(d), top(d)) for d in reversed(ds)], "y", -.012, .014)
+        if self.lod == 2:  # the leaf alone
+            return m
         for d in (.06, w * .5, w - .06):
             m.box("Door", (X(d - .02), .012, z0 + .05), (X(d + .02), .03, band - .02))
             m.box("DoorTop", (X(d - .02), .014, band), (X(d + .02), .03, top(d) - .05))
         m.prism("Rubber", [(X(w - .015), z0 + .003), (X(w + .008), z0 + .003), (X(w + .008), top(w) - .003), (X(w - .015), top(w - .015) - .003)],
                 "y", -.02, .02)
+        if self.lod:  # no rods, keepers, hinges or plates
+            return m
         # Two lock rods, their keepers top and bottom and along, and a handle on each.
         for f in (.42, .86):
             rx, z1 = X(w * f), top(w * f)

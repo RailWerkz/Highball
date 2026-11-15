@@ -68,6 +68,79 @@ layout(set = 4, binding = 33) uniform sampler2D paint6Color;
 layout(set = 4, binding = 34) uniform sampler2D paint6Normal;
 layout(set = 4, binding = 35) uniform sampler2D paint6Packed;
 layout(set = 4, binding = 36) uniform sampler2D paintPalette;
+// The paved surfaces' textures in use (SurfaceTextures.Bound): sixteen, three maps each, the roads' asphalt first; then which
+// slot each texture's in, by its number.
+layout(set = 4, binding = 37) uniform sampler2D surface0Color;
+layout(set = 4, binding = 38) uniform sampler2D surface0Normal;
+layout(set = 4, binding = 39) uniform sampler2D surface0Packed;
+layout(set = 4, binding = 40) uniform sampler2D surface1Color;
+layout(set = 4, binding = 41) uniform sampler2D surface1Normal;
+layout(set = 4, binding = 42) uniform sampler2D surface1Packed;
+layout(set = 4, binding = 43) uniform sampler2D surface2Color;
+layout(set = 4, binding = 44) uniform sampler2D surface2Normal;
+layout(set = 4, binding = 45) uniform sampler2D surface2Packed;
+layout(set = 4, binding = 46) uniform sampler2D surface3Color;
+layout(set = 4, binding = 47) uniform sampler2D surface3Normal;
+layout(set = 4, binding = 48) uniform sampler2D surface3Packed;
+layout(set = 4, binding = 49) uniform sampler2D surface4Color;
+layout(set = 4, binding = 50) uniform sampler2D surface4Normal;
+layout(set = 4, binding = 51) uniform sampler2D surface4Packed;
+layout(set = 4, binding = 52) uniform sampler2D surface5Color;
+layout(set = 4, binding = 53) uniform sampler2D surface5Normal;
+layout(set = 4, binding = 54) uniform sampler2D surface5Packed;
+layout(set = 4, binding = 55) uniform sampler2D surface6Color;
+layout(set = 4, binding = 56) uniform sampler2D surface6Normal;
+layout(set = 4, binding = 57) uniform sampler2D surface6Packed;
+layout(set = 4, binding = 58) uniform sampler2D surface7Color;
+layout(set = 4, binding = 59) uniform sampler2D surface7Normal;
+layout(set = 4, binding = 60) uniform sampler2D surface7Packed;
+layout(set = 4, binding = 61) uniform sampler2D surface8Color;
+layout(set = 4, binding = 62) uniform sampler2D surface8Normal;
+layout(set = 4, binding = 63) uniform sampler2D surface8Packed;
+layout(set = 4, binding = 64) uniform sampler2D surface9Color;
+layout(set = 4, binding = 65) uniform sampler2D surface9Normal;
+layout(set = 4, binding = 66) uniform sampler2D surface9Packed;
+layout(set = 4, binding = 67) uniform sampler2D surface10Color;
+layout(set = 4, binding = 68) uniform sampler2D surface10Normal;
+layout(set = 4, binding = 69) uniform sampler2D surface10Packed;
+layout(set = 4, binding = 70) uniform sampler2D surface11Color;
+layout(set = 4, binding = 71) uniform sampler2D surface11Normal;
+layout(set = 4, binding = 72) uniform sampler2D surface11Packed;
+layout(set = 4, binding = 73) uniform sampler2D surface12Color;
+layout(set = 4, binding = 74) uniform sampler2D surface12Normal;
+layout(set = 4, binding = 75) uniform sampler2D surface12Packed;
+layout(set = 4, binding = 76) uniform sampler2D surface13Color;
+layout(set = 4, binding = 77) uniform sampler2D surface13Normal;
+layout(set = 4, binding = 78) uniform sampler2D surface13Packed;
+layout(set = 4, binding = 79) uniform sampler2D surface14Color;
+layout(set = 4, binding = 80) uniform sampler2D surface14Normal;
+layout(set = 4, binding = 81) uniform sampler2D surface14Packed;
+layout(set = 4, binding = 82) uniform sampler2D surface15Color;
+layout(set = 4, binding = 83) uniform sampler2D surface15Normal;
+layout(set = 4, binding = 84) uniform sampler2D surface15Packed;
+layout(set = 4, binding = 85) uniform sampler2D surfaceLookup;
+
+// A surface texture's three maps, by slot. (With the derivatives worked out beforehand, outside the branches.)
+void surfaceMaps(int slot, vec2 uv, vec2 gx, vec2 gy, out vec3 color, out vec3 normal, out vec4 packed)
+{
+    if (slot == 0) { color = textureGrad(surface0Color, uv, gx, gy).rgb; normal = textureGrad(surface0Normal, uv, gx, gy).xyz; packed = textureGrad(surface0Packed, uv, gx, gy); }
+    else if (slot == 1) { color = textureGrad(surface1Color, uv, gx, gy).rgb; normal = textureGrad(surface1Normal, uv, gx, gy).xyz; packed = textureGrad(surface1Packed, uv, gx, gy); }
+    else if (slot == 2) { color = textureGrad(surface2Color, uv, gx, gy).rgb; normal = textureGrad(surface2Normal, uv, gx, gy).xyz; packed = textureGrad(surface2Packed, uv, gx, gy); }
+    else if (slot == 3) { color = textureGrad(surface3Color, uv, gx, gy).rgb; normal = textureGrad(surface3Normal, uv, gx, gy).xyz; packed = textureGrad(surface3Packed, uv, gx, gy); }
+    else if (slot == 4) { color = textureGrad(surface4Color, uv, gx, gy).rgb; normal = textureGrad(surface4Normal, uv, gx, gy).xyz; packed = textureGrad(surface4Packed, uv, gx, gy); }
+    else if (slot == 5) { color = textureGrad(surface5Color, uv, gx, gy).rgb; normal = textureGrad(surface5Normal, uv, gx, gy).xyz; packed = textureGrad(surface5Packed, uv, gx, gy); }
+    else if (slot == 6) { color = textureGrad(surface6Color, uv, gx, gy).rgb; normal = textureGrad(surface6Normal, uv, gx, gy).xyz; packed = textureGrad(surface6Packed, uv, gx, gy); }
+    else if (slot == 7) { color = textureGrad(surface7Color, uv, gx, gy).rgb; normal = textureGrad(surface7Normal, uv, gx, gy).xyz; packed = textureGrad(surface7Packed, uv, gx, gy); }
+    else if (slot == 8) { color = textureGrad(surface8Color, uv, gx, gy).rgb; normal = textureGrad(surface8Normal, uv, gx, gy).xyz; packed = textureGrad(surface8Packed, uv, gx, gy); }
+    else if (slot == 9) { color = textureGrad(surface9Color, uv, gx, gy).rgb; normal = textureGrad(surface9Normal, uv, gx, gy).xyz; packed = textureGrad(surface9Packed, uv, gx, gy); }
+    else if (slot == 10) { color = textureGrad(surface10Color, uv, gx, gy).rgb; normal = textureGrad(surface10Normal, uv, gx, gy).xyz; packed = textureGrad(surface10Packed, uv, gx, gy); }
+    else if (slot == 11) { color = textureGrad(surface11Color, uv, gx, gy).rgb; normal = textureGrad(surface11Normal, uv, gx, gy).xyz; packed = textureGrad(surface11Packed, uv, gx, gy); }
+    else if (slot == 12) { color = textureGrad(surface12Color, uv, gx, gy).rgb; normal = textureGrad(surface12Normal, uv, gx, gy).xyz; packed = textureGrad(surface12Packed, uv, gx, gy); }
+    else if (slot == 13) { color = textureGrad(surface13Color, uv, gx, gy).rgb; normal = textureGrad(surface13Normal, uv, gx, gy).xyz; packed = textureGrad(surface13Packed, uv, gx, gy); }
+    else if (slot == 14) { color = textureGrad(surface14Color, uv, gx, gy).rgb; normal = textureGrad(surface14Normal, uv, gx, gy).xyz; packed = textureGrad(surface14Packed, uv, gx, gy); }
+    else if (slot == 15) { color = textureGrad(surface15Color, uv, gx, gy).rgb; normal = textureGrad(surface15Normal, uv, gx, gy).xyz; packed = textureGrad(surface15Packed, uv, gx, gy); }
+    else { color = vec3(0.05); normal = vec3(0.5, 0.5, 1.0); packed = vec4(1.0, 0.8, 0.0, 0.5); }
+}
 
 // A paint's three maps at uv: colour, roughness (from the packed map's green) and the normal map's bump.
 void paintMaps(int slot, vec2 uv, out vec3 color, out float rough, out vec3 bump)
@@ -405,17 +478,33 @@ void main()
     }
     else if (material == Asphalt)
     {
-        float grit = fbm(tex * 6.0, pixel * 6.0);
+        // A paved surface in one of the surface textures (SurfaceTextures): 0 the roads' own asphalt (always in the first slot);
+        // otherwise 1 + its number (a crossing's panels), whose slot the lookup has; and its kind (asphalt, concrete, wood).
+        int surface = (style >> 14) & 63;
+        vec2 found = surface == 0 ? vec2(0.0) : texelFetch(surfaceLookup, ivec2(surface - 1, 0), 0).rg * 255.0 + 0.5;
+        int slot = int(found.x);
+        int kind = int(found.y);
+        bool upright = abs(n.y) < 0.5;
         float wear = fbm(world.xz * 0.12, pixel * 0.12);
-        albedo = vec3(0.036, 0.037, 0.039) * (0.85 + 0.3 * grit) * (0.85 + 0.3 * wear);
-        roughness = mix(0.8, 0.95, grit);
-        puddle = smoothstep(0.55, 0.68, fbm(world.xz * 0.12, pixel * 0.12));
-        specular = 0.18;
+        // Asphalt over 3 m and concrete over 2 m, laid by where it is; wood over 1.5 m, its grain along the panels (along the
+        // track on top, along the face on a side).
+        vec2 suv = kind == 2 ? (upright ? vec2(u, v) : vec2(v, u)) / 1.5 : (upright ? boxUv(local, n) : tex) / (kind == 0 ? 3.0 : 2.0);
+        vec2 gx = dFdx(suv), gy = dFdy(suv);
+        vec3 surfaceColor, surfaceNormal;
+        vec4 surfacePacked;
+        surfaceMaps(slot, suv, gx, gy, surfaceColor, surfaceNormal, surfacePacked);
+
+        albedo = surfaceColor * (0.9 + 0.2 * wear);
+        occlusion = surfacePacked.x;
+        roughness = surfacePacked.y;
+        n = bumped(n, surfaceNormal * 2.0 - 1.0, suv);
+        puddle = kind == 0 && !upright ? smoothstep(0.55, 0.68, wear) : 0.0;
+        specular = kind == 0 ? 0.18 : kind == 1 ? 0.25 : 0.4;
 
         int lanes = style & 7;
         bool oneway = (style & 8) != 0;
         int marks = (style >> 4) & 3;
-        float halfWidth = float(style >> 6) * 0.125;
+        float halfWidth = float((style >> 6) & 255) * 0.125;
         // Markings stop short of junctions, where the roads' surfaces overlap.
         float show = smoothstep(halfWidth + 1.0, halfWidth + 4.0, vData.w) * (0.75 + 0.25 * wear);
 
@@ -458,7 +547,12 @@ void main()
         // (Data.w starts from -0.3 at the outer edge, so multisampling reading it a little past the edge still finds it fading.)
         float rise = fading ? clamp((-vData.w - 0.3) / 2.4, 0.0, 1.0) : 1.0;
         fadeShadowDrop = 0.06 * (1.0 - rise);
-        vec2 base = (fading ? vec2(u, v) : tex) / 1.5;
+        // Lying on the ground, it's lit as the ground under it is: its shadow looked up straight above it, not off along its own
+        // normal, which tilts out across the bed's edge and would look it up in under whatever rises beside it (a road's fill).
+        if (fading)
+            shadowNormal = vec3(0.0, 1.0, 0.0);
+        // (Solid, by its strongest axis: on the ground that's its plan, as before, and on a wall it's the wall's face, not smeared.)
+        vec2 base = (fading ? vec2(u, v) : boxUv(local, n)) / 1.5;
         Hex stone = hexAt(base, n, view, 0.06 * smoothstep(0.4, 1.0, rise), dist);
         if (fading)
         {

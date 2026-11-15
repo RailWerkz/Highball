@@ -133,3 +133,82 @@ def wheelset(t: TruckSpec):
             m.cyl("Dark", (s * .74, y, z), (s * .765, y, z), .022, 8)
     return m
 
+
+
+# ---------------------------------------------------------------- lower detail, for seeing from further off
+
+
+def truck_lod1(t: TruckSpec):
+    """The truck seen from 60 m or so: the side frames' outline, columns, a block for the springs, the bolster and a beam for
+    each brake; no beads, wedges, coils, shoes or levers."""
+    m = Kit()
+    r, a, j, cp = t.wheel_r, t.axle, t.journal, t.centre_plate
+    ped = r + .145
+    jaw = .115
+    top = cp + .16
+    win = .30
+    col = .09
+    seat = r - .125
+    spring_top = cp - .17
+    end = a + jaw + .13
+    inner = a - jaw - .07
+    for s in (-1, 1):
+        x0, x1 = span(s * (j - .06), s * (j + .06))
+        m.prism("Truck", [(-end, ped), (-inner, ped), (-(win + col), top - .13), (win + col, top - .13), (inner, ped), (end, ped),
+                          (end, ped + .07), (a, ped + .13), (win + col + .1, top), (-(win + col + .1), top), (-a, ped + .13), (-end, ped + .07)],
+                "x", x0, x1)
+        m.prism("Truck", [(-(a - jaw), ped - .16), (-(win + col), seat - .08), (win + col, seat - .08), (a - jaw, ped - .16),
+                          (inner, ped - .06), (win + col, seat), (-(win + col), seat), (-inner, ped - .06)], "x", x0, x1)
+        for e in (-1, 1):
+            c0, c1 = span(e * win, e * (win + col))
+            m.box("Truck", (x0, c0, seat - .02), (x1, c1, top - .12))
+            for l0, l1 in ((e * (a + jaw), e * (a + jaw + .09)), (e * inner, e * (a - jaw))):
+                m.box("Truck", (x0, l0, ped - .16), (x1, l1, ped + .01))
+            m.box("Truck", (s * (j - .1), e * a - jaw, ped - .05), (s * (j + .1), e * a + jaw, ped))
+        m.box("Truck", (s * (j - .15), -win, seat - .03), (s * (j + .15), win, seat))
+        m.box("Spring", (s * (j - .13), -win + .02, seat), (s * (j + .13), win - .02, spring_top))
+    reach = j + .12
+    m.prism("Truck", [(-reach, spring_top), (-.55, cp - .26), (.55, cp - .26), (reach, spring_top), (reach, cp - .02), (.35, cp), (-.35, cp), (-reach, cp - .02)],
+            "y", -.22, .22)
+    for e in (-1, 1):
+        y = e * (a - r - .09)
+        m.box("Brake", (-(j - .08), y - .03, r - .05), (j - .08, y + .03, r + .01))
+    return m
+
+
+def wheelset_lod1(t: TruckSpec):
+    """Wheels and axle in few sides: a plate and a flanged tread each, the bearings as plain drums."""
+    m = Kit()
+    r, j = t.wheel_r, t.journal
+    m.cyl("Steel", (-(j + .1), 0, 0), (j + .1, 0, 0), .09, 8)
+    for s in (-1, 1):
+        m.lathe("Truck", (0, 0, 0), (s, 0, 0), [(.62, .095), (.69, r - .055), (.80, r - .055), (.79, .095)], 12)
+        m.lathe("Tread", (0, 0, 0), (s, 0, 0), [(.68, r - .06), (.68, r + .028), (.71, r + .006), (.82, r - .006), (.82, r - .06)], 20)
+        m.lathe("Bearing", (0, 0, 0), (s, 0, 0), [(j - .11, .09), (j - .11, .112), (j + .12, .112), (j + .12, .09)], 10)
+    return m
+
+
+def truck_lod2(t: TruckSpec):
+    """The truck seen from 220 m or more: each side frame a six-sided slab, the springs and bolster one block across."""
+    m = Kit()
+    r, a, j, cp = t.wheel_r, t.axle, t.journal, t.centre_plate
+    ped, top, end = r + .145, cp + .16, a + .245
+    for s in (-1, 1):
+        x0, x1 = span(s * (j - .06), s * (j + .06))
+        m.prism("Truck", [(-end, ped - .16), (end, ped - .16), (end, ped + .07), (.49, top), (-.49, top), (-end, ped + .07)], "x", x0, x1)
+    m.box("Truck", (-(j - .06), -.22, cp - .26), (j - .06, .22, cp))
+    return m
+
+
+def wheelset_lod2(t: TruckSpec):
+    """Each wheel a short drum of eight sides on a thin axle."""
+    m = Kit()
+    r = t.wheel_r
+    m.cyl("Steel", (-.68, 0, 0), (.68, 0, 0), .09, 6)
+    for s in (-1, 1):
+        m.cyl("Tread", (s * .68, 0, 0), (s * .82, 0, 0), r, 8)
+    return m
+
+
+TRUCKS = {0: truck, 1: truck_lod1, 2: truck_lod2}
+WHEELSETS = {0: wheelset, 1: wheelset_lod1, 2: wheelset_lod2}

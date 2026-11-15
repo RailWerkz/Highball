@@ -2,30 +2,22 @@ namespace Highball.World;
 
 public sealed partial class NetworkMeshes
 {
-    /// A grade crossing's surface as one mesh: the road and its ramps, the panels with their rail slots, the ballast running into it
-    /// and the fill round it, sharing every vertex and edge, with nothing laid over or under anything else. Points relative to the
-    /// crossing's place; Data as line.frag reads it. The terrain under it stays whole, shaped to its fill (ConformPads): all of it
-    /// but the road's deck and the panels lies on the ground as the terrain draws it, a hair over it.
+    /// A grade crossing's surface as one closed solid, the way a crossing's laid in a game: a box. Its top is the road's deck (ramps
+    /// and all), its gravel shoulders, and the panels with their rail slots, all sharing every vertex and edge; its four sides are
+    /// skirts running straight down from the top's outline to well under the ground, so wherever the ground round it lies, the
+    /// crossing stands on it with no edge left in the air. The tracks' beds run on whole through it, under its top, and the
+    /// ground's shaped under and round it (ConformPads). Points relative to the crossing's place; Data as line.frag reads it.
     private sealed record CrossingMesh(float3[] Points, float3[] Normals, float4[] Data, uint[] Indices);
 
-    /// What a part of a crossing's surface is.
-    private enum CrossingPart { Road, Panel, Slot, Ballast, Fill, Fade }
+    /// What a part of a crossing's top is.
+    private enum CrossingPart { Road, Shoulder, Panel, Slot }
 
-    /// The grid a crossing's surface is cut from, how wide the band is where its fill fades into the ground round its outside,
-    /// how far past the panels' ends the ballast is the crossing's, and how far either way a joint with the road or the ballast
-    /// running on is drawn to them.
+    /// The grid a crossing's top is cut from.
     private const float CrossingCell = 0.5f;
-    private const float CrossingBand = 1.5f;
-    private const float CrossingBedOn = 1f;
-    private const float CrossingJoin = 2f;
-    /// How near a joint with the road running on the crossing's fill is that road's shoulder exactly.
-    private const float JoinExact = 0.3f;
-    /// How far out from the deck's edge, and from the panels', the fill comes down from them onto the ground.
-    private const float EdgeDrop = 0.3f;
-    /// How far out from the panels the gravel round them is solid, before it fades (beside the road, out to its shoulder's edge).
-    private const float PanelSolid = 0.5f;
-    /// How far out past a bed's outer edge the ground beside it, beyond the crossing's stretch of it, is left to the terrain.
-    private const float BedSide = CrossingBand + 2f;
+    /// How far under the ground round it a crossing's sides run on down.
+    private const float CrossingSkirt = 0.75f;
+    /// How far under the ground (or ballast) a crossing's embankment runs on before its foot.
+    private const float FootUnder = 0.15f;
     /// How deep a rail's slot through the panels is, and how wide its walls; a panel joint's dip.
     private const float SlotDepth = 0.06f;
     private const float SlotWall = 0.012f;
@@ -33,11 +25,10 @@ public sealed partial class NetworkMeshes
 
     /// A track the road crosses, as the mesh sees it: a frame at the crossing (its centre line, the way it runs, its right), and how
     /// far along it either way its panels run.
-    private sealed class CrossingTrack(Leg leg, float s, float offset, float from, float to)
+    private sealed class CrossingTrack(Leg leg, float s, float from, float to)
     {
         public Leg Leg { get; } = leg;
         public float S { get; } = s;
-        public float Offset { get; } = offset;
         public float From { get; } = from;
         public float To { get; } = to;
         public double Ox, Oz, Fx, Fz, Rx, Rz;
@@ -46,60 +37,11 @@ public sealed partial class NetworkMeshes
         public (double X, double Z) World(double lat, double along) => (Ox + Rx * lat + Fx * along, Oz + Rz * lat + Fz * along);
     }
 
-    /// A line's ballast bed as the mesh sees it: a frame on the line's own centre, the stretch of it the crossing takes over (from
-    /// CutLow to CutHigh along it), and its section there.
-    private sealed class CrossingBed(NetworkLine line, float s)
-    {
-        public NetworkLine Line { get; } = line;
-        public Leg Leg { get; } = new(line, 0, 1);
-        public float S { get; } = s;
-        public float CutLow, CutHigh, Toe, Outer;
-        public double Ox, Oz, Fx, Fz, Rx, Rz;
-        private readonly Dictionary<int, (float U, float Y)[]> _sections = [];
-
-        public (double Lat, double Along) Local(double x, double z) => ((x - Ox) * Rx + (z - Oz) * Rz, (x - Ox) * Fx + (z - Oz) * Fz);
-        public (double X, double Z) World(double lat, double along) => (Ox + Rx * lat + Fx * along, Oz + Rz * lat + Fz * along);
-
-        /// Its section at s along the line (as FarRail sweeps it), a quarter metre at a time.
-        public (float U, float Y)[] Section(float at)
-        {
-            var key = (int)MathF.Round(at * 4f);
-            if (!_sections.TryGetValue(key, out var section))
-                _sections[key] = section = BedSection(Line, false, 0f, 0f, 0f, Line.SinkAt(key * 0.25f));
-            return section;
-        }
-
-        /// The bed's surface lat across from its centre, along from the crossing: its rock out to the toes, then its fade out over the
-        /// ground to its outer edge; nothing past that.
-        public float? Height(double lat, double along)
-        {
-            var s = S + (float)along;
-            var p = Section(s);
-            var u = (float)lat;
-            var n = p.Length;
-            var y = Leg.At(s).Y;
-            if (u <= p[0].U || u >= p[n - 1].U)
-                return null;
-            if (u < p[2].U)
-                return y + p[0].Y + (p[2].Y - p[0].Y) * (u - p[0].U) / (p[2].U - p[0].U);
-            if (u > p[n - 3].U)
-                return y + p[n - 3].Y + (p[n - 1].Y - p[n - 3].Y) * (u - p[n - 3].U) / (p[n - 1].U - p[n - 3].U);
-            for (var i = 2; i < n - 3; i++)
-                if (u <= p[i + 1].U)
-                {
-                    var span = p[i + 1].U - p[i].U;
-                    return y + (span < 1e-5f ? p[i + 1].Y : p[i].Y + (p[i + 1].Y - p[i].Y) * (u - p[i].U) / span);
-                }
-
-            return y + p[n - 3].Y;
-        }
-    }
-
-    /// Builds a crossing's surface as one mesh. (cx, cz) and (dx, dz): the crossing's middle and the way its road runs; half the
-    /// road's width; where its ramps end along the road; deck(t, w) the road's surface over it, ramps and all; offLow and offHigh how
-    /// far across the roads running on from each end actually end; the tracks it crosses and the stretches of them its panels cover.
-    /// Also returns the stretches of each line's bed the crossing takes over, for the bed to leave out.
-    private (CrossingMesh? Mesh, List<(int Line, float From, float To)> BedCuts) BuildCrossingMesh(long id, double cx, double cz, double dx, double dz,
+    /// Builds a crossing as one closed solid. (cx, cz) and (dx, dz): the crossing's middle and the way its road runs; half the
+    /// road's width (its gravel shoulders run ShoulderOut on past that, and so does the crossing); where its ramps end along the
+    /// road; deck(t, w) the road's surface over it, ramps and panels and all; offLow and offHigh how far across the roads running on
+    /// from each end actually end; the tracks it crosses and the stretches of them its panels cover.
+    private CrossingMesh? BuildCrossingMesh(long id, double cx, double cz, double dx, double dz,
         float half, float rampLow, float rampHigh, Func<float, float, float> deck, float offLow, float offHigh,
         List<(Leg Leg, float S, float Offset)> trackList, List<(int Line, float From, float To)> covered, float reach, float g, float railTop,
         float paint, bool joints, DeckRoad? road, double baseX, double baseZ)
@@ -107,80 +49,28 @@ public sealed partial class NetworkMeshes
         var (nx, nz) = (-dz, dx);
         (double X, double Z) World(double t, double w) => (cx + dx * t + nx * w, cz + dz * t + nz * w);
         (double T, double W) Local(double x, double z) => ((x - cx) * dx + (z - cz) * dz, (x - cx) * nx + (z - cz) * nz);
-        var bedCuts = new List<(int Line, float From, float To)>();
+        var outer = half + ShoulderOut;
 
-        // The tracks, each in a frame of its own where it crosses.
         var tracks = new List<CrossingTrack>();
         for (var j = 0; j < trackList.Count; j++)
         {
             var (leg, s, offset) = trackList[j];
-            var track = new CrossingTrack(leg, s, offset, covered[j].From - s, covered[j].To - s);
+            var track = new CrossingTrack(leg, s, covered[j].From - s, covered[j].To - s);
             var (px, pz, _, fx, fz, rx, rz) = leg.At(s);
             (track.Ox, track.Oz, track.Fx, track.Fz, track.Rx, track.Rz) = (px + rx * offset, pz + rz * offset, fx, fz, rx, rz);
             tracks.Add(track);
-        }
-
-        // Their lines' beds: the stretch the crossing takes over runs CrossingBedOn past the panels each way.
-        var beds = new List<CrossingBed>();
-        foreach (var group in tracks.GroupBy(t => t.Leg.Line.Index))
-        {
-            var first = group.First();
-            var bed = new CrossingBed(first.Leg.Line, first.S);
-            var (px, pz, _, fx, fz, rx, rz) = bed.Leg.At(bed.S);
-            (bed.Ox, bed.Oz, bed.Fx, bed.Fz, bed.Rx, bed.Rz) = (px, pz, fx, fz, rx, rz);
-            (bed.CutLow, bed.CutHigh) = (group.Min(t => t.From) - CrossingBedOn, group.Max(t => t.To) + CrossingBedOn);
-            var section = bed.Section(bed.S);
-            (bed.Toe, bed.Outer) = (section[^3].U, section[^1].U);
-            // On a skew the bed running on past a square cut would lie alongside the road, under its fill: the cut moves on out each
-            // way till the bed beyond (out to its fade's edge and the band past it) is wholly clear of the road and its fill.
-            var clear = half + ShoulderOut + 1.5f;
-            bool Clear(float along)
-            {
-                var sides = ((double[])[-bed.Outer - BedSide, bed.Outer + BedSide]).Select(lat =>
-                {
-                    var (x, z) = bed.World(lat, along);
-                    return Local(x, z).W;
-                }).ToArray();
-                return Math.Sign(sides[0]) == Math.Sign(sides[1]) && Math.Abs(sides[0]) >= clear && Math.Abs(sides[1]) >= clear;
-            }
-
-            for (var k = 0; k < 160 && !Clear(bed.CutLow); k++)
-                bed.CutLow -= 0.25f;
-            for (var k = 0; k < 160 && !Clear(bed.CutHigh); k++)
-                bed.CutHigh += 0.25f;
-            beds.Add(bed);
-            bedCuts.Add((bed.Line.Index, bed.S + bed.CutLow, bed.S + bed.CutHigh));
-        }
-
-        // --- What's where, and how high. ---
-
-        bool InRoad(double t, double w) => Math.Abs(w) <= half + 1e-4 && t >= rampLow - 1e-4 && t <= rampHigh + 1e-4;
-        // Beyond the ramps' ends the road runs on, its surface and shoulders its own: none of the crossing there.
-        bool RoadBeyond(double t, double w) => (t < rampLow - 1e-4 || t > rampHigh + 1e-4) && Math.Abs(w) < half + ShoulderOut - 1e-4;
-        // Beyond the stretch the crossing takes over, each bed runs on as itself, and the ground beside it is the terrain's: none of
-        // the crossing there (alongside the bed, the two would meet on a step).
-        bool BedBeyond(double x, double z)
-        {
-            foreach (var bed in beds)
-            {
-                var (lat, along) = bed.Local(x, z);
-                if ((along < bed.CutLow - 1e-4 || along > bed.CutHigh + 1e-4) && Math.Abs(lat) < bed.Outer + BedSide - 1e-4)
-                    return true;
-            }
-
-            return false;
         }
 
         // A rail's slot through the panels, each side of the track: from its outer edge to its inner.
         var flange = RailHeadHalf + PanelFlangeway;
         (float From, float To)[] slots = [(-g - RailHeadHalf - PanelGapOutside, -g + flange), (g - flange, g + RailHeadHalf + PanelGapOutside)];
 
-        CrossingTrack? PanelAt(double x, double z, double margin = 1e-4)
+        CrossingTrack? PanelAt(double x, double z)
         {
             foreach (var track in tracks)
             {
                 var (lat, along) = track.Local(x, z);
-                if (Math.Abs(lat) <= reach + margin && along >= track.From - margin && along <= track.To + margin)
+                if (Math.Abs(lat) <= reach + 1e-4 && along >= track.From - 1e-4 && along <= track.To + 1e-4)
                     return track;
             }
 
@@ -213,69 +103,53 @@ public sealed partial class NetworkMeshes
             return y;
         }
 
-        // The road's fill beside it: its own shoulder's shape (as RoadStretch sweeps it), down from just under its edge, and on down
-        // past it at the same slope.
-        float RoadFill(double t, double w)
+        // The top at (t, w): the panels over the tracks, the deck across the road, and its gravel shoulders sloping off its edges
+        // as the road's own do beyond.
+        float Top(double t, double w, (double X, double Z) at, bool panels = true)
         {
+            if (panels && PanelAt(at.X, at.Z) is { } panel)
+                return PanelHeight(panel, at.X, at.Z, out _);
+            var ct = (float)Math.Clamp(t, rampLow, rampHigh);
+            if (Math.Abs(w) <= half + 1e-4)
+                return deck(ct, (float)w);
             var side = w < 0 ? -1f : 1f;
-            var edge = deck(Math.Clamp((float)t, rampLow, rampHigh), side * half);
-            var under = edge - RoadRise - 0.002f;
+            var edge = deck(ct, side * half);
             var out_ = (float)Math.Abs(w) - half;
-            var shoulder = under + 0.04f - (out_ + 0.05f) * (0.39f / 0.65f);
-            return out_ < 0.02f ? edge + (shoulder - edge) * MathF.Max(0f, out_) / 0.02f : shoulder;
+            // (As the road's own shoulders: from a hair under the edge, down and out. The deck's edge is its surface, RoadRise over
+            // the road's line.)
+            return edge - ShoulderUnder - out_ * ((ShoulderDrop - ShoulderUnder) / ShoulderOut);
         }
 
-        (float? Y, CrossingBed? Bed, double Lat, double Along) BedAt(double x, double z)
-        {
-            (float? Y, CrossingBed? Bed, double Lat, double Along) best = (null, null, 0, 0);
-            foreach (var bed in beds)
-            {
-                var (lat, along) = bed.Local(x, z);
-                var along2 = Math.Clamp(along, bed.CutLow - CrossingJoin, bed.CutHigh + CrossingJoin);
-                if (bed.Height(lat, along2) is { } y && (best.Y is null || y > best.Y))
-                    best = (y, bed, lat, along);
-            }
-
-            return best;
-        }
-
-        // The ground as it's drawn: the terrain splits each square of its grid into two triangles, along the one diagonal unless
-        // the other's much gentler and enough of the patch's squares want it so (Terrain.Diagonals), which on a steep bank lies well
-        // off the grid's smooth (bilinear) height. Taken as the terrain takes it, so the surface lies just over it, never under it
-        // nor standing up off it on a ledge.
+        // The ground as it's drawn: the terrain splits each square of its grid into two triangles along one diagonal or the other
+        // (Terrain.Diagonals); taken as the terrain takes it, so the embankment meets it exactly.
         var flipsOf = new Dictionary<(int, int), bool[]?>();
-        bool[]? Flips(int px, int pz)
-        {
-            if (flipsOf.TryGetValue((px, pz), out var known))
-                return known;
-            const int quads = Terrain.Quads;
-            var (x0, z0) = (px * quads, pz * quads);
-            bool[]? flips = null;
-            var count = 0;
-            for (var qz = 0; qz < quads; qz++)
-                for (var qx = 0; qx < quads; qx++)
-                {
-                    if (!_source.TryHeight(x0 + qx, z0 + qz, out var a) || !_source.TryHeight(x0 + qx + 1, z0 + qz, out var b)
-                        || !_source.TryHeight(x0 + qx, z0 + qz + 1, out var c) || !_source.TryHeight(x0 + qx + 1, z0 + qz + 1, out var d))
-                        continue;
-                    if (MathF.Abs(b - c) - MathF.Abs(a - d) <= Terrain.FlipGain * _source.Spacing)
-                        continue;
-                    flips ??= new bool[quads * quads];
-                    flips[qz * quads + qx] = true;
-                    count++;
-                }
-
-            return flipsOf[(px, pz)] = count >= Terrain.FewestFlips ? flips : null;
-        }
-
-        // Whether the terrain splits its grid's square at (gx, gz) along its a-d diagonal rather than b-c.
         bool Flipped(int gx, int gz)
         {
             const int quads = Terrain.Quads;
             var (px, pz) = (Math.DivRem(gx, quads, out var qx), Math.DivRem(gz, quads, out var qz));
             if (qx < 0) (px, qx) = (px - 1, qx + quads);
             if (qz < 0) (pz, qz) = (pz - 1, qz + quads);
-            return Flips(px, pz) is { } flips && flips[qz * quads + qx];
+            if (!flipsOf.TryGetValue((px, pz), out var flips))
+            {
+                var (x0, z0) = (px * quads, pz * quads);
+                var count = 0;
+                for (var iz = 0; iz < quads; iz++)
+                    for (var ix = 0; ix < quads; ix++)
+                    {
+                        if (!_source.TryHeight(x0 + ix, z0 + iz, out var a) || !_source.TryHeight(x0 + ix + 1, z0 + iz, out var b)
+                            || !_source.TryHeight(x0 + ix, z0 + iz + 1, out var c) || !_source.TryHeight(x0 + ix + 1, z0 + iz + 1, out var d))
+                            continue;
+                        if (MathF.Abs(b - c) - MathF.Abs(a - d) <= Terrain.FlipGain * _source.Spacing)
+                            continue;
+                        flips ??= new bool[quads * quads];
+                        flips[iz * quads + ix] = true;
+                        count++;
+                    }
+
+                flipsOf[(px, pz)] = flips = count >= Terrain.FewestFlips ? flips : null;
+            }
+
+            return flips is not null && flips[qz * quads + qx];
         }
 
         float Ground(double x, double z)
@@ -287,213 +161,119 @@ public sealed partial class NetworkMeshes
             if (!_source.TryHeight(gx, gz, out var a) || !_source.TryHeight(gx + 1, gz, out var b) || !_source.TryHeight(gx, gz + 1, out var c)
                 || !_source.TryHeight(gx + 1, gz + 1, out var d))
                 return _source.HeightAt(x, z);
-            var flipped = Flipped(gx, gz);
-            // Split a-d: (a, b, d) above it, (a, c, d) below; split b-c: (a, b, c) or (b, c, d).
-            return flipped
+            return Flipped(gx, gz)
                 ? tx >= tz ? a + (b - a) * tx + (d - b) * tz : a + (c - a) * tz + (d - c) * tx
                 : tx + tz <= 1f ? a + (b - a) * tx + (c - a) * tz : d + (c - d) * (1f - tx) + (b - d) * (1f - tz);
         }
 
-        static float Ease(float u)
+        // The crossed lines' ballast beds, as their own meshes draw them (FarRail, BedSection): the highest bed surface at (x, z).
+        var beds = trackList.Select(t => t.Leg.Line).Distinct().Select(line => (Line: line, Leg: new Leg(line, 0, 1))).ToList();
+        var sections = new Dictionary<(int, int), (float U, float Y)[]>();
+        float? BedTop(double x, double z)
         {
-            u = Math.Clamp(u, 0f, 1f);
-            return u * u * (3f - 2f * u);
-        }
-
-        // Off the deck's edge: its own shoulder stepping down from it, coming down onto the ground (floor) over EdgeDrop.
-        float RoadEdge(double t, double w, float floor)
-        {
-            var out_ = (float)Math.Abs(w) - half;
-            if (out_ >= EdgeDrop)
-                return floor;
-            var fill = RoadFill(t, w);
-            return MathF.Max(floor, fill + (floor - fill) * Ease(out_ / EdgeDrop));
-        }
-
-        // The ballast heaped up against the panels round their outside: level with their tops at their edges, down at the ballast's
-        // own slope from there and onto the ground (floor) over EdgeDrop, so no panel stands up out of the ground on a wall. (The
-        // terrain's heaped up against them too, so the two nearly agree.)
-        float PanelFill(double x, double z, float floor)
-        {
-            var best = floor;
-            foreach (var track in tracks)
+            float? best = null;
+            foreach (var (line, leg) in beds)
             {
-                var (lat, along) = track.Local(x, z);
-                var (dl, da) = (Math.Max(0, Math.Abs(lat) - reach), Math.Max(0, Math.Max(along - track.To, track.From - along)));
-                var d = (float)Math.Sqrt(dl * dl + da * da);
-                if (d >= EdgeDrop)
+                var (bi, bd) = (0, double.MaxValue);
+                for (var i = 0; i < line.Count; i++)
+                {
+                    var dd = (line.X[i] - x) * (line.X[i] - x) + (line.Z[i] - z) * (line.Z[i] - z);
+                    if (dd < bd)
+                        (bi, bd) = (i, dd);
+                }
+
+                if (bd > 60.0 * 60.0)
                     continue;
-                var top = track.Leg.At(track.S + (float)Math.Clamp(along, track.From, track.To)).Y + railTop - 0.005f;
-                var heap = top - d / NetworkLine.BallastSlope;
-                best = MathF.Max(best, heap + (floor - heap) * Ease(d / EdgeDrop));
+                var s = line.S[bi];
+                for (var k = 0; k < 6; k++)
+                {
+                    var (qx, qz, _, fx, fz, _, _) = leg.At(s);
+                    s += (float)((x - qx) * fx + (z - qz) * fz);
+                }
+
+                if (s <= 0f || s >= line.S[^1])
+                    continue;
+                var (lx, lz, y, _, _, rx, rz) = leg.At(s);
+                var u = (float)((x - lx) * rx + (z - lz) * rz);
+                var key = (line.Index, (int)MathF.Round(s * 4f));
+                if (!sections.TryGetValue(key, out var p))
+                    sections[key] = p = BedSection(line, false, 0f, 0f, 0f, line.SinkAt(s));
+                var n = p.Length;
+                if (u <= p[0].U || u >= p[n - 1].U)
+                    continue;
+                float h;
+                if (u < p[2].U)
+                    h = p[0].Y + (p[2].Y - p[0].Y) * (u - p[0].U) / (p[2].U - p[0].U);
+                else if (u > p[n - 3].U)
+                    h = p[n - 3].Y + (p[n - 1].Y - p[n - 3].Y) * (u - p[n - 3].U) / (p[n - 1].U - p[n - 3].U);
+                else
+                {
+                    h = p[n - 3].Y;
+                    for (var i = 2; i < n - 3; i++)
+                        if (u <= p[i + 1].U)
+                        {
+                            var span = p[i + 1].U - p[i].U;
+                            h = span < 1e-5f ? p[i + 1].Y : p[i].Y + (p[i + 1].Y - p[i].Y) * (u - p[i].U) / span;
+                            break;
+                        }
+                }
+
+                if (best is null || y + h > best)
+                    best = y + h;
             }
 
             return best;
         }
 
-        // Everywhere but the deck and the panels it's the ground as it's drawn, a hair over it, but for where it comes down off the
-        // deck's edge and the panels', and where it meets the road or a bed running on.
-        float Fill(double t, double w, double x, double z)
-        {
-            var ground = Ground(x, z);
-            var floor = ground + GivesOut;
-            var fill = RoadFill(t, w);
-            var y = MathF.Max(RoadEdge(t, w, floor), PanelFill(x, z, floor));
+        // --- Every edge the top has to have, cut into a grid over its outline. ---
 
-            // Toward where the road runs on beyond a ramp, its own shoulder, and toward where a bed runs on beyond the crossing, the
-            // bed's own section, so they meet edge to edge.
-            var toJoint = (float)Math.Min(Math.Abs(t - rampLow), Math.Abs(t - rampHigh));
-            if (toJoint < CrossingJoin && Math.Abs(w) < half + ShoulderOut + CrossingJoin)
-            {
-                var weight = 1f - toJoint / CrossingJoin;
-                y += (MathF.Max(fill, ground) - y) * weight * weight;
-            }
-
-            foreach (var near in beds)
-            {
-                var (l, a) = near.Local(x, z);
-                var toCut = (float)Math.Min(Math.Abs(a - near.CutLow), Math.Abs(a - near.CutHigh));
-                // Only over the bed itself: past its outer edge nothing runs on beyond the cut to meet.
-                if (toCut >= CrossingJoin || near.Height(l, Math.Clamp(a, near.CutLow, near.CutHigh)) is not { } exact)
-                    continue;
-                var weight = 1f - toCut / CrossingJoin;
-                y += (exact - y) * weight * weight;
-            }
-
-            // Never under the ground as it's drawn, and a hair over it, so the terrain never shows through.
-            y = MathF.Max(y, floor);
-
-            // But right at a joint with the road running on, its shoulder exactly, under the ground or not, so the two meet edge to
-            // edge.
-            if (Math.Abs(w) < half + ShoulderOut + JoinExact)
-                y += (fill - y) * MathF.Max(0f, 1f - toJoint / JoinExact);
-            return y;
-        }
-
-        // --- The cuts. ---
-
-        // Every edge the surface has to have, as a segment in (t, w).
         var segments = new List<((double T, double W) A, (double T, double W) B)>();
         void Segment((double X, double Z) a, (double X, double Z) b) => segments.Add((Local(a.X, a.Z), Local(b.X, b.Z)));
-        void Line(double t0, double w0, double t1, double w1) => segments.Add(((t0, w0), (t1, w1)));
-
-        // How far it all reaches: the road's fill and the beds' fades and a band past them.
-        var (tMin, tMax, wMax) = (rampLow - 4f, rampHigh + 4f, half + ShoulderOut + 5f);
-        foreach (var bed in beds)
-            foreach (var along in (double[])[bed.CutLow, bed.CutHigh])
-                foreach (var lat in (double[])[-bed.Outer - BedSide, bed.Outer + BedSide])
-                {
-                    var (x, z) = bed.World(lat, along);
-                    var (t, w) = Local(x, z);
-                    (tMin, tMax, wMax) = (Math.Min(tMin, (float)t), Math.Max(tMax, (float)t), Math.Max(wMax, (float)Math.Abs(w)));
-                }
-
-        (tMin, tMax, wMax) = (MathF.Floor((tMin - 1f) / CrossingCell) * CrossingCell, MathF.Ceiling((tMax + 1f) / CrossingCell) * CrossingCell,
-            MathF.Ceiling((wMax + 1f) / CrossingCell) * CrossingCell);
-
         foreach (var side in (float[])[-1f, 1f])
         {
-            Line(rampLow, side * half, rampHigh, side * half);
-            Line(rampLow, side * (half + 0.02f), rampHigh, side * (half + 0.02f));
-            Line(rampLow, side * (half + EdgeDrop), rampHigh, side * (half + EdgeDrop));
-            Line(tMin, side * (half + ShoulderOut), tMax, side * (half + ShoulderOut));
+            segments.Add(((rampLow, side * half), (rampHigh, side * half)));
+            segments.Add(((rampLow, side * (half + 0.02f)), (rampHigh, side * (half + 0.02f))));
         }
-
-        foreach (var t in (float[])[rampLow, rampHigh])
-            Line(t, -(half + ShoulderOut), t, half + ShoulderOut);
 
         foreach (var track in tracks)
         {
             var (f, to) = (track.From, track.To);
-            void Across(double lat0, double lat1, double along) => Segment(track.World(lat0, along), track.World(lat1, along));
-            void Along(double lat, double a0, double a1) => Segment(track.World(lat, a0), track.World(lat, a1));
-            const double wall = 0.02;
             foreach (var s in (double[])[-1, 1])
-            {
-                Along(s * reach, f, to);
-                Along(s * (reach + wall), f - wall, to + wall);
-            }
-
+                Segment(track.World(s * reach, f), track.World(s * reach, to));
             foreach (var a in (double[])[f, to])
-                Across(-reach, reach, a);
-            Across(-reach - wall, reach + wall, f - wall);
-            Across(-reach - wall, reach + wall, to + wall);
-            // Where the heap round them reaches the ground, and where their solid gravel gives way to its fade.
-            foreach (var m in (double[])[EdgeDrop, PanelSolid])
-            {
-                foreach (var s in (double[])[-1, 1])
-                    Along(s * (reach + m), f - m, to + m);
-                Across(-reach - m, reach + m, f - m);
-                Across(-reach - m, reach + m, to + m);
-            }
-
+                Segment(track.World(-reach, a), track.World(reach, a));
             foreach (var (from, end) in slots)
                 foreach (var lat in (double[])[from, from + SlotWall, end - SlotWall, end])
-                    Along(lat, f, to);
+                    Segment(track.World(lat, f), track.World(lat, to));
             if (joints)
                 for (var a = f + PanelLength; a < to - 0.1f; a += PanelLength)
                     foreach (var o in (double[])[-0.01, 0, 0.01])
-                        Across(-reach, reach, a + o);
+                        Segment(track.World(-reach, a + o), track.World(reach, a + o));
         }
 
-        foreach (var bed in beds)
+        // The grid's lines, with the outline exactly at the ramps' ends and the shoulders' edges.
+        static List<double> Lines(double from, double to)
         {
-            foreach (var (u, _) in bed.Section(bed.S))
-                Segment(bed.World(u, bed.CutLow - CrossingJoin), bed.World(u, bed.CutHigh + CrossingJoin));
-            foreach (var a in (double[])[bed.CutLow, bed.CutHigh])
-                Segment(bed.World(-bed.Outer - BedSide, a), bed.World(bed.Outer + BedSide, a));
-            foreach (var lat in (double[])[-bed.Outer - BedSide, bed.Outer + BedSide])
-                foreach (var (from, to) in new (double, double)[] { (bed.CutLow - 40, bed.CutLow), (bed.CutHigh, bed.CutHigh + 40) })
-                    Segment(bed.World(lat, from), bed.World(lat, to));
+            var lines = new List<double> { from };
+            for (var v = Math.Floor(from / CrossingCell) * CrossingCell + CrossingCell; v < to - 0.05; v += CrossingCell)
+                if (v > from + 0.05)
+                    lines.Add(v);
+            lines.Add(to);
+            return lines;
         }
 
-        // The ground's own triangles: every edge the terrain draws (its grid's and each square's diagonal, the way it splits it), so
-        // the fill lying on it bends where it bends, and never cuts through under it or bridges over it.
-        {
-            var spacing = _source.Spacing;
-            var (xMin, xMax, zMin, zMax) = (double.MaxValue, double.MinValue, double.MaxValue, double.MinValue);
-            foreach (var (t, w) in new (double, double)[] { (tMin, -wMax), (tMax, -wMax), (tMin, wMax), (tMax, wMax) })
-            {
-                var (x, z) = World(t, w);
-                (xMin, xMax, zMin, zMax) = (Math.Min(xMin, x), Math.Max(xMax, x), Math.Min(zMin, z), Math.Max(zMax, z));
-            }
-
-            (double X, double Z) Grid(int gx, int gz) => (gx * (double)spacing, gz * (double)spacing);
-            for (var gx = (int)Math.Floor(xMin / spacing); gx <= (int)Math.Ceiling(xMax / spacing); gx++)
-                for (var gz = (int)Math.Floor(zMin / spacing); gz <= (int)Math.Ceiling(zMax / spacing); gz++)
-                {
-                    Segment(Grid(gx, gz), Grid(gx + 1, gz));
-                    Segment(Grid(gx, gz), Grid(gx, gz + 1));
-                    if (Flipped(gx, gz))
-                        Segment(Grid(gx, gz), Grid(gx + 1, gz + 1));
-                    else
-                        Segment(Grid(gx + 1, gz), Grid(gx, gz + 1));
-                }
-        }
-
-        // The grid's cells, each cut by the segments through it into convex pieces.
-        var columns = (int)MathF.Round((tMax - tMin) / CrossingCell);
-        var rowsAcross = (int)MathF.Round(2f * wMax / CrossingCell);
-        var buckets = new List<int>[columns * rowsAcross];
-        for (var i = 0; i < segments.Count; i++)
-        {
-            var (a, b) = segments[i];
-            var (c0, c1) = ((int)Math.Floor((Math.Min(a.T, b.T) - tMin) / CrossingCell), (int)Math.Floor((Math.Max(a.T, b.T) - tMin) / CrossingCell));
-            var (r0, r1) = ((int)Math.Floor((Math.Min(a.W, b.W) + wMax) / CrossingCell), (int)Math.Floor((Math.Max(a.W, b.W) + wMax) / CrossingCell));
-            for (var c = Math.Max(0, c0); c <= Math.Min(columns - 1, c1); c++)
-                for (var r = Math.Max(0, r0); r <= Math.Min(rowsAcross - 1, r1); r++)
-                    (buckets[c * rowsAcross + r] ??= []).Add(i);
-        }
-
+        var ts = Lines(rampLow, rampHigh);
+        var ws = Lines(-outer, outer);
         var pieces = new List<List<(double T, double W)>>();
-        for (var c = 0; c < columns; c++)
-            for (var r = 0; r < rowsAcross; r++)
+        for (var c = 0; c + 1 < ts.Count; c++)
+            for (var r = 0; r + 1 < ws.Count; r++)
             {
-                var (t0, w0) = (tMin + c * CrossingCell, -wMax + r * CrossingCell);
-                var cell = new List<List<(double T, double W)>> { new() { (t0, w0), (t0 + CrossingCell, w0), (t0 + CrossingCell, w0 + CrossingCell), (t0, w0 + CrossingCell) } };
-                foreach (var i in buckets[c * rowsAcross + r] ?? [])
+                var (t0, t1, w0, w1) = (ts[c], ts[c + 1], ws[r], ws[r + 1]);
+                var cell = new List<List<(double T, double W)>> { new() { (t0, w0), (t1, w0), (t1, w1), (t0, w1) } };
+                foreach (var (a, b) in segments)
                 {
-                    var (a, b) = segments[i];
+                    if (Math.Max(a.T, b.T) < t0 || Math.Min(a.T, b.T) > t1 || Math.Max(a.W, b.W) < w0 || Math.Min(a.W, b.W) > w1)
+                        continue;
                     var next = new List<List<(double T, double W)>>();
                     foreach (var piece in cell)
                         next.AddRange(Split(piece, a, b));
@@ -506,43 +286,20 @@ public sealed partial class NetworkMeshes
         // --- What each piece is. ---
 
         var parts = new CrossingPart[pieces.Count];
-        var keep = new bool[pieces.Count];
         for (var i = 0; i < pieces.Count; i++)
         {
             var (t, w) = (pieces[i].Average(p => p.T), pieces[i].Average(p => p.W));
             var (x, z) = World(t, w);
-            if (RoadBeyond(t, w) || BedBeyond(x, z))
-                continue;
-            keep[i] = true;
             if (PanelAt(x, z) is { } panel)
             {
                 PanelHeight(panel, x, z, out var slot);
                 parts[i] = slot ? CrossingPart.Slot : CrossingPart.Panel;
-                continue;
             }
-
-            if (InRoad(t, w))
-            {
-                parts[i] = CrossingPart.Road;
-                continue;
-            }
-
-            // The gravel's solid beside the road out to its shoulder's edge and round the panels out to PanelSolid, and fades from
-            // there (the band past it, CrossingBand, left off further out).
-            var (bedY, bed, lat, along) = BedAt(x, z);
-            var onBed = bedY is { } b && b >= RoadFill(t, w) - 0.02f && bed is not null;
-            var byRoad = t >= rampLow && t <= rampHigh && Math.Abs(w) <= half + ShoulderOut;
-            if (onBed && Math.Abs(lat) <= bed!.Toe)
-                parts[i] = CrossingPart.Ballast;
-            else if (onBed && (along < bed!.CutLow + CrossingJoin || along > bed.CutHigh - CrossingJoin) && PanelAt(x, z, 0.5) is null)
-                parts[i] = CrossingPart.Fade;
-            else if (byRoad || PanelAt(x, z, PanelSolid) is not null)
-                parts[i] = CrossingPart.Fill;
             else
-                parts[i] = CrossingPart.Fade;
+                parts[i] = Math.Abs(w) <= half ? CrossingPart.Road : CrossingPart.Shoulder;
         }
 
-        // --- The vertices, shared. ---
+        // --- The vertices, shared, with every vertex lying along another piece's edge put into that edge too, so the top's closed. ---
 
         var vertices = new List<(double T, double W)>();
         var lookup = new Dictionary<(long, long), int>();
@@ -556,13 +313,7 @@ public sealed partial class NetworkMeshes
             return vertices.Count - 1;
         }
 
-        var rings = new List<int>[pieces.Count];
-        for (var i = 0; i < pieces.Count; i++)
-            if (keep[i])
-                rings[i] = [.. pieces[i].Select(VertexOf)];
-
-        // Every vertex lying along another piece's edge goes into that edge too, so no edge has a vertex on it the piece beside it
-        // hasn't: the surface is closed, crack-free, everywhere.
+        var rings = pieces.Select(piece => piece.Select(VertexOf).ToList()).ToList();
         var near = new Dictionary<(int, int), List<int>>();
         for (var v = 0; v < vertices.Count; v++)
         {
@@ -572,10 +323,8 @@ public sealed partial class NetworkMeshes
             list.Add(v);
         }
 
-        for (var i = 0; i < pieces.Count; i++)
+        for (var i = 0; i < rings.Count; i++)
         {
-            if (!keep[i])
-                continue;
             var ring = rings[i];
             var whole = new List<int>();
             for (var k = 0; k < ring.Count; k++)
@@ -610,283 +359,367 @@ public sealed partial class NetworkMeshes
             rings[i] = whole;
         }
 
-        // How far each vertex is from the solid part, along the surface: the fade band runs CrossingBand out from it.
-        bool Solid(int i) => keep[i] && parts[i] != CrossingPart.Fade;
-        var reachOut = new double[vertices.Count];
-        Array.Fill(reachOut, double.MaxValue);
-        var links = new Dictionary<int, List<int>>();
-        var queue = new PriorityQueue<int, double>();
-        for (var i = 0; i < pieces.Count; i++)
-        {
-            if (!keep[i])
-                continue;
-            var ring = rings[i];
-            for (var k = 0; k < ring.Count; k++)
-            {
-                var (a, b) = (ring[k], ring[(k + 1) % ring.Count]);
-                (links.TryGetValue(a, out var la) ? la : links[a] = []).Add(b);
-                (links.TryGetValue(b, out var lb) ? lb : links[b] = []).Add(a);
-                if (Solid(i) && reachOut[a] > 0)
-                {
-                    reachOut[a] = 0;
-                    queue.Enqueue(a, 0);
-                }
-            }
-        }
-
-        while (queue.TryDequeue(out var v, out var d))
-        {
-            if (d > reachOut[v] || d > CrossingBand)
-                continue;
-            foreach (var u in links[v])
-            {
-                var (pv, pu) = (vertices[v], vertices[u]);
-                var nd = d + Math.Sqrt((pv.T - pu.T) * (pv.T - pu.T) + (pv.W - pu.W) * (pv.W - pu.W));
-                if (nd < reachOut[u])
-                {
-                    reachOut[u] = nd;
-                    queue.Enqueue(u, nd);
-                }
-            }
-        }
-
-        // The fade's pieces out past the band are left off; so's the bed's own fade where it's not by a joint with the bed beyond.
-        for (var i = 0; i < pieces.Count; i++)
-            if (keep[i] && parts[i] == CrossingPart.Fade && rings[i].Min(v => reachOut[v]) > CrossingBand)
-                keep[i] = false;
-
-        // --- Where each vertex is, and how high. ---
-
-        // Near a joint, the crossing's moved across to where the road or the bed beyond actually runs, so their ends meet exactly.
+        // Near each end the crossing's moved across to where the road beyond actually runs, so their ends meet exactly.
         (double X, double Z) Placed((double T, double W) p)
         {
             var (x, z) = World(p.T, p.W);
             var shift = offLow * Math.Clamp((rampLow + 3.0 - p.T) / 3.0, 0, 1) + offHigh * Math.Clamp((p.T - (rampHigh - 3.0)) / 3.0, 0, 1);
-            (x, z) = (x + nx * shift, z + nz * shift);
-            foreach (var bed in beds)
-            {
-                var (lat, along) = bed.Local(x, z);
-                if (Math.Abs(lat) > bed.Outer + CrossingBand + CrossingJoin)
-                    continue;
-                foreach (var cut in (float[])[bed.CutLow, bed.CutHigh])
-                {
-                    var weight = Math.Clamp(1.0 - Math.Abs(along - cut) / CrossingJoin, 0, 1);
-                    if (weight <= 0)
-                        continue;
-                    var (rx, rz, _, _, _, ax, az) = bed.Leg.At(bed.S + cut);
-                    var (lx, lz) = bed.World(lat, cut);
-                    var (realX, realZ) = (rx + ax * lat, rz + az * lat);
-                    (x, z) = (x + (realX - lx) * weight, z + (realZ - lz) * weight);
-                }
-            }
-
-            return (x, z);
+            return (x + nx * shift, z + nz * shift);
         }
 
-        var used = new bool[vertices.Count];
-        var touchesFade = new bool[vertices.Count];
-        for (var i = 0; i < pieces.Count; i++)
-            if (keep[i])
-                foreach (var v in rings[i])
-                {
-                    used[v] = true;
-                    touchesFade[v] |= parts[i] == CrossingPart.Fade;
-                }
+        var places = vertices.Select(Placed).ToArray();
+        var heights = vertices.Select(p => Top(p.T, p.W, World(p.T, p.W))).ToArray();
+        // The road's own surface at each vertex, panels or not: where the road's top meets a panel's edge it runs on under the
+        // panel at its own height (the panel's wall stands over it), never up the panel's edge to its top.
+        var roadHeights = vertices.Select(p => Top(p.T, p.W, World(p.T, p.W), false)).ToArray();
 
-        var places = new (double X, double Z)[vertices.Count];
-        var heights = new float[vertices.Count];
-        for (var v = 0; v < vertices.Count; v++)
-        {
-            if (!used[v])
-                continue;
-            var p = vertices[v];
-            places[v] = Placed(p);
-            var (x, z) = World(p.T, p.W);
-            var (px, pz) = places[v];
-            float y;
-            if (PanelAt(x, z) is { } panel)
-                y = PanelHeight(panel, x, z, out _);
-            else if (InRoad(p.T, p.W))
-                y = deck((float)p.T, (float)p.W);
-            else
-                y = Fill(p.T, p.W, px, pz);
-            if (touchesFade[v])
-                y = MathF.Max(y, Ground(px, pz) + GivesOut);
-            heights[v] = y;
-        }
-
-        // Its outer edge, where it meets the terrain itself, comes down onto the ground exactly: a lip there, however small, casts a
-        // line of shadow. (Not where it meets the road or the bed running on: those it meets edge to edge already.)
-        var edgeUses = new Dictionary<(int, int), int>();
-        for (var i = 0; i < pieces.Count; i++)
-            if (keep[i])
-                for (var k = 0; k < rings[i].Count; k++)
-                {
-                    var (a, b) = (rings[i][k], rings[i][(k + 1) % rings[i].Count]);
-                    var key = a < b ? (a, b) : (b, a);
-                    edgeUses[key] = edgeUses.GetValueOrDefault(key) + 1;
-                }
-
-        foreach (var ((a, b), uses) in edgeUses)
-        {
-            if (uses != 1)
-                continue;
-            foreach (var v in (int[])[a, b])
-            {
-                var p = vertices[v];
-                var (x, z) = World(p.T, p.W);
-                if (InRoad(p.T, p.W) || PanelAt(x, z, 0.05) is not null)
-                    continue;
-                var toJoint = Math.Min(Math.Abs(p.T - rampLow), Math.Abs(p.T - rampHigh));
-                if (toJoint < 0.05 && Math.Abs(p.W) < half + ShoulderOut + 0.05)
-                    continue;
-                if (beds.Any(bed =>
-                    {
-                        var (lat, along) = bed.Local(x, z);
-                        return Math.Abs(lat) < bed.Outer + 0.05 && Math.Min(Math.Abs(along - bed.CutLow), Math.Abs(along - bed.CutHigh)) < 0.05;
-                    }))
-                    continue;
-                heights[v] = Ground(places[v].X, places[v].Z);
-            }
-        }
-
-        // --- The triangles, and what each corner of them is drawn as. ---
+        // --- The triangles. ---
 
         var points = new List<float3>();
         var data = new List<float4>();
         var normals = new List<float3>();
         var indices = new List<uint>();
-        var copies = new Dictionary<(int, CrossingPart), int>();
-        // Which vertex each point is a copy of (-1 for a fan's middle), and which parts share their shading across a vertex: the
-        // ballast, fill and fade are one ground, smooth over where one becomes another.
-        var owners = new List<int>();
-        var groups = new List<int>();
-        var ballastOf = beds.ToDictionary(b => b, b => Code(LineMaterial.Ballast, b.Line.Tracks + (b.Line.Disused ? 8 : 0) + (b.Line.BedHeight < 0.12f ? 16 : 0)));
         var gravel = Code(LineMaterial.Gravel);
         var asphalt = Code(LineMaterial.Asphalt);
         float3 Relative(double x, double z, float y) => new((float)(x - baseX), y, (float)(z - baseZ));
 
-        float4 DataOf((double X, double Z) at, float3 p, CrossingPart part, double reached)
+        // The road's markings across it by how far across the crossing's own road a place is (w, before its ends are moved
+        // across onto the roads running on): the crossing's road and the road beyond meet edge to edge, so their lines do too,
+        // where measured from the road's line at one end they'd stand off it by as much as the road's end drifts.
+        var across = road is { } dr && Dot(new float3((float)nx, 0f, (float)nz), dr.Across) < 0f ? -1f : 1f;
+        float4 DataOf((double X, double Z) at, float3 p, CrossingPart part, double w = 0.0) => part switch
         {
-            switch (part)
-            {
-                case CrossingPart.Road:
-                    return road is { } r
-                        ? new float4(Dot(p, r.Across) - r.AcrossAt, (Dot(p, r.Along) + r.AlongAt) % Wrap, r.Code, 1000f)
-                        : new float4(p.X, p.X + p.Z, asphalt, 0f);
-                case CrossingPart.Panel:
-                case CrossingPart.Slot:
-                    return new float4(p.X, p.X + p.Z, paint, 0f);
-            }
+            CrossingPart.Road => road is { } r
+                ? new float4(across * (float)w, (Dot(p, r.Along) + r.AlongAt) % Wrap, r.Code, 1000f)
+                : new float4(p.X, p.X + p.Z, asphalt, 0f),
+            CrossingPart.Shoulder => new float4((float)WrapTexture(at.X), (float)WrapTexture(at.Z), gravel, 0f),
+            _ => new float4(p.X, p.X + p.Z, paint, 0f),
+        };
 
-            // On the ballast, its fill and its fade: across the nearest bed and along it, as the bed's own are.
-            var bed = beds.MinBy(b => Math.Abs(b.Local(at.X, at.Z).Lat))!;
-            var (lat, along) = bed.Local(at.X, at.Z);
-            var s = (bed.S + (float)along) % Wrap;
-            if (part == CrossingPart.Ballast)
-                return new float4((float)lat, s, ballastOf[bed], bed.Line.Gauge * 0.5f + RailHeadHalf);
-            // The fill and its fade lay their stones the same way, by where they are in the world (as the shader lays solid gravel's),
-            // and the fade's wholly covering at its solid end: so where the one becomes the other, cell by cell, nothing changes.
-            var (wx, wz) = ((float)WrapTexture(at.X), (float)WrapTexture(at.Z));
-            if (part == CrossingPart.Fill)
-                return new float4(wx, wz, gravel, 0f);
-
-            // The fade: as solid as the bed's own at its toe where it leaves the solid part, gone by the band's (or the bed fade's) edge.
-            var faded = Math.Clamp(reached / CrossingBand, 0, 1);
-            var across = Math.Abs(lat);
-            if (across > bed.Toe && across < bed.Outer)
-                faded = Math.Min(faded, (across - bed.Toe) / (bed.Outer - bed.Toe));
-            return new float4(wx, wz, gravel, -0.3f - (float)(1.0 - faded) * Fading);
-        }
-
+        // Each part's own copy of a vertex, its normal summed over that part's triangles (smooth within a part, creased between).
+        var copies = new Dictionary<(int, CrossingPart), int>();
         int CopyOf(int v, CrossingPart part)
         {
             if (copies.TryGetValue((v, part), out var index))
                 return index;
-            var p = Relative(places[v].X, places[v].Z, heights[v]);
+            var p = Relative(places[v].X, places[v].Z, part is CrossingPart.Panel or CrossingPart.Slot ? heights[v] : roadHeights[v]);
             copies[(v, part)] = points.Count;
-            owners.Add(v);
-            groups.Add(part is CrossingPart.Ballast or CrossingPart.Fill or CrossingPart.Fade ? 0 : (int)part + 1);
             points.Add(p);
             normals.Add(new float3(0f, 0f, 0f));
-            data.Add(DataOf(places[v], p, part, reachOut[v]));
+            data.Add(DataOf(places[v], p, part, vertices[v].W));
             return points.Count - 1;
         }
 
-        void Triangle(int a, int b, int c)
+        // A triangle facing `toward` (the game's front faces wind so the cross product points into the surface).
+        void Triangle(int a, int b, int c, float3 toward, bool sum)
         {
-            var (pa, pb, pc) = (points[a], points[b], points[c]);
-            var normal = Cross(pb - pa, pc - pa);
-            if (normal.Y < 0f)
-            {
-                normal = normal * -1f;
-                (b, c) = (c, b);
-            }
-
+            var normal = Cross(points[b] - points[a], points[c] - points[a]);
             if (Dot(normal, normal) < 1e-14f)
                 return;
-            // (The game's front faces wind so that this cross points into the surface.)
+            if (Dot(normal, toward) < 0f)
+            {
+                (b, c) = (c, b);
+                normal = normal * -1f;
+            }
+
             indices.AddRange([(uint)a, (uint)c, (uint)b]);
-            normals[a] += normal;
-            normals[b] += normal;
-            normals[c] += normal;
+            if (sum)
+            {
+                normals[a] += normal;
+                normals[b] += normal;
+                normals[c] += normal;
+            }
         }
 
+        var up = new float3(0f, 1f, 0f);
         for (var i = 0; i < pieces.Count; i++)
         {
-            if (!keep[i])
+            // (The panels are slabs of their own, below.)
+            if (parts[i] is CrossingPart.Panel or CrossingPart.Slot)
                 continue;
             var ring = rings[i];
-            var part = parts[i];
-            var corners = ring.Select(v => CopyOf(v, part)).ToArray();
+            var corners = ring.Select(v => CopyOf(v, parts[i])).ToArray();
             if (corners.Length == 3)
-                Triangle(corners[0], corners[1], corners[2]);
+                Triangle(corners[0], corners[1], corners[2], up, true);
             else if (corners.Length == 4 && ring.Count == pieces[i].Count)
             {
-                Triangle(corners[0], corners[1], corners[2]);
-                Triangle(corners[0], corners[2], corners[3]);
+                Triangle(corners[0], corners[1], corners[2], up, true);
+                Triangle(corners[0], corners[2], corners[3], up, true);
             }
             else
             {
                 // A fan from its middle, over every vertex along its edges.
                 var (t, w) = (ring.Average(v => vertices[v].T), ring.Average(v => vertices[v].W));
-                var middle = VertexOf((t, w));
-                if (middle >= used.Length)
-                {
-                    var (x, z) = World(t, w);
-                    var place = Placed((t, w));
-                    var y = PanelAt(x, z) is { } panel ? PanelHeight(panel, x, z, out _) : InRoad(t, w) ? deck((float)t, (float)w) : Fill(t, w, place.X, place.Z);
-                    if (part == CrossingPart.Fade)
-                        y = MathF.Max(y, Ground(place.X, place.Z) + GivesOut);
-                    var reached = ring.Average(v => Math.Min(reachOut[v], CrossingBand));
-                    var p = Relative(place.X, place.Z, y);
-                    var centre = points.Count;
-                    owners.Add(-1);
-                    groups.Add(-1);
-                    points.Add(p);
-                    normals.Add(new float3(0f, 0f, 0f));
-                    data.Add(DataOf(place, p, part, reached));
-                    for (var k = 0; k < corners.Length; k++)
-                        Triangle(centre, corners[k], corners[(k + 1) % corners.Length]);
-                }
-                else
-                    for (var k = 1; k + 1 < corners.Length; k++)
-                        Triangle(corners[0], corners[k], corners[k + 1]);
+                var place = Placed((t, w));
+                var p = Relative(place.X, place.Z, Top(t, w, World(t, w), false));
+                var centre = points.Count;
+                points.Add(p);
+                normals.Add(new float3(0f, 0f, 0f));
+                data.Add(DataOf(place, p, parts[i], w));
+                for (var k = 0; k < corners.Length; k++)
+                    Triangle(centre, corners[k], corners[(k + 1) % corners.Length], up, true);
             }
         }
 
-        if (indices.Count == 0)
-            return (null, bedCuts);
-        var shared = new Dictionary<(int, int), float3>();
-        for (var c = 0; c < points.Count; c++)
-            if (owners[c] >= 0 && groups[c] == 0)
-                shared[(owners[c], 0)] = shared.GetValueOrDefault((owners[c], 0)) + normals[c];
-        for (var c = 0; c < points.Count; c++)
-            if (owners[c] >= 0 && groups[c] == 0)
-                normals[c] = shared[(owners[c], 0)];
-        var unit = normals.Select(n => n * (1f / MathF.Max(MathF.Sqrt(Dot(n, n)), 1e-9f))).ToArray();
+        // --- The sides. ---
+        //
+        // Along the road's two sides, an embankment of gravel from the top's edge outward and down at the ballast's slope till it
+        // meets what's there, the ground or a track's ballast bed, wherever that lies: so the crossing never stands up on a wall
+        // whatever the ground round it does (where the ground's shaped to its fill, the embankment's only a hand's width). At its
+        // foot it goes on a little under, and then straight down. Across the road at each end the road runs on from it: there
+        // it goes straight down, out of sight under the road's end.
 
-        return (new CrossingMesh([.. points], unit, [.. data], [.. indices]), bedCuts);
+        var uses = new Dictionary<(int, int), (int Count, int Piece)>();
+        for (var i = 0; i < rings.Count; i++)
+            for (var k = 0; k < rings[i].Count; k++)
+            {
+                var (a, b) = (rings[i][k], rings[i][(k + 1) % rings[i].Count]);
+                var key = a < b ? (a, b) : (b, a);
+                uses[key] = (uses.TryGetValue(key, out var u) ? u.Count + 1 : 1, i);
+            }
+
+        const float bank = 1f / NetworkLine.BallastSlope;
+        const float bankMost = 10f;
+        float Floor(double x, double z)
+        {
+            var g = Ground(x, z);
+            return BedTop(x, z) is { } bed ? MathF.Max(g, bed) : g;
+        }
+
+        // The side's top edge: the shoulders' outer edge, under the panels as well (where it's hidden under them), so the
+        // embankment runs unbroken the length of the side and heaps against a panel's wall where one stands out past it.
+        float SideTop(int v)
+        {
+            var p = vertices[v];
+            return deck((float)Math.Clamp(p.T, rampLow, rampHigh), (p.W < 0 ? -1f : 1f) * half) - ShoulderDrop;
+        }
+
+        // Each side vertex's foot: how far out the embankment runs from it, and how high its foot is.
+        var feet = new Dictionary<int, (double X, double Z, float Y, bool Reached)>();
+        (double X, double Z, float Y, bool Reached) Foot(int v)
+        {
+            if (feet.TryGetValue(v, out var known))
+                return known;
+            var (px, pz) = places[v];
+            var sign = vertices[v].W < 0 ? -1.0 : 1.0;
+            var (ox, oz) = (nx * sign, nz * sign);
+            var y = SideTop(v);
+            var reached = false;
+            var d = 0.0;
+            // Out till it's well under what it meets (so the straight edge from one foot to the next stays under it even where
+            // what's under it curves, as a ballast bed's shoulder does), there where its foot lies (tested at the foot itself, so a floor that
+            // drops away just past where it's met, as a ballast bed's fade ends over lower ground, can't leave the foot in the air).
+            for (; d < bankMost; d += 0.05)
+                if (y - (float)d * bank <= Floor(px + ox * d, pz + oz * d) - FootUnder)
+                {
+                    reached = true;
+                    break;
+                }
+
+            d = Math.Min(d, bankMost);
+            return feet[v] = (px + ox * d, pz + oz * d, y - (float)d * bank, reached);
+        }
+
+        // From (x, z) at height y, out along (ox, oz) at the ballast's slope till well under what's there: where it lands.
+        (double X, double Z, float Y) Reach(double x, double z, float y, double ox, double oz)
+        {
+            var d = 0.0;
+            for (; d < bankMost; d += 0.05)
+                if (y - (float)d * bank <= Floor(x + ox * d, z + oz * d) - FootUnder)
+                    break;
+            d = Math.Min(d, bankMost);
+            return (x + ox * d, z + oz * d, y - (float)d * bank);
+        }
+
+        int Point((double X, double Z) at, float y, float3 normal)
+        {
+            var p = Relative(at.X, at.Z, y);
+            points.Add(p);
+            normals.Add(normal);
+            data.Add(DataOf(at, p, CrossingPart.Shoulder));
+            return points.Count - 1;
+        }
+
+        // The outline's edges: each used by one piece of the road's top (round the panels the panels' own walls stand). How many
+        // of the sides' edges each vertex has, so a run of side that stops (at a corner, or against a panel) is closed off.
+        bool OnPanel(int piece) => parts[piece] is CrossingPart.Panel or CrossingPart.Slot;
+        bool Side((double T, double W) p, (double T, double W) q) => Math.Abs(Math.Abs(p.W) - outer) < 1e-4 && Math.Abs(Math.Abs(q.W) - outer) < 1e-4;
+        var outline = uses.Where(e => e.Value.Count == 1 && (!OnPanel(e.Value.Piece) || Side(vertices[e.Key.Item1], vertices[e.Key.Item2]))).Select(e => e.Key).ToList();
+        var sideCount = new Dictionary<int, int>();
+        foreach (var (a, b) in outline)
+            if (Side(vertices[a], vertices[b]))
+                foreach (var v in (int[])[a, b])
+                    sideCount[v] = sideCount.GetValueOrDefault(v) + 1;
+
+        var (worst, unreached, sideEdges) = (0f, 0, 0);
+        foreach (var (a, b) in outline)
+        {
+            var (pa, pb) = (vertices[a], vertices[b]);
+            var end = Math.Abs(pa.T - pb.T) < 1e-6 && (Math.Abs(pa.T - rampLow) < 1e-4 || Math.Abs(pa.T - rampHigh) < 1e-4);
+            if (end)
+            {
+                var toward = new float3((float)(pa.T < 0 ? -dx : dx), 0f, (float)(pa.T < 0 ? -dz : dz));
+                int Down(int v, bool bottom) => Point(places[v], bottom ? MathF.Min(roadHeights[v], Ground(places[v].X, places[v].Z)) - CrossingSkirt : roadHeights[v], toward);
+                var (ta, tb, ba, bb) = (Down(a, false), Down(b, false), Down(a, true), Down(b, true));
+                Triangle(ta, tb, bb, toward, false);
+                Triangle(ta, bb, ba, toward, false);
+                continue;
+            }
+
+            if (!Side(pa, pb))
+                continue;
+            sideEdges++;
+            var (fa, fb) = (Foot(a), Foot(b));
+            var sign = pa.W < 0 ? -1f : 1f;
+            var outward = new float3((float)nx * sign, 0f, (float)nz * sign);
+            var slopeNormal = outward * bank + new float3(0f, 1f, 0f);
+            var zero = new float3(0f, 0f, 0f);
+            // The embankment, top edge to foot.
+            var (ea, eb, sa, sb) = (Point(places[a], SideTop(a), zero), Point(places[b], SideTop(b), zero), Point((fa.X, fa.Z), fa.Y, zero), Point((fb.X, fb.Z), fb.Y, zero));
+            Triangle(ea, eb, sb, slopeNormal, true);
+            Triangle(ea, sb, sa, slopeNormal, true);
+            // Then, where it never met anything, straight down from its foot.
+            int Under((double X, double Z, float Y, bool Reached) f, bool bottom) =>
+                Point((f.X, f.Z), bottom ? MathF.Min(f.Y, Ground(f.X, f.Z)) - CrossingSkirt : f.Y, outward);
+            if (!fa.Reached || !fb.Reached)
+            {
+                var (ua, ub, la, lb) = (Under(fa, false), Under(fb, false), Under(fa, true), Under(fb, true));
+                Triangle(ua, ub, lb, outward, false);
+                Triangle(ua, lb, la, outward, false);
+            }
+            // Where a run of side stops (a corner, where the road runs on), the embankment's end sloped off too, hipped: down
+            // along the road and round the corner at the same slope, so no cut face is left there.
+            foreach (var (v, other, f) in new[] { (a, b, fa), (b, a, fb) })
+            {
+                if (sideCount.GetValueOrDefault(v) != 1)
+                    continue;
+                var way = vertices[v].T > vertices[other].T ? 1.0 : -1.0;
+                var (ox2, oz2) = (nx * sign, nz * sign);
+                var (ax2, az2) = (dx * way, dz * way);
+                var (hx, hz) = ((ox2 + ax2) * Math.Sqrt(0.5), (oz2 + az2) * Math.Sqrt(0.5));
+                var (px, pz) = places[v];
+                var top = SideTop(v);
+                var e = Reach(px, pz, top, ax2, az2);
+                var c = Reach(px, pz, top, hx, hz);
+                var endNormal = new float3((float)ax2, 0f, (float)az2) * bank + new float3(0f, 1f, 0f);
+                var (tv, tf, tc, te) = (Point(places[v], top, zero), Point((f.X, f.Z), f.Y, zero), Point((c.X, c.Z), c.Y, zero), Point((e.X, e.Z), e.Y, zero));
+                Triangle(tv, tf, tc, slopeNormal + endNormal, true);
+                Triangle(tv, tc, te, endNormal, true);
+            }
+
+            foreach (var f in new[] { fa, fb })
+            {
+                worst = MathF.Max(worst, f.Y - Floor(f.X, f.Z));
+                if (!f.Reached)
+                    unreached++;
+            }
+        }
+
+        // --- The panels. ---
+        //
+        // Each track's panels as one slab, square to the track as they're laid (not cut along the road's edges): their top level
+        // with the rail tops, with its slots and joints; their four sides straight down to the ballast (or the ground, or into the
+        // road's box where they lie in it), in the panels' own material.
+        foreach (var track in tracks)
+        {
+            var lats = new List<double> { -reach, reach };
+            foreach (var (from, to) in slots)
+                lats.AddRange([from, from + SlotWall, to - SlotWall, to]);
+            lats = [.. lats.Where(l => l >= -reach - 1e-6 && l <= reach + 1e-6).Distinct().Order()];
+            var alongs = new List<double> { track.From, track.To };
+            for (var a = track.From + 0.5; a < track.To - 0.05; a += 0.5)
+                alongs.Add(a);
+            if (joints)
+                for (var a = track.From + PanelLength; a < track.To - 0.1; a += PanelLength)
+                    alongs.AddRange([a - 0.01, a, a + 0.01]);
+            alongs = [.. alongs.Distinct().Order()];
+
+            var grid = new int[lats.Count, alongs.Count];
+            var tops = new float[lats.Count, alongs.Count];
+            var at = new (double X, double Z)[lats.Count, alongs.Count];
+            for (var i = 0; i < lats.Count; i++)
+                for (var j = 0; j < alongs.Count; j++)
+                {
+                    at[i, j] = track.World(lats[i], alongs[j]);
+                    tops[i, j] = PanelHeight(track, at[i, j].X, at[i, j].Z, out _);
+                    var pt = Relative(at[i, j].X, at[i, j].Z, tops[i, j]);
+                    grid[i, j] = points.Count;
+                    points.Add(pt);
+                    normals.Add(new float3(0f, 0f, 0f));
+                    data.Add(new float4((float)lats[i], (float)(alongs[j] - track.From), paint, 0f));
+                }
+
+            for (var i = 0; i + 1 < lats.Count; i++)
+                for (var j = 0; j + 1 < alongs.Count; j++)
+                {
+                    Triangle(grid[i, j], grid[i + 1, j], grid[i + 1, j + 1], up, true);
+                    Triangle(grid[i, j], grid[i + 1, j + 1], grid[i, j + 1], up, true);
+                }
+
+            // Its sides, edge by edge round it: (i, j) of each corner, and the way out.
+            void Wall((int I, int J)[] run, double fx, double fz)
+            {
+                var toward = new float3((float)fx, 0f, (float)fz);
+                var u = 0.0;
+                for (var k = 0; k + 1 < run.Length; k++)
+                {
+                    var (a, b) = (run[k], run[k + 1]);
+                    var length = Math.Sqrt((at[b.I, b.J].X - at[a.I, a.J].X) * (at[b.I, b.J].X - at[a.I, a.J].X) + (at[b.I, b.J].Z - at[a.I, a.J].Z) * (at[b.I, b.J].Z - at[a.I, a.J].Z));
+                    int Corner((int I, int J) c, bool bottom, double cu)
+                    {
+                        var (x, z) = at[c.I, c.J];
+                        var y = bottom ? MathF.Min(tops[c.I, c.J], Floor(x, z)) - 0.05f : tops[c.I, c.J];
+                        points.Add(Relative(x, z, y));
+                        normals.Add(toward);
+                        data.Add(new float4((float)cu, y, paint, 0f));
+                        return points.Count - 1;
+                    }
+
+                    var (ta, tb, ba, bb) = (Corner(a, false, u), Corner(b, false, u + length), Corner(a, true, u), Corner(b, true, u + length));
+                    Triangle(ta, tb, bb, toward, false);
+                    Triangle(ta, bb, ba, toward, false);
+                    u += length;
+                }
+            }
+
+            var (lastI, lastJ) = (lats.Count - 1, alongs.Count - 1);
+            Wall([.. Enumerable.Range(0, alongs.Count).Select(j => (0, j))], -track.Rx, -track.Rz);
+            Wall([.. Enumerable.Range(0, alongs.Count).Select(j => (lastI, j))], track.Rx, track.Rz);
+            Wall([.. Enumerable.Range(0, lats.Count).Select(i => (i, 0))], -track.Fx, -track.Fz);
+            Wall([.. Enumerable.Range(0, lats.Count).Select(i => (i, lastJ))], track.Fx, track.Fz);
+        }
+
+        if (Environment.GetEnvironmentVariable("RW_CROSSING_AUDIT") is not null)
+        {
+            var sb = new System.Text.StringBuilder();
+            var worstOver = (D: -9f, X: 0.0, Z: 0.0);
+            var capWorst = (D: -9f, T: 0.0, W: 0.0);
+            for (var gt = rampLow - 6.0; gt <= rampHigh + 6.0; gt += 0.5)
+                for (var gw = -outer - 8.0; gw <= outer + 8.0; gw += 0.5)
+                {
+                    var (x, z) = World(gt, gw);
+                    if (BedTop(x, z) is { } bt)
+                    {
+                        if (_lines.BedClearance(x, z) is { } cap && cap - bt > capWorst.D)
+                            capWorst = (cap - bt, gt, gw);
+                        var over = Ground(x, z) - bt;
+                        if (over > worstOver.D)
+                            worstOver = (over, x, z);
+                        if (over > -0.01f && sb.Length < 1500)
+                            sb.Append($"[t{gt:F1} w{gw:F1} {over:+0.00}] ");
+                    }
+                }
+
+            RailWerkz.Core.Logging.Log.Info($"Crossing ground audit {id} ({string.Join("/", beds.Select(b => $"{(Highball.Routes.RailClass)b.Line.Class} bed {b.Line.BedHeight:F2} top {b.Line.BallastHalfTop:F2}"))}): highest ground over the drawn bed {worstOver.D:+0.00;-0.00} m at {worstOver.X:F1},{worstOver.Z:F1}; brush limit over the drawn bed by up to {capWorst.D:+0.00;-0.00} m (t {capWorst.T:F1} w {capWorst.W:F1}); {sb}");
+        }
+
+        if (Environment.GetEnvironmentVariable("RW_CROSSING_AUDIT") is not null)
+            RailWerkz.Core.Logging.Log.Info($"Crossing audit {id}: {sideEdges} side edges, highest wall left under an embankment's foot {worst:F2} m, {unreached} feet that never met the ground");
+
+        if (indices.Count == 0)
+            return null;
+        var unit = normals.Select(n => n * (1f / MathF.Max(MathF.Sqrt(Dot(n, n)), 1e-9f))).ToArray();
+        return new CrossingMesh([.. points], unit, [.. data], [.. indices]);
     }
 
     /// A convex polygon split by the line through a and b, if the segment a-b runs through it: one piece each side, or itself.

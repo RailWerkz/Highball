@@ -588,7 +588,7 @@ public sealed unsafe class Vegetation : IDisposable
             for (var t = 0; t < TreeNodes.Length; t++)
             {
                 var which = t;
-                Place(FirstTree + which * 2, 10u + (uint)which, 320 / TreeNodes.Length,
+                Place(FirstTree + which * 2, 10u + (uint)which, 1280 / TreeNodes.Length,
                     (cover, _, patches, clear, _) => MathEx.SmoothStep(0.35f, 0.75f, cover.W) * 0.8f * (0.3f + patches) * MathEx.SmoothStep(2f, 6f, clear),
                     (pick, _, _, _) => (0.8f + 0.7f * pick, new float3(0.85f + 0.3f * pick, 0.85f + 0.25f * pick, 0.8f + 0.2f * pick)), 3f, 0.02f, 0.7f);
             }

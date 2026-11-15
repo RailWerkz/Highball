@@ -33,6 +33,8 @@ public sealed partial class NetworkLines
     private const float PadJoin = 3f;
     private const float PadEndSlope = 0.12f;
     private const float PadEndReach = 8f;
+    /// How far past a pad's ends the ground's filled under the roads running on from it (as far as they're raised to it).
+    private const float PadRoadReach = 40f;
     private const float PadSearch = 40f;
     private const float PadTrackGap = 12f;
 
@@ -42,19 +44,8 @@ public sealed partial class NetworkLines
     private const float PadEdgeIn = 0.05f;
     private const float PadSideSlope = 0.39f / 0.65f;
     private const float PadSideReach = 6f;
-
-    /// The ground heaped round a track's panels: how far along the track they run past the road's edges, how far under their top
-    /// the ground within them lies, and outside them how far under it the heap starts, how many metres out it falls one, and how
-    /// far out it runs. How far across a pad's road its shaping can reach.
-    private const float PanelPast = 1.8f;
-    private const float PanelUnder = 0.025f;
-    private const float PanelHeapBelow = 0.005f;
-    private const float PanelHeapRun = 1.5f;
-    private const float PanelHeapReach = 4f;
+    /// How far across a pad's road its shaping can reach.
     private const float PadOutside = 9.5f;
-
-    /// How far a rail's top stands over its ballast's surface.
-    private const float RailOverBed = RailTopAbove - NetworkLine.BallastHeight;
 
     /// A road shorter than this has come to nothing (a scrap whose ends were both snapped to the same pad end): it isn't drawn,
     /// and meets no other road.
@@ -100,7 +91,7 @@ public sealed partial class NetworkLines
     {
         var angle = heading * Math.PI / 180.0;
         var (dx, dz) = (Math.Cos(angle), Math.Sin(angle));
-        if (RoadThrough(x, z, dx, dz) is { } road)
+        if ((RoadThrough(x, z, dx, dz) ?? RoadAcross(x, z)) is { } road)
         {
             var sign = road.Dx * dx + road.Dz * dz < 0.0 ? -1.0 : 1.0;
             (dx, dz) = (road.Dx * sign, road.Dz * sign);
@@ -122,7 +113,7 @@ public sealed partial class NetworkLines
                 var (sx, sz) = (line.X[i + 1] - line.X[i], line.Z[i + 1] - line.Z[i]);
                 var denominator = dx * sz - dz * sx;
                 var length = Math.Sqrt(sx * sx + sz * sz);
-                if (length < 1e-6 || Math.Abs(denominator) / length < 0.25)
+                if (length < 1e-6 || Math.Abs(denominator) / length < MinPadSine)
                     continue;
                 var (qx, qz) = (line.X[i] - x, line.Z[i] - z);
                 var t = (qx * sz - qz * sx) / denominator;
@@ -150,6 +141,55 @@ public sealed partial class NetworkLines
             (low, high, level) = (MathF.Min(low, hits[k].T - hits[k].Reach), MathF.Max(high, hits[k].T + hits[k].Reach), MathF.Max(level, hits[k].Y));
 
         return new CrossingPad(id, x, z, dx, dz, half, low, high, level);
+    }
+
+    /// The shallowest a road can cross a track for a pad to be laid (the sine of its angle to it: about 7 degrees).
+    private const double MinPadSine = 0.12;
+
+    /// The road through a crossing at (x, z) from the two roads cut back to its pad: free ends facing each other across it, the
+    /// crossing between them. (A road crossing a track at a shallow angle is cut back a long way either side, beyond where
+    /// RoadThrough looks; and a crossing laid square to the track, not along its road, wouldn't find the road that way at all.)
+    private (double X, double Z, double Dx, double Dz, float Width)? RoadAcross(double x, double z)
+    {
+        const double reach = 80.0;
+        var ends = new List<(double X, double Z, double Ox, double Oz, float Width)>();
+        foreach (var road in _lines)
+        {
+            if (road.Rail || road.Mark || road.Count < 2 || x < road.MinX - reach || x > road.MaxX + reach || z < road.MinZ - reach || z > road.MaxZ + reach)
+                continue;
+            foreach (var (p, q) in new[] { (0, 1), (road.Count - 1, road.Count - 2) })
+            {
+                var (ox, oz) = (road.X[p] - road.X[q], road.Z[p] - road.Z[q]);
+                var length = Math.Sqrt(ox * ox + oz * oz);
+                if (length < 1e-6 || (road.X[p] - x) * (road.X[p] - x) + (road.Z[p] - z) * (road.Z[p] - z) > reach * reach)
+                    continue;
+                ends.Add((road.X[p], road.Z[p], ox / length, oz / length, road.Width));
+            }
+        }
+
+        (double, double, double, double, float)? found = null;
+        var best = double.MaxValue;
+        for (var a = 0; a < ends.Count; a++)
+            for (var b = 0; b < ends.Count; b++)
+            {
+                var (ea, eb) = (ends[a], ends[b]);
+                var (vx, vz) = (eb.X - ea.X, eb.Z - ea.Z);
+                var length = Math.Sqrt(vx * vx + vz * vz);
+                if (a == b || length < 2.0 || length > reach * 2.0)
+                    continue;
+                (vx, vz) = (vx / length, vz / length);
+                // Each end running on toward the other.
+                if (ea.Ox * vx + ea.Oz * vz < 0.97 || -(eb.Ox * vx + eb.Oz * vz) < 0.97)
+                    continue;
+                var t = (x - ea.X) * vx + (z - ea.Z) * vz;
+                var aside = Math.Abs((x - ea.X) * -vz + (z - ea.Z) * vx);
+                if (t < 0.0 || t > length || aside > MathF.Max(ea.Width, eb.Width) * 0.5 + 2.0 || aside >= best)
+                    continue;
+                best = aside;
+                found = (ea.X + vx * t, ea.Z + vz * t, vx, vz, MathF.Max(ea.Width, eb.Width));
+            }
+
+        return found;
     }
 
     /// The road running along a crossing at (x, z), if there is one: the nearest place on it, the way it runs there, its width.
@@ -259,16 +299,22 @@ public sealed partial class NetworkLines
         });
     }
 
-    /// Shapes the ground under and round each pad in the tile to the crossing's fill, so the crossing's surface can lie on it:
-    /// level a little under the deck across the road, falling away beside it as the road's fill does, and gently past each end;
-    /// a little under each track's panels, and heaped up round them to their top. Outside the road and the panels it only fills,
-    /// and past the panels' ends never over a track's ballast, so the bed still shows there.
+    /// Shapes the ground to each pad's crossing once it's laid, so its box sits in the ground (NetworkMeshes.BuildCrossingMesh).
+    /// Under the road's deck the ground's brought to a little under it, cut or filled (over a track's bed, left under the bed).
+    /// Everywhere else round it, it's only filled, never cut: up to the road's fill falling away from the shoulders, easing down
+    /// past each end, but never over a track's ballast bed (UnderBed). Whatever's left between the crossing's top and what's
+    /// under it, the crossing's own gravel embankment covers.
     private void ConformPads(float[] heights, int samples, int gx0, int gz0, (int Line, float D, float Y, float Ex, float Ez)[] near)
     {
         foreach (var pad in _pads)
         {
             var outside = pad.Half + PadOutside;
-            var corners = new[] { pad.At(pad.From - PadEndReach, -outside), pad.At(pad.From - PadEndReach, outside), pad.At(pad.To + PadEndReach, -outside), pad.At(pad.To + PadEndReach, outside) };
+            var corners = new[] { pad.At(pad.From - PadRoadReach, -outside), pad.At(pad.From - PadRoadReach, outside), pad.At(pad.To + PadRoadReach, -outside), pad.At(pad.To + PadRoadReach, outside) };
+            // The roads running on from its ends, raised to its level there and easing back to their own (LevelRoadsAtPads).
+            var (sx, sz) = pad.Start;
+            var (ex, ez) = pad.End;
+            var roads = _lines.Where(l => !l.Rail && !l.Mark && l.Count >= 2 && new[] { 0, l.Count - 1 }.Any(p =>
+                Math.Min((l.X[p] - sx) * (l.X[p] - sx) + (l.Z[p] - sz) * (l.Z[p] - sz), (l.X[p] - ex) * (l.X[p] - ex) + (l.Z[p] - ez) * (l.Z[p] - ez)) <= PadJoin * PadJoin)).ToList();
             var x0 = Math.Max(0, (int)Math.Floor(corners.Min(c => c.X) / _spacing) - gx0);
             var x1 = Math.Min(samples - 1, (int)Math.Ceiling(corners.Max(c => c.X) / _spacing) - gx0);
             var z0 = Math.Max(0, (int)Math.Floor(corners.Min(c => c.Z) / _spacing) - gz0);
@@ -283,82 +329,73 @@ public sealed partial class NetworkLines
                     var (t, w) = pad.Local((x + gx0) * (double)_spacing, (z + gz0) * (double)_spacing);
                     var along = MathF.Max(0f, MathF.Max(pad.From - t, t - pad.To));
                     var side = MathF.Abs(w) - pad.Half;
-                    var road = along <= 0f && side <= 0f;
-
-                    // The road's own ground and its fill beside it, easing down past each end.
-                    var target = float.MinValue;
-                    if (along <= PadEndReach && side <= PadSideReach)
-                        target = (side <= 0f ? top : top + PadEdgeAbove - (side + PadEdgeIn) * PadSideSlope) - along * PadEndSlope;
-                    var exact = road;
-
-                    var sample = z * samples + x;
-                    var n = near[sample];
-                    if (n.Line >= 0)
+                    if (along > 0f)
                     {
-                        var rail = _lines[n.Line];
-                        var past = true;
-                        if (TrackPanels(pad, t, w, n, rail) is { } panels)
+                        // Past an end: under and beside the road running on, its own fill at its own height, falling away from its
+                        // shoulders (the road's own shaping can't reach in here, the track having taken the ground near it).
+                        var (wx, wz) = ((x + gx0) * (double)_spacing, (z + gz0) * (double)_spacing);
+                        var roadFill = float.MinValue;
+                        foreach (var road in roads)
+                            for (var i = 0; i + 1 < road.Count; i++)
+                            {
+                                var (ax, az, bx, bz) = (road.X[i], road.Z[i], road.X[i + 1], road.Z[i + 1]);
+                                var (dx, dz) = (bx - ax, bz - az);
+                                var length2 = dx * dx + dz * dz;
+                                if (length2 < 1e-9)
+                                    continue;
+                                var u = Math.Clamp(((wx - ax) * dx + (wz - az) * dz) / length2, 0.0, 1.0);
+                                var d = (float)Math.Sqrt((ax + dx * u - wx) * (ax + dx * u - wx) + (az + dz * u - wz) * (az + dz * u - wz));
+                                var off = d - road.Width * 0.5f;
+                                if (off > PadSideReach)
+                                    continue;
+                                var level = road.Y[i] + (road.Y[i + 1] - road.Y[i]) * (float)u - RoadClearance;
+                                roadFill = MathF.Max(roadFill, off <= 0f ? level : level + PadEdgeAbove - (off + PadEdgeIn) * PadSideSlope);
+                            }
+
+                        if (roadFill > float.MinValue && along <= PadRoadReach)
                         {
-                            past = panels.Along > 0f;
-                            var head = n.Y + rail.BedHeight + RailOverBed;
-                            if (panels.Along <= 0f && panels.Across <= 0f)
-                            {
-                                // Within the panels: a little under them, wherever the ground was.
-                                var under = head - PanelUnder;
-                                target = road ? MathF.Min(target, under) : under;
-                                exact = true;
-                            }
-                            else if (!road)
-                            {
-                                // Round them, heaped up to their top and falling away from their edges.
-                                var off = MathF.Sqrt(panels.Along * panels.Along + panels.Across * panels.Across);
-                                if (off <= PanelHeapReach)
-                                    target = MathF.Max(target, head - PanelHeapBelow - off / PanelHeapRun);
-                            }
+                            var n0 = near[z * samples + x];
+                            if (n0.Line >= 0)
+                                roadFill = MathF.Min(roadFill, UnderBed(_lines[n0.Line], n0.D, n0.Y, 0.71f));
+                            if (roadFill > heights[z * samples + x])
+                                heights[z * samples + x] = roadFill;
+                            if (n0.Line >= 0 && UnderBed(_lines[n0.Line], n0.D, n0.Y, 0.71f) is var under && heights[z * samples + x] > under)
+                                heights[z * samples + x] = under;
                         }
 
-                        // Over a track's ballast past its panels, no higher than its surface.
-                        if (past && n.D < rail.BallastHalfTop + 0.25f)
-                            target = MathF.Min(target, n.Y - 0.04f + rail.BedHeight);
+                        if (along > PadEndReach)
+                            continue;
                     }
 
-                    if (target == float.MinValue)
+                    if (along > PadEndReach || side > PadSideReach)
                         continue;
-                    if (exact)
-                        heights[sample] = target;
-                    else if (target > heights[sample])
-                        heights[sample] = target;
+
+                    // The crossing's surface carried on outward: flat under the deck, then the shoulders' slope on down.
+                    var surface = MathF.Min(top, top + PadEdgeAbove - (side + PadEdgeIn) * PadSideSlope) - along * PadEndSlope;
+                    var sample = z * samples + x;
+                    var n = near[sample];
+                    var bed = n.Line >= 0 ? UnderBed(_lines[n.Line], n.D, n.Y, 0.71f) : float.MaxValue;
+
+                    if (along <= 0f && side <= 0f)
+                    {
+                        // Under the road's deck: a little under it (cut or filled), and over a bed under the bed too.
+                        heights[sample] = bed < surface ? MathF.Min(heights[sample], bed) : surface;
+                        continue;
+                    }
+
+                    // Off the deck: filled up to the road's fill, never cut, and never over a track's ballast bed: the bed shows whole,
+                    // and where the fill can't reach the crossing's top over it, the crossing's own embankment comes down onto it.
+                    var fill = MathF.Min(surface, bed);
+                    if (fill > heights[sample])
+                        heights[sample] = fill;
+                    // And cut down to it wherever anything before raised the ground over a bed: the roads running up to the pad
+                    // are lifted to its level and fill their sides at their own slope, the bed's shoulders and fade buried under.
+                    if (heights[sample] > bed)
+                        heights[sample] = bed;
+                    // And clear of the bed as it's drawn, by more than its fade looks its shadow up under it.
+                    if (BedClearance((x + gx0) * (double)_spacing, (z + gz0) * (double)_spacing) is { } clear && heights[sample] > clear)
+                        heights[sample] = clear;
                 }
         }
-    }
-
-    /// How far a place at (t, w) on a pad lies outside the panels of the rail line nearest it, along the track and across it (0
-    /// within them), if that line crosses the pad's road between its panels' ends. The panels run across all the line's tracks
-    /// and PadReach past the outer ones, and along the track over the road and PanelPast past each of its edges (further on a
-    /// skewed crossing, the panels' corners carried along by it).
-    private static (float Along, float Across)? TrackPanels(CrossingPad pad, float t, float w, (int Line, float D, float Y, float Ex, float Ez) n, NetworkLine rail)
-    {
-        // The way to the line's centreline, on the pad, and so the way the track runs.
-        var (et, ew) = (n.Ex * pad.Dx + n.Ez * pad.Dz, -n.Ex * pad.Dz + n.Ez * pad.Dx);
-        var toward = Math.Sqrt(et * et + ew * ew);
-        if (toward < 1e-6)
-            return null;
-        var (ft, fw) = ((float)(-ew / toward), (float)(et / toward));
-        var (sine, cosine) = (MathF.Abs(fw), MathF.Abs(ft));
-        if (sine < 0.25f)
-            return null;
-
-        // Where the centreline beside this place is, how far along the track that is from the road's middle line, and where the
-        // track meets it.
-        var scale = n.D / (float)toward;
-        var (ct, cw) = (t + (float)et * scale, w + (float)ew * scale);
-        var from = cw / fw;
-        var meet = ct - from * ft;
-        var outer = (rail.Tracks - 1) * 0.5f * NetworkLine.TrackSpacing + PadReach;
-        if (meet < pad.Low - outer || meet > pad.High + outer)
-            return null;
-
-        var length = (pad.Half + outer * cosine) / sine + PanelPast;
-        return (MathF.Max(0f, MathF.Abs(from) - length), MathF.Max(0f, n.D - outer));
     }
 }

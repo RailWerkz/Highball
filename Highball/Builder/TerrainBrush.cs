@@ -11,7 +11,7 @@ using static RailWerkz.UI.Style;
 namespace Highball.Builder;
 
 /// What the terrain brush does to the ground.
-public enum BrushMode { Raise, Lower, Smooth, Flatten, Paint }
+public enum BrushMode { Raise, Lower, Smooth, Flatten, Paint, ClearBallast }
 
 /// The terrain brushes: raising, lowering, smoothing and flattening the ground, and painting its land cover, in strokes
 /// that are each one undo. The brush works on another thread, one dab at a time: a big one takes longer than a frame.
@@ -24,7 +24,8 @@ public sealed class TerrainBrush(ToolContext context) : IEditorTool
 
     private const float RaiseRate = 3f;   // metres a second at the brush's centre
     private const float BlendRate = 4f;   // smoothing and flattening: how much of the way a second
-    public const float MinRadius = 2f;
+    /// The smallest brush: one foot.
+    public const float MinRadius = 0.3048f;
     public const float MaxRadius = 400f;
     private const float FeetPerMeter = 3.28084f;
 
@@ -35,6 +36,9 @@ public sealed class TerrainBrush(ToolContext context) : IEditorTool
 
     public BrushMode Mode { get; set; }
     public float Radius { get; set; } = 20f;
+
+    /// How hard the brush works, from 1% to 100% of its full rate (raising and lowering, smoothing and flattening).
+    public float Strength { get; set; } = 1f;
 
     /// Which of PaintCovers is painted.
     public int Paint { get; set; }
@@ -118,7 +122,7 @@ public sealed class TerrainBrush(ToolContext context) : IEditorTool
     {
         var source = context.Source;
         var hit = context.Hit!.Value;
-        var fast = Input.Key(GlfwKey.LeftShift) ? 4f : 1f;
+        var fast = (Input.Key(GlfwKey.LeftShift) ? 4f : 1f) * Strength;
         var (mode, radius, paint, flatten, stroke, time) = (Mode, Radius, PaintCovers[Paint].Class, _flattenTo, _stroke!, _dabTime);
         _dabTime = 0f;
         return () => mode switch
@@ -128,6 +132,7 @@ public sealed class TerrainBrush(ToolContext context) : IEditorTool
             BrushMode.Smooth => source.Sculpt(hit.X, hit.Z, radius, SculptMode.Smooth, MathF.Min(1f, BlendRate * fast * time), 0f, stroke),
             BrushMode.Flatten => source.Sculpt(hit.X, hit.Z, radius, SculptMode.Flatten, MathF.Min(1f, BlendRate * fast * time), flatten, stroke),
             BrushMode.Paint => source.Paint(hit.X, hit.Z, radius, paint, stroke),
+            BrushMode.ClearBallast => source.Sculpt(hit.X, hit.Z, radius, SculptMode.ClearBed, MathF.Min(1f, BlendRate * fast * time), 0f, stroke),
             _ => null,
         };
     }
@@ -195,8 +200,15 @@ public sealed class TerrainBrush(ToolContext context) : IEditorTool
         Kit.BeginCard("Brush");
         var factor = imperial ? FeetPerMeter : 1f;
         var radius = Radius * factor;
-        if (ToolPanel.Value("brushradius", imperial ? "Radius (ft)" : "Radius (m)", ref radius, MinRadius * factor, MaxRadius * factor, "0", log: true))
+        if (ToolPanel.Value("brushradius", imperial ? "Radius (ft)" : "Radius (m)", ref radius, MinRadius * factor, MaxRadius * factor, radius < 10f ? "0.0" : "0", log: true))
             Radius = Math.Clamp(radius / factor, MinRadius, MaxRadius);
+        if (Mode != BrushMode.Paint)
+        {
+            var percent = Strength * 100f;
+            if (ToolPanel.Value("brushstrength", "Strength (%)", ref percent, 1f, 100f, "0"))
+                Strength = Math.Clamp(percent / 100f, 0.01f, 1f);
+        }
+
         Kit.EndCard();
 
         if (Mode != BrushMode.Paint)
@@ -213,6 +225,7 @@ public sealed class TerrainBrush(ToolContext context) : IEditorTool
     {
         BrushMode.Flatten when FlattenSample is not null => [("LMB", "Flatten"), ("F", FlattenSampleText), ("ESC", "Clear sample"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
         BrushMode.Flatten => [("LMB", "Flatten"), ("F", FlattenSampleText), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
+        BrushMode.ClearBallast => [("LMB", "Clear ground off the ballast"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
         BrushMode.Paint => [("LMB", "Paint"), ("P", "Cover"), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
         _ => [("LMB", Mode.ToString()), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
     };

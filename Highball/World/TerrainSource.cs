@@ -362,6 +362,9 @@ public sealed partial class TerrainSource
 
     /// The WorldCover classes around a sample, averaged over a square radius metres across: the ground colour (and
     /// how much of it is forest), and how much of each ground texture it calls for (grass, bare earth, water).
+    /// How much of the ground at sample (gx, gz) is a track's ballast run out over it, 0 to 1.
+    public float BallastAt(int gx, int gz) => Lines is { } lines && Canonical(gx, gz, out var tile, out var sx, out var sz) ? lines.BallastAt(tile.Id, sx, sz) : 0f;
+
     public (float4 Cover, float4 Materials) Ground(int gx, int gz, float radius)
     {
         if (!Canonical(gx, gz, out _, out _, out _))

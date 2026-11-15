@@ -123,6 +123,15 @@ public sealed class RouteInfo
         return route;
     }
 
+    /// A new, empty route in place of this one (its folder already cleared): the same folder and name, nothing built, its
+    /// origin and grid unset till the first area's picked.
+    public RouteInfo Fresh()
+    {
+        var route = new RouteInfo { Name = Name, Author = Author, Version = "0.0.1", Id = Id, _folder = _folder };
+        route.Save();
+        return route;
+    }
+
     /// The folder of the one world the Route Builder edits.
     public const string WorldId = "World";
 

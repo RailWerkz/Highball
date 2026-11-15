@@ -9,7 +9,7 @@ namespace Highball.World;
 /// out each one's average), except the beach's, which is its own colour; the normals relief for the light.
 public sealed class GroundTextures : IDisposable
 {
-    public const int Count = 17;
+    public const int Count = 20;
 
     private static readonly string[] Materials = ["Grass", "BareSand", "Cliffs"];
 
@@ -45,8 +45,22 @@ public sealed class GroundTextures : IDisposable
             Texture2D.LoadDds($"Terrain/{m}/{m}_AoRoughMetal.dds", srgb: false, skip),
         ]),
         Texture2D.LoadDds("Terrain/Grass/Grass_Displacement.dds", srgb: false, skip),
-        Texture2D.LoadDds("Terrain/BareSand/BareSand_Displacement.dds", srgb: false, skip)];
+        Texture2D.LoadDds("Terrain/BareSand/BareSand_Displacement.dds", srgb: false, skip),
+        .. BallastMaps()];
         _binding = new TextureBinding(_textures);
+    }
+
+    /// The ballast's rock (TrackMaterials' ballast texture: colour, normal, and the packed maps with its height), for the stones
+    /// run out over the ground beside the track.
+    private static Texture2D[] BallastMaps()
+    {
+        if (TrackMaterials.Decode(TrackMaterials.Current.TextureOf(TrackMaterials.Slot.Ballast), "1K") is { } d)
+            return [
+                Texture2D.FromPixels(d.Width, d.Height, d.Color, repeat: true, mipmaps: true, srgb: true, name: "ground.ballast.color"),
+                Texture2D.FromPixels(d.Width, d.Height, d.Normal, repeat: true, mipmaps: true, name: "ground.ballast.normal"),
+                Texture2D.FromPixels(d.Width, d.Height, d.Packed, repeat: true, mipmaps: true, name: "ground.ballast.packed"),
+            ];
+        return [Texture2D.Solid(new byte4(110, 105, 100, 255)), Texture2D.Solid(new byte4(128, 128, 255, 255)), Texture2D.Solid(new byte4(200, 230, 0, 128))];
     }
 
     private void Release()

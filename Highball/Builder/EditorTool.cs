@@ -86,7 +86,14 @@ public sealed class ToolContext(IToolHost host)
     public void Record(object? edit) => host.Record(edit);
 
     /// A network edit made: diamonds put in where it crosses track, kept for undoing, and the track laid out again.
-    public void Commit(NetworkEdit? edit) => host.Commit(edit);
+    public void Commit(NetworkEdit? edit)
+    {
+        host.Commit(edit);
+        Kinks.Watch(edit, Tracks);
+    }
+
+    /// The joins of the track last laid, checked for kinks once it's built.
+    public KinkCheck Kinks { get; } = new();
 
     /// The track laid out again from the network as it is (after an edit that isn't a NetworkEdit).
     public void RebuildNetwork() => host.RebuildNetwork();

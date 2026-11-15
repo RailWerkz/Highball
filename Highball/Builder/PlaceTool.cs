@@ -23,6 +23,10 @@ public sealed class PlaceTool
     public const float MinCrossingWidth = 3f;
     public const float MaxCrossingWidth = 40f;
     private const double RoadReach = 15.0;
+    /// How far along the track from the pointer a road crossing it is looked for, and the shallowest it can cross (the sine of its
+    /// angle to the track: about 7 degrees).
+    private const double CrossingSearch = 40.0;
+    private const double MinCrossingSine = 0.12;
     private const float GrabRadius = 12f;
 
     public PlaceMode Mode;
@@ -180,6 +184,37 @@ public sealed class PlaceTool
         var width = DefaultCrossingWidth;
         var onRoad = false;
         var best = double.MaxValue;
+
+        // A road that crosses the track near here, at any angle bar nearly along it: the crossing goes where it crosses, along the
+        // road. (Measured from the nearest place on the track, a road crossing at a shallow angle can be well off it where the
+        // pointer is, yet cross the track only a few metres along.)
+        var (fx, fz) = (-rz, rx);
+        foreach (var road in lines.Lines)
+        {
+            if (road.Rail || road.Mark || px < road.MinX - CrossingSearch || px > road.MaxX + CrossingSearch || pz < road.MinZ - CrossingSearch || pz > road.MaxZ + CrossingSearch)
+                continue;
+            for (var i = 0; i + 1 < road.Count; i++)
+            {
+                var (dx, dz) = (road.X[i + 1] - road.X[i], road.Z[i + 1] - road.Z[i]);
+                var length = Math.Sqrt(dx * dx + dz * dz);
+                var denominator = fx * dz - fz * dx;
+                if (length < 1e-6 || Math.Abs(denominator) / length < MinCrossingSine)
+                    continue;
+                var (qx, qz) = (road.X[i] - px, road.Z[i] - pz);
+                var along = (qx * dz - qz * dx) / denominator;
+                var u = (qx * fz - qz * fx) / denominator;
+                if (u < 0.0 || u > 1.0 || Math.Abs(along) > CrossingSearch || Math.Abs(along) >= best)
+                    continue;
+                best = Math.Abs(along);
+                (px, pz) = (px + fx * along, pz + fz * along);
+                heading = Math.Atan2(dz, dx) * 180.0 / Math.PI;
+                width = Math.Clamp(road.Width, MinCrossingWidth, MaxCrossingWidth);
+                onRoad = true;
+            }
+        }
+
+        if (onRoad)
+            return (px, pz, heading, width, true);
         foreach (var road in lines.Lines)
         {
             if (road.Rail || px < road.MinX - RoadReach || px > road.MaxX + RoadReach || pz < road.MinZ - RoadReach || pz > road.MaxZ + RoadReach)

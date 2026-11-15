@@ -20,7 +20,10 @@ public sealed class TrackTextures : IDisposable
     /// in order); then the paints' palette. A tie's or plate's first three maps are in the same places, with the rest repeated so
     /// every binding fits the one layout.
     public static readonly int PaintCount = TrackMaterials.Paints.Length;
-    public static readonly int SetSize = 15 + PaintCount * 3 + 1;
+    public static readonly int SetSize = 15 + PaintCount * 3 + 1 + SurfaceTextures.Slots * 3 + 1;
+
+    /// What's to be loaded has changed: a texture in the Track Materials window, or another surface texture come into use.
+    private static int WantedVersion => TrackMaterials.TextureVersion * 65536 + SurfaceTextures.Version;
     public const int SetIndex = 4;
 
     public static VkDescriptorSetLayout SetLayout => TextureBinding.SetLayoutFor(SetSize);
@@ -35,6 +38,7 @@ public sealed class TrackTextures : IDisposable
     /// Uploaded textures by id and size, kept while something uses them.
     private readonly Dictionary<(string Id, string Size), Texture2D[]> _loaded = [];
     private Texture2D? _palette;
+    private Texture2D? _surfaceLookup;
     private TextureBinding? _lines;
     private TextureBinding? _ties;
     private TextureBinding? _plates;
@@ -59,7 +63,7 @@ public sealed class TrackTextures : IDisposable
 
         // The first set's loaded straight away, so the track never shows without them.
         _size = Wanted;
-        _decodingVersion = TrackMaterials.TextureVersion;
+        _decodingVersion = WantedVersion;
         _decodingSize = _size;
         Apply(DecodeAll(Wanted, Needed(Wanted)));
     }
@@ -84,6 +88,9 @@ public sealed class TrackTextures : IDisposable
             needed.Add((materials.TextureOf(slot), slot == TrackMaterials.Slot.PoleWood && size >= 2048 ? "4K" : label));
         for (var i = 0; i < PaintCount; i++)
             needed.Add((materials.PaintOf(i).Texture, label));
+        foreach (var id in SurfaceTextures.Bound(out _))
+            if (id.Length > 0)
+                needed.Add((id, label));
         return needed.Distinct().ToList();
     }
 
@@ -110,18 +117,18 @@ public sealed class TrackTextures : IDisposable
             _decoding = null;
             Loading = false;
             // Only what was asked for most recently goes up.
-            if (_decodingVersion == TrackMaterials.TextureVersion && _decodingSize == size)
+            if (_decodingVersion == WantedVersion && _decodingSize == size)
             {
                 _size = size;
                 Apply(done.Result);
             }
         }
 
-        if (_decoding is null && (TrackMaterials.TextureVersion != _textureVersion || size != _size))
+        if (_decoding is null && (WantedVersion != _textureVersion || size != _size))
         {
             // Already loaded ones aren't read again.
             var needed = Needed(size).Where(n => !_loaded.TryGetValue(n, out var have) || have.Length == 0).ToList();
-            _decodingVersion = TrackMaterials.TextureVersion;
+            _decodingVersion = WantedVersion;
             _decodingSize = size;
             if (needed.Count == 0)
             {
@@ -197,10 +204,23 @@ public sealed class TrackTextures : IDisposable
         for (var i = 0; i < PaintCount; i++)
             lines.AddRange(Maps(materials.PaintOf(i).Texture, label));
         lines.Add(palette);
+        // The paved surfaces' textures in use (SurfaceTextures), after it, then which slot each texture's in.
+        var bound = SurfaceTextures.Bound(out var lookup);
+        foreach (var id in bound)
+            lines.AddRange(id.Length > 0 ? Maps(id, label) : [_neutral, _neutral, _neutral]);
+        var lookupPixels = new byte[SurfaceTextures.Max * 4];
+        for (var i = 0; i < lookup.Length; i++)
+        {
+            lookupPixels[i * 4] = lookup[i].Slot;
+            lookupPixels[i * 4 + 1] = lookup[i].Kind;
+        }
+        var surfaceLookup = Texture2D.FromPixels(SurfaceTextures.Max, 1, lookupPixels, repeat: false, mipmaps: false, linear: false, name: "surfaces");
+        lines.Add(surfaceLookup);
 
         Texture2D[] Alone(Texture2D[] three) => [.. Enumerable.Range(0, SetSize - 1).Select(i => three[i % 3]), _neutral];
 
-        var (oldLines, oldTies, oldPlates, oldPalette) = (_lines, _ties, _plates, _palette);
+        var (oldLines, oldTies, oldPlates, oldPalette, oldLookup) = (_lines, _ties, _plates, _palette, _surfaceLookup);
+        _surfaceLookup = surfaceLookup;
         _lines = new TextureBinding([.. lines]);
         _ties = new TextureBinding(Alone(Of(TrackMaterials.Slot.Ties)));
         _plates = new TextureBinding(Alone(Of(TrackMaterials.Slot.Plates)));
@@ -209,6 +229,7 @@ public sealed class TrackTextures : IDisposable
         oldTies?.Dispose();
         oldPlates?.Dispose();
         oldPalette?.Dispose();
+        oldLookup?.Dispose();
         _version = TrackMaterials.Version;
 
         var inUse = new Dictionary<string, string>();

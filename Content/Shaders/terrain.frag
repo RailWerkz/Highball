@@ -10,6 +10,7 @@ layout(location = 0) in vec3 vRelative;
 layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec4 vCover;
 layout(location = 3) in vec4 vMaterials; // grass, bare earth, water
+layout(location = 4) in float vBallast; // how much of the ground is a track's ballast run out over it (NetworkLines.BallastAt)
 layout(location = 0) out vec4 outColor;
 
 // GroundTextures, in its order.
@@ -30,6 +31,10 @@ layout(set = 0, binding = 13) uniform sampler2D beachNormal;
 layout(set = 0, binding = 14) uniform sampler2D beachSurface;
 layout(set = 0, binding = 15) uniform sampler2D grassHeight;
 layout(set = 0, binding = 16) uniform sampler2D earthHeight;
+// The ballast's rock (GroundTextures.BallastMaps): colour, normal, and ambient occlusion, roughness, metalness and height packed.
+layout(set = 0, binding = 17) uniform sampler2D ballastColor;
+layout(set = 0, binding = 18) uniform sampler2D ballastNormal;
+layout(set = 0, binding = 19) uniform sampler2D ballastPacked;
 
 layout(push_constant) uniform Push
 {
@@ -196,6 +201,28 @@ void main()
         vec2 rockFinish = texture(cliffSurface, wx.zy / CliffTile).rg * blend.x + texture(cliffSurface, wx.xz / CliffTile).rg * blend.y
             + texture(cliffSurface, wx.xy / CliffTile).rg * blend.z;
         finish = mix(finish, rockFinish, rock);
+    }
+
+    // The track's ballast run out over the ground beside it, laid into the ground's own surface (not a layer over it, which the
+    // ground beneath could shade or come up through): all stone at the bed's toe, thinning out to none across its fade, the
+    // ground rising between the stones, filling the gaps first and leaving the tallest last, in patches.
+    float ballast = clamp(vBallast, 0.0, 1.0) * (1.0 - clamp(m.z + m.w, 0.0, 1.0));
+    if (ballast > Unused)
+    {
+        vec2 bu = tex / 1.5;
+        vec4 packedRock = texture(ballastPacked, bu);
+        float stones = packedRock.a;
+        float drift = fbm(world.xz * 0.6, pixel * 0.6);
+        float footprint = max(length(dFdx(bu)), length(dFdy(bu))) * float(textureSize(ballastPacked, 0).x);
+        float soft = 0.03 + 0.04 * log2(max(footprint, 1.0));
+        float level = mix(1.05, 0.1, ballast) + (0.5 - drift) * 0.5;
+        float cover = max(smoothstep(level - soft, level + soft, stones) * smoothstep(0.0, 0.15, ballast), smoothstep(0.85, 1.0, ballast));
+        // Crushed rock weathered by dust and oil, dark in the gaps between the stones (as line.frag's rock).
+        vec3 rockAlbedo = texture(ballastColor, bu).rgb * vec3(0.46, 0.44, 0.42) * mix(0.45, 1.0, smoothstep(0.25, 0.7, stones));
+        vec2 rockBump = (texture(ballastNormal, bu).rg * 2.0 - 1.0) * 1.5;
+        albedo = mix(albedo, rockAlbedo, cover);
+        surface = normalize(mix(surface, normalize(vec3(n.x + rockBump.x, n.y, n.z + rockBump.y)), cover));
+        finish = mix(finish, vec2(0.8 * packedRock.r, packedRock.g), cover);
     }
 
     Surface s;

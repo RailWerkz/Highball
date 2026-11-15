@@ -671,6 +671,12 @@ public sealed class TrackEditor
             track = WithClass(track, mapped);
         else if (!exact && (ClassAt(laid[0]) ?? ClassAt(laid[^1])) is { } joined && joined != RailClass.Main)
             track = WithClass(track, joined);
+
+        // Carrying on from a track's loose end, it's laid as the same kind of track (exact if that is, the same rails, and
+        // the class and bed it has unless others are in hand), so the two are built as one line: one spline straight
+        // through the join, rather than two lines meeting there at whatever angle each was fitted to.
+        if ((Continued(laid[0]) ?? Continued(laid[^1])) is { } carried)
+            track = SameKind(track, carried, keepClass: NewClass is not null, keepBed: NewBed is not null || NewBedHeight is not null, exact);
         changes[id] = (null, track);
         return Commit([.. changes.Select(c => (c.Key, c.Value.Before, c.Value.After))]);
     }
@@ -1028,6 +1034,41 @@ public sealed class TrackEditor
         return Unit(_nodes[node], _nodes[inner]);
     }
 
+    /// From a track's end back along it: the end first, then the control points inward until metres along (and always at
+    /// least one), carrying on into the next track where two end on each other with nothing else there. Null if the node
+    /// isn't the end of a track.
+    public List<(double X, double Z)>? Behind(long end, double metres)
+    {
+        Refresh();
+        if (WayThrough(end) is not { } way || (way.Nodes[0] != end && way.Nodes[^1] != end))
+            return null;
+
+        var points = new List<(double X, double Z)> { _nodes[end] };
+        var seen = new HashSet<long> { way.Id };
+        var along = 0.0;
+        var at = end;
+        while (true)
+        {
+            var nodes = way.Nodes[0] == at ? way.Nodes : [.. way.Nodes.Reverse()];
+            for (var i = 1; i < nodes.Length; i++)
+            {
+                var (px, pz) = points[^1];
+                var (x, z) = _nodes[nodes[i]];
+                along += Math.Sqrt((x - px) * (x - px) + (z - pz) * (z - pz));
+                points.Add((x, z));
+                if (along >= metres)
+                    return points;
+            }
+
+            at = nodes[^1];
+            if (!_waysAt.TryGetValue(at, out var through) || through.Count != 2 || through.FirstOrDefault(w => !seen.Contains(w.Id)) is not { } next ||
+                (next.Nodes[0] != at && next.Nodes[^1] != at))
+                return points;
+            way = next;
+            seen.Add(way.Id);
+        }
+    }
+
     /// Whether a place on a track is on yard or industrial track.
     public bool IsYard(LayPoint point)
     {
@@ -1119,6 +1160,41 @@ public sealed class TrackEditor
         if (point.Node is { } node && _network.Ways.Values.FirstOrDefault(w => w.Rail && Array.IndexOf(w.Nodes, node) >= 0) is { } through)
             return (RailClass)through.Class;
         return null;
+    }
+
+    /// The track whose loose end a laid point joins, if it does.
+    private NetworkWay? Continued(LayPoint point) =>
+        point.Node is { } node && IsLooseEnd(node) && WayThrough(node) is { } way ? way : null;
+
+    /// New track made the same kind as the track it carries on, everything that decides whether two ways meeting end to end
+    /// are built as one line: exact if that is (track laid exact stays exact), the rails' tags, and its class and bed unless
+    /// the tool has its own in hand (keepClass, keepBed: the bed's put on as it's committed).
+    private static NetworkWay SameKind(NetworkWay track, NetworkWay carried, bool keepClass, bool keepBed, bool exact)
+    {
+        var same = keepClass ? track : WithClass(track, (RailClass)carried.Class);
+        void Copy(string tag)
+        {
+            if (carried.Tags.TryGetValue(tag, out var value))
+                same.Tags[tag] = value;
+            else
+                same.Tags.Remove(tag);
+        }
+
+        foreach (var tag in (string[])["tracks", "gauge"])
+            Copy(tag);
+        if (!keepClass)
+            Copy("railway");
+        if (!keepBed)
+        {
+            Copy(RouteNetwork.BedTag);
+            Copy(RouteNetwork.BedHeightTag);
+        }
+
+        if (carried.Tags.ContainsKey(RouteNetwork.ExactTag))
+            same.Tags[RouteNetwork.ExactTag] = "yes";
+        else if (!exact)
+            same.Tags.Remove(RouteNetwork.ExactTag);
+        return same;
     }
 
     /// The rail ways touching these control points given a class.

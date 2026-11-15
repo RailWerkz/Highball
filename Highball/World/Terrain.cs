@@ -9,7 +9,7 @@ using RailWerkz.Vulkan;
 namespace Highball.World;
 
 [StructLayout(LayoutKind.Sequential)]
-public struct TerrainVertex(float3 position, float3 normal, float4 cover, float4 materials)
+public struct TerrainVertex(float3 position, float3 normal, float4 cover, float4 materials, float ballast = 0f)
 {
     public float3 Position = position;
     public float3 Normal = normal;
@@ -17,8 +17,11 @@ public struct TerrainVertex(float3 position, float3 normal, float4 cover, float4
     public float4 Cover = cover;
     /// How much of each ground texture: grass, bare earth, water.
     public float4 Materials = materials;
+    /// How much of the ground here is a track's ballast run out over it, 0 to 1 (NetworkLines.BallastAt): terrain.frag lays its
+    /// stones into the ground by it, thinning out away from the track.
+    public float Ballast = ballast;
 
-    public static readonly VertexAttribute[] Layout = [new(0, 3, 0), new(1, 3, 12), new(2, 4, 24), new(3, 4, 40)];
+    public static readonly VertexAttribute[] Layout = [new(0, 3, 0), new(1, 3, 12), new(2, 4, 24), new(3, 4, 40), new(4, 1, 56)];
 }
 
 /// The route's ground as a quadtree of patches over the global sample grid. Every patch is 64 x 64 quads; a patch at
@@ -398,7 +401,7 @@ public sealed class Terrain : IDisposable
                 var normal = Normalize(new float3(hl - hr, 2f * spacing, hu - hd));
 
                 var (cover, materials) = _source.Ground(gx, gz, spacing);
-                vertices[z * width + x] = new TerrainVertex(new float3(x * spacing, h, z * spacing), normal, cover, materials);
+                vertices[z * width + x] = new TerrainVertex(new float3(x * spacing, h, z * spacing), normal, cover, materials, _source.BallastAt(gx, gz));
             }
         }
 

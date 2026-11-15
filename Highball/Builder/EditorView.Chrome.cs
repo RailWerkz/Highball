@@ -31,6 +31,7 @@ public sealed partial class EditorView
         [
             (Tool.Follow, default, ToolIcon.Lay, "Lay", "Lay track along guides (=)"),
             (Tool.Pen, default, ToolIcon.Pen, "Pen", "Draw track (8)"),
+            (Tool.Join, default, ToolIcon.Join, "Join", "Join two track ends with a smooth curve"),
             (Tool.Track, default, ToolIcon.Edit, "Edit", "Edit control points (7)"),
             (Tool.Shape, default, ToolIcon.Shape, "Shape", "Shape a line's curves (-)"),
             (Tool.Parallel, default, ToolIcon.Parallel, "Parallel", "Lay tracks beside a track (P)"),
@@ -62,13 +63,13 @@ public sealed partial class EditorView
     }
 
     private static readonly (Tool Tool, string Name)[] Brushes =
-        [(Tool.Raise, "Raise"), (Tool.Lower, "Lower"), (Tool.Smooth, "Smooth"), (Tool.Flatten, "Flatten"), (Tool.Paint, "Paint")];
+        [(Tool.Raise, "Raise"), (Tool.Lower, "Lower"), (Tool.Smooth, "Smooth"), (Tool.Flatten, "Flatten"), (Tool.Paint, "Paint"), (Tool.ClearBallast, "Ballast")];
 
 
     /// The terrain brush last used, which the strip's Terrain button goes back to.
     private Tool _brush = Tool.Raise;
 
-    private static bool IsBrush(Tool tool) => tool is Tool.Raise or Tool.Lower or Tool.Smooth or Tool.Flatten or Tool.Paint;
+    private static bool IsBrush(Tool tool) => tool is Tool.Raise or Tool.Lower or Tool.Smooth or Tool.Flatten or Tool.Paint or Tool.ClearBallast;
 
     private YardTool ActiveYard => _tool == Tool.Parallel ? _parallel : _yard;
 

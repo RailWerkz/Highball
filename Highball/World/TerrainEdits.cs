@@ -6,7 +6,7 @@ using Highball.Routes;
 namespace Highball.World;
 
 /// The ways a brush changes the ground.
-public enum SculptMode { Raise, Lower, Smooth, Flatten }
+public enum SculptMode { Raise, Lower, Smooth, Flatten, ClearBed }
 
 /// One brush stroke's changes, kept so it can be undone and redone: each touched sample's height offset and each
 /// touched cover cell, before and after.
@@ -69,6 +69,9 @@ public sealed partial class TerrainSource
     /// sample rectangle it changed, for the terrain to rebuild, or null if nothing could be changed.
     public (int X0, int Z0, int X1, int Z1)? Sculpt(double x, double z, float radius, SculptMode mode, float strength, float flattenTo, TerrainStroke stroke)
     {
+        // The ground's samples are Spacing apart: a brush smaller than that still has to reach the nearest one, or it would do
+        // nothing at all between samples. Below that it works the single sample nearest it.
+        radius = MathF.Max(radius, Spacing * 0.75f);
         var gx0 = (int)Math.Floor((x - radius) / Spacing);
         var gx1 = (int)Math.Ceiling((x + radius) / Spacing);
         var gz0 = (int)Math.Floor((z - radius) / Spacing);
@@ -94,6 +97,8 @@ public sealed partial class TerrainSource
                     SculptMode.Raise => h + strength,
                     SculptMode.Lower => h - strength,
                     SculptMode.Flatten => h + (flattenTo - h) * strength,
+                    // Down to just under the nearest track's ballast bed, where it's come up over it; nothing else.
+                    SculptMode.ClearBed => Lines?.BedClearance(gx * Spacing, gz * Spacing) is { } cap && h > cap ? h + (cap - h) * strength : h,
                     _ => h + (Neighbourhood(gx, gz, h) - h) * strength,
                 };
                 var delta = (target - h) * weight;
