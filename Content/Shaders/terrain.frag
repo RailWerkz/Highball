@@ -35,6 +35,16 @@ layout(set = 0, binding = 16) uniform sampler2D earthHeight;
 layout(set = 0, binding = 17) uniform sampler2D ballastColor;
 layout(set = 0, binding = 18) uniform sampler2D ballastNormal;
 layout(set = 0, binding = 19) uniform sampler2D ballastPacked;
+// fbm (noise.glsl's) that repeats every NoisePeriod cells, in red (GroundTextures.BroadNoise).
+layout(set = 0, binding = 20) uniform sampler2D broadNoise;
+const float NoisePeriod = 32.0;
+
+// fbm for the broad patterns, read rather than worked out: one read for twenty hashes, its mips fading the finer octaves out with
+// distance as fbm does by hand.
+float broad(vec2 p)
+{
+    return texture(broadNoise, p / NoisePeriod).r;
+}
 
 layout(push_constant) uniform Push
 {
@@ -68,10 +78,26 @@ vec3 detail(sampler2D map, vec2 uv)
     return texture(map, uv).rgb / average;
 }
 
-// Two scales of a detail map, the larger one turned so its repeats run a different way.
-vec3 detail2(sampler2D map, vec2 p, float tile)
+// How much a scale of a texture is worth reading, by how much of its repeat a pixel covers (pixel, in metres): once a pixel is past
+// a twelfth of a repeat the GPU reads it from a 16 x 16 mip or smaller, near enough its average (1 for detail, flat for relief),
+// so it fades to that and isn't read at all. Most of the ground in a wide view is that far off, and these reads are most of
+// what it costs. (Where it's skipped the pixels beside one still reading it are weighted to nothing, as with Unused.)
+float worth(float tile, float pixel)
 {
-    return detail(map, p / tile) * mix(vec3(1.0), detail(map, Turn * p / (tile * Second)), 0.5);
+    return 1.0 - smoothstep(tile / 32.0, tile / 12.0, pixel);
+}
+
+// Two scales of a detail map, the larger one turned so its repeats run a different way.
+vec3 detail2(sampler2D map, vec2 p, float tile, float pixel)
+{
+    vec3 d = vec3(1.0);
+    float near = worth(tile, pixel);
+    if (near > 0.0)
+        d = mix(vec3(1.0), detail(map, p / tile), near);
+    float far = worth(tile * Second, pixel);
+    if (far > 0.0)
+        d *= mix(vec3(1.0), detail(map, Turn * p / (tile * Second)), 0.5 * far);
+    return d;
 }
 
 // A tangent-space normal map's xy (BC5: the blue is rebuilt from them).
@@ -80,11 +106,19 @@ vec2 relief(sampler2D map, vec2 uv)
     return texture(map, uv).rg * 2.0 - 1.0;
 }
 
-vec2 relief2(sampler2D map, vec2 p, float tile)
+vec2 relief2(sampler2D map, vec2 p, float tile, float pixel)
 {
-    vec2 large = relief(map, Turn * p / (tile * Second));
-    large = mat2(0.8, -0.6, 0.6, 0.8) * large; // back into the unturned frame
-    return (relief(map, p / tile) + large * 0.35) * 0.75;
+    vec2 sum = vec2(0.0);
+    float near = worth(tile, pixel);
+    if (near > 0.0)
+        sum = relief(map, p / tile) * near;
+    float far = worth(tile * Second, pixel);
+    if (far > 0.0)
+    {
+        vec2 large = relief(map, Turn * p / (tile * Second));
+        sum += mat2(0.8, -0.6, 0.6, 0.8) * large * (0.35 * far); // back into the unturned frame
+    }
+    return sum * 0.75;
 }
 
 // Open water, which has no maps: smooth, and with nothing to hide the sky.
@@ -123,13 +157,13 @@ void main()
     }
 
     // Bare ground goes to weathered desert rock as it steepens, patchily.
-    float desert = clamp(smoothstep(0.985, 0.9, n.y) + (fbm(world.xz * 0.012, pixel * 0.012) - 0.55) * 1.2, 0.0, 1.0);
+    float desert = clamp(smoothstep(0.985, 0.9, n.y) + (broad(world.xz * 0.012) - 0.55) * 1.2, 0.0, 1.0);
 
     // Sand along the water's edge, in its own colour.
     float shore = smoothstep(0.02, 0.3, m.z) * (1.0 - smoothstep(0.55, 0.9, m.z)) * step(n.y, 2.0) * smoothstep(0.85, 0.95, n.y);
 
     // The land cover's colour, varied broadly, times the textures' detail.
-    vec3 albedo = vCover.rgb * (0.7 + 0.6 * fbm(world.xz * 0.004, pixel * 0.004));
+    vec3 albedo = vCover.rgb * (0.7 + 0.6 * broad(world.xz * 0.004));
 
     // grain: their detail. bump: their relief, laid onto the ground's own normal (projected straight down; flat ground mostly faces up).
     // finish: how much sky reaches it, and how rough it is. All in the same proportions, adding up only the materials that are here.
@@ -138,24 +172,24 @@ void main()
     vec2 finish = WaterSurface * (m.z + m.w);
     if (m.x > Unused)
     {
-        grain += detail2(grassAlbedo, tex, GrassTile) * m.x;
-        bump += relief2(grassNormal, tex, GrassTile) * m.x;
+        grain += detail2(grassAlbedo, tex, GrassTile, pixel) * m.x;
+        bump += relief2(grassNormal, tex, GrassTile, pixel) * m.x;
         finish += texture(grassSurface, tex / GrassTile).rg * m.x;
     }
 
     float earth = m.y * (1.0 - desert);
     if (earth > Unused)
     {
-        grain += detail2(earthAlbedo, tex, EarthTile) * earth;
-        bump += relief2(earthNormal, tex, EarthTile) * earth;
+        grain += detail2(earthAlbedo, tex, EarthTile, pixel) * earth;
+        bump += relief2(earthNormal, tex, EarthTile, pixel) * earth;
         finish += texture(earthSurface, tex / EarthTile).rg * earth;
     }
 
     float rocky = m.y * desert;
     if (rocky > Unused)
     {
-        grain += detail2(desertAlbedo, tex, DesertTile) * rocky;
-        bump += relief2(desertNormal, tex, DesertTile) * rocky;
+        grain += detail2(desertAlbedo, tex, DesertTile, pixel) * rocky;
+        bump += relief2(desertNormal, tex, DesertTile, pixel) * rocky;
         finish += texture(desertSurface, tex / DesertTile).rg * rocky;
     }
 
@@ -164,7 +198,7 @@ void main()
     if (shore > 0.0)
     {
         albedo = mix(albedo, texture(beachAlbedo, tex / BeachTile).rgb, shore);
-        bump = mix(bump, relief2(beachNormal, tex, BeachTile), shore);
+        bump = mix(bump, relief2(beachNormal, tex, BeachTile, pixel), shore);
         finish = mix(finish, texture(beachSurface, tex / BeachTile).rg, shore);
         m.z *= 1.0 - shore;
     }
@@ -186,13 +220,13 @@ void main()
         blend /= blend.x + blend.y + blend.z;
         vec3 wx = local;
         // Rock in the colour of the ground it's cut through, its grain softened: a bank in pale desert isn't a black hole.
-        vec3 grainy = detail2(cliffAlbedo, wx.zy, CliffTile) * blend.x + detail2(cliffAlbedo, wx.xz, CliffTile) * blend.y
-            + detail2(cliffAlbedo, wx.xy, CliffTile) * blend.z;
+        vec3 grainy = detail2(cliffAlbedo, wx.zy, CliffTile, pixel) * blend.x + detail2(cliffAlbedo, wx.xz, CliffTile, pixel) * blend.y
+            + detail2(cliffAlbedo, wx.xy, CliffTile, pixel) * blend.z;
         vec3 rockColor = mix(vec3(0.17, 0.16, 0.145), vCover.rgb * 0.72, 0.8) * mix(vec3(1.0), grainy, 0.55);
         // Gentler than the ground's: on a slope the relief tilts faces right away from the sun.
-        vec2 rx = relief2(cliffNormal, wx.zy, CliffTile) * 0.6;
-        vec2 ry = relief2(cliffNormal, wx.xz, CliffTile) * 0.6;
-        vec2 rz = relief2(cliffNormal, wx.xy, CliffTile) * 0.6;
+        vec2 rx = relief2(cliffNormal, wx.zy, CliffTile, pixel) * 0.6;
+        vec2 ry = relief2(cliffNormal, wx.xz, CliffTile, pixel) * 0.6;
+        vec2 rz = relief2(cliffNormal, wx.xy, CliffTile, pixel) * 0.6;
         vec3 cliff = normalize(vec3(n.x, rx.y + n.y, rx.x + n.z) * blend.x + vec3(ry.x + n.x, n.y, ry.y + n.z) * blend.y
             + vec3(rz.x + n.x, rz.y + n.y, n.z) * blend.z);
         albedo = mix(albedo, rockColor, rock);
