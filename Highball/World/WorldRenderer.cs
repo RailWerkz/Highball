@@ -93,6 +93,7 @@ public sealed unsafe class WorldRenderer : IDisposable
     private VkPipeline _model;
     private VkPipeline _modelSeeThrough;
     private VkPipeline _plant;
+    private VkPipeline _plantDepth;
     private VkSampleCountFlags _pipelineSamples;
 
     /// Unit vector towards the sun.
@@ -137,6 +138,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         using var modelFrag = Shader.Load("model.frag");
         using var plantVert = Shader.Load("plant.vert");
         using var plantFrag = Shader.Load("plant.frag");
+        using var plantDepthFrag = Shader.Load("plant_depth.frag");
         using var glowVert = Shader.Load("glow.vert");
         using var glowFrag = Shader.Load("glow.frag");
 
@@ -189,10 +191,18 @@ public sealed unsafe class WorldRenderer : IDisposable
         // Drawn over what's solid, and no part of it.
         _glow = Pipelines.Create(new PipelineDesc { Vertex = glowVert, Fragment = glowFrag, Layout = _layout, Cull = VkCullModeFlags.None, DepthWrite = false, Blend = true });
         // Plants and rocks, many of one mesh. Cards are seen from both sides.
+        // Their depth first (cut out, nothing shaded), then shaded only where that depth is theirs: grass stacked many deep in
+        // front of the camera is lit once a pixel, not once a blade.
+        _plantDepth = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = plantVert, Fragment = plantDepthFrag, Layout = _modelLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(),
+            InstanceAttributes = PlantInstance.Layout, InstanceStride = Marshal.SizeOf<PlantInstance>(), Cull = VkCullModeFlags.None, AlphaToCoverage = true, NoColor = true,
+        });
         _plant = Pipelines.Create(new PipelineDesc
         {
             Vertex = plantVert, Fragment = plantFrag, Layout = _modelLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(),
             InstanceAttributes = PlantInstance.Layout, InstanceStride = Marshal.SizeOf<PlantInstance>(), Cull = VkCullModeFlags.None, AlphaToCoverage = true,
+            DepthWrite = false, DepthCompare = VkCompareOp.Equal,
         });
     }
 
@@ -210,6 +220,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         Pipelines.Destroy(_model, default);
         Pipelines.Destroy(_modelSeeThrough, default);
         Pipelines.Destroy(_plant, default);
+        Pipelines.Destroy(_plantDepth, default);
         Pipelines.Destroy(_glow, default);
     }
 
@@ -356,7 +367,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             Sky.Bind(cmd, _modelLayout);
             _shadows.Bind(cmd, _modelLayout);
             _clouds.Bind(cmd, _modelLayout);
-            _vegetation.Draw(cmd, _modelLayout, camera, aspect);
+            _vegetation.Draw(cmd, _modelLayout, camera, aspect, _plantDepth, _plant);
         }
 
         _seen.Clear();

@@ -168,6 +168,7 @@ public sealed unsafe class Vegetation : IDisposable
     private TerrainSource? _source;
     private NetworkLines? _lines;
     private volatile Dictionary<(int, int), List<(double Ax, double Az, double Bx, double Bz, float Clear)>>? _clearances;
+    private volatile Dictionary<(int, int), float>? _trackField;
     private int _generation;
     private int _terrainEpoch = -1;
 
@@ -291,8 +292,11 @@ public sealed unsafe class Vegetation : IDisposable
         Task.Run(() =>
         {
             var grid = BuildClearances(lines);
-            if (ReferenceEquals(lines, _lines))
-                _clearances = grid;
+            var field = BuildTrackField(lines);
+            if (!ReferenceEquals(lines, _lines))
+                return;
+            _trackField = field;
+            _clearances = grid;
         });
     }
 
@@ -446,6 +450,86 @@ public sealed unsafe class Vegetation : IDisposable
         return (float)best;
     }
 
+    // --- Trees by the line. ---
+
+    /// Trees and bushes crowd along the railway and thin out away from it: TracksidePeak times what the land cover alone would
+    /// grow out to TracksideDense metres from the track's edge, easing down to Background by TracksideFalloff and staying there.
+    /// Peak and Background are balanced so about as many grow in view as when they were spread evenly.
+    public const float TracksideDense = 110f;
+    public const float TracksideFalloff = 320f;
+    public const float TracksidePeak = 4.2f;
+    public const float Background = 0.15f;
+
+    /// How far a tree's trunk keeps from the track bed's edge (ballast and walkway), and where it's no longer thinned by it.
+    public const float TreeClearance = 5f;
+    public const float TreeClearanceSoft = 10f;
+
+    /// The track distance field's squares: the distance from a square's centre to the nearest rail line's edge, for squares within
+    /// TracksideFalloff of one. Coarse, since the density changes over hundreds of metres; the stems' clearance is exact.
+    private const float TrackCell = 32f;
+
+    /// Null for a route without railway, whose trees stay spread evenly.
+    private static Dictionary<(int, int), float>? BuildTrackField(NetworkLines? lines)
+    {
+        if (lines is null)
+            return null;
+
+        var field = new Dictionary<(int, int), float>();
+        var reach = TracksideFalloff + TrackCell;
+        var any = false;
+        foreach (var line in lines.Lines)
+        {
+            if (!line.Rail || line.Embedded)
+                continue;
+            any = true;
+            var edge = Math.Max(line.Formation, 2f);
+            for (var i = 0; i + 1 < line.X.Length; i++)
+            {
+                var (ax, az, bx, bz) = (line.X[i], line.Z[i], line.X[i + 1], line.Z[i + 1]);
+                var x0 = (int)Math.Floor((Math.Min(ax, bx) - reach) / TrackCell);
+                var x1 = (int)Math.Floor((Math.Max(ax, bx) + reach) / TrackCell);
+                var z0 = (int)Math.Floor((Math.Min(az, bz) - reach) / TrackCell);
+                var z1 = (int)Math.Floor((Math.Max(az, bz) + reach) / TrackCell);
+                var (dx, dz) = (bx - ax, bz - az);
+                var lengthSquared = dx * dx + dz * dz;
+                for (var z = z0; z <= z1; z++)
+                {
+                    for (var x = x0; x <= x1; x++)
+                    {
+                        var (cx, cz) = ((x + 0.5) * TrackCell, (z + 0.5) * TrackCell);
+                        var t = lengthSquared > 1e-6 ? Math.Clamp(((cx - ax) * dx + (cz - az) * dz) / lengthSquared, 0.0, 1.0) : 0.0;
+                        var (px, pz) = (ax + dx * t - cx, az + dz * t - cz);
+                        var d = (float)(Math.Sqrt(px * px + pz * pz) - edge);
+                        if (d > reach)
+                            continue;
+                        if (!field.TryGetValue((x, z), out var best) || d < best)
+                            field[(x, z)] = d;
+                    }
+                }
+            }
+        }
+
+        return any ? field : null;
+    }
+
+    /// Roughly how far a point is from the nearest rail line's edge, blended between the field's squares; well off, past its reach.
+    private static float TrackDistance(Dictionary<(int, int), float> field, double x, double z)
+    {
+        const float far = TracksideFalloff + TrackCell * 2f;
+        var fx = x / TrackCell - 0.5;
+        var fz = z / TrackCell - 0.5;
+        var (ix, iz) = ((int)Math.Floor(fx), (int)Math.Floor(fz));
+        var (tx, tz) = ((float)(fx - ix), (float)(fz - iz));
+        float At(int a, int b) => field.TryGetValue((a, b), out var d) ? d : far;
+        var top = At(ix, iz) + (At(ix + 1, iz) - At(ix, iz)) * tx;
+        var bottom = At(ix, iz + 1) + (At(ix + 1, iz + 1) - At(ix, iz + 1)) * tx;
+        return top + (bottom - top) * tz;
+    }
+
+    /// How many times the land cover's own density of trees and bushes grows this far from the track.
+    private static float TracksideDensity(float distance) =>
+        Background + (TracksidePeak - Background) * (1f - MathEx.SmoothStep(TracksideDense, TracksideFalloff, distance));
+
     private static uint Hash(int a, int b, uint salt)
     {
         var h = (uint)a * 0x8DA6B343u ^ (uint)b * 0xD8163841u ^ salt * 0xCB1AB31Fu;
@@ -525,13 +609,31 @@ public sealed unsafe class Vegetation : IDisposable
             return (Mix(covers), Mix(materials));
         }
 
-        void Place(int slot, uint salt, int attempts, Func<float4, float4, float, float, float, float> chance, Func<float, float4, float4, Random32, (float Scale, float3 Tint)> look, float minClear, float sink, float steepest)
+        // How thick trees and bushes grow along the track here: the most anywhere in the cell sets how many are tried for, each then
+        // kept by its own place's share of that.
+        var field = _trackField;
+        var cellPeak = 1f;
+        if (key.Far && field is not null)
+        {
+            var nearest = float.MaxValue;
+            for (var j = 0; j <= 4; j++)
+                for (var i = 0; i <= 4; i++)
+                    nearest = MathF.Min(nearest, TrackDistance(field, originX + size * i / 4, originZ + size * j / 4));
+            cellPeak = TracksideDensity(nearest - TrackCell);
+        }
+
+        void Place(int slot, uint salt, int attempts, Func<float4, float4, float, float, float, float> chance, Func<float, float4, float4, Random32, (float Scale, float3 Tint)> look, float minClear, float sink, float steepest, bool trackside = false)
         {
             var random = new Random32(Hash(key.X, key.Z, salt + (key.Far ? 1000u : 0u)));
+            var crowd = trackside && field is not null;
+            if (crowd)
+                attempts = (int)MathF.Ceiling(attempts * cellPeak);
             for (var n = 0; n < attempts; n++)
             {
                 var (u, v, roll, pick) = (random.Next(), random.Next(), random.Next(), random.Next());
                 var (x, z) = (originX + u * size, originZ + v * size);
+                if (crowd && random.Next() * cellPeak > TracksideDensity(TrackDistance(field!, x, z)))
+                    continue;
                 var (cover, ground) = Sample(u, v);
                 if (ground.Z + ground.W > 0.15f)
                     continue;
@@ -590,12 +692,13 @@ public sealed unsafe class Vegetation : IDisposable
         }
         else
         {
-            // Spaced as scrub is: every few metres in shrubland, thinner on bare ground, none on the track's shoulders.
+            // Spaced as scrub is: every few metres in shrubland, thinner on bare ground, none on the track's shoulders; thickest
+            // along the railway, as the trees are.
             for (var b = 0; b < ShrubCount; b++)
             {
                 Place(FirstShrub + b, 3u + (uint)b * 101u, 50,
                     (cover, ground, patches, clear, _) => (ground.X * (0.3f + cover.W * 1.2f) + ground.Y * 0.3f) * MathEx.SmoothStep(0.15f, 0.6f, patches) * MathEx.SmoothStep(0.5f, 3f, clear),
-                    (pick, _, _, _) => (0.7f + 0.7f * pick, Leafy(pick)), 1f, 0f, 0.72f);
+                    (pick, _, _, _) => (0.7f + 0.7f * pick, Leafy(pick)), 1f, 0f, 0.72f, trackside: true);
             }
 
             Place(Boulder, 4u, 15,
@@ -607,13 +710,13 @@ public sealed unsafe class Vegetation : IDisposable
                 }, 2f, 0.3f, 0.5f);
 
             // Trees only where the map says there's forest (the small ones straying a little further out); the desert has none
-            // to speak of.
+            // to speak of. Most crowd along the railway, a few scattered further off (see TracksideDensity).
             for (var t = 0; t < TreeCount; t++)
             {
                 var small = t >= 9;
                 Place(FirstTree + t, 10u + (uint)t, TreeAttempts[t],
-                    (cover, _, patches, clear, _) => (small ? MathEx.SmoothStep(0.2f, 0.6f, cover.W) : MathEx.SmoothStep(0.35f, 0.75f, cover.W)) * 0.8f * (0.3f + patches) * MathEx.SmoothStep(2f, 6f, clear),
-                    (pick, _, _, _) => (0.75f + 0.45f * pick, Leafy(pick)), 3f, 0f, 0.7f);
+                    (cover, _, patches, clear, _) => (small ? MathEx.SmoothStep(0.2f, 0.6f, cover.W) : MathEx.SmoothStep(0.35f, 0.75f, cover.W)) * 0.8f * (0.3f + patches) * MathEx.SmoothStep(TreeClearance, TreeClearanceSoft, clear),
+                    (pick, _, _, _) => (0.75f + 0.45f * pick, Leafy(pick)), TreeClearance, 0f, 0.7f, trackside: true);
             }
         }
 
@@ -753,7 +856,10 @@ public sealed unsafe class Vegetation : IDisposable
     }
 
     /// Draws everything in view. Inside the world's pass, with the pipeline, sky, shadow and cloud sets already bound.
-    public void Draw(CommandBuffer cmd, VkPipelineLayout layout, Camera camera, float aspect)
+    /// Draws what's in view in two passes: every kind's depth with depthPipeline (cut out, unshaded), then every kind shaded with
+    /// colorPipeline, which tests for equal depth, so overlapping plants are lit once a pixel. The descriptor sets other than
+    /// the kinds' textures are bound by the caller.
+    public void Draw(CommandBuffer cmd, VkPipelineLayout layout, Camera camera, float aspect, VkPipeline depthPipeline, VkPipeline colorPipeline)
     {
         DrawnInstances = 0;
         if (!Enabled)
@@ -761,11 +867,18 @@ public sealed unsafe class Vegetation : IDisposable
 
         var view = camera.View(aspect);
         var push = new Push { Matrix = camera.JitteredViewProjection(aspect), Globals = Globals(camera) };
-        foreach (var kind in _kinds)
+        while (_gathered.Count < _kinds.Count)
+            _gathered.Add([]);
+
+        cmd.BindPipeline(VkPipelineBindPoint.Graphics, depthPipeline);
+        for (var k = 0; k < _kinds.Count; k++)
         {
+            var kind = _kinds[k];
+            _gathered[k].Clear();
             if (!Gather(camera, kind, (centre, radius) => view.Sees(centre, radius)))
                 continue;
 
+            _gathered[k].AddRange(_visible);
             push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, kind.Cutout);
             push.Band = Band(kind);
             kind.Textures.Bind(cmd, layout);
@@ -774,7 +887,25 @@ public sealed unsafe class Vegetation : IDisposable
             foreach (var visible in _visible)
                 DrawnInstances += visible.Count;
         }
+
+        cmd.BindPipeline(VkPipelineBindPoint.Graphics, colorPipeline);
+        for (var k = 0; k < _kinds.Count; k++)
+        {
+            if (_gathered[k].Count == 0)
+                continue;
+
+            var kind = _kinds[k];
+            _visible.Clear();
+            _visible.AddRange(_gathered[k]);
+            push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, kind.Cutout);
+            push.Band = Band(kind);
+            kind.Textures.Bind(cmd, layout);
+            DrawVisible(cmd, layout, ref push, kind.Mesh, kind.FirstIndex, kind.Count);
+        }
     }
+
+    /// Each kind's cells gathered for the depth pass, drawn again by the shaded one.
+    private readonly List<List<Visible>> _gathered = [];
 
     /// Draws what falls in one shadow cascade, with the pipeline bound.
     public void DrawCasters(CommandBuffer cmd, VkPipelineLayout layout, Camera camera, float4x4 light, int cascade, Func<float3, float, bool> reaches)

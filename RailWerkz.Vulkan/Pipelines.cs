@@ -26,6 +26,9 @@ public sealed class PipelineDesc
     public bool DepthTest { get; init; } = true;
     public bool DepthWrite { get; init; } = true;
 
+    /// How depth is tested (reverse-Z: nearer is greater). Equal draws only where a depth prepass left this very surface.
+    public VkCompareOp DepthCompare { get; init; } = VkCompareOp.GreaterOrEqual;
+
     /// Draws depth alone, one sample per pixel (a shadow map).
     public bool DepthOnly { get; init; }
     public float DepthBiasConstant { get; init; }
@@ -99,7 +102,7 @@ public static unsafe class Pipelines
             {
                 DepthTestEnable = new Bool32(desc.DepthTest),
                 DepthWriteEnable = new Bool32(desc.DepthWrite),
-                DepthCompareOp = VkCompareOp.GreaterOrEqual,
+                DepthCompareOp = desc.DepthCompare,
             };
             var attachment = new VkPipelineColorBlendAttachmentState
             {

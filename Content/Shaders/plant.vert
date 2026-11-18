@@ -17,6 +17,10 @@ layout(location = 2) out vec2 vUv;
 layout(location = 3) out vec3 vTint;
 layout(location = 4) out float vHeight;
 
+// The depth prepass (plant_depth.frag) and the shaded pass after it must land on exactly the same depth, or the shaded pass's
+// equal test would miss.
+invariant gl_Position;
+
 // Each indirect draw's cell (Vegetation): xy where it is relative to the camera, zw its place on the ground, wrapped.
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Cells
 {
