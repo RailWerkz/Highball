@@ -122,8 +122,9 @@ public sealed class RenderModel : IDisposable
 public readonly record struct ModelDraw(RenderModel Model, float3 Position, float Yaw = 0f, float Scale = 1f, float4? BaseColor = null, float? Metallic = null, float? Roughness = null, bool CastsShadow = true,
     float4? Rotation = null, double3? At = null, float4? PreviousRotation = null, double3? PreviousAt = null)
 {
-    /// It moved since last frame, and says how.
-    public bool Moving => PreviousAt is not null;
+    /// It moved since last frame, and says how. Standing stock that's given its last place (the same) isn't: the motion
+    /// vectors pass needn't draw it again, and temporal anti-aliasing reprojects it as it does everything still.
+    public bool Moving => PreviousAt is { } was && (At is not { } at || !was.Equals(at) || (PreviousRotation is { } turn && !turn.Equals(Orientation)));
 
     /// The orientation as drawn.
     public float4 Orientation

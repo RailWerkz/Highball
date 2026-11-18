@@ -79,19 +79,24 @@ public sealed class GroundTextures : IDisposable
         {
             for (var x = 0; x < NoiseSize; x++)
             {
-                var (px, py) = ((double)x / NoiseSize * NoisePeriod, (double)y / NoiseSize * NoisePeriod);
-                double sum = 0, total = 0, amplitude = 0.5;
-                for (var octave = 0; octave < 5; octave++)
+                var i = (y * NoiseSize + x) * 4;
+                // Red and green: two of it, unlike each other.
+                for (var channel = 0; channel < 2; channel++)
                 {
-                    var period = NoisePeriod << octave;
-                    sum += Noise(px, py, period, (uint)octave) * amplitude;
-                    total += amplitude;
-                    (px, py) = (px * 2.0, py * 2.0);
-                    amplitude *= 0.5;
+                    var (px, py) = ((double)x / NoiseSize * NoisePeriod, (double)y / NoiseSize * NoisePeriod);
+                    double sum = 0, total = 0, amplitude = 0.5;
+                    for (var octave = 0; octave < 5; octave++)
+                    {
+                        var period = NoisePeriod << octave;
+                        sum += Noise(px, py, period, (uint)(octave + channel * 16)) * amplitude;
+                        total += amplitude;
+                        (px, py) = (px * 2.0, py * 2.0);
+                        amplitude *= 0.5;
+                    }
+
+                    pixels[i + channel] = (byte)Math.Clamp(Math.Round(sum / total * 255.0), 0, 255);
                 }
 
-                var i = (y * NoiseSize + x) * 4;
-                pixels[i] = (byte)Math.Clamp(Math.Round(sum / total * 255.0), 0, 255);
                 pixels[i + 3] = 255;
             }
         });

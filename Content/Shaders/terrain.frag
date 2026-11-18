@@ -35,7 +35,7 @@ layout(set = 0, binding = 16) uniform sampler2D earthHeight;
 layout(set = 0, binding = 17) uniform sampler2D ballastColor;
 layout(set = 0, binding = 18) uniform sampler2D ballastNormal;
 layout(set = 0, binding = 19) uniform sampler2D ballastPacked;
-// fbm (noise.glsl's) that repeats every NoisePeriod cells, in red (GroundTextures.BroadNoise).
+// fbm (noise.glsl's) that repeats every NoisePeriod cells, two unlike ones in red and green (GroundTextures.BroadNoise).
 layout(set = 0, binding = 20) uniform sampler2D broadNoise;
 const float NoisePeriod = 32.0;
 
@@ -44,6 +44,12 @@ const float NoisePeriod = 32.0;
 float broad(vec2 p)
 {
     return texture(broadNoise, p / NoisePeriod).r;
+}
+
+// The other one, turned, for patterns fine enough that a repeat could line up with the first's.
+float broad2(vec2 p)
+{
+    return texture(broadNoise, mat2(0.8, 0.6, -0.6, 0.8) * p / NoisePeriod).g;
 }
 
 layout(push_constant) uniform Push
@@ -208,7 +214,7 @@ void main()
     // Tree canopy: dark clumps with lighter crowns.
     if (vCover.a > 0.0)
     {
-        float canopy = vCover.a * smoothstep(0.35, 0.6, fbm(world.xz * 0.06, pixel * 0.06));
+        float canopy = vCover.a * smoothstep(0.35, 0.6, broad2(world.xz * 0.06));
         albedo = mix(albedo, albedo * vec3(0.55, 0.7, 0.5), canopy * 0.6);
     }
 
