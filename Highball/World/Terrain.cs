@@ -777,6 +777,26 @@ public sealed class Terrain : IDisposable
     }
 
     /// Draws the patches that pass the test (a patch's middle relative to the camera, and its radius), for a shadow.
+    /// What DrawCasters would draw for this test, as one number that changes whenever it would draw anything differently (a
+    /// patch built again, a level of detail changed): shadows cached from the ground are drawn again when it changes.
+    public int CasterSignature(double cx, double cy, double cz, Func<float3, float, bool> reaches)
+    {
+        var hash = new HashCode();
+        foreach (var (patch, indices, count) in _drawList)
+        {
+            var offset = new float3((float)(patch.Origin.X - cx), (float)-cy, (float)(patch.Origin.Z - cz));
+            if (!reaches(offset + patch.Centre, patch.Radius))
+                continue;
+            hash.Add(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(patch.Mesh));
+            hash.Add(indices.VkBuffer);
+            hash.Add(count);
+            if (patch.Insert is { } insert)
+                hash.Add(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(insert));
+        }
+
+        return hash.ToHashCode();
+    }
+
     public void DrawCasters(CommandBuffer cmd, double cx, double cy, double cz, Func<float3, float, bool> reaches, Action<float3> push)
     {
         foreach (var (patch, indices, count) in _drawList)

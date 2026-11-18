@@ -62,7 +62,7 @@ public sealed unsafe class SunShadows : IDisposable
 
     private static VkDescriptorSetLayout _setLayout;
 
-    private ShadowMap _map = new(Quality.ShadowSize, Cascades + 1);
+    private ShadowMap _map = new(Quality.ShadowSize, Cascades + 1 + StillSlots);
     private Texture2D? _horizon0;
     private Texture2D? _horizon1;
     private readonly BufferEx _uniforms;
@@ -242,7 +242,7 @@ public sealed unsafe class SunShadows : IDisposable
         if (_map.Size != Quality.ShadowSize)
         {
             var old = _map;
-            _map = new ShadowMap(Quality.ShadowSize, Cascades + 1);
+            _map = new ShadowMap(Quality.ShadowSize, Cascades + 1 + StillSlots);
             Gpu.Defer(old.Dispose);
             MakeSet(_horizon0!, _horizon1!);
         }
@@ -267,6 +267,7 @@ public sealed unsafe class SunShadows : IDisposable
         var texels = new float[Cascades];
 
         _frame++;
+        var stillModels = StillModels(models);
         for (var c = 0; c < Cascades; c++)
         {
             var far = Reach[c];
@@ -275,6 +276,14 @@ public sealed unsafe class SunShadows : IDisposable
             var seenFrom = c == 0 ? 0f : near * 0.9f;
             near = far;
             var cached = c >= CachedFrom;
+            if (!cached && active)
+            {
+                using (Profiler.Sample(CascadeNames[c], cmd))
+                    (_matrices[c], texels[c]) = DrawSplit(cmd, camera, aspect, c, c, centre, radius, seenFrom, far, right, up, sun, terrain, models, vegetation, network, stillModels);
+                _drawnInto[c] = null;
+                continue;
+            }
+
             if (cached)
                 radius *= 1f + CacheDrift;
             var texel = radius * 2f / _map.Size;
@@ -314,17 +323,23 @@ public sealed unsafe class SunShadows : IDisposable
         // The track's cascade: the view out to TrackReach, with the thin parts of the track alone.
         {
             var (centre, radius) = Slice(camera, aspect, camera.Near, TrackReach);
-            var texel = radius * 2f / _map.Size;
-            centre += right * Snap(centre, right, camera, texel) + up * Snap(centre, up, camera, texel);
-            uniforms.Track = Matrix(centre, right, up, sun, radius);
-            uniforms.TrackShadow = new float4(texel, active && network is not null ? TrackReach : 0f, 0f, 0f);
             using (Profiler.Sample("Track cascade", cmd))
             {
-                _map.BeginLayer(cmd, TrackLayer);
-                _receiverLow = LowestGround(terrain, camera, centre, radius);
                 if (active && network is not null)
-                    DrawCasters(cmd, camera, aspect, TrackLayer, centre, right, up, sun, radius, 0f, TrackReach, null, null, null, network, uniforms.Track);
-                _map.EndLayer(cmd);
+                {
+                    var (matrix, trackTexel) = DrawSplit(cmd, camera, aspect, TrackSlot, TrackLayer, centre, radius, 0f, TrackReach, right, up, sun, null, null, null, network, 0);
+                    uniforms.Track = matrix;
+                    uniforms.TrackShadow = new float4(trackTexel, TrackReach, 0f, 0f);
+                }
+                else
+                {
+                    var texel = radius * 2f / _map.Size;
+                    centre += right * Snap(centre, right, camera, texel) + up * Snap(centre, up, camera, texel);
+                    uniforms.Track = Matrix(centre, right, up, sun, radius);
+                    uniforms.TrackShadow = new float4(texel, 0f, 0f, 0f);
+                    _map.BeginLayer(cmd, TrackLayer);
+                    _map.EndLayer(cmd);
+                }
             }
         }
 
@@ -456,7 +471,8 @@ public sealed unsafe class SunShadows : IDisposable
     private readonly List<ModelInstances.Batch> _casters = [];
 
     private void DrawCasters(CommandBuffer cmd, Camera camera, float aspect, int cascade, float3 centre, float3 right, float3 up, float3 sun, float radius,
-        float seenFrom, float seenTo, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation, NetworkMeshes? network, float4x4 light)
+        float seenFrom, float seenTo, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation, NetworkMeshes? network, float4x4 light,
+        CasterSet set = CasterSet.All)
     {
         // Could something this size at this place shade anything in the cascade? Anywhere towards the sun can.
         bool InCascade(float3 relative, float size)
@@ -503,6 +519,14 @@ public sealed unsafe class SunShadows : IDisposable
                 return false;
             var r = size + edge;
             var end = relative - sun * MathF.Min(CasterReach(size, top), TowardsSun);
+            if (set == CasterSet.Still)
+            {
+                // Kept while the view moves about inside the cascade: anything whose shadow can land anywhere in its sphere.
+                var along = end - relative;
+                var t = Math.Clamp(MathEx.Dot(centre - relative, along) / MathF.Max(MathEx.Dot(along, along), 1e-6f), 0f, 1f);
+                return MathEx.Length(relative + along * t - centre) <= radius + r;
+            }
+
             foreach (var (n, d) in planesArray)
                 if (MathEx.Dot(n, relative) + d > r && MathEx.Dot(n, end) + d > r)
                     return false;
@@ -511,8 +535,9 @@ public sealed unsafe class SunShadows : IDisposable
 
         var trackOnly = cascade == TrackLayer;
 
-        if (vegetation is not null)
+        if (vegetation is not null && set != CasterSet.Still)
         {
+            using var _p = Profiler.Sample("Plant casters", cmd);
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, _plant);
             vegetation.DrawCasters(cmd, _plantLayout, camera, light, cascade, Reaches);
         }
@@ -525,17 +550,24 @@ public sealed unsafe class SunShadows : IDisposable
                 cmd.PushConstants(_layout, Stages, ByteSize.Zero, push);
             }
 
+            using var _t = Profiler.Sample("Track casters", cmd);
             // (The track's cascade draws as the nearest does, everything thin, but nothing that isn't.)
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, _line);
-            network.DrawLineCasters(cmd, camera.X, camera.Y, camera.Z, trackOnly ? 0 : cascade, Reaches, Place, thinOnly: trackOnly);
-            cmd.BindPipeline(VkPipelineBindPoint.Graphics, _part);
-            network.DrawPartCasters(cmd, camera.X, camera.Y, camera.Z, trackOnly ? 0 : cascade, Reaches, Place, coarse: trackOnly);
+            network.DrawLineCasters(cmd, camera.X, camera.Y, camera.Z, trackOnly ? 0 : cascade, Reaches, Place, thinOnly: trackOnly,
+                stillParts: set != CasterSet.Moving, movingParts: set != CasterSet.Still);
+            if (set != CasterSet.Moving)
+            {
+                cmd.BindPipeline(VkPipelineBindPoint.Graphics, _part);
+                network.DrawPartCasters(cmd, camera.X, camera.Y, camera.Z, trackOnly ? 0 : cascade, Reaches, Place, coarse: trackOnly);
+            }
         }
 
         if (models is not null && _instances is not null)
         {
+            using var _m = Profiler.Sample("Model casters", cmd);
             _casters.Clear();
-            _instances.Add(models, camera, (draw, centre, size) => draw.CastsShadow && (size <= 0f || Reaches(centre, size, centre.Y + size)), _casters, lodFloor);
+            _instances.Add(models, camera, (draw, centre, size) => draw.CastsShadow
+                && (set == CasterSet.All || (set == CasterSet.Moving) == draw.Moving) && (size <= 0f || Reaches(centre, size, centre.Y + size)), _casters, lodFloor);
             if (_casters.Count > 0)
             {
                 cmd.BindPipeline(VkPipelineBindPoint.Graphics, _model);
@@ -545,8 +577,9 @@ public sealed unsafe class SunShadows : IDisposable
             }
         }
 
-        if (terrain is not null)
+        if (terrain is not null && set != CasterSet.Moving)
         {
+            using var _g = Profiler.Sample("Ground casters", cmd);
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, _terrain);
             terrain.DrawCasters(cmd, camera.X, camera.Y, camera.Z, InCascade, offset =>
             {
@@ -555,6 +588,122 @@ public sealed unsafe class SunShadows : IDisposable
             });
         }
     }
+
+    /// Which casters a draw takes: everything; only what stands still (the ground, the track, standing stock and objects), into a
+    /// cascade's cached layer; or only what moves (plants in the wind, rolling stock, switch blades, crossing arms), over a copy of it.
+    private enum CasterSet { All, Still, Moving }
+
+    /// The near cascades and the track's are drawn in two parts. What stands still goes into a layer of its own (after the five
+    /// read ones), drawn StillMargin wider than the view needs, and kept while the view stays inside it, the sun doesn't move and
+    /// what stands still there doesn't change; each frame it's copied into the cascade and what moves is drawn over it. Standing
+    /// still (or riding slowly), most frames draw just the plants and the trains.
+    private const int StillSlots = 3;
+    private const int TrackSlot = 2;
+    private const float StillMargin = 0.12f;
+    private static readonly string[] StillNames = ["Still 0", "Still 1", "Still track"];
+
+    private sealed class StillCache
+    {
+        public (double X, double Y, double Z) Centre;
+        public float Radius;
+        public float Texel;
+        public float Low;
+        public float3 Sun;
+        public ShadowMap? Map;
+        public int Signature;
+    }
+
+    private readonly StillCache[] _still = [new(), new(), new()];
+
+    /// Every standing model that throws a shadow, as one number: a train starting or stopping, or anything placed or moved, changes it.
+    private static int StillModels(IReadOnlyList<ModelDraw>? models)
+    {
+        if (models is null)
+            return 0;
+        var hash = new HashCode();
+        foreach (var draw in models)
+        {
+            if (!draw.CastsShadow || draw.Moving)
+                continue;
+            hash.Add(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(draw.Model));
+            hash.Add(draw.Position);
+            hash.Add(draw.At);
+            hash.Add(draw.Orientation);
+            hash.Add(draw.Scale);
+        }
+
+        return hash.ToHashCode();
+    }
+
+    /// What stands still in a cascade's sphere (relative to the camera), as one number (see StillCache).
+    private static int StillSignature(Camera camera, float3 centre, float radius, float3 right, float3 up, float3 sun, int cascade, Terrain? terrain, NetworkMeshes? network, int models)
+    {
+        bool InCascade(float3 relative, float size)
+        {
+            var d = relative - centre;
+            return MathF.Abs(MathEx.Dot(d, right)) <= radius + size && MathF.Abs(MathEx.Dot(d, up)) <= radius + size && MathEx.Dot(d, sun) >= -radius - size;
+        }
+
+        var hash = new HashCode();
+        hash.Add(models);
+        if (terrain is not null)
+            hash.Add(terrain.CasterSignature(camera.X, camera.Y, camera.Z, InCascade));
+        if (network is not null)
+        {
+            var trackOnly = cascade == TrackLayer;
+            hash.Add(network.CasterSignature(camera.X, camera.Y, camera.Z, trackOnly ? 0 : cascade, (c, size, _) => InCascade(c, size), trackOnly));
+        }
+
+        return hash.ToHashCode();
+    }
+
+    /// Draws a near cascade (or the track's) in its two parts (StillCache), and returns the matrix and texel it's read with.
+    private (float4x4 Matrix, float Texel) DrawSplit(CommandBuffer cmd, Camera camera, float aspect, int slot, int layer, float3 centre, float radius,
+        float seenFrom, float seenTo, float3 right, float3 up, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation,
+        NetworkMeshes? network, int stillModels)
+    {
+        var cache = _still[slot];
+        var fits = false;
+        var drawn = default(float3);
+        if (cache.Map == _map && MathEx.Dot(cache.Sun, sun) >= 0.99999f)
+        {
+            var (x, y, z) = cache.Centre;
+            drawn = new float3((float)(x - camera.X), (float)(y - camera.Y), (float)(z - camera.Z));
+            fits = MathEx.Length(centre - drawn) + radius <= cache.Radius
+                && StillSignature(camera, drawn, cache.Radius, right, up, sun, layer, terrain, network, stillModels) == cache.Signature;
+        }
+
+        if (!fits)
+        {
+            var wide = radius * (1f + StillMargin);
+            var texel = wide * 2f / _map.Size;
+            drawn = centre + right * Snap(centre, right, camera, texel) + up * Snap(centre, up, camera, texel);
+            using (Profiler.Sample(StillNames[slot], cmd))
+            {
+                _map.BeginLayer(cmd, Cascades + 1 + slot);
+                _receiverLow = cache.Low = LowestGround(terrain, camera, drawn, wide);
+                DrawCasters(cmd, camera, aspect, layer, drawn, right, up, sun, wide, seenFrom, seenTo, terrain, models, null, network,
+                    Matrix(drawn, right, up, sun, wide), CasterSet.Still);
+                _map.EndLayer(cmd);
+            }
+
+            cache.Centre = (camera.X + drawn.X, camera.Y + drawn.Y, camera.Z + drawn.Z);
+            cache.Radius = wide;
+            cache.Texel = texel;
+            cache.Sun = sun;
+            cache.Map = _map;
+            cache.Signature = StillSignature(camera, drawn, wide, right, up, sun, layer, terrain, network, stillModels);
+        }
+
+        var matrix = Matrix(drawn, right, up, sun, cache.Radius);
+        _map.CopyLayer(cmd, Cascades + 1 + slot, layer);
+        _map.BeginLayer(cmd, layer, keep: true);
+        _receiverLow = cache.Low;
+        DrawCasters(cmd, camera, aspect, layer, drawn, right, up, sun, cache.Radius, seenFrom, seenTo, null, models, vegetation, network, matrix, CasterSet.Moving);
+        _map.EndLayer(cmd);
+        return (matrix, cache.Texel);
+    }
+
 
     public void Dispose()
     {

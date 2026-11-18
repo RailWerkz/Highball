@@ -2702,11 +2702,44 @@ public sealed partial class NetworkMeshes : IDisposable
     /// Draws the lines' shapes into a shadow cascade, with a pipeline bound that takes just their positions.
     /// thinOnly: the track's own cascade (SunShadows.TrackReach), which takes the rails and the rest of the near meshes but not the
     /// beds and roads of the far ones.
+    /// What the lines and parts that stand still (not switch blades or crossing arms) would draw into a cascade for this test, as one
+    /// number that changes whenever any of them would be drawn differently: shadows cached from them are drawn again when it does.
+    public int CasterSignature(double cx, double cy, double cz, int cascade, SunShadows.CasterTest reaches, bool thinOnly = false)
+    {
+        var hash = new HashCode();
+        foreach (var (key, near) in _drawList)
+        {
+            if ((near && cascade > LastThinCascade) || (thinOnly && !near))
+                continue;
+            var chunk = _chunks[key];
+            var mesh = near ? chunk.Near : chunk.Far;
+            if (mesh is null)
+                continue;
+            var origin = OriginOf(key);
+            var offset = new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz));
+            if (!reaches(offset + (mesh.BoundsMin + mesh.BoundsMax) * 0.5f, MathEx.Length(mesh.BoundsMax - mesh.BoundsMin) * 0.5f, offset.Y + mesh.BoundsMax.Y))
+                continue;
+            hash.Add(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(mesh));
+            if (near)
+            {
+                hash.Add(chunk.Ties.VkBuffer);
+                hash.Add(chunk.TieCount);
+                hash.Add(chunk.Plates.VkBuffer);
+                hash.Add(chunk.PlateCount);
+            }
+        }
+
+        return hash.ToHashCode();
+    }
+
+    /// stillParts: the lines themselves; movingParts: switch blades and crossing arms (which swing).
     public void DrawLineCasters(CommandBuffer cmd, double cx, double cy, double cz, int cascade, SunShadows.CasterTest reaches, Action<float3> push,
-        bool thinOnly = false)
+        bool thinOnly = false, bool stillParts = true, bool movingParts = true)
     {
         foreach (var (key, near) in _drawList)
         {
+            if (!stillParts)
+                break;
             if ((near && cascade > LastThinCascade) || (thinOnly && !near))
                 continue;
 
@@ -2724,7 +2757,7 @@ public sealed partial class NetworkMeshes : IDisposable
             mesh.Draw(cmd);
         }
 
-        if (cascade > LastThinCascade)
+        if (cascade > LastThinCascade || !movingParts)
             return;
 
         foreach (var sw in _switches.Values)
