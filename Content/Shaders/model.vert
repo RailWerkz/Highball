@@ -1,5 +1,7 @@
-#version 450
-// A placed model, one instance each (ModelInstance); its material's factors in the push constants.
+#version 460
+#extension GL_EXT_buffer_reference : require
+// A placed model, one instance each (ModelInstance). Each of a call's draws is one of its parts: which one (its material's row in
+// the table, model.frag) is the call's base plus the draw's place in it.
 
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
@@ -10,12 +12,14 @@ layout(location = 4) in vec4 inPlaceAndScale; // xyz: where it stands relative t
 layout(location = 0) out vec3 vRelative;
 layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec2 vUv;
+layout(location = 3) flat out uint vDraw;
 
 layout(push_constant) uniform Push
 {
     mat4 viewProjection;
-    vec4 baseColor;
-    vec4 material;      // x: metallic, y: roughness, z: camera height, w: alpha cutoff
+    uvec2 materials; // the draws' material table (model.frag)
+    uint base;       // this call's first row in it
+    float cameraHeight;
 } pc;
 
 vec3 rotate(vec4 q, vec3 v)
@@ -29,5 +33,6 @@ void main()
     vRelative = relative;
     vNormal = rotate(inRotation, inNormal);
     vUv = inUv;
+    vDraw = pc.base + uint(gl_DrawID);
     gl_Position = pc.viewProjection * vec4(relative, 1.0);
 }

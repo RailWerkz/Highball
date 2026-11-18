@@ -102,8 +102,34 @@ public sealed class RenderModel : IDisposable
         return binding;
     }
 
+    /// Each part's textures' slots in the MaterialTable (albedo, metallic-roughness, normal, occlusion) and whether it has a normal
+    /// map, taken the first time they're drawn and given back when this goes.
+    public (int Albedo, int MetalRough, int Normal, int Occlusion, bool HasNormal)[] Slots
+    {
+        get
+        {
+            if (_slots is not null)
+                return _slots;
+            _slots = new (int, int, int, int, bool)[_parts.Count];
+            for (var i = 0; i < _parts.Count; i++)
+            {
+                var t = _parts[i].Textures.Textures;
+                _slots[i] = (MaterialTable.Acquire(t[0]), MaterialTable.Acquire(t[1]), MaterialTable.Acquire(t[2]), MaterialTable.Acquire(t[3]), t[2].Width > 1);
+            }
+
+            return _slots;
+        }
+    }
+
+    private (int Albedo, int MetalRough, int Normal, int Occlusion, bool HasNormal)[]? _slots;
+
     public void Dispose()
     {
+        if (_slots is not null)
+            foreach (var part in _parts)
+                foreach (var texture in part.Textures.Textures)
+                    MaterialTable.Release(texture);
+        _slots = null;
         foreach (var (lod, _) in _lods)
             lod.Dispose();
         foreach (var binding in _bindings)

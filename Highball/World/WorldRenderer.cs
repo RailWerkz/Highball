@@ -53,9 +53,25 @@ public sealed unsafe class WorldRenderer : IDisposable
     private struct ModelPush
     {
         public float4x4 ViewProjection;
-        public float4 BaseColor;
-        public float4 Material;
+        public ulong Materials;
+        public uint Base;
+        public float CameraHeight;
     }
+
+    /// One draw's material, as model.frag reads it: its textures' MaterialTable slots, its colour, and metallic, roughness, alpha
+    /// cutoff (below 0: see-through) and whether it has a normal map.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DrawMaterial
+    {
+        public uint Albedo, MetalRough, Normal, Occlusion;
+        public float4 BaseColor;
+        public float4 Factors;
+    }
+
+    private readonly FrameRing<DrawMaterial> _drawMaterials = new(VkBufferUsageFlags.StorageBufferBit | VkBufferUsageFlags.ShaderDeviceAddressBit, "models.materials");
+    private readonly FrameRing<VkDrawIndexedIndirectCommand> _modelCommands = new(VkBufferUsageFlags.IndirectBufferBit, "models.commands");
+    private DrawMaterial[] _materialScratch = new DrawMaterial[64];
+    private VkDrawIndexedIndirectCommand[] _commandScratch = new VkDrawIndexedIndirectCommand[64];
 
     private const VkShaderStageFlags Stages = VkShaderStageFlags.VertexBit | VkShaderStageFlags.FragmentBit;
 
@@ -63,6 +79,7 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly VkPipelineLayout _layout;
     private readonly VkPipelineLayout _terrainLayout;
     private readonly VkPipelineLayout _modelLayout;
+    private readonly VkPipelineLayout _bindlessLayout;
     private readonly GroundTextures _ground = new();
     private readonly LocalLights _lights = new();
     private readonly Weather _weather = new();
@@ -119,6 +136,8 @@ public sealed unsafe class WorldRenderer : IDisposable
         _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
         // (Colour, metal-roughness, normal and occlusion: RenderModel.Bind.)
         _modelLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(4), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
+        // Models: every texture in one array (MaterialTable), the rest as the plants have it.
+        _bindlessLayout = Pipelines.Layout(128, MaterialTable.SetLayout, Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
         CreateWorldPipelines();
     }
 
@@ -178,14 +197,14 @@ public sealed unsafe class WorldRenderer : IDisposable
         // Whole models under physically based light (lighting.glsl). Nothing's culled: the shader lights the side it sees.
         _model = Pipelines.Create(new PipelineDesc
         {
-            Vertex = modelVert, Fragment = modelFrag, Layout = _modelLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(), Cull = VkCullModeFlags.None,
+            Vertex = modelVert, Fragment = modelFrag, Layout = _bindlessLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(), Cull = VkCullModeFlags.None,
             InstanceAttributes = ModelInstance.Layout[..2], InstanceStride = Marshal.SizeOf<ModelInstance>(),
         });
         // Their see-through parts (glass), once everything solid and the sky are down: laid over what's behind, which they
         // don't hide from what's drawn after (no depth written).
         _modelSeeThrough = Pipelines.Create(new PipelineDesc
         {
-            Vertex = modelVert, Fragment = modelFrag, Layout = _modelLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(), Cull = VkCullModeFlags.None,
+            Vertex = modelVert, Fragment = modelFrag, Layout = _bindlessLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(), Cull = VkCullModeFlags.None,
             InstanceAttributes = ModelInstance.Layout[..2], InstanceStride = Marshal.SizeOf<ModelInstance>(), DepthWrite = false, Blend = true,
         });
         // Drawn over what's solid, and no part of it.
@@ -608,39 +627,82 @@ public sealed unsafe class WorldRenderer : IDisposable
         }
     }
 
-    /// The models in view: one instanced draw per material of each model. Their solid parts, or (seeThrough) their glass.
+    /// The models in view, their solid parts or (seeThrough) their glass: every part of a model's batch in one indirect call,
+    /// whatever its materials, each draw reading its own from a table (DrawMaterial) and its textures from the MaterialTable.
     private void DrawModels(CommandBuffer cmd, Camera camera, float aspect, bool seeThrough = false)
     {
         if (seeThrough && !_seen.Any(b => b.Model.HasSeeThrough))
             return;
 
         cmd.BindPipeline(VkPipelineBindPoint.Graphics, seeThrough ? _modelSeeThrough : _model);
-        Sky.Bind(cmd, _modelLayout);
-        _shadows.Bind(cmd, _modelLayout);
-        _clouds.Bind(cmd, _modelLayout);
-        var viewProjection = camera.JitteredViewProjection(aspect);
+        MaterialTable.Bind(cmd, _bindlessLayout);
+        Sky.Bind(cmd, _bindlessLayout);
+        _shadows.Bind(cmd, _bindlessLayout);
+        _clouds.Bind(cmd, _bindlessLayout);
+        var push = new ModelPush { ViewProjection = camera.JitteredViewProjection(aspect), CameraHeight = (float)camera.Y };
 
         foreach (var batch in _seen)
         {
             if (seeThrough && !batch.Model.HasSeeThrough)
                 continue;
 
-            foreach (var part in batch.Model.Parts)
+            var parts = batch.Model.Parts;
+            var slots = batch.Model.Slots;
+            if (_materialScratch.Length < parts.Count)
             {
-                if (part.SeeThrough != seeThrough)
-                    continue;
+                _materialScratch = new DrawMaterial[parts.Count * 2];
+                _commandScratch = new VkDrawIndexedIndirectCommand[parts.Count * 2];
+            }
 
-                var push = new ModelPush
+            var n = 0;
+            long triangles = 0;
+            for (var i = 0; i < parts.Count; i++)
+            {
+                var part = parts[i];
+                if (part.SeeThrough != seeThrough || part.IndexCount == 0)
+                    continue;
+                var slot = slots[i];
+                _materialScratch[n] = new DrawMaterial
                 {
-                    ViewProjection = viewProjection,
+                    Albedo = (uint)slot.Albedo, MetalRough = (uint)slot.MetalRough, Normal = (uint)slot.Normal, Occlusion = (uint)slot.Occlusion,
                     BaseColor = batch.BaseColor ?? part.BaseColor,
-                    Material = new float4(batch.Metallic ?? part.Metallic, batch.Roughness ?? part.Roughness, (float)camera.Y, part.SeeThrough ? -1f : part.AlphaCutoff),
+                    Factors = new float4(batch.Metallic ?? part.Metallic, batch.Roughness ?? part.Roughness, part.SeeThrough ? -1f : part.AlphaCutoff, slot.HasNormal ? 1f : 0f),
                 };
-                part.Textures.Bind(cmd, _modelLayout);
-                cmd.PushConstants(_modelLayout, Stages, ByteSize.Zero, push);
-                batch.Model.Mesh.DrawRangeInstanced(cmd, batch.Buffer, part.FirstIndex, part.IndexCount, batch.Count, batch.First);
+                _commandScratch[n] = new VkDrawIndexedIndirectCommand
+                {
+                    IndexCount = part.IndexCount, InstanceCount = batch.Count, FirstIndex = part.FirstIndex, VertexOffset = 0, FirstInstance = batch.First,
+                };
+                triangles += part.IndexCount / 3 * (long)batch.Count;
+                n++;
+            }
+
+            if (n == 0)
+                continue;
+            var (materials, row) = _drawMaterials.Append(_materialScratch.AsSpan(0, n));
+            var (commands, first) = _modelCommands.Append(_commandScratch.AsSpan(0, n));
+            push.Materials = MaterialAddress(materials);
+            const int stride = 20;
+            if (Gpu.MultiDraw)
+            {
+                push.Base = (uint)row;
+                cmd.PushConstants(_bindlessLayout, Stages, ByteSize.Zero, push);
+                batch.Model.Mesh.DrawIndexedIndirect(cmd, batch.Buffer, commands, (long)first * stride, n, triangles);
+                continue;
+            }
+
+            for (var i = 0; i < n; i++)
+            {
+                push.Base = (uint)(row + i);
+                cmd.PushConstants(_bindlessLayout, Stages, ByteSize.Zero, push);
+                batch.Model.Mesh.DrawIndexedIndirect(cmd, batch.Buffer, commands, (long)(first + i) * stride, 1, _commandScratch[i].IndexCount / 3 * (long)batch.Count);
             }
         }
+    }
+
+    private static ulong MaterialAddress(Brutal.VulkanApi.Abstractions.BufferEx buffer)
+    {
+        var address = buffer.GetDeviceAddress();
+        return System.Runtime.CompilerServices.Unsafe.As<VkDeviceAddress, ulong>(ref address);
     }
 
     /// Draws the finished world over the screen. Inside the present pass, before the interface.
@@ -656,6 +718,9 @@ public sealed unsafe class WorldRenderer : IDisposable
         DestroyWorldPipelines();
         Pipelines.Destroy(default, _terrainLayout);
         Pipelines.Destroy(default, _modelLayout);
+        Pipelines.Destroy(default, _bindlessLayout);
+        _drawMaterials.Dispose();
+        _modelCommands.Dispose();
         _ground.Dispose();
         _shadows.Dispose();
         _clouds.Dispose();

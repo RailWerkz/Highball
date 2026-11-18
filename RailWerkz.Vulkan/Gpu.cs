@@ -244,6 +244,7 @@ public static unsafe class Gpu
             DescriptorBindingPartiallyBound = new Bool32(true),
             DescriptorBindingVariableDescriptorCount = new Bool32(true),
             DescriptorBindingSampledImageUpdateAfterBind = new Bool32(true),
+            DescriptorBindingUpdateUnusedWhilePending = new Bool32(true), // MaterialTable: slots written while frames using others are in flight
             ShaderSampledImageArrayNonUniformIndexing = new Bool32(true),
             DrawIndirectCount = new Bool32(IndirectCount),
         };

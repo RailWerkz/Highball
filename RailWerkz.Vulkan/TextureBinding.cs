@@ -38,8 +38,12 @@ public sealed unsafe class TextureBinding : IDisposable
         return layout;
     }
 
+    /// What it binds, in binding order.
+    public Texture2D[] Textures { get; }
+
     public TextureBinding(params Texture2D[] textures)
     {
+        Textures = textures;
         var count = textures.Length;
         var size = new VkDescriptorPoolSize { Type = VkDescriptorType.CombinedImageSampler, DescriptorCount = count };
         var pool = new VkDescriptorPoolCreateInfo { MaxSets = 1, PoolSizeCount = 1, PoolSizes = &size };
