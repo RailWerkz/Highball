@@ -29,12 +29,22 @@ public sealed class PackSource : IDisposable
         Header = PackFile.ReadHeader(_file);
         _tiles = Header.Tiles.ToDictionary(t => t.Id);
 
-        // The track files, unpacked fresh each time into a cache folder of this pack's own.
+        // The track files, unpacked fresh each time into a cache folder of this pack's own. The track this game solved from them
+        // (SolvedTrack) is kept from the last time: it's checked against a stamp of what it was solved from, so it's only used
+        // while the pack's track is the same, and the solve (a second for 70 km) is paid once, not every time. It's ten times
+        // the size of what it's solved from, which is why packs don't carry it.
         var name = System.IO.Path.GetFileNameWithoutExtension(path);
         var world = System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(path)) ?? "World";
         var cache = System.IO.Path.Combine(ContentPath.UserData, "PackCache", world, name);
         if (Directory.Exists(cache))
-            Directory.Delete(cache, true);
+        {
+            foreach (var old in Directory.GetFiles(cache))
+                if (!System.IO.Path.GetFileName(old).Equals(SolvedTrack, StringComparison.OrdinalIgnoreCase))
+                    File.Delete(old);
+            foreach (var old in Directory.GetDirectories(cache))
+                Directory.Delete(old, true);
+        }
+
         Directory.CreateDirectory(cache);
         foreach (var entry in Header.Files)
             File.WriteAllBytes(System.IO.Path.Combine(cache, entry.Name), PackFile.ReadBlob(_file, entry.Offset, entry.Length));
@@ -46,6 +56,9 @@ public sealed class PackSource : IDisposable
     }
 
     public static PackSource Open(string path) => new(path);
+
+    /// The file NetworkLines.SaveSolved writes in a route's folder.
+    private const string SolvedTrack = "Track.bin.gz";
 
     /// Every installed pack: (world, region, path), by world then region.
     public static List<(string World, string Region, string Path)> Installed()
