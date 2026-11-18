@@ -10,17 +10,24 @@ namespace Highball.Routes;
 ///
 /// A tile is Brotli-compressed: its heights as decimetres above its lowest point, each stored as the difference from
 /// what its left, upper and upper-left neighbours predict (small numbers, which compress far better than the heights),
-/// with hand sculpting already added in; then its land cover.
+/// with hand sculpting already added in; then its land cover. Version 2 stores those differences' low bytes, then their
+/// high bytes (nearly all zero, so they all but vanish), at Brotli quality 9: about 73% of version 1's size, at about
+/// 0.1 s a tile to pack. Version 1 packs (each difference's two bytes together, quality 4) are still read.
 public static class PackFile
 {
     private const uint Magic = 0x4B504248; // "HBPK"
-    private const int Version = 1;
+    private const int Version = 2;
+
+    /// Brotli's quality and window for tiles: 9 is the knee (10 and 11 save another 5-7% at 8-20 times the time, which across
+    /// the whole country is days). Release builds of the packs can raise it.
+    public static int TileQuality { get; set; } = 9;
+    private const int TileWindow = 22;
 
     public sealed record TileEntry(TileId Id, long Offset, int Length, byte[] Hash);
 
     public sealed record FileEntry(string Name, long Offset, int Length, byte[] Hash);
 
-    public sealed record Header(int Zone, string Region, double TileSize, int Samples, int CoverCells, List<TileEntry> Tiles, List<FileEntry> Files);
+    public sealed record Header(int Zone, string Region, double TileSize, int Samples, int CoverCells, List<TileEntry> Tiles, List<FileEntry> Files, int Version = 1);
 
     /// One tile as the pack keeps it.
     public sealed record Tile(TileId Id, float MinHeight, float MaxHeight, string HeightSource, float[] Heights, byte[] Cover);
@@ -41,10 +48,12 @@ public static class PackFile
             (_zone, _region, _grid) = (zone, region, grid);
         }
 
-        public void Add(Tile tile)
+        public void Add(Tile tile) => AddEncoded(tile.Id, Encode(tile, _grid.Samples, _grid.CoverCells));
+
+        /// A tile already encoded (EncodeTile), so many can be encoded at once and written in order.
+        public void AddEncoded(TileId id, byte[] blob)
         {
-            var blob = Encode(tile, _grid.Samples, _grid.CoverCells);
-            _tiles.Add(new TileEntry(tile.Id, _file.Position, blob.Length, Hash(blob)));
+            _tiles.Add(new TileEntry(id, _file.Position, blob.Length, Hash(blob)));
             _file.Write(blob);
         }
 
@@ -100,6 +109,9 @@ public static class PackFile
     /// The first 16 bytes of the SHA-256: what a patch compares to know a tile's changed.
     public static byte[] Hash(byte[] data) => SHA256.HashData(data)[..16];
 
+    /// A tile as the pack stores it, for Writer.AddEncoded. Thread-safe.
+    public static byte[] EncodeTile(Tile tile, RouteGrid grid) => Encode(tile, grid.Samples, grid.CoverCells);
+
     private static byte[] Encode(Tile tile, int samples, int cells)
     {
         using var raw = new MemoryStream();
@@ -111,23 +123,29 @@ public static class PackFile
             var packed = new int[samples * samples];
             for (var i = 0; i < packed.Length; i++)
                 packed[i] = (int)Math.Clamp(MathF.Round((tile.Heights[i] - tile.MinHeight) * 10f), 0f, 65535f);
+            var planes = new byte[packed.Length * 2];
             for (var z = 0; z < samples; z++)
             for (var x = 0; x < samples; x++)
             {
-                var residual = packed[z * samples + x] - Predict(packed, samples, x, z);
+                var i = z * samples + x;
+                var residual = packed[i] - Predict(packed, samples, x, z);
                 if (residual is > short.MaxValue or < short.MinValue)
                     throw new InvalidDataException($"tile {tile.Id}: heights jump too far between samples to pack");
-                // Zigzag, so small negatives are small too.
-                w.Write((ushort)((residual << 1) ^ (residual >> 31)));
+                // Zigzag, so small negatives are small too; low bytes first, then high.
+                var zig = (ushort)((residual << 1) ^ (residual >> 31));
+                planes[i] = (byte)zig;
+                planes[packed.Length + i] = (byte)(zig >> 8);
             }
 
+            w.Write(planes);
             w.Write(tile.Cover);
         }
 
-        using var output = new MemoryStream();
-        using (var brotli = new BrotliStream(output, CompressionLevel.Optimal, leaveOpen: true))
-            brotli.Write(raw.GetBuffer(), 0, (int)raw.Length);
-        return output.ToArray();
+        var source = raw.GetBuffer().AsSpan(0, (int)raw.Length);
+        var output = new byte[BrotliEncoder.GetMaxCompressedLength(source.Length)];
+        if (!BrotliEncoder.TryCompress(source, output, out var written, TileQuality, TileWindow))
+            throw new InvalidDataException($"tile {tile.Id}: couldn't compress");
+        return output[..written];
     }
 
     private static int Predict(int[] p, int samples, int x, int z)
@@ -150,8 +168,8 @@ public static class PackFile
         using var r = new BinaryReader(file, System.Text.Encoding.UTF8, leaveOpen: true);
         if (r.ReadUInt32() != Magic)
             throw new InvalidDataException("not a client pack");
-        if (r.ReadInt32() is var version && version != Version)
-            throw new InvalidDataException($"pack version {version}, not {Version}");
+        if (r.ReadInt32() is var version && version is < 1 or > Version)
+            throw new InvalidDataException($"pack version {version}, not 1 to {Version}");
         var (zone, region, size, samples, cells) = (r.ReadInt32(), r.ReadString(), r.ReadDouble(), r.ReadInt32(), r.ReadInt32());
         var tiles = new List<TileEntry>();
         for (var n = r.ReadInt32(); n > 0; n--)
@@ -159,7 +177,7 @@ public static class PackFile
         var files = new List<FileEntry>();
         for (var n = r.ReadInt32(); n > 0; n--)
             files.Add(new FileEntry(r.ReadString(), r.ReadInt64(), r.ReadInt32(), r.ReadBytes(16)));
-        return new Header(zone, region, size, samples, cells, tiles, files);
+        return new Header(zone, region, size, samples, cells, tiles, files, version);
     }
 
     public static byte[] ReadBlob(Stream file, long offset, int length)
@@ -180,12 +198,14 @@ public static class PackFile
         var (min, max, source) = (r.ReadSingle(), r.ReadSingle(), r.ReadString());
         var samples = header.Samples;
         var packed = new int[samples * samples];
+        var planes = header.Version >= 2 ? r.ReadBytes(packed.Length * 2) : null;
         for (var z = 0; z < samples; z++)
         for (var x = 0; x < samples; x++)
         {
-            var zig = r.ReadUInt16();
+            var i = z * samples + x;
+            int zig = planes is null ? r.ReadUInt16() : planes[i] | (planes[packed.Length + i] << 8);
             var residual = (zig >> 1) ^ -(zig & 1);
-            packed[z * samples + x] = Predict(packed, samples, x, z) + residual;
+            packed[i] = Predict(packed, samples, x, z) + residual;
         }
 
         var heights = new float[packed.Length];

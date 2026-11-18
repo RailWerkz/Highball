@@ -60,18 +60,34 @@ public static class WorldExport
             var hashes = new Dictionary<string, string>();
             using (var pack = new PackFile.Writer(path, zone, name, grid))
             {
-                foreach (var id in tiles)
+                // Loaded and compressed a batch at a time on every core (each tile is a tenth of a second of Brotli), written in order.
+                const int Batch = 64;
+                for (var start = 0; start < tiles.Count; start += Batch)
                 {
-                    var tileFolder = route.TileFolder(id);
-                    rawBytes += Directory.GetFiles(tileFolder).Sum(f => new FileInfo(f).Length);
-                    var tile = RouteTile.Load(tileFolder);
-                    var heights = tile.Heights;
-                    if (LoadEdits(tileFolder, heights.Length) is { } edits)
-                        for (var i = 0; i < heights.Length; i++)
-                            heights[i] += edits[i];
-                    pack.Add(new PackFile.Tile(id, heights.Min(), heights.Max(), tile.Meta.HeightSource, heights, tile.Cover));
-                    hashes[id.ToString()] = Convert.ToHexString(pack.Tiles[^1].Hash);
-                    progress?.Invoke($"Packing tiles: {++done} of {built.Count}");
+                    var batch = tiles.Skip(start).Take(Batch).ToList();
+                    var blobs = new byte[batch.Count][];
+                    var sizes = new long[batch.Count];
+                    Parallel.For(0, batch.Count, k =>
+                    {
+                        var tileFolder = route.TileFolder(batch[k]);
+                        sizes[k] = Directory.GetFiles(tileFolder).Sum(f => new FileInfo(f).Length);
+                        var tile = RouteTile.Load(tileFolder);
+                        var heights = tile.Heights;
+                        if (LoadEdits(tileFolder, heights.Length) is { } edits)
+                            for (var i = 0; i < heights.Length; i++)
+                                heights[i] += edits[i];
+                        blobs[k] = PackFile.EncodeTile(new PackFile.Tile(batch[k], heights.Min(), heights.Max(), tile.Meta.HeightSource, heights, tile.Cover), grid);
+                    });
+
+                    for (var k = 0; k < batch.Count; k++)
+                    {
+                        rawBytes += sizes[k];
+                        pack.AddEncoded(batch[k], blobs[k]);
+                        hashes[batch[k].ToString()] = Convert.ToHexString(pack.Tiles[^1].Hash);
+                    }
+
+                    done += batch.Count;
+                    progress?.Invoke($"Packing tiles: {done} of {built.Count}");
                 }
 
                 foreach (var (fileName, data) in files)
