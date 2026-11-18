@@ -859,19 +859,29 @@ public sealed unsafe class Vegetation : IDisposable
     /// Draws what's in view in two passes: every kind's depth with depthPipeline (cut out, unshaded), then every kind shaded with
     /// colorPipeline, which tests for equal depth, so overlapping plants are lit once a pixel. The descriptor sets other than
     /// the kinds' textures are bound by the caller.
-    public void Draw(CommandBuffer cmd, VkPipelineLayout layout, Camera camera, float aspect, VkPipeline depthPipeline, VkPipeline colorPipeline, int culled = -1)
+    public void Draw(CommandBuffer cmd, VkPipelineLayout layout, Camera camera, float aspect, VkPipeline depthPipeline, VkPipeline colorPipeline, int culled = -1,
+        PlantPass pass = PlantPass.Both)
     {
-        DrawnInstances = 0;
+        if (pass != PlantPass.Color)
+            DrawnInstances = 0;
         if (!Enabled)
             return;
 
         if (culled >= 0)
         {
             var gpuPush = new Push { Matrix = camera.JitteredViewProjection(aspect), Globals = Globals(camera) };
-            cmd.BindPipeline(VkPipelineBindPoint.Graphics, depthPipeline);
-            DrawCulled(cmd, layout, ref gpuPush, culled, -1);
-            cmd.BindPipeline(VkPipelineBindPoint.Graphics, colorPipeline);
-            DrawCulled(cmd, layout, ref gpuPush, culled, -1);
+            if (pass != PlantPass.Color)
+            {
+                cmd.BindPipeline(VkPipelineBindPoint.Graphics, depthPipeline);
+                DrawCulled(cmd, layout, ref gpuPush, culled, -1);
+            }
+
+            if (pass != PlantPass.Depth)
+            {
+                cmd.BindPipeline(VkPipelineBindPoint.Graphics, colorPipeline);
+                DrawCulled(cmd, layout, ref gpuPush, culled, -1);
+            }
+
             return;
         }
 
@@ -880,8 +890,9 @@ public sealed unsafe class Vegetation : IDisposable
         while (_gathered.Count < _kinds.Count)
             _gathered.Add([]);
 
-        cmd.BindPipeline(VkPipelineBindPoint.Graphics, depthPipeline);
-        for (var k = 0; k < _kinds.Count; k++)
+        if (pass != PlantPass.Color)
+            cmd.BindPipeline(VkPipelineBindPoint.Graphics, depthPipeline);
+        for (var k = 0; pass != PlantPass.Color && k < _kinds.Count; k++)
         {
             var kind = _kinds[k];
             _gathered[k].Clear();
@@ -898,6 +909,8 @@ public sealed unsafe class Vegetation : IDisposable
                 DrawnInstances += visible.Count;
         }
 
+        if (pass == PlantPass.Depth)
+            return;
         cmd.BindPipeline(VkPipelineBindPoint.Graphics, colorPipeline);
         for (var k = 0; k < _kinds.Count; k++)
         {
@@ -913,6 +926,10 @@ public sealed unsafe class Vegetation : IDisposable
             DrawVisible(cmd, layout, ref push, kind.Mesh, kind.FirstIndex, kind.Count);
         }
     }
+
+    /// Draw's halves: the alpha-tested depth (drawn before the ground, so ground under plants isn't shaded), then the shaded
+    /// plants (an equal depth test, after the track's fades so they cover them), or both at once.
+    public enum PlantPass { Both, Depth, Color }
 
     /// Each kind's cells gathered for the depth pass, drawn again by the shaded one.
     private readonly List<List<Visible>> _gathered = [];
@@ -951,11 +968,17 @@ public sealed unsafe class Vegetation : IDisposable
     private static float4 Band(Kind kind) => new(kind.Near, float.IsPositiveInfinity(kind.Far) ? 1e9f : kind.Far, 0f, 0f);
 
     /// What every cell drawn this frame shares: the ground below the camera and the wind's phases.
+    /// The wind's phases are taken once a frame: the plants' depth and their shaded pass (drawn apart, PlantPass) and every shadow
+    /// must bend them the same, or the equal depth test misses.
     private static float4 Globals(Camera camera)
     {
-        var phases = WindPhases();
-        return new float4(-(float)camera.Y, phases.Z, phases.X, phases.Y);
+        if (_phasesFrame != Gpu.FrameNumber)
+            (_phasesFrame, _phases) = (Gpu.FrameNumber, WindPhases());
+        return new float4(-(float)camera.Y, _phases.Z, _phases.X, _phases.Y);
     }
+
+    private static long _phasesFrame = -1;
+    private static float3 _phases;
 
     /// The cells with any of a kind to draw in this pass (those within its distances, and that keep takes by their sphere relative
     /// to the camera), and how many of it each shows at its distance, into _visible. False if there are none.

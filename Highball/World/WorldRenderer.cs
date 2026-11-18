@@ -315,8 +315,16 @@ public sealed unsafe class WorldRenderer : IDisposable
             });
         }
 
+        // The plants' depth first, so the ground and track under them are never shaded (their colour comes later, tested equal).
+        if (terrain is not null && _vegetation.Enabled)
+        {
+            using var _ = Profiler.Sample("Plant depth", cmd);
+            _vegetation.Draw(cmd, _modelLayout, camera, aspect, _plantDepth, _plant, plants, Vegetation.PlantPass.Depth);
+        }
+
         // The ground, then the track's fades into it, then what stands on them. The fades are drawn well nearer the camera than
-        // they are and write no depth, so they show over coarse ground; plants and models must come after, to cover them.
+        // they are and write no depth, so they show over coarse ground; plants and models must come after, to cover them (the
+        // plants' colour is drawn after them, with the equal depth test, over whatever of a fade landed on them).
         if (terrain is not null)
         {
             using var _ = Profiler.Sample("Terrain", cmd);
@@ -378,7 +386,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             Sky.Bind(cmd, _modelLayout);
             _shadows.Bind(cmd, _modelLayout);
             _clouds.Bind(cmd, _modelLayout);
-            _vegetation.Draw(cmd, _modelLayout, camera, aspect, _plantDepth, _plant, plants);
+            _vegetation.Draw(cmd, _modelLayout, camera, aspect, _plantDepth, _plant, plants, Vegetation.PlantPass.Color);
         }
 
         _seen.Clear();
