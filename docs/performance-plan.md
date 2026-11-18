@@ -3,104 +3,106 @@
 Goal: **120+ fps on an RTX 4060 Ti at High, 90+ at Ultra**, with 1M+ triangle vehicles, and a route format that scales to the
 whole USA, feeding both single player and multiplayer.
 
-## What the profiler actually says (2026-11-18, Ultra, CSX train, Barstow-style scene)
+Branch: `perf/renderer`. Every step is measured with the benchmark below and committed on its own.
 
-| | |
-|---|---|
-| Frame | 21.2 ms CPU, **19.9 ms GPU**. CPU spends 15.5 ms in Present waiting on the GPU. |
-| Bound by | **The GPU.** CPU recording of the whole frame is 4.7 ms. 1,583 draws is not what's slow. |
-| Triangles | **34.2 M per frame**, of which **18.4 M are sun shadows** (4 cascades of 3.8–5.1 M each). |
-| Models | 3.77 M tris drawn **six times**: main pass, motion vectors pass, four shadow cascades. |
-| Settings | Quality 3: 4096² shadows x 4 cascades, **8x MSAA and TAA together**, 19.3 km view distance. |
+## Benchmark
 
-GPU time by pass (avg ms): shadows 4.0, roads and rails 2.4, clouds 1.9, models 1.8, plants 1.7, cloud march 1.6,
-terrain 1.6, ties 1.3, after-the-world 1.3, motion 0.8, AO 0.7, track depth 0.5.
+Two fixed views on the World route with the 65-car CSX/BNSF autorack train parked, 3440x1440, run from `bin/Agent` with a
+read-only copy of the player's settings (`--settingsfile`), `--gputimes`, 24 s in, at 18:30 (sun 4.6° up, the worst case
+for shadows) and at noon:
 
-Conclusions:
-- The fix is **fewer triangles and fewer pixels shaded per frame**, not fewer API calls. Draw calls get collapsed too, but
-  as a side effect of moving culling and LOD onto the GPU.
-- 8x MSAA on top of TAA is paying twice for anti-aliasing on 34 M triangles, and thin geometry (rails, ties, wires) under
-  MSAA is the worst case for quad overdraw. That's most of the 2.4 ms in "roads and rails".
-- Shadow casters don't drop LOD per cascade, and every cascade is redrawn every frame.
-- Vehicle LOD2 (from 220 m) is still ~25–28% of LOD0. There's no LOD3 or impostor, so a long consist far away costs millions
-  of triangles for a few hundred pixels.
+- **A, trackside:** 2 m up, 40 m ahead of the lead locomotive, looking back along it.
+- **B, aerial:** 80 m up, 150 m ahead, looking down the train and the junction.
 
-## Not a ground-up rewrite
+```
+Highball --settingsfile ultra.json --skipsplash --route World --view --camera 42.3825740 -83.4670200 2.0 196 -1 \
+  --skytime 2026-05-15 18.5 --novsync --gputimes --shot 24 A.png --quit 26
+Highball ... --camera 42.3835200 -83.4667000 80 196 -20 ...
+```
 
-A from-scratch rewrite of 76k lines with no automated tests would leave the Route Builder broken for weeks and lose the
-track fitting, bridges and sim work that's correct today. Instead: **replace the renderer core behind `FrameScene`, finish
-the layering in `refactor-plan.md`, and add a cooked route format.** Every phase builds, runs, and is measured against
-the baseline before the next starts.
+Back up `Content/Routes/World/Stock.json` around every run (the game rewrites it on exit). Dev flags such as
+`--novegetation` save into the `--settingsfile` copy, so keep that copy read-only.
 
-## Phases
+## Where it started (Ultra, 8x MSAA + TAA, native 3440x1440)
 
-### 0. Measurement (first, ~1 hr)
-- Fixed benchmark: `--bench <route> <camera path>` flies a scripted path for 30 s with a train in view and writes
-  per-pass GPU/CPU avg, p99 and triangle counts to CSV. Runs at Low/High/Ultra.
-- Baseline committed in `docs/perf/`. Every later step reports its delta against it.
-
-### 1. Quick wins in the current renderer (hours; expected ~20 ms → ~11–13 ms GPU)
-1. **AA:** TAA by default; MSAA 0/2/4 as an option, never stacked at 8x with TAA. Ultra = TAA + 2x at most.
-2. **Shadow LOD:** casters pick their LOD from cascade texel size, not camera distance. Cascades 2–3 use LOD2/impostors.
-3. **Shadow caching:** far cascades (2, 3) re-render every 2nd/4th frame or only when the sun or casters move; static
-   geometry cached, dynamic (trains) composited on top.
-4. **Merge the motion pass:** write velocity as a second colour target in the main pass for moving models instead of drawing
-   them again (-0.8 ms, -3.7 M tris).
-5. **Vehicle LOD3 + octahedral impostors** past ~600 m, and tighter LOD distances scaled by screen size, not metres.
-6. **Ties:** past ~150 m, stop drawing tie instances and let the track texture carry them.
-7. Clouds and cloud march at half resolution with temporal reprojection (~-1.5 ms).
-
-### 2. GPU-driven renderer (the core rewrite; ~1–2 sessions)
-- **One geometry pool:** every static mesh, vehicle and track chunk in shared vertex/index buffers (`BufferArena` grows into this).
-- **Bindless materials:** descriptor indexing, one material table SSBO. One pipeline per shading model, not per object.
-- **Instance table on the GPU:** transforms, bounds, LOD ranges, material IDs. CPU only uploads what changed.
-- **Compute culling:** frustum + Hi-Z occlusion (last frame's depth pyramid, two-phase) per instance, picks LOD, writes
-  `vkCmdDrawIndexedIndirectCount` commands. Same pass reruns per shadow cascade with the light frustum.
-- **Depth prepass from the culled set**, then shading with equal-depth test: no overdraw in the expensive shaders.
-- Result: ~20–60 indirect draws per frame regardless of scene size; CPU recording well under 1 ms.
-
-### 3. Geometry for 1M+ triangle models (~1–2 sessions)
-- **Offline cooker** (`Tools/Cook`): meshoptimizer for meshlets (64 verts / 124 tris), cluster LOD hierarchy (group,
-  simplify, lock borders — a Nanite-style DAG), vertex quantisation, meshopt compression.
-- **Renderer tiers** (the "multiple renderers"):
-  - **Tier A — mesh shaders** (`VK_EXT_mesh_shader`, RTX 20+/RX 6000+): task shader culls clusters (frustum, backface
-    cone, Hi-Z), picks the LOD cut by screen-space error. Million-poly locos cost what's on screen.
-  - **Tier B — compute cluster culling + MDI** for GPUs without mesh shaders. Same data, same results.
-  - **Tier C — classic instanced LOD path** (today's, cleaned up) as the safe fallback and the reference for screenshots.
-- Shadows use the same cluster culling with a coarser error target.
-
-### 4. Shadows at scale
-- Move to **virtual shadow maps** (16k² sparse page table, only pages the camera samples are drawn, static pages cached
-  across frames) on Tier A/B; cached CSM on Tier C.
-
-### 5. Route data for the whole USA
-- Split **editable project** (what the builder saves today) from a **cooked route package**:
-  - World partitioned into fixed tiles (e.g. 2 km) in a quadtree, each tile one file chunk with a header for streaming.
-  - Heights quantised + delta + zstd; track/road/bridge meshes cooked to clusters (phase 3 format); instance lists for
-    plants, poles, ties; the rail graph as its own compact layer the sim and server load without any geometry.
-  - Content-addressed shared assets (meshes, textures as BC7/BC5 KTX2) so a 5,000-mile route doesn't duplicate them.
-- Streaming on a background thread with an async transfer queue upload; double-precision tile origins (already used).
-
-### 6. Game structure: builder, single player, multiplayer
-- Finish `refactor-plan.md` steps (RouteWorld owns the route and trains; DriveScreen stops being EditorView).
-- **Runtime** loads only cooked packages. **Single player = local server in-process**; **multiplayer = the same server
-  headless** (`RailWerkz.Server`) with the authoritative sim (`RailWerkz.Sim`, already clean) and client prediction for the
-  local cab. One code path for both.
-- Builder → "Export route" produces the cooked package used by both.
-
-## Order and checkpoints
-
-| Step | Ships | Check |
+| | A | B |
 |---|---|---|
-| 0 | Benchmark + baseline | CSV committed |
-| 1 | Quick wins | GPU ≤ 13 ms on the benchmark at Ultra, screenshots match baseline |
-| 2 | GPU-driven Tier C/B | ≤ 60 draws, CPU record < 1 ms, GPU ≤ 9 ms High |
-| 3 | Cooker + mesh shader Tier A | A 1M+ tri loco ×20 in view at 120+ fps High |
-| 4 | Virtual shadows | Shadows ≤ 1.5 ms |
-| 5 | Cooked route format | A multi-route package streams with no hitches (p99 < 12 ms) |
-| 6 | SP/MP from cooked routes | Host and join drive the same exported route |
+| GPU | 18.7 ms (53 fps) | 18.9 ms |
+| Triangles | 31.7 M | 23.7 M |
+| Sun shadows | 4.85 ms, 21.4 M tris | 3.0 ms |
+
+CPU work was ~3–5 ms; the rest of the frame was waiting on the GPU. **Draw calls (1,500) were never the bottleneck.**
+
+## Phase 1: done
+
+| Step | What | A (ms GPU) | B (ms GPU) |
+|---|---|---|---|
+| Baseline | Ultra, 8x MSAA + TAA | 18.7 | 18.9 |
+| AA | MSAA capped at 2x while TAA is on (8x cost ~4 ms for nothing visible) | | |
+| Shadow LOD | Casters drawn at the LOD a cascade's texel can show | | |
+| Cached cascades | Cascades 2–3 drawn on alternate frames, reused (re-based) between; redrawn at once if the sun or view drifts | 14.8 | 13.0 |
+| Plant prepass | Alpha-tested depth first, then shaded once a pixel (equal depth) | 13.3 | ~13 |
+| Terrain noise | The broad fbm patterns read from a baked tiling texture (1.5 ms of ALU) | 13.0 | 12.1 |
+| **Temporal upscaling** | World drawn at Render resolution (default 75%), TAA reconstructs full size | 10.5 | 10.0 |
+| Caster reach | Shadows thrown from each caster's real top down to the cascade's measured lowest ground | 10.5 | 9.9 |
+| Motion | Only stock that actually moved is redrawn for motion vectors | | |
+
+**Now, High preset (2048 shadows) with 75% render resolution: 94–98 fps at dusk, 112–114 fps at noon** (from ~50 fps on
+Ultra). Ultra: ~88–93 fps.
+
+What's left in a frame (High, noon, trackside): shadows 1.9, plants 1.1, clouds 1.0, post 1.1, terrain 0.9, models 0.7,
+AO 0.6, ties 0.4, roads 0.3.
+
+## Phase 2: shadows (you asked for this one)
+
+Cascaded shadow maps were the largest single cost and the place most likely to show artefacts. Done so far: texel-based
+LOD, cached far cascades, geometric caster culling. Next, in order:
+
+1. **Static/dynamic split for the near cascades.** Terrain, track and placed objects cached per cascade and only re-drawn
+   when the cascade scrolls a set number of texels or the sun moves; trains and wind-moved plants drawn on top each frame.
+2. **Per-cascade GPU culling** (shares phase 3's culling pass): instances and track cells culled against the light
+   frustum and the receiver bounds on the GPU, so the CPU stops walking every caster five times (1.1 ms CPU today).
+3. **Virtual shadow maps** (16k² virtual, 128² pages, only pages the camera samples are drawn, static pages cached across
+   frames) as the long-term replacement for cascades on GPUs with sparse binding or a page-table fallback. One filter
+   width in world space everywhere, so there's no visible step in sharpness where cascades meet.
+4. Optional **ray-traced sun shadows** (`VK_KHR_ray_query`) for RTX-class cards as an Ultra option, with VSM as the
+   fallback.
+
+## Phase 3: GPU-driven drawing
+
+- One geometry pool (`BufferArena` grows into it), bindless material table, instance table on the GPU.
+- Compute culling (frustum + two-phase Hi-Z occlusion) per view and per shadow cascade, writing
+  `vkCmdDrawIndexedIndirectCount`. Plants first (the biggest instance counts), then models, ties and plates.
+- Depth prepass from the culled set for everything with an expensive shader.
+
+## Phase 4: geometry for 1M+ triangle models
+
+Today's locomotives are 1.03 M / 257 k / 68 k triangles (LOD0/1/2), and their LODs are well proportioned. Next:
+- Offline cooker (meshoptimizer): meshlets, a cluster LOD hierarchy, vertex quantisation.
+- Renderer tiers: mesh shaders (task-shader cluster culling), compute cluster culling + MDI, and today's path as the
+  reference.
+- Material merging: 61–64 materials per locomotive means 60+ draws per vehicle; texture arrays / bindless cut that to a
+  handful.
+
+## Phase 5: route data for the whole USA
+
+**Already built:** `--export` (and the editor's export) writes `REGION.hbpack` (tiles: decimetre heights, 2D-predicted,
+zigzag, Brotli, plus land cover and the track files), `REGION.hbserver` (rail graph with heights and signals) and a
+manifest with per-tile hashes for patches, verifies everything read back, and installs the packs for Single Player.
+The World route today: 115 tiles, 33.7 MB (~293 KB a tile).
+
+Next: smaller tiles on disk (byte-plane residuals, a stronger Brotli setting), the visual track and objects stored per tile
+(`docs/mmo.md`), and streaming tiles from packs on a background thread with transfer-queue uploads.
+
+## Phase 6: single player and multiplayer from exported routes
+
+**Already built:** Single Player drives installed packs; `--host` / `--join` run sessions over RakNet; `RailWerkz.Server`
+exists. The design for the national world (zones, 2 km tiles, regions, servers) is in `docs/mmo.md`.
+
+Next: finish `docs/refactor-plan.md` (RouteWorld owns the route and trains, DriveScreen stops being the editor), then the
+authoritative headless server loading `.hbserver`, with the same code path for a local single-player server.
 
 ## Risks
-- Visual parity: every phase compares launch-line screenshots against the baseline (`--noshadows` first, then with).
-- Mesh shaders need driver support: Tier B/C must stay working and be tested, not just compiled.
-- The cluster LOD DAG is the hardest piece; Tier B with discrete LODs + impostors already gets most of the win if it slips.
+- Visual parity: every phase compares A/B screenshots against the previous step.
+- Temporal upscaling is a little softer than native; a texture mip bias of log2(scale) is the next fix for that.
+- Mesh shaders and VSM need fallbacks that are tested, not just compiled.
