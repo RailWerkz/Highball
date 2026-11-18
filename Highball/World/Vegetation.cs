@@ -109,7 +109,7 @@ public sealed unsafe class Vegetation : IDisposable
 
         /// x: minus the camera's height; y: the flutter's phase; zw: the gusts' phases.
         public float4 Globals;
-        public VkDeviceAddress Cells;
+        public ulong Cells;
         public uint Base;
         private uint _pad;
     }
@@ -859,11 +859,21 @@ public sealed unsafe class Vegetation : IDisposable
     /// Draws what's in view in two passes: every kind's depth with depthPipeline (cut out, unshaded), then every kind shaded with
     /// colorPipeline, which tests for equal depth, so overlapping plants are lit once a pixel. The descriptor sets other than
     /// the kinds' textures are bound by the caller.
-    public void Draw(CommandBuffer cmd, VkPipelineLayout layout, Camera camera, float aspect, VkPipeline depthPipeline, VkPipeline colorPipeline)
+    public void Draw(CommandBuffer cmd, VkPipelineLayout layout, Camera camera, float aspect, VkPipeline depthPipeline, VkPipeline colorPipeline, int culled = -1)
     {
         DrawnInstances = 0;
         if (!Enabled)
             return;
+
+        if (culled >= 0)
+        {
+            var gpuPush = new Push { Matrix = camera.JitteredViewProjection(aspect), Globals = Globals(camera) };
+            cmd.BindPipeline(VkPipelineBindPoint.Graphics, depthPipeline);
+            DrawCulled(cmd, layout, ref gpuPush, culled, -1);
+            cmd.BindPipeline(VkPipelineBindPoint.Graphics, colorPipeline);
+            DrawCulled(cmd, layout, ref gpuPush, culled, -1);
+            return;
+        }
 
         var view = camera.View(aspect);
         var push = new Push { Matrix = camera.JitteredViewProjection(aspect), Globals = Globals(camera) };
@@ -908,12 +918,18 @@ public sealed unsafe class Vegetation : IDisposable
     private readonly List<List<Visible>> _gathered = [];
 
     /// Draws what falls in one shadow cascade, with the pipeline bound.
-    public void DrawCasters(CommandBuffer cmd, VkPipelineLayout layout, Camera camera, float4x4 light, int cascade, SunShadows.CasterTest reaches)
+    public void DrawCasters(CommandBuffer cmd, VkPipelineLayout layout, Camera camera, float4x4 light, int cascade, SunShadows.CasterTest reaches, int culled = -1)
     {
         if (!Enabled)
             return;
 
         var push = new Push { Matrix = light, Globals = Globals(camera) };
+        if (culled >= 0)
+        {
+            DrawCulled(cmd, layout, ref push, culled, cascade);
+            return;
+        }
+
         var last = cascade >= FarCasterFrom;
         foreach (var kind in _kinds)
         {
@@ -1012,7 +1028,7 @@ public sealed unsafe class Vegetation : IDisposable
 
         var (commands, first) = _commands.Append(_scratch.AsSpan(0, n));
         var (table, row) = _cellTable.Append(_rows.AsSpan(0, n));
-        push.Cells = table.GetDeviceAddress();
+        push.Cells = Raw(table.GetDeviceAddress());
         const int stride = 20; // a VkDrawIndexedIndirectCommand
         if (Gpu.MultiDraw)
         {
@@ -1029,6 +1045,293 @@ public sealed unsafe class Vegetation : IDisposable
             mesh.DrawIndexedIndirect(cmd, _arena.Buffer, commands, (long)(first + i) * stride, 1, indexCount / 3 * (long)_visible[i].Count);
         }
     }
+
+    // --- Culling on the GPU. ---
+
+    /// How many slot starts plant_cull.comp's CellData holds (its Slots): must be SlotCount + 1.
+    private const int CullSlotStarts = 19;
+
+    /// A buffer's address on the GPU as a plain number, to offset and push.
+    private static ulong Raw(VkDeviceAddress address) => System.Runtime.CompilerServices.Unsafe.As<VkDeviceAddress, ulong>(ref address);
+
+    /// A cell as plant_cull.comp reads it.
+    [StructLayout(LayoutKind.Sequential)]
+    private unsafe struct CellData
+    {
+        public int X, Z, Size, Offset;
+        public float Low, High;
+        public fixed int Starts[SlotCount + 1];
+    }
+
+    /// A kind as plant_cull.comp reads it, for one pass.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KindData
+    {
+        public float Near, Far, Fade;
+        public int Slot;
+        public int IndexCount, FirstIndex, Enabled, Pad;
+    }
+
+    /// One pass's view, as plant_cull.comp reads it (PassData there).
+    [StructLayout(LayoutKind.Sequential)]
+    public struct CullView
+    {
+        public float4 Plane0, Plane1, Plane2, Plane3, Plane4, Plane5;
+        public float4 Box;
+        public float4 Right;
+        public float4 Up;
+        public float4 Sun;
+        public float4 Reach;
+        public int CameraX, CameraZ, Pad0, Pad1;
+        public float4 Camera;
+
+        public void SetPlanes(ReadOnlySpan<(float3 N, float D)> planes)
+        {
+            Plane0 = new float4(planes[0].N, planes[0].D);
+            Plane1 = new float4(planes[1].N, planes[1].D);
+            Plane2 = new float4(planes[2].N, planes[2].D);
+            Plane3 = new float4(planes[3].N, planes[3].D);
+            Plane4 = new float4(planes[4].N, planes[4].D);
+            Plane5 = new float4(planes[5].N, planes[5].D);
+        }
+
+        public void SetCamera(Camera camera)
+        {
+            var (x, z) = (Math.Floor(camera.X), Math.Floor(camera.Z));
+            (CameraX, CameraZ) = ((int)x, (int)z);
+            Camera = new float4((float)(camera.X - x), (float)(camera.Z - z), (float)camera.Y, 0f);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CullPush
+    {
+        public ulong Cells, Kinds, Pass, Commands, Rows, Counts;
+        public uint CellCount, KindCount;
+        public float Tallest, Slack;
+    }
+
+    /// A pass culled this frame: where its commands, rows and counts are, and which kinds it draws (and as their stand-ins).
+    private readonly record struct Culled(BufferEx Buffer, long Commands, long Rows, long Counts, int CellCount, bool[] Enabled, bool[] StandIn);
+
+    private readonly GpuRing _cullRing = new(VkBufferUsageFlags.IndirectBufferBit, "vegetation.culled");
+    private readonly FrameRing<CellData> _cellRing = new(VkBufferUsageFlags.StorageBufferBit | VkBufferUsageFlags.ShaderDeviceAddressBit, "vegetation.cellData");
+    private readonly FrameRing<KindData> _kindRing = new(VkBufferUsageFlags.StorageBufferBit | VkBufferUsageFlags.ShaderDeviceAddressBit, "vegetation.kindData");
+    private readonly FrameRing<CullView> _passRing = new(VkBufferUsageFlags.StorageBufferBit | VkBufferUsageFlags.ShaderDeviceAddressBit, "vegetation.passes");
+    private readonly List<Culled> _culled = [];
+    private CellData[] _cellData = [];
+    private KindData[] _kindData = [];
+    private long _cellsFrame = -1;
+    private ulong _cellsAddress;
+    private int _cellCount;
+    private VkPipelineLayout _cullLayout;
+    private VkPipeline _cullPipeline;
+
+    /// Whether passes are culled on the GPU (Cull) rather than by Gather.
+    public bool CullsOnGpu => Gpu.IndirectCount && Enabled;
+
+    /// Every cell, uploaded once a frame for the passes to cull.
+    private unsafe void UploadCells()
+    {
+        if (_cellsFrame == Gpu.FrameNumber)
+            return;
+        _cellsFrame = Gpu.FrameNumber;
+        if (_culled.Count > 0)
+            _culled.Clear();
+
+        if (_cellData.Length < _cells.Count)
+            _cellData = new CellData[Math.Max(_cells.Count, _cellData.Length * 2)];
+        var n = 0;
+        foreach (var cell in _cells.Values)
+        {
+            ref var data = ref _cellData[n++];
+            var size = cell.Key.Far ? (int)FarCell : (int)NearCell;
+            (data.X, data.Z, data.Size, data.Offset, data.Low, data.High) = (cell.Key.X, cell.Key.Z, size, cell.Offset, cell.Low, cell.High);
+            for (var s = 0; s <= SlotCount; s++)
+                data.Starts[s] = cell.Starts[s];
+        }
+
+        _cellCount = n;
+        var (buffer, first) = _cellRing.Append(_cellData.AsSpan(0, n));
+        _cellsAddress = Raw(buffer.GetDeviceAddress()) + (ulong)(first * sizeof(CellData));
+    }
+
+    private long _cameraFrame = -1;
+    private int _cameraPass = -1;
+
+    /// The camera's own view as plant_cull.comp tests it.
+    private static CullView CameraView(Camera camera, float aspect)
+    {
+        var (forward, right, up) = (camera.Forward, camera.Right, camera.Up);
+        var tanY = MathF.Tan(camera.FieldOfView * 0.5f);
+        var tanX = tanY * aspect;
+        var view = new CullView { Box = new float4(0f, 0f, 0f, -1f), Reach = new float4(0f, -1e30f, 0f, 0f) };
+        view.SetPlanes(
+        [
+            (MathEx.Normalize(right - forward * tanX), 0f),
+            (MathEx.Normalize(-right - forward * tanX), 0f),
+            (MathEx.Normalize(up - forward * tanY), 0f),
+            (MathEx.Normalize(-up - forward * tanY), 0f),
+            (-forward, 0f),
+            (forward, -1e9f),
+        ]);
+        view.SetCamera(camera);
+        return view;
+    }
+
+    /// The camera's own view, culled on the GPU: what Draw's culled takes. Outside any render pass. Culled already this frame along
+    /// with the shadow cascades (CullAll) where those were drawn. -1 when culling's on the CPU.
+    public int CullCamera(CommandBuffer cmd, Camera camera, float aspect)
+    {
+        if (!CullsOnGpu)
+            return -1;
+        if (_cameraFrame == Gpu.FrameNumber)
+            return _cameraPass;
+        return CullAll(cmd, camera, aspect, [])[0];
+    }
+
+    /// Every pass this frame culled at once: the given shadow cascades' casters (each view's planes and reach set as
+    /// SunShadows.DrawCasters' Reaches tests) and, after them, the camera's own view. One dispatch and one wait, rather than the
+    /// GPU stopping between cascades for each. Returns each cascade's pass for DrawCasters' culled, then the camera's for Draw's
+    /// (-1 each when culling's on the CPU). Outside any render pass.
+    public int[] CullAll(CommandBuffer cmd, Camera camera, float aspect, IReadOnlyList<(int Cascade, CullView View)> cascades)
+    {
+        var result = new int[cascades.Count + 1];
+        Array.Fill(result, -1);
+        if (!CullsOnGpu)
+            return result;
+
+        var views = new CullView[cascades.Count + 1];
+        var which = new int[cascades.Count + 1];
+        for (var i = 0; i < cascades.Count; i++)
+        {
+            views[i] = cascades[i].View;
+            views[i].SetCamera(camera);
+            which[i] = cascades[i].Cascade;
+        }
+
+        views[^1] = CameraView(camera, aspect);
+        which[^1] = -1;
+        var first = Cull(cmd, views, which);
+        if (first >= 0)
+            for (var i = 0; i < result.Length; i++)
+                result[i] = first + i;
+        _cameraFrame = Gpu.FrameNumber;
+        _cameraPass = result[^1];
+        return result;
+    }
+
+    /// Culls the passes (cascade below 0: the camera's view) in one dispatch, one row of workgroups each; returns the first's index
+    /// in _culled, the rest following.
+    private unsafe int Cull(CommandBuffer cmd, CullView[] views, int[] cascades)
+    {
+        UploadCells();
+        var n = _cellCount;
+        var k = _kinds.Count;
+        var passes = views.Length;
+        if (n == 0 || k == 0)
+            return -1;
+
+        if (_cullPipeline.IsNull())
+        {
+            if (SlotCount + 1 != CullSlotStarts)
+                throw new InvalidOperationException($"plant_cull.comp reads {CullSlotStarts} slot starts a cell; Vegetation has {SlotCount + 1}");
+            _cullLayout = Pipelines.ComputeLayout(sizeof(CullPush));
+            using var shader = Shader.Load("plant_cull.comp");
+            _cullPipeline = Pipelines.CreateCompute(shader, _cullLayout);
+        }
+
+        if (_kindData.Length < k * passes)
+            _kindData = new KindData[k * passes];
+        var enabled = new bool[passes][];
+        var standIn = new bool[passes][];
+        for (var p = 0; p < passes; p++)
+        {
+            var cascade = cascades[p];
+            var last = cascade >= FarCasterFrom;
+            enabled[p] = new bool[k];
+            standIn[p] = new bool[k];
+            for (var i = 0; i < k; i++)
+            {
+                var kind = _kinds[i];
+                var on = cascade < 0 || !(cascade > kind.LastCascade || (last && kind.NoFarCaster));
+                var stand = cascade >= 0 && last && kind.FarCaster is not null;
+                (enabled[p][i], standIn[p][i]) = (on, stand);
+                _kindData[p * k + i] = new KindData
+                {
+                    Near = kind.Near, Far = float.IsPositiveInfinity(kind.Far) ? 1e9f : kind.Far, Fade = kind.Fade * Quality.PlantReach, Slot = kind.Slot,
+                    IndexCount = stand ? kind.FarCaster!.IndexCount : kind.Count, FirstIndex = stand ? 0 : kind.FirstIndex, Enabled = on ? 1 : 0,
+                };
+            }
+        }
+
+        var (kinds, kindFirst) = _kindRing.Append(_kindData.AsSpan(0, k * passes));
+        var (pass, passFirst) = _passRing.Append(views);
+        const int commandSize = 20;
+        var perPass = (long)k * n;
+        var commandBytes = passes * perPass * commandSize;
+        var rowBytes = passes * perPass * 16;
+        var countBytes = passes * k * 4L;
+        var (buffer, start) = _cullRing.Reserve(commandBytes + rowBytes + countBytes + 512);
+        var commands = start;
+        var rows = (commands + commandBytes + 255) / 256 * 256;
+        var counts = (rows + rowBytes + 255) / 256 * 256;
+
+        cmd.FillBuffer(buffer.VkBuffer, new ByteSize64((ulong)counts), new ByteSize64((ulong)countBytes), 0);
+        var filled = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.TransferWriteBit, DstAccessMask = VkAccessFlags.ShaderReadBit | VkAccessFlags.ShaderWriteBit };
+        cmd.PipelineBarrier(VkPipelineStageFlags.TransferBit, VkPipelineStageFlags.ComputeShaderBit, VkDependencyFlags.None, [filled], [], []);
+
+        var address = Raw(buffer.GetDeviceAddress());
+        var push = new CullPush
+        {
+            Cells = _cellsAddress,
+            Kinds = Raw(kinds.GetDeviceAddress()) + (ulong)(kindFirst * sizeof(KindData)),
+            Pass = Raw(pass.GetDeviceAddress()) + (ulong)(passFirst * sizeof(CullView)),
+            Commands = address + (ulong)commands,
+            Rows = address + (ulong)rows,
+            Counts = address + (ulong)counts,
+            CellCount = (uint)n,
+            KindCount = (uint)k,
+            Tallest = SunShadows.TallestCaster,
+            Slack = SunShadows.CullSlack,
+        };
+        cmd.BindPipeline(VkPipelineBindPoint.Compute, _cullPipeline);
+        cmd.PushConstants(_cullLayout, VkShaderStageFlags.ComputeBit, ByteSize.Zero, push);
+        cmd.Dispatch((n + 63) / 64, passes, 1);
+
+        var written = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.ShaderWriteBit, DstAccessMask = VkAccessFlags.IndirectCommandReadBit | VkAccessFlags.ShaderReadBit };
+        cmd.PipelineBarrier(VkPipelineStageFlags.ComputeShaderBit, VkPipelineStageFlags.DrawIndirectBit | VkPipelineStageFlags.VertexShaderBit,
+            VkDependencyFlags.None, [written], [], []);
+
+        var firstIndex = _culled.Count;
+        for (var p = 0; p < passes; p++)
+            _culled.Add(new Culled(buffer, commands + p * perPass * commandSize, rows + p * perPass * 16, counts + p * k * 4L, n, enabled[p], standIn[p]));
+        return firstIndex;
+    }
+
+    /// Draws a culled pass's kinds, with the pipeline bound: each kind one call of as many commands as the GPU kept.
+    private void DrawCulled(CommandBuffer cmd, VkPipelineLayout layout, ref Push push, int index, int cascade)
+    {
+        var culled = _culled[index];
+        var n = culled.CellCount;
+        const int commandSize = 20;
+        push.Cells = Raw(culled.Buffer.GetDeviceAddress()) + (ulong)culled.Rows;
+        for (var k = 0; k < _kinds.Count; k++)
+        {
+            if (!culled.Enabled[k])
+                continue;
+            var kind = _kinds[k];
+            var standIn = culled.StandIn[k];
+            push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, standIn ? 2f : kind.Cutout);
+            push.Band = Band(kind);
+            push.Base = (uint)(k * n);
+            kind.Textures.Bind(cmd, layout);
+            cmd.PushConstants(layout, Stages, ByteSize.Zero, push);
+            var mesh = standIn ? kind.FarCaster! : kind.Mesh;
+            mesh.DrawIndexedIndirectCount(cmd, _arena.Buffer, culled.Buffer, culled.Commands + (long)k * n * commandSize, culled.Buffer, culled.Counts + k * 4L, n);
+        }
+    }
+
 
     // --- Meshes made here. ---
 
@@ -1135,6 +1438,12 @@ public sealed unsafe class Vegetation : IDisposable
 
     public void Dispose()
     {
+        _cullRing.Dispose();
+        _cellRing.Dispose();
+        _kindRing.Dispose();
+        _passRing.Dispose();
+        if (!_cullPipeline.IsNull())
+            Pipelines.Destroy(_cullPipeline, _cullLayout);
         _jobs.Dispose();
         ClearCells();
         _arena.Dispose();

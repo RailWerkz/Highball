@@ -260,16 +260,20 @@ public sealed unsafe class SunShadows : IDisposable
                 : default,
         };
 
-        _map.BeginFrame(cmd);
         var right = MathEx.Normalize(MathEx.Cross(MathF.Abs(sun.Y) > 0.99f ? new float3(1f, 0f, 0f) : new float3(0f, 1f, 0f), sun));
         var up = MathEx.Cross(sun, right);
         var near = camera.Near;
         var texels = new float[Cascades];
 
+        // Planned first, every layer's place and what it draws, its plants queued; then all the plants culled at once on the GPU
+        // (Vegetation.CullAll: one dispatch, not a stop between every cascade); then the layers drawn.
         _frame++;
         var stillModels = StillModels(models);
+        _queued.Clear();
+        _draws.Clear();
         for (var c = 0; c < Cascades; c++)
         {
+            var cascade = c;
             var far = Reach[c];
             var (centre, radius) = Slice(camera, aspect, near, far);
             // What this cascade is read for: its own slice, and the last tenth of the one before, where the two blend.
@@ -278,8 +282,13 @@ public sealed unsafe class SunShadows : IDisposable
             var cached = c >= CachedFrom;
             if (!cached && active)
             {
-                using (Profiler.Sample(CascadeNames[c], cmd))
-                    (_matrices[c], texels[c]) = DrawSplit(cmd, camera, aspect, c, c, centre, radius, seenFrom, far, right, up, sun, terrain, models, vegetation, network, stillModels);
+                var (matrix, splitTexel, draw) = PlanSplit(camera, aspect, c, c, centre, radius, seenFrom, far, right, up, sun, terrain, models, vegetation, network, stillModels);
+                (_matrices[c], texels[c]) = (matrix, splitTexel);
+                _draws.Add(cmd =>
+                {
+                    using (Profiler.Sample(CascadeNames[cascade], cmd))
+                        draw(cmd);
+                });
                 _drawnInto[c] = null;
                 continue;
             }
@@ -302,7 +311,7 @@ public sealed unsafe class SunShadows : IDisposable
             }
 
             texels[c] = texel;
-            _matrices[c] = Matrix(centre, right, up, sun, radius);
+            var light = _matrices[c] = Matrix(centre, right, up, sun, radius);
             _drawnCentre[c] = (camera.X + centre.X, camera.Y + centre.Y, camera.Z + centre.Z);
             _drawnRadius[c] = radius;
             _drawnSun[c] = sun;
@@ -310,39 +319,53 @@ public sealed unsafe class SunShadows : IDisposable
             _drawnActive[c] = active;
             _drawnTexel[c] = texel;
 
-            using (Profiler.Sample(CascadeNames[c], cmd))
+            var low = _receiverLow = LowestGround(terrain, camera, centre, radius);
+            var plants = active ? QueuePlants(camera, aspect, c, centre, right, up, sun, radius, seenFrom, far, vegetation) : -1;
+            _draws.Add(cmd =>
             {
-                _map.BeginLayer(cmd, c);
-                _receiverLow = LowestGround(terrain, camera, centre, radius);
-                if (active)
-                    DrawCasters(cmd, camera, aspect, c, centre, right, up, sun, radius, seenFrom, far, terrain, models, vegetation, network, _matrices[c]);
-                _map.EndLayer(cmd);
-            }
+                using (Profiler.Sample(CascadeNames[cascade], cmd))
+                {
+                    _map.BeginLayer(cmd, cascade);
+                    _receiverLow = low;
+                    if (active)
+                        DrawCasters(cmd, camera, aspect, cascade, centre, right, up, sun, radius, seenFrom, far, terrain, models, vegetation, network, light, plants: Plants(plants));
+                    _map.EndLayer(cmd);
+                }
+            });
         }
 
         // The track's cascade: the view out to TrackReach, with the thin parts of the track alone.
         {
             var (centre, radius) = Slice(camera, aspect, camera.Near, TrackReach);
-            using (Profiler.Sample("Track cascade", cmd))
+            if (active && network is not null)
             {
-                if (active && network is not null)
+                var (matrix, trackTexel, draw) = PlanSplit(camera, aspect, TrackSlot, TrackLayer, centre, radius, 0f, TrackReach, right, up, sun, null, null, null, network, 0);
+                uniforms.Track = matrix;
+                uniforms.TrackShadow = new float4(trackTexel, TrackReach, 0f, 0f);
+                _draws.Add(cmd =>
                 {
-                    var (matrix, trackTexel) = DrawSplit(cmd, camera, aspect, TrackSlot, TrackLayer, centre, radius, 0f, TrackReach, right, up, sun, null, null, null, network, 0);
-                    uniforms.Track = matrix;
-                    uniforms.TrackShadow = new float4(trackTexel, TrackReach, 0f, 0f);
-                }
-                else
+                    using (Profiler.Sample("Track cascade", cmd))
+                        draw(cmd);
+                });
+            }
+            else
+            {
+                var texel = radius * 2f / _map.Size;
+                centre += right * Snap(centre, right, camera, texel) + up * Snap(centre, up, camera, texel);
+                uniforms.Track = Matrix(centre, right, up, sun, radius);
+                uniforms.TrackShadow = new float4(texel, 0f, 0f, 0f);
+                _draws.Add(cmd =>
                 {
-                    var texel = radius * 2f / _map.Size;
-                    centre += right * Snap(centre, right, camera, texel) + up * Snap(centre, up, camera, texel);
-                    uniforms.Track = Matrix(centre, right, up, sun, radius);
-                    uniforms.TrackShadow = new float4(texel, 0f, 0f, 0f);
                     _map.BeginLayer(cmd, TrackLayer);
                     _map.EndLayer(cmd);
-                }
+                });
             }
         }
 
+        _plantPasses = vegetation is not null && vegetation.CullsOnGpu ? vegetation.CullAll(cmd, camera, aspect, _queued) : null;
+        _map.BeginFrame(cmd);
+        foreach (var draw in _draws)
+            draw(cmd);
         _map.EndFrame(cmd);
 
         (uniforms.Cascade0, uniforms.Cascade1, uniforms.Cascade2, uniforms.Cascade3) = (_matrices[0], _matrices[1], _matrices[2], _matrices[3]);
@@ -472,7 +495,7 @@ public sealed unsafe class SunShadows : IDisposable
 
     private void DrawCasters(CommandBuffer cmd, Camera camera, float aspect, int cascade, float3 centre, float3 right, float3 up, float3 sun, float radius,
         float seenFrom, float seenTo, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation, NetworkMeshes? network, float4x4 light,
-        CasterSet set = CasterSet.All)
+        CasterSet set = CasterSet.All, int plants = -1)
     {
         // Could something this size at this place shade anything in the cascade? Anywhere towards the sun can.
         bool InCascade(float3 relative, float size)
@@ -483,18 +506,7 @@ public sealed unsafe class SunShadows : IDisposable
 
         // The part of the view this cascade's read for: the camera's frustum between seenFrom and seenTo along it, as planes
         // (normal, offset) that a point is outside of where Dot(normal, p) + offset > 0.
-        var (forward, cr, cu) = (camera.Forward, camera.Right, camera.Up);
-        var tanY = MathF.Tan(camera.FieldOfView * 0.5f);
-        var tanX = tanY * aspect;
-        (float3 N, float D)[] planesArray =
-        [
-            (MathEx.Normalize(cr - forward * tanX), 0f),
-            (MathEx.Normalize(-cr - forward * tanX), 0f),
-            (MathEx.Normalize(cu - forward * tanY), 0f),
-            (MathEx.Normalize(-cu - forward * tanY), 0f),
-            (-forward, seenFrom),
-            (forward, -seenTo),
-        ];
+        var planesArray = ViewPlanes(camera, aspect, seenFrom, seenTo);
         var lift = MathF.Max(sun.Y, 0.08f);
         var texel = radius * 2f / _map.Size;
         var edge = texel * 4f;
@@ -539,7 +551,7 @@ public sealed unsafe class SunShadows : IDisposable
         {
             using var _p = Profiler.Sample("Plant casters", cmd);
             cmd.BindPipeline(VkPipelineBindPoint.Graphics, _plant);
-            vegetation.DrawCasters(cmd, _plantLayout, camera, light, cascade, Reaches);
+            vegetation.DrawCasters(cmd, _plantLayout, camera, light, cascade, Reaches, plants);
         }
 
         if (network is not null)
@@ -592,6 +604,28 @@ public sealed unsafe class SunShadows : IDisposable
     /// Which casters a draw takes: everything; only what stands still (the ground, the track, standing stock and objects), into a
     /// cascade's cached layer; or only what moves (plants in the wind, rolling stock, switch blades, crossing arms), over a copy of it.
     private enum CasterSet { All, Still, Moving }
+
+    /// ShadowSlack, for culling on the GPU.
+    public const float CullSlack = ShadowSlack;
+
+    /// The camera's frustum between seenFrom and seenTo along it, as planes (normal, offset) that a point is outside of where
+    /// Dot(normal, p) + offset > 0.
+    private static (float3 N, float D)[] ViewPlanes(Camera camera, float aspect, float seenFrom, float seenTo)
+    {
+        var (forward, cr, cu) = (camera.Forward, camera.Right, camera.Up);
+        var tanY = MathF.Tan(camera.FieldOfView * 0.5f);
+        var tanX = tanY * aspect;
+        return
+        [
+            (MathEx.Normalize(cr - forward * tanX), 0f),
+            (MathEx.Normalize(-cr - forward * tanX), 0f),
+            (MathEx.Normalize(cu - forward * tanY), 0f),
+            (MathEx.Normalize(-cu - forward * tanY), 0f),
+            (-forward, seenFrom),
+            (forward, -seenTo),
+        ];
+    }
+
 
     /// The near cascades and the track's are drawn in two parts. What stands still goes into a layer of its own (after the five
     /// read ones), drawn StillMargin wider than the view needs, and kept while the view stays inside it, the sun doesn't move and
@@ -657,8 +691,9 @@ public sealed unsafe class SunShadows : IDisposable
         return hash.ToHashCode();
     }
 
-    /// Draws a near cascade (or the track's) in its two parts (StillCache), and returns the matrix and texel it's read with.
-    private (float4x4 Matrix, float Texel) DrawSplit(CommandBuffer cmd, Camera camera, float aspect, int slot, int layer, float3 centre, float radius,
+    /// Plans a near cascade (or the track's) in its two parts (StillCache): returns the matrix and texel it's read with, and what
+    /// draws it (the still layer if that's due, then the copy and what moves), to run once the plants are culled.
+    private (float4x4 Matrix, float Texel, Action<CommandBuffer> Draw) PlanSplit(Camera camera, float aspect, int slot, int layer, float3 centre, float radius,
         float seenFrom, float seenTo, float3 right, float3 up, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models, Vegetation? vegetation,
         NetworkMeshes? network, int stillModels)
     {
@@ -673,35 +708,75 @@ public sealed unsafe class SunShadows : IDisposable
                 && StillSignature(camera, drawn, cache.Radius, right, up, sun, layer, terrain, network, stillModels) == cache.Signature;
         }
 
+        Action<CommandBuffer>? still = null;
         if (!fits)
         {
             var wide = radius * (1f + StillMargin);
             var texel = wide * 2f / _map.Size;
             drawn = centre + right * Snap(centre, right, camera, texel) + up * Snap(centre, up, camera, texel);
-            using (Profiler.Sample(StillNames[slot], cmd))
+            var stillCentre = drawn;
+            var stillLight = Matrix(drawn, right, up, sun, wide);
+            var stillLow = LowestGround(terrain, camera, drawn, wide);
+            still = cmd =>
             {
-                _map.BeginLayer(cmd, Cascades + 1 + slot);
-                _receiverLow = cache.Low = LowestGround(terrain, camera, drawn, wide);
-                DrawCasters(cmd, camera, aspect, layer, drawn, right, up, sun, wide, seenFrom, seenTo, terrain, models, null, network,
-                    Matrix(drawn, right, up, sun, wide), CasterSet.Still);
-                _map.EndLayer(cmd);
-            }
+                using (Profiler.Sample(StillNames[slot], cmd))
+                {
+                    _map.BeginLayer(cmd, Cascades + 1 + slot);
+                    _receiverLow = stillLow;
+                    DrawCasters(cmd, camera, aspect, layer, stillCentre, right, up, sun, wide, seenFrom, seenTo, terrain, models, null, network, stillLight, CasterSet.Still);
+                    _map.EndLayer(cmd);
+                }
+            };
 
             cache.Centre = (camera.X + drawn.X, camera.Y + drawn.Y, camera.Z + drawn.Z);
             cache.Radius = wide;
             cache.Texel = texel;
+            cache.Low = stillLow;
             cache.Sun = sun;
             cache.Map = _map;
             cache.Signature = StillSignature(camera, drawn, wide, right, up, sun, layer, terrain, network, stillModels);
         }
 
-        var matrix = Matrix(drawn, right, up, sun, cache.Radius);
-        _map.CopyLayer(cmd, Cascades + 1 + slot, layer);
-        _map.BeginLayer(cmd, layer, keep: true);
-        _receiverLow = cache.Low;
-        DrawCasters(cmd, camera, aspect, layer, drawn, right, up, sun, cache.Radius, seenFrom, seenTo, null, models, vegetation, network, matrix, CasterSet.Moving);
-        _map.EndLayer(cmd);
-        return (matrix, cache.Texel);
+        var (at, size, low) = (drawn, cache.Radius, cache.Low);
+        var matrix = Matrix(at, right, up, sun, size);
+        _receiverLow = low;
+        var plants = QueuePlants(camera, aspect, layer, at, right, up, sun, size, seenFrom, seenTo, vegetation);
+        return (matrix, cache.Texel, cmd =>
+        {
+            still?.Invoke(cmd);
+            _map.CopyLayer(cmd, Cascades + 1 + slot, layer);
+            _map.BeginLayer(cmd, layer, keep: true);
+            _receiverLow = low;
+            DrawCasters(cmd, camera, aspect, layer, at, right, up, sun, size, seenFrom, seenTo, null, models, vegetation, network, matrix, CasterSet.Moving, Plants(plants));
+            _map.EndLayer(cmd);
+        });
+    }
+
+    /// The plant passes queued for this frame (QueuePlants), the GPU's pass for each once culled, and the layers' draws.
+    private readonly List<(int Cascade, Vegetation.CullView View)> _queued = [];
+    private int[]? _plantPasses;
+    private readonly List<Action<CommandBuffer>> _draws = [];
+
+    private int Plants(int queued) => queued < 0 || _plantPasses is null ? -1 : _plantPasses[queued];
+
+    /// Queues a cascade's plants to be culled on the GPU with the same tests DrawCasters' Reaches makes (after _receiverLow is set).
+    /// -1 when culling's on the CPU (or there are no plants).
+    private int QueuePlants(Camera camera, float aspect, int cascade, float3 centre, float3 right, float3 up, float3 sun, float radius,
+        float seenFrom, float seenTo, Vegetation? vegetation)
+    {
+        if (vegetation is null || !vegetation.CullsOnGpu)
+            return -1;
+        var view = new Vegetation.CullView
+        {
+            Box = new float4(centre, radius),
+            Right = new float4(right, 0f),
+            Up = new float4(up, 0f),
+            Sun = new float4(sun, MathF.Max(sun.Y, 0.08f)),
+            Reach = new float4(radius * 2f / _map.Size * 4f, float.IsNegativeInfinity(_receiverLow) ? -1e30f : _receiverLow, TowardsSun, 1f),
+        };
+        view.SetPlanes(ViewPlanes(camera, aspect, seenFrom, seenTo));
+        _queued.Add((cascade, view));
+        return _queued.Count - 1;
     }
 
 

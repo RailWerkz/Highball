@@ -49,6 +49,10 @@ public static unsafe class Gpu
     /// Whether one indirect call can make many draws (multiDrawIndirect).
     public static bool MultiDraw { get; private set; }
 
+    /// Indirect draws whose count the GPU writes (vkCmdDrawIndexedIndirectCount): culling on the GPU (Vegetation). Without it,
+    /// culling stays on the CPU.
+    public static bool IndirectCount { get; private set; }
+
     /// FIFO when on; mailbox (or immediate) when off. Takes effect on the next frame.
     public static bool VSync
     {
@@ -218,6 +222,10 @@ public static unsafe class Gpu
         VulkanHelpers.AddMandatoryIfSupportedDeviceExtensions(extensions, PhysicalDevice);
 
         var supported = PhysicalDevice.GetFeatures();
+        var has12 = new VkPhysicalDeviceVulkan12Features();
+        var query = new VkPhysicalDeviceFeatures2 { Next = &has12 };
+        PhysicalDevice.GetFeatures2(ref query);
+        IndirectCount = (bool)has12.DrawIndirectCount && (bool)supported.MultiDrawIndirect && Environment.GetEnvironmentVariable("HIGHBALL_CPU_CULLING") is null;
         var v13 = new VkPhysicalDeviceVulkan13Features
         {
             DynamicRendering = new Bool32(true),
@@ -237,6 +245,7 @@ public static unsafe class Gpu
             DescriptorBindingVariableDescriptorCount = new Bool32(true),
             DescriptorBindingSampledImageUpdateAfterBind = new Bool32(true),
             ShaderSampledImageArrayNonUniformIndexing = new Bool32(true),
+            DrawIndirectCount = new Bool32(IndirectCount),
         };
         // gl_DrawID, for draws that read what each of a multi-draw's commands is for (Vegetation).
         var v11 = new VkPhysicalDeviceVulkan11Features { Next = &v12, ShaderDrawParameters = new Bool32(true) };

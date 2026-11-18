@@ -1,0 +1,149 @@
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+// Which of the plants' cells each kind draws in one pass (the view, or a shadow cascade), on the GPU: Vegetation.Gather's tests,
+// one thread a cell. Each kind's commands go to its own stretch of the output, as many as are kept counted for
+// vkCmdDrawIndexedIndirectCount, each with its cell's row (where it is relative to the camera) for plant.vert.
+
+layout(local_size_x = 64) in;
+
+// Vegetation.SlotCount + 1: checked there (CullSlotStarts) before this is used.
+const int Slots = 19;
+
+struct CellData
+{
+    int x, z, size, offset; // its key, its size in metres, where its instances start
+    float low, high;        // its lowest and highest ground, in metres
+    int starts[Slots];      // where each slot's instances start, from offset; the last, the end
+};
+
+struct KindData
+{
+    float near, far, fade;  // the distances it's drawn from and to, and how far it thins out over (plant.vert)
+    int slot;
+    int indexCount, firstIndex, enabled, pad;
+};
+
+struct PassData
+{
+    vec4 planes[6];  // the view this pass is for, as planes: a point's outside where dot(xyz, p) + w > 0
+    vec4 box;        // xyz: the cascade's middle, w its radius (below 0: no cascade, the camera's own view)
+    vec4 right;
+    vec4 up;
+    vec4 sun;        // xyz towards the sun, w how high it stands (at least 0.08)
+    vec4 reach;      // x: slack on a sphere's radius, y: the lowest ground shaded (below -1e29: unknown), z: how far towards the
+                     // sun casters are looked for, w: 1 when shadows are thrown (a cascade), 0 for the view itself
+    ivec4 cameraCell; // the camera's x and z, whole metres
+    vec4 camera;     // x, y: the rest of its x and z; z: its height
+};
+
+struct Command
+{
+    uint indexCount, instanceCount, firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+
+layout(buffer_reference, scalar) readonly buffer Cells { CellData cell[]; };
+layout(buffer_reference, scalar) readonly buffer Kinds { KindData kind[]; };
+layout(buffer_reference, scalar) readonly buffer Pass { PassData p[]; };
+layout(buffer_reference, scalar) writeonly buffer Commands { Command command[]; };
+layout(buffer_reference, scalar) writeonly buffer Rows { vec4 row[]; };
+layout(buffer_reference, scalar) buffer Counts { uint count[]; };
+
+layout(push_constant) uniform Push
+{
+    Cells cells;
+    Kinds kinds;
+    Pass pass;
+    Commands commands;
+    Rows rows;
+    Counts counts;
+    uint cellCount;
+    uint kindCount;
+    float tallest; // SunShadows.TallestCaster
+    float slack;   // SunShadows.ShadowSlack
+} pc;
+
+// Vegetation.Showing: how many of a cell's instances (nearest first by their random) plant.vert hasn't faded out at this distance.
+uint showing(int count, float distance, float fade)
+{
+    float needed = (distance / fade - 0.25) / 0.75;
+    return needed <= 0.0 ? uint(count) : uint(ceil(float(count) * clamp(1.0 - needed, 0.0, 1.0)));
+}
+
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.cellCount)
+        return;
+
+    CellData c = pc.cells.cell[i];
+    // One row of workgroups a pass: its view, its kinds' settings, and its stretch of the output.
+    uint passIndex = gl_WorkGroupID.y;
+    PassData p = pc.pass.p[passIndex];
+    uint kindBase = passIndex * pc.kindCount;
+    float size = float(c.size);
+    // Whole metres apart first (exact in integers), then the camera's fraction, so it holds anywhere in the country.
+    float ox = float(c.x * c.size - p.cameraCell.x) - p.camera.x;
+    float oz = float(c.z * c.size - p.cameraCell.y) - p.camera.y;
+    float lowY = c.low - p.camera.z;
+    float highY = c.high - p.camera.z;
+
+    float nx = max(max(-ox - size, ox), 0.0);
+    float nz = max(max(-oz - size, oz), 0.0);
+    float ny = max(max(lowY, -highY), 0.0);
+    float nearest = sqrt(nx * nx + ny * ny + nz * nz);
+    float fx = max(abs(ox), abs(ox + size));
+    float fz = max(abs(oz), abs(oz + size));
+    float fy = max(abs(lowY), abs(highY));
+    float furthest = sqrt(fx * fx + fy * fy + fz * fz);
+
+    vec3 centre = vec3(ox + size * 0.5, (lowY + highY) * 0.5, oz + size * 0.5);
+    float radius = sqrt(size * size * 0.5 + (highY - lowY) * (highY - lowY) * 0.25) + 12.0;
+
+    // In the cascade at all (anywhere towards the sun counts)?
+    if (p.box.w >= 0.0)
+    {
+        vec3 d = centre - p.box.xyz;
+        float r = p.box.w + radius;
+        if (abs(dot(d, p.right.xyz)) > r || abs(dot(d, p.up.xyz)) > r || dot(d, p.sun.xyz) < -r)
+            return;
+    }
+
+    // Can it (or, in a cascade, its shadow, from the top of the tallest plant down to the lowest ground) be seen?
+    vec3 end = centre;
+    if (p.reach.w > 0.5)
+    {
+        float top = highY + pc.tallest;
+        float lift = p.sun.w;
+        float thrown = p.reach.y < -1e29 ? (min(2.0 * radius, pc.tallest) + pc.slack) / lift : max(top - p.reach.y, 0.0) / lift;
+        end = centre - p.sun.xyz * min(thrown, p.reach.z);
+    }
+
+    float r = radius + p.reach.x;
+    for (int k = 0; k < 6; k++)
+    {
+        vec4 plane = p.planes[k];
+        if (dot(plane.xyz, centre) + plane.w > r && dot(plane.xyz, end) + plane.w > r)
+            return;
+    }
+
+    vec4 row = vec4(ox, oz, float((c.x * c.size) & 1023), float((c.z * c.size) & 1023));
+    for (uint k = 0; k < pc.kindCount; k++)
+    {
+        KindData kind = pc.kinds.kind[kindBase + k];
+        if (kind.enabled == 0)
+            continue;
+        int count = c.starts[kind.slot + 1] - c.starts[kind.slot];
+        if (count == 0 || nearest >= kind.far * 1.1 || furthest < kind.near * 0.9)
+            continue;
+        uint shown = showing(count, nearest, kind.fade);
+        if (shown == 0u)
+            continue;
+
+        uint at = (kindBase + k) * pc.cellCount + atomicAdd(pc.counts.count[kindBase + k], 1u);
+        pc.commands.command[at] = Command(uint(kind.indexCount), shown, uint(kind.firstIndex), 0, uint(c.offset + c.starts[kind.slot]));
+        pc.rows.row[at] = row;
+    }
+}

@@ -66,6 +66,13 @@ public static unsafe class Pipelines
         return Gpu.Device.CreatePipelineLayout(sets, pushBytes > 0 ? [range] : [], Gpu.Device.VkAllocator);
     }
 
+    /// A layout for compute shaders that take only push constants (their buffers by address).
+    public static VkPipelineLayout ComputeLayout(int pushBytes)
+    {
+        var range = new VkPushConstantRange { StageFlags = VkShaderStageFlags.ComputeBit, Offset = (ByteSize32)0, Size = (ByteSize32)pushBytes };
+        return Gpu.Device.CreatePipelineLayout([], [range], Gpu.Device.VkAllocator);
+    }
+
     public static VkPipeline Create(PipelineDesc desc)
     {
         fixed (byte* main = "main\0"u8)

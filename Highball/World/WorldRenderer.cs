@@ -293,6 +293,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         using (Profiler.Sample("Cloud shade", cmd))
             _clouds.Prepare(cmd, _target, camera, aspect, Sky);
 
+        var plants = terrain is not null && _vegetation.Enabled ? _vegetation.CullCamera(cmd, camera, aspect) : -1;
         _target.Begin(cmd, new float4(0f, 0f, 0f, 1f));
 
         var view = camera.View(aspect);
@@ -377,7 +378,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             Sky.Bind(cmd, _modelLayout);
             _shadows.Bind(cmd, _modelLayout);
             _clouds.Bind(cmd, _modelLayout);
-            _vegetation.Draw(cmd, _modelLayout, camera, aspect, _plantDepth, _plant);
+            _vegetation.Draw(cmd, _modelLayout, camera, aspect, _plantDepth, _plant, plants);
         }
 
         _seen.Clear();

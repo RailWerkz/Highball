@@ -173,6 +173,19 @@ public sealed class Mesh : IDisposable
     /// Draws as many as count commands (VkDrawIndexedIndirectCommand, in a row from offset bytes into commands) in one call,
     /// their instances read from instances (binding 1). Needs Gpu.MultiDraw for a count over one. triangles is only for the
     /// statistics, since the GPU reads the counts.
+    /// Draws up to maxCount commands from commands at offset, as many as the GPU wrote into counts at countOffset (Gpu.IndirectCount),
+    /// their instances from instances (binding 1). What they draw isn't known here, so isn't counted in Triangles.
+    public void DrawIndexedIndirectCount(CommandBuffer cmd, BufferEx instances, BufferEx commands, long offset, BufferEx counts, long countOffset, int maxCount)
+    {
+        if (maxCount <= 0)
+            return;
+
+        Bind(cmd);
+        cmd.BindVertexBuffer(1, instances.VkBuffer, ByteSize.Zero);
+        DrawCalls++;
+        cmd.DrawIndexedIndirectCount(commands.VkBuffer, new ByteSize64((ulong)offset), counts.VkBuffer, new ByteSize64((ulong)countOffset), maxCount, sizeof(uint) * 5);
+    }
+
     public void DrawIndexedIndirect(CommandBuffer cmd, BufferEx instances, BufferEx commands, long offset, int count, long triangles)
     {
         if (count <= 0)
