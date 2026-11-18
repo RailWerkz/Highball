@@ -91,6 +91,7 @@ public sealed unsafe class WorldRenderer : IDisposable
     private VkPipeline _part;
     private VkPipeline _partWire;
     private VkPipeline _model;
+    private VkPipeline _modelSeeThrough;
     private VkPipeline _plant;
     private VkSampleCountFlags _pipelineSamples;
 
@@ -115,7 +116,8 @@ public sealed unsafe class WorldRenderer : IDisposable
         // One layout for every world pipeline: push constants, and a texture at set 0 for those that sample one.
         _layout = Pipelines.Layout(128, TextureBinding.SetLayout, Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout, TrackTextures.SetLayout);
         _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
-        _modelLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(3), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
+        // (Colour, metal-roughness, normal and occlusion: RenderModel.Bind.)
+        _modelLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(4), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
         CreateWorldPipelines();
     }
 
@@ -177,6 +179,13 @@ public sealed unsafe class WorldRenderer : IDisposable
             Vertex = modelVert, Fragment = modelFrag, Layout = _modelLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(), Cull = VkCullModeFlags.None,
             InstanceAttributes = ModelInstance.Layout[..2], InstanceStride = Marshal.SizeOf<ModelInstance>(),
         });
+        // Their see-through parts (glass), once everything solid and the sky are down: laid over what's behind, which they
+        // don't hide from what's drawn after (no depth written).
+        _modelSeeThrough = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = modelVert, Fragment = modelFrag, Layout = _modelLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(), Cull = VkCullModeFlags.None,
+            InstanceAttributes = ModelInstance.Layout[..2], InstanceStride = Marshal.SizeOf<ModelInstance>(), DepthWrite = false, Blend = true,
+        });
         // Drawn over what's solid, and no part of it.
         _glow = Pipelines.Create(new PipelineDesc { Vertex = glowVert, Fragment = glowFrag, Layout = _layout, Cull = VkCullModeFlags.None, DepthWrite = false, Blend = true });
         // Plants and rocks, many of one mesh. Cards are seen from both sides.
@@ -199,6 +208,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         Pipelines.Destroy(_part, default);
         Pipelines.Destroy(_partWire, default);
         Pipelines.Destroy(_model, default);
+        Pipelines.Destroy(_modelSeeThrough, default);
         Pipelines.Destroy(_plant, default);
         Pipelines.Destroy(_glow, default);
     }
@@ -376,6 +386,9 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         skyScope.Dispose();
 
+        using (Profiler.Sample("See-through", cmd))
+            DrawModels(cmd, camera, aspect, seeThrough: true);
+
         using (Profiler.Sample("Glows", cmd))
             DrawGlows(cmd, camera, aspect);
 
@@ -390,7 +403,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         if (RailWerkz.Core.Settings.Settings.Current.AmbientOcclusion)
         {
             using var _ = Profiler.Sample("Ambient occlusion", cmd);
-            _occlusion.Draw(cmd, _target, camera, aspect, _post.NoiseFrame, layout =>
+            _occlusion.Draw(cmd, _target, _motion.Image!, camera, aspect, _post.NoiseFrame, layout =>
             {
                 Sky.Bind(cmd, layout);
                 _shadows.Bind(cmd, layout);
@@ -565,10 +578,13 @@ public sealed unsafe class WorldRenderer : IDisposable
         }
     }
 
-    /// The models in view: one instanced draw per material of each model.
-    private void DrawModels(CommandBuffer cmd, Camera camera, float aspect)
+    /// The models in view: one instanced draw per material of each model. Their solid parts, or (seeThrough) their glass.
+    private void DrawModels(CommandBuffer cmd, Camera camera, float aspect, bool seeThrough = false)
     {
-        cmd.BindPipeline(VkPipelineBindPoint.Graphics, _model);
+        if (seeThrough && !_seen.Any(b => b.Model.HasSeeThrough))
+            return;
+
+        cmd.BindPipeline(VkPipelineBindPoint.Graphics, seeThrough ? _modelSeeThrough : _model);
         Sky.Bind(cmd, _modelLayout);
         _shadows.Bind(cmd, _modelLayout);
         _clouds.Bind(cmd, _modelLayout);
@@ -576,13 +592,19 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         foreach (var batch in _seen)
         {
+            if (seeThrough && !batch.Model.HasSeeThrough)
+                continue;
+
             foreach (var part in batch.Model.Parts)
             {
+                if (part.SeeThrough != seeThrough)
+                    continue;
+
                 var push = new ModelPush
                 {
                     ViewProjection = viewProjection,
                     BaseColor = batch.BaseColor ?? part.BaseColor,
-                    Material = new float4(batch.Metallic ?? part.Metallic, batch.Roughness ?? part.Roughness, (float)camera.Y, part.AlphaCutoff),
+                    Material = new float4(batch.Metallic ?? part.Metallic, batch.Roughness ?? part.Roughness, (float)camera.Y, part.SeeThrough ? -1f : part.AlphaCutoff),
                 };
                 part.Textures.Bind(cmd, _modelLayout);
                 cmd.PushConstants(_modelLayout, Stages, ByteSize.Zero, push);

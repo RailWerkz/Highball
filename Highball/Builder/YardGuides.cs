@@ -59,6 +59,9 @@ public sealed class YardGuides
         public readonly Dictionary<long, (double X, double Z)> Nodes = [];
         public readonly Dictionary<long, List<(long Other, double Length)>> Links = [];
         public readonly List<(long A, long B, bool Done)> Segments = [];
+        /// Each segment's shape, from its first node to its second: the same smooth curve through the map's points as the
+        /// mark on the ground is drawn along (a centripetal Catmull-Rom spline), every few metres.
+        public readonly Dictionary<(long, long), List<(double X, double Z)>> Shapes = [];
         /// Every guide segment's class, and whether any built track (hand-laid or drawn) already runs along it.
         public readonly List<(int Class, bool Covered)> Classes = [];
         /// Each guide segment's class, by its two nodes (either way round).
@@ -170,13 +173,30 @@ public sealed class YardGuides
             return false;
         }
 
-        foreach (var way in ways.Where(RouteNetwork.IsGuide))
-        {
+        var guideWays = ways.Where(RouteNetwork.IsGuide).ToList();
+        foreach (var way in guideWays)
             for (var i = 0; i < way.Nodes.Length; i++)
             {
                 var p = projection.Forward(new GeoPoint(way.Lat[i], way.Lon[i]));
                 found.Nodes[way.Nodes[i]] = (p.East, -p.North);
             }
+
+        // Where guide ways end, so a way's curve carries on into the way it runs on into, as the mark's chain does.
+        var endsAt = new Dictionary<long, List<(NetworkWay Way, bool AtStart)>>();
+        foreach (var way in guideWays)
+            if (way.Nodes.Length >= 2)
+                foreach (var (node, atStart) in (ReadOnlySpan<(long, bool)>)[(way.Nodes[0], true), (way.Nodes[^1], false)])
+                {
+                    if (!endsAt.TryGetValue(node, out var list))
+                        endsAt[node] = list = [];
+                    list.Add((way, atStart));
+                }
+
+        foreach (var way in guideWays)
+            AddShapes(found, way, endsAt);
+
+        foreach (var way in guideWays)
+        {
 
             for (var i = 0; i + 1 < way.Nodes.Length; i++)
             {
@@ -206,6 +226,110 @@ public sealed class YardGuides
         }
 
         return found;
+    }
+
+    /// How far apart a guide's shape is taken, metres.
+    private const double ShapeStep = 3.0;
+
+    /// The shape of each of a way's segments: a centripetal Catmull-Rom spline through its nodes, as the mark on the ground
+    /// is laid along, its ends carrying on into a way that runs on from them (or, with none, straight on).
+    private static void AddShapes(Found found, NetworkWay way, Dictionary<long, List<(NetworkWay Way, bool AtStart)>> endsAt)
+    {
+        var n = way.Nodes.Length;
+        if (n < 2)
+            return;
+        var p = way.Nodes.Select(id => found.Nodes[id]).ToArray();
+        (double X, double Z) Beyond(int end, int inner)
+        {
+            if (endsAt.TryGetValue(way.Nodes[end], out var list) && list.Count == 2)
+                foreach (var (other, atStart) in list)
+                    if (other != way && other.Nodes.Length >= 2 && found.Nodes.TryGetValue(other.Nodes[atStart ? 1 : other.Nodes.Length - 2], out var q))
+                        return q;
+            return (2 * p[end].X - p[inner].X, 2 * p[end].Z - p[inner].Z);
+        }
+
+        (double X, double Z) P(int i) => i < 0 ? Beyond(0, 1) : i >= n ? Beyond(n - 1, n - 2) : p[i];
+        static double Knot(double t, (double X, double Z) a, (double X, double Z) b) =>
+            t + Math.Max(Math.Sqrt(Math.Sqrt((b.X - a.X) * (b.X - a.X) + (b.Z - a.Z) * (b.Z - a.Z))), 1e-4);
+
+        for (var i = 0; i + 1 < n; i++)
+        {
+            var (p0, p1, p2, p3) = (P(i - 1), P(i), P(i + 1), P(i + 2));
+            var t0 = 0.0;
+            var t1 = Knot(t0, p0, p1);
+            var t2 = Knot(t1, p1, p2);
+            var t3 = Knot(t2, p2, p3);
+            var length = Math.Sqrt((p2.X - p1.X) * (p2.X - p1.X) + (p2.Z - p1.Z) * (p2.Z - p1.Z));
+            var steps = Math.Max(1, (int)Math.Ceiling(length / ShapeStep));
+            var shape = new List<(double X, double Z)>(steps + 1);
+            for (var k = 0; k <= steps; k++)
+            {
+                var t = t1 + (t2 - t1) * k / steps;
+                (double X, double Z) Mix((double X, double Z) a, (double X, double Z) b, double ta, double tb) =>
+                    ((tb - t) / (tb - ta) * a.X + (t - ta) / (tb - ta) * b.X, (tb - t) / (tb - ta) * a.Z + (t - ta) / (tb - ta) * b.Z);
+                var b1 = Mix(Mix(p0, p1, t0, t1), Mix(p1, p2, t1, t2), t0, t2);
+                var b2 = Mix(Mix(p1, p2, t1, t2), Mix(p2, p3, t2, t3), t1, t3);
+                shape.Add(Mix(b1, b2, t1, t2));
+            }
+
+            shape[0] = p1;
+            shape[^1] = p2;
+            found.Shapes[(way.Nodes[i], way.Nodes[i + 1])] = shape;
+        }
+    }
+
+    /// A segment's shape from a to b (either way round); its chord if it has none.
+    private List<(double X, double Z)> Shape(long a, long b) =>
+        _found.Shapes.TryGetValue((a, b), out var shape) ? shape
+        : _found.Shapes.TryGetValue((b, a), out var back) ? Enumerable.Reverse(back).ToList()
+        : [_nodes[a], _nodes[b]];
+
+    /// Distance along a shape at each of its points.
+    private static double[] Lengths(List<(double X, double Z)> shape)
+    {
+        var lengths = new double[shape.Count];
+        for (var i = 1; i < shape.Count; i++)
+            lengths[i] = lengths[i - 1] + Math.Sqrt((shape[i].X - shape[i - 1].X) * (shape[i].X - shape[i - 1].X) + (shape[i].Z - shape[i - 1].Z) * (shape[i].Z - shape[i - 1].Z));
+        return lengths;
+    }
+
+    /// The place a share t of the way along a shape (by length).
+    private static (double X, double Z) AlongShape(List<(double X, double Z)> shape, double[] lengths, double t)
+    {
+        var want = lengths[^1] * Math.Clamp(t, 0.0, 1.0);
+        for (var i = 1; i < shape.Count; i++)
+            if (want <= lengths[i] || i == shape.Count - 1)
+            {
+                var piece = lengths[i] - lengths[i - 1];
+                var f = piece < 1e-9 ? 0.0 : Math.Clamp((want - lengths[i - 1]) / piece, 0.0, 1.0);
+                return (shape[i - 1].X + (shape[i].X - shape[i - 1].X) * f, shape[i - 1].Z + (shape[i].Z - shape[i - 1].Z) * f);
+            }
+
+        return shape[^1];
+    }
+
+    /// A segment's shape (a to b) from the share t0 along it to the share t1, either way.
+    private List<(double X, double Z)> Between(long a, long b, double t0, double t1)
+    {
+        var shape = Shape(a, b);
+        var lengths = Lengths(shape);
+        var (s0, s1) = (lengths[^1] * Math.Clamp(t0, 0.0, 1.0), lengths[^1] * Math.Clamp(t1, 0.0, 1.0));
+        var result = new List<(double X, double Z)> { AlongShape(shape, lengths, t0) };
+        if (s1 >= s0)
+        {
+            for (var i = 0; i < shape.Count; i++)
+                if (lengths[i] > s0 + 1e-6 && lengths[i] < s1 - 1e-6)
+                    result.Add(shape[i]);
+        }
+        else
+        {
+            for (var i = shape.Count - 1; i >= 0; i--)
+                if (lengths[i] < s0 - 1e-6 && lengths[i] > s1 + 1e-6)
+                    result.Add(shape[i]);
+        }
+
+        result.Add(AlongShape(shape, lengths, t1));
+        return result;
     }
 
     /// The class of the mapped track a place on a guide is on, if known.
@@ -278,14 +402,24 @@ public sealed class YardGuides
             var (pa, pb) = (_nodes[a], _nodes[b]);
             if ((Math.Abs(pa.X - cx) > reach && Math.Abs(pb.X - cx) > reach) || (Math.Abs(pa.Z - cz) > reach && Math.Abs(pb.Z - cz) > reach))
                 continue;
-            if (project(pa.X, pa.Z) is not { } sa || project(pb.X, pb.Z) is not { } sb)
-                continue;
-            var (dx, dy) = (sb.X - sa.X, sb.Y - sa.Y);
-            var t = Math.Clamp(((mouse.X - sa.X) * dx + (mouse.Y - sa.Y) * dy) / MathF.Max(dx * dx + dy * dy, 1e-3f), 0f, 1f);
-            var (ex, ey) = (sa.X + dx * t - mouse.X, sa.Y + dy * t - mouse.Y);
-            var d = MathF.Sqrt(ex * ex + ey * ey);
-            if (d < best)
-                (best, found) = (d, new GuidePlace(a, b, t, pa.X + (pb.X - pa.X) * t, pa.Z + (pb.Z - pa.Z) * t));
+            // Along the segment's shape, a piece at a time (the place's share along it by length).
+            var shape = Shape(a, b);
+            var lengths = Lengths(shape);
+            for (var i = 1; i < shape.Count; i++)
+            {
+                var (qa, qb) = (shape[i - 1], shape[i]);
+                if (project(qa.X, qa.Z) is not { } sa || project(qb.X, qb.Z) is not { } sb)
+                    continue;
+                var (dx, dy) = (sb.X - sa.X, sb.Y - sa.Y);
+                var t = Math.Clamp(((mouse.X - sa.X) * dx + (mouse.Y - sa.Y) * dy) / MathF.Max(dx * dx + dy * dy, 1e-3f), 0f, 1f);
+                var (ex, ey) = (sa.X + dx * t - mouse.X, sa.Y + dy * t - mouse.Y);
+                var d = MathF.Sqrt(ex * ex + ey * ey);
+                if (d < best)
+                {
+                    var share = lengths[^1] < 1e-9 ? 0.0 : (lengths[i - 1] + (lengths[i] - lengths[i - 1]) * t) / lengths[^1];
+                    (best, found) = (d, new GuidePlace(a, b, share, qa.X + (qb.X - qa.X) * t, qa.Z + (qb.Z - qa.Z) * t));
+                }
+            }
         }
 
         return found;
@@ -299,12 +433,24 @@ public sealed class YardGuides
         foreach (var (a, b, _) in _segments)
         {
             var (pa, pb) = (_nodes[a], _nodes[b]);
-            var (dx, dz) = (pb.X - pa.X, pb.Z - pa.Z);
-            var t = Math.Clamp(((x - pa.X) * dx + (z - pa.Z) * dz) / Math.Max(dx * dx + dz * dz, 1e-9), 0.0, 1.0);
-            var (px, pz) = (pa.X + dx * t, pa.Z + dz * t);
-            var d = (px - x) * (px - x) + (pz - z) * (pz - z);
-            if (d < best)
-                (best, found) = (d, new GuidePlace(a, b, t, px, pz));
+            var span = Math.Sqrt((pb.X - pa.X) * (pb.X - pa.X) + (pb.Z - pa.Z) * (pb.Z - pa.Z));
+            if (Math.Abs(x - (pa.X + pb.X) * 0.5) > span + within || Math.Abs(z - (pa.Z + pb.Z) * 0.5) > span + within)
+                continue;
+            var shape = Shape(a, b);
+            var lengths = Lengths(shape);
+            for (var i = 1; i < shape.Count; i++)
+            {
+                var (qa, qb) = (shape[i - 1], shape[i]);
+                var (dx, dz) = (qb.X - qa.X, qb.Z - qa.Z);
+                var t = Math.Clamp(((x - qa.X) * dx + (z - qa.Z) * dz) / Math.Max(dx * dx + dz * dz, 1e-9), 0.0, 1.0);
+                var (px, pz) = (qa.X + dx * t, qa.Z + dz * t);
+                var d = (px - x) * (px - x) + (pz - z) * (pz - z);
+                if (d < best)
+                {
+                    var share = lengths[^1] < 1e-9 ? 0.0 : (lengths[i - 1] + (lengths[i] - lengths[i - 1]) * t) / lengths[^1];
+                    (best, found) = (d, new GuidePlace(a, b, share, px, pz));
+                }
+            }
         }
 
         return found;
@@ -327,7 +473,12 @@ public sealed class YardGuides
     public List<(double X, double Z)>? Path(GuidePlace from, GuidePlace to)
     {
         if ((from.A, from.B) == (to.A, to.B) || (from.A, from.B) == (to.B, to.A))
-            return [(from.X, from.Z), (to.X, to.Z)];
+        {
+            // Along the one segment's shape, between the two places.
+            var part = Between(from.A, from.B, from.T, (from.A, from.B) == (to.A, to.B) ? to.T : 1.0 - to.T);
+            (part[0], part[^1]) = ((from.X, from.Z), (to.X, to.Z));
+            return part;
+        }
 
         double Along(GuidePlace place, long node)
         {
@@ -400,7 +551,16 @@ public sealed class YardGuides
         }
 
         nodes.Reverse();
-        List<(double, double)> path = [(from.X, from.Z), .. nodes.Select(n => _nodes[n]), (to.X, to.Z)];
+        // Along the shapes: from the first place round its segment to the first node, node to node, and from the last node
+        // round its segment to the last place.
+        var path = Between(from.A, from.B, from.T, nodes[0] == from.B ? 1.0 : 0.0);
+        path[0] = (from.X, from.Z);
+        path[^1] = _nodes[nodes[0]];
+        for (var i = 0; i + 1 < nodes.Count; i++)
+            path.AddRange(Shape(nodes[i], nodes[i + 1]).Skip(1));
+        var tail = Between(to.A, to.B, nodes[^1] == to.B ? 1.0 : 0.0, to.T);
+        path.AddRange(tail.Skip(1));
+        path[^1] = (to.X, to.Z);
         return path;
     }
 
@@ -426,11 +586,10 @@ public sealed class YardGuides
             if ((Math.Abs(pa.X - cx) > reach && Math.Abs(pb.X - cx) > reach) || (Math.Abs(pa.Z - cz) > reach && Math.Abs(pb.Z - cz) > reach))
                 continue;
             var color = RailColours.Of(cls).WithAlpha(0.85f);
-            var pieces = Math.Clamp((int)(Math.Sqrt((pb.X - pa.X) * (pb.X - pa.X) + (pb.Z - pa.Z) * (pb.Z - pa.Z)) / 20.0), 1, 32);
             float2? previous = null;
-            for (var k = 0; k <= pieces; k++)
+            foreach (var q in Shape(a, b))
             {
-                var at = project(pa.X + (pb.X - pa.X) * k / pieces, pa.Z + (pb.Z - pa.Z) * k / pieces);
+                var at = project(q.X, q.Z);
                 if (previous is { } p0 && at is { } p1 && Clip(p0, p1, screen) is var (from, to))
                 {
                     // Dashes counted whole along the clipped piece: a far point projected millions of pixels off the
@@ -486,12 +645,11 @@ public sealed class YardGuides
             var (pa, pb) = (_nodes[a], _nodes[b]);
             if ((Math.Abs(pa.X - cx) > reach && Math.Abs(pb.X - cx) > reach) || (Math.Abs(pa.Z - cz) > reach && Math.Abs(pb.Z - cz) > reach))
                 continue;
-            // (Long map segments follow the ground in lengths.)
-            var pieces = Math.Clamp((int)(Math.Sqrt((pb.X - pa.X) * (pb.X - pa.X) + (pb.Z - pa.Z) * (pb.Z - pa.Z)) / 20.0), 1, 32);
+            // (Along the segment's shape, which follows the ground in lengths.)
             float2? previous = null;
-            for (var k = 0; k <= pieces; k++)
+            foreach (var q in Shape(a, b))
             {
-                var at = project(pa.X + (pb.X - pa.X) * k / pieces, pa.Z + (pb.Z - pa.Z) * k / pieces);
+                var at = project(q.X, q.Z);
                 if (previous is { } from && at is { } to)
                     draw.AddLine(from, to, finished ? done : open, Style.S(finished ? 1.5f : 2.5f));
                 previous = at;

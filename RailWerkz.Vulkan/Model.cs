@@ -17,10 +17,11 @@ public sealed class Model : IDisposable
     public readonly record struct SubMesh(int Material, int FirstIndex, int IndexCount);
 
     /// AlphaCutoff is 0 for an opaque material; for a cut-out one (leaves, grass cards) the alpha below which a pixel is
-    /// thrown away.
+    /// thrown away. Blend is set for a see-through one (glass): its alpha is how opaque it is, for whatever draws it so.
     /// Metallic and Roughness are the material's factors; MetallicRoughness, if it has one, is its glTF map of them (green
     /// roughness, blue metalness), multiplied by those factors.
-    public readonly record struct Surface(float4 BaseColor, Texture2D? Texture, float AlphaCutoff, float Metallic = 1f, float Roughness = 1f, Texture2D? MetallicRoughness = null, Texture2D? Normal = null);
+    public readonly record struct Surface(float4 BaseColor, Texture2D? Texture, float AlphaCutoff, float Metallic = 1f, float Roughness = 1f, Texture2D? MetallicRoughness = null, Texture2D? Normal = null,
+        Texture2D? Occlusion = null, bool Blend = false);
 
     /// How the file's coordinates were turned, moved and scaled into the model's, so a part loaded on its own (a
     /// rotor, say) can be put in exactly the same place.
@@ -568,9 +569,13 @@ public sealed class Model : IDisposable
             var texture = pbr?.BaseColorTexture is { } color ? Image(color.Index, true) : null;
             var metallicRoughness = pbr?.MetallicRoughnessTexture is { } map ? Image(map.Index, false) : null;
             var normal = material?.NormalTexture is { } bumps ? Image(bumps.Index, false) : null;
+            // How much of the sky reaches each place (glTF's occlusion, red).
+            var occlusion = material?.OcclusionTexture is { } shade ? Image(shade.Index, false) : null;
 
+            var blend = material?.AlphaMode == Material.AlphaModeEnum.Blend;
+            // (A blended one keeps glTF's cutoff too, for whatever draws it cut out instead: the plant kit's leaf cards.)
             var cutoff = material is null || material.AlphaMode == Material.AlphaModeEnum.Opaque ? 0f : material.AlphaCutoff;
-            surfaces.Add(new Surface(factor, texture, cutoff, pbr?.MetallicFactor ?? 1f, pbr?.RoughnessFactor ?? 1f, metallicRoughness, normal));
+            surfaces.Add(new Surface(factor, texture, cutoff, pbr?.MetallicFactor ?? 1f, pbr?.RoughnessFactor ?? 1f, metallicRoughness, normal, occlusion, blend));
         }
 
         return surfaces;
@@ -703,7 +708,7 @@ public sealed class Model : IDisposable
     public void Dispose()
     {
         Mesh.Dispose();
-        foreach (var texture in Surfaces.SelectMany(s => new[] { s.Texture, s.MetallicRoughness, s.Normal }).OfType<Texture2D>().Distinct())
+        foreach (var texture in Surfaces.SelectMany(s => new[] { s.Texture, s.MetallicRoughness, s.Normal, s.Occlusion }).OfType<Texture2D>().Distinct())
             texture.Dispose();
     }
 }

@@ -32,6 +32,27 @@ public sealed partial class NetworkMeshes
     }
 
     /// One bridge's edit changed: its piers are worked out again, and its chunk built again.
+    /// What one end of a bridge stands on, as it's been worked out (and set by hand), if it has an end there.
+    public BridgeEndKind? EndKindOf(BridgeGroup group, bool start) => _lines.BridgeEndAt(group.Reference, start ? group.First : group.Last)?.Kind;
+
+    /// One end of a bridge as it's built now: what it stands on, whether hand settings were found for it, how far its deck was lengthened
+    /// by hand, and its wall's or slope's setback (metres).
+    /// Whether the track as built now was laid knowing these nodes' hand settings (a check: they reach it only when it's laid again).
+    public bool EditsReached(IEnumerable<long> nodes)
+    {
+        var known = (_lines.BridgeEdits?.Values ?? []).SelectMany(e => (e.StartNodes ?? []).Concat(e.EndNodes ?? [])).ToHashSet();
+        return nodes.Any(known.Contains);
+    }
+
+    public (BridgeEndKind? Kind, bool Set, float Lengthened, float Setback) EndBuilt(BridgeGroup group, bool start)
+    {
+        var line = group.Reference;
+        var end = _lines.BridgeEndAt(line, start ? group.First : group.Last);
+        var (f, l) = _lines.Unextended(line, group.First, group.Last);
+        var lengthened = start ? line.S[f] - line.S[group.First] : line.S[group.Last] - line.S[l];
+        return (end?.Kind, end?.Set ?? false, lengthened, end?.Setback ?? 0f);
+    }
+
     public void BridgeChanged(long key)
     {
         foreach (var group in _bridges.Where(g => g.Key == key))
@@ -204,7 +225,9 @@ public sealed partial class NetworkMeshes
                     Solid(builder, center + r * u, r * 0.035f, forward * 0.05f, center.Y + edge + ParapetHeight, center.Y + edge + ParapetHeight + ParapetRail + 0.04f, bright);
             else
                 foreach (var u in (float[])[left + 0.08f, right - 0.08f])
-                    Solid(builder, center + r * u, r * 0.05f, forward * 0.05f, center.Y + edge, center.Y + edge + RailingHeight + 0.05f, bright);
+                    // (Down the slab's edge to its underside, bolted to its face, as a railway bridge's railings are: started at the
+                    // ballast's height they stood in the air over the slab.)
+                    Solid(builder, center + r * u, r * 0.05f, forward * 0.05f, center.Y + deckBottom, center.Y + edge + RailingHeight + 0.05f, bright);
         }
 
         Along(RailPostGap, Post);
@@ -354,9 +377,28 @@ public sealed partial class NetworkMeshes
             BackWall(seatBottom);
             // (A railway's slope is left as levelled earth, unpaved.)
             if (kind == BridgeEndKind.Wall)
+            {
                 RetainingWall(builder, group, end!.Value, data);
+                DeckWings(builder, group, end.Value, s, inward, left, right, depth, data);
+            }
             else if (!group.Rail)
                 Paving(builder, group, middle, r, forward, half + 0.4f, 1.1f, end!.Value, data);
+            // A slope end with wing walls set holds the bank back beside the seat, out to the side and flared back into it.
+            if (kind == BridgeEndKind.Slope && wing is null)
+                SlopeWings(builder, group, end!.Value, s, inward, left, right, depth, data);
+            if (kind == BridgeEndKind.Slope && wing is { } wingLength)
+            {
+                var flareTurn = Math.Clamp(flare, -45f, 80f) * MathF.PI / 180f;
+                foreach (var side in (float[])[-1f, 1f])
+                {
+                    var a = middle - forward * 0.1f + r * (side * half);
+                    var outward = r * (side * MathF.Cos(flareTurn)) - forward * MathF.Sin(flareTurn);
+                    var b = a + outward * wingLength;
+                    var low = MathF.Min(seatBottom, _source.HeightAt(b.X + builder.Origin.X, b.Z + builder.Origin.Z)) - 1.5f;
+                    Wing(builder, a, b, 0.4f, low, center.Y + edge, settled, data);
+                }
+            }
+
             return;
         }
 
@@ -380,6 +422,88 @@ public sealed partial class NetworkMeshes
         }
     }
 
+    /// A slope end's wing walls: one under each edge of the deck, running with it from just behind the seat out over the slope to its
+    /// toe, its top the slope's plane (NetworkLines.SlopeAt) a little proud of it, up to the deck's underside: a triangle of wall the
+    /// slope's side meets, whatever the angle what's underneath crosses at, the bank carrying on round it outside.
+    private void SlopeWings(Builder builder, BridgeGroup group, BridgeEnd end, float s, float inward, float left, float right, float depth, float4 data)
+    {
+        // (All of it from the end's shape, as the ground round it is: BridgeEndShape.)
+        if (_lines.EndShapeAt(group.Reference, end.Point) is not { } shape)
+            return;
+        var origin = builder.Origin;
+        float3 At(float a, float c)
+        {
+            var (x, z) = shape.World(a, c);
+            return new float3((float)(x - origin.X), 0f, (float)(z - origin.Z));
+        }
+
+        const float thick = BridgeEndShape.WallThick;
+        foreach (var side in (float[])[-1f, 1f])
+        {
+            var toe = shape.Toe(side);
+            var middle = side * (shape.DeckHalf + thick * 0.5f);
+            var points = new List<(float3 At, float Top, float Low)>();
+            for (var a = BridgeEndShape.WallFrom; ; a = MathF.Min(a + 0.5f, toe))
+            {
+                var (ix, iz) = shape.World(a, side * shape.DeckHalf);
+                var (ox, oz) = shape.World(a, side * (shape.DeckHalf + thick));
+                var low = MathF.Min(shape.Inner(a, ix, iz), shape.ConeTop(a, ox, oz)) - 1.5f;
+                points.Add((At(a, middle), shape.WallTop(a, side), low));
+                if (a >= toe)
+                    break;
+            }
+
+            for (var k = 0; k + 1 < points.Count; k++)
+            {
+                var (p, q) = (points[k], points[k + 1]);
+                Wing(builder, p.At, q.At, thick, MathF.Min(p.Low, q.Low), p.Top, q.Top, data);
+            }
+
+            // The corner block over the wall's start, holding the ballast and the bank's top back at the deck's end.
+            var (from, to) = (-BridgeEndShape.BlockBehind, BridgeEndShape.BlockAhead);
+            var (inner, outer) = (shape.DeckHalf - BridgeEndShape.BlockIn, shape.DeckHalf + thick + BridgeEndShape.BlockOut);
+            var centre = At((from + to) * 0.5f, side * (inner + outer) * 0.5f);
+            var forward = new float3((float)shape.Fx, 0f, (float)shape.Fz);
+            var across = new float3((float)shape.Rx, 0f, (float)shape.Rz);
+            var blockTop = shape.TrackY(0f) + NetworkLine.BallastHeight + BridgeEndShape.BlockRise;
+            Solid(builder, centre, across * ((outer - inner) * 0.5f), forward * ((to - from) * 0.5f), shape.SeatY - 1f, blockTop, data);
+        }
+    }
+
+    /// A wall end's wing walls along the deck's sides, where the deck runs on over the bank behind the wall (on a skew, the wedge
+    /// between its square end and the wall along the road): from the wall's face back past the deck's end into the bank, just outside
+    /// the deck, holding the bank beside it at the approach's height up off the seat the deck sits on between them.
+    private void DeckWings(Builder builder, BridgeGroup group, BridgeEnd end, float s, float inward, float left, float right, float depth, float4 data)
+    {
+        var line = group.Reference;
+        var origin = builder.Origin;
+        var faceOff = _lines.WallFaceOff(end);
+        foreach (var across in (float[])[left - 0.25f, right + 0.25f])
+        {
+            // Inward from the deck's end along its side, to where that side comes out in front of the wall.
+            float? met = null;
+            for (var k = 0; k <= 240; k++)
+            {
+                var at = s + inward * k * 0.25f;
+                var (c, r) = FrameAt(line, at, origin);
+                var p = c + r * across;
+                if (end.FromUnder(p.X + origin.X, p.Z + origin.Z) <= faceOff + WallThick)
+                {
+                    met = at;
+                    break;
+                }
+            }
+
+            if (met is not { } from || MathF.Abs(from - s) < 0.5f)
+                continue;
+            var (ca, ra) = FrameAt(line, from, origin);
+            var (cb, rb) = FrameAt(line, s - inward * 1.2f, origin);
+            var (a, b) = (ca + ra * across, cb + rb * across);
+            float Top(float3 p) => _lines.EmbankmentAt(end, p.X + origin.X, p.Z + origin.Z) + 0.1f;
+            Wing(builder, a, b, 0.4f, MathF.Min(ca.Y, cb.Y) - depth - 1.8f, Top(a), Top(b), data);
+        }
+    }
+
     private const float WallOff = NetworkLines.WallOff;
     private const float WallThick = NetworkLines.WallThick;
     private const float WallStep = 2f;
@@ -388,6 +512,10 @@ public sealed partial class NetworkMeshes
     private const float WallLooks = 3.5f;
     /// How far past a deck's end a wall still rises to its seat (the wedge a skewed crossing leaves).
     private const float WallWedge = 25f;
+
+    /// How far back from its face a wall's top may carry on over the ground's climb behind it, metres (past the strip let down in front
+    /// of it and a diagonal of the terrain's squares, the most the climb can take).
+    private const float WallCover = 4.5f;
 
     /// A wall end's wall: along the edge of what runs underneath, its face WallOff past its formation, under the deck up to the seat
     /// and out either side as a retaining wall, its top following the bank behind it until the bank's come down to the road (or
@@ -452,7 +580,7 @@ public sealed partial class NetworkMeshes
             var (dx, dz) = ((float)(under.X[i + 1] - under.X[i]), (float)(under.Z[i + 1] - under.Z[i]));
             var length = MathF.Max(MathF.Sqrt(dx * dx + dz * dz), 1e-5f);
             var (rx, rz) = (-dz / length * end.Side, dx / length * end.Side);
-            var off = (under.Rail ? under.Formation : NetworkLines.PavedHalf(under, i)) + WallOff;
+            var off = (under.Rail ? under.Formation : NetworkLines.PavedHalf(under, i)) + WallOff + end.Setback;
             var face = (X: x + rx * off, Z: z + rz * off);
             // (Its body covers the strip let down behind it: its back where the ground's left as it is.)
             var body = _lines.WallBody;
@@ -465,15 +593,13 @@ public sealed partial class NetworkMeshes
             }
             else
             {
-                // (Past the deck, the approach's bank falls away at the slope's run: a cutting's own high ground beyond is left as it is.)
-                var beyond = MathF.Abs(s - (lastCovered ?? end.UnderS));
-                var bank = endY + 0.3f - beyond / NetworkLines.SpillRun;
-                // (The highest of the ground just behind it: the terrain's triangles from the road up to that cross the wall's plane no
-                // higher, so the wall hides them, and the bank meets its top.)
-                var behind = float.MinValue;
-                for (var look = 0.3f; look <= WallLooks; look += 0.8f)
-                    behind = MathF.Max(behind, _source.HeightAt(back.X + rx * look, back.Z + rz * look));
-                top = MathF.Min(behind + 0.15f, bank);
+                // (Past the deck, the approach's bank stays at its height across the rest of its formation, then falls away at the slope's
+                // run: a cutting's own high ground beyond is left as it is.)
+                // (The same line the ground behind is shaped to, NetworkLines.WallTop.)
+                var bank = _lines.WallTop(end, s);
+                // (A straight line down the bank, as a wall's coping is cast: not the ground's every sample behind it, which left its top
+                // wavy. The bank behind is shaped to the same slope.)
+                top = bank;
                 if (top < floor + 0.6f)
                 {
                     stop = true;
@@ -485,28 +611,63 @@ public sealed partial class NetworkMeshes
         }
 
         var points = new List<(float3 Face, float3 Back, float Top, float Bottom)>();
+        var covers = new List<bool>();
         foreach (var way in (int[])[-1, 1])
         {
             lastCovered = null;
             var run = new List<(float3, float3, float, float)>();
+            var runCovers = new List<bool>();
+            var why = "most";
             for (var k = way < 0 ? 0 : 1; k * WallStep <= WallMost; k++)
             {
                 var s = end.UnderS + way * k * WallStep;
                 if (s < 0f || s > under.S[^1])
+                {
+                    why = "road's end";
                     break;
+                }
+
                 if (At(s, out var stop, out var covered) is not { } place)
+                {
+                    why = "none";
                     break;
-                // (Past halfway to the next wall only while still under its own deck.)
+                }
+
+                // (Past halfway to the next wall only while still under its own deck; and no further than a length set by hand.)
                 if ((s < lowest || s > highest) && !covered)
+                {
+                    why = $"next wall ({lowest:0}..{highest:0})";
                     break;
+                }
+
+                if (end.Cap is { } cap && !covered && MathF.Abs(s - end.UnderS) > end.Footprint + cap)
+                {
+                    why = "cap";
+                    break;
+                }
+
                 run.Add(place);
+                runCovers.Add(covered);
                 if (stop)
+                {
+                    why = $"down to the road at {s:0} (top {place.Top:0.0}, road {place.Bottom + 1.2f:0.0})";
                     break;
+                }
             }
 
+            if (Environment.GetEnvironmentVariable("HB_WALLS") == "1")
+                RailWerkz.Core.Logging.Log.Info(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                    $"Wall {group.Key} at {end.UnderS:0} way {way}: {run.Count} points, stopped: {why}; deck y {endY:0.0}, span {_lines.WallSpanOf(end)}; " +
+                    $"face at middle {_lines.WallFaceAt(end, end.UnderS).X:0.0},{_lines.WallFaceAt(end, end.UnderS).Z:0.0} out {_lines.WallFaceAt(end, end.UnderS).Rx:0.00},{_lines.WallFaceAt(end, end.UnderS).Rz:0.00} road {_lines.WallFaceAt(end, end.UnderS).Floor:0.0}"));
+
             if (way < 0)
+            {
                 run.Reverse();
+                runCovers.Reverse();
+            }
+
             points.AddRange(run);
+            covers.AddRange(runCovers);
         }
 
         if (points.Count < 2)
@@ -515,11 +676,48 @@ public sealed partial class NetworkMeshes
         var tops = points.Select(p => p.Top).ToArray();
         for (var k = 1; k + 1 < points.Count; k++)
             points[k] = points[k] with { Top = MathF.Max(tops[k], (tops[k - 1] + tops[k] * 2f + tops[k + 1]) * 0.25f) };
+
+        // Its body only its own thickness, and its top carried back over the bank as far as the ground drawn is still under it: the
+        // terrain's samples are metres apart, so behind the strip let down in front of the wall (NetworkLines.TrenchWalls) the ground
+        // climbs to the bank's height (or under the deck, to just under its beams) over a whole square of them, and a back face standing
+        // in that climb shows.
+        var extras = new float[points.Count];
+        for (var k = 0; k < points.Count; k++)
+        {
+            var (f, _, top, _) = points[k];
+            var backward = MathEx.Normalize(points[k].Back - f);
+            // (Out to where the ground's reached the bank it's shaped to, the embankment's height there or the top, whichever's lower:
+            // where the embankment falls away behind the wall, that's soon, not the top's height, which the ground never comes to.)
+            var extra = WallThick;
+            extras[k] = extra;
+        }
+
+        // Where the top's carried back, it slopes down from the wall's own back to the ground at its edge, as the bank does over it:
+        // flat at the top's height it stood up as a slab where the bank behind is lower than the wall's top.
+        var walls = new float3[points.Count];
+        var edges = new float[points.Count];
+        for (var k = 0; k < points.Count; k++)
+        {
+            // (The most of it and its neighbours': the back edge even, not stepping with every sample.)
+            var most = extras[k];
+            if (k > 0)
+                most = MathF.Max(most, extras[k - 1]);
+            if (k + 1 < points.Count)
+                most = MathF.Max(most, extras[k + 1]);
+            var (f, b, top, bottom) = points[k];
+            var backward = MathEx.Normalize(b - f);
+            var edge = f + backward * (WallThick + 0.02f);
+            walls[k] = f + backward * WallThick;
+            edges[k] = top;
+            points[k] = (f, edge, top, bottom);
+        }
+
         var up = new float3(0f, 1f, 0f);
         for (var k = 0; k + 1 < points.Count; k++)
         {
             var (f0, b0, t0, d0) = points[k];
             var (f1, b1, t1, d1) = points[k + 1];
+            var (w0, w1, e0, e1) = (walls[k], walls[k + 1], edges[k], edges[k + 1]);
             var outward = MathEx.Normalize(f0 - b0);
             var along = MathEx.Normalize(f1 - f0);
             void Quad(float3 p, float3 q, float pBottom, float qBottom, float pTop, float qTop, float3 normal)
@@ -532,17 +730,52 @@ public sealed partial class NetworkMeshes
             }
 
             Quad(f0, f1, d0, d1, t0, t1, outward);
-            Quad(b0, b1, d0, d1, t0, t1, outward * -1f);
-            // The top.
+            Quad(b0, b1, d0, d1, e0, e1, outward * -1f);
+            // The coping: a band along its top standing a little proud of the face, as a retaining wall's is cast.
+            {
+                const float proud = 0.08f, deep = 0.35f, rise = 0.06f;
+                var (c0, c1) = (f0 + outward * proud, f1 + outward * proud);
+                Quad(c0, c1, t0 - deep, t1 - deep, t0 + rise, t1 + rise, outward);
+                // Its underside, from the face out to its edge.
+                var down = new float3(0f, -1f, 0f);
+                var u0 = builder.Add(f0 with { Y = t0 - deep }, down, data);
+                var u1 = builder.Add(f1 with { Y = t1 - deep }, down, data);
+                var u2 = builder.Add(c0 with { Y = t0 - deep }, down, data);
+                var u3 = builder.Add(c1 with { Y = t1 - deep }, down, data);
+                builder.Indices.AddRange([u0, u1, u2, u1, u3, u2, u0, u2, u1, u1, u2, u3]);
+                // Its top, over the wall's own thickness, and its back edge.
+                var p0 = builder.Add(c0 with { Y = t0 + rise }, up, data);
+                var p1 = builder.Add(c1 with { Y = t1 + rise }, up, data);
+                var p2 = builder.Add(w0 with { Y = t0 + rise }, up, data);
+                var p3 = builder.Add(w1 with { Y = t1 + rise }, up, data);
+                builder.Indices.AddRange([p0, p1, p2, p1, p3, p2, p0, p2, p1, p1, p2, p3]);
+                Quad(w0, w1, t0 - deep, t1 - deep, t0 + rise, t1 + rise, outward * -1f);
+                if (k == 0)
+                    Quad(c0, w0, t0 - deep, t0 - deep, t0 + rise, t0 + rise, along * -1f);
+                if (k + 2 == points.Count)
+                    Quad(c1, w1, t1 - deep, t1 - deep, t1 + rise, t1 + rise, along);
+            }
+
+            // The top: level over the wall, then down to the ground at its edge.
             var a0 = builder.Add(f0 with { Y = t0 }, up, data);
             var a1 = builder.Add(f1 with { Y = t1 }, up, data);
-            var a2 = builder.Add(b0 with { Y = t0 }, up, data);
-            var a3 = builder.Add(b1 with { Y = t1 }, up, data);
+            var a2 = builder.Add(w0 with { Y = t0 }, up, data);
+            var a3 = builder.Add(w1 with { Y = t1 }, up, data);
+            var a4 = builder.Add(b0 with { Y = e0 }, up, data);
+            var a5 = builder.Add(b1 with { Y = e1 }, up, data);
             builder.Indices.AddRange([a0, a1, a2, a1, a3, a2, a0, a2, a1, a1, a2, a3]);
+            builder.Indices.AddRange([a2, a3, a4, a3, a5, a4, a2, a4, a3, a3, a4, a5]);
             if (k == 0)
-                Quad(f0, b0, d0, d0, t0, t0, along * -1f);
+            {
+                Quad(f0, w0, d0, d0, t0, t0, along * -1f);
+                Quad(w0, b0, d0, d0, t0, e0, along * -1f);
+            }
+
             if (k + 2 == points.Count)
-                Quad(f1, b1, d1, d1, t1, t1, along);
+            {
+                Quad(f1, w1, d1, d1, t1, t1, along);
+                Quad(w1, b1, d1, d1, t1, e1, along);
+            }
         }
     }
 

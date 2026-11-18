@@ -315,10 +315,10 @@ public sealed partial class NetworkLines
             var (ex, ez) = pad.End;
             var roads = _lines.Where(l => !l.Rail && !l.Mark && l.Count >= 2 && new[] { 0, l.Count - 1 }.Any(p =>
                 Math.Min((l.X[p] - sx) * (l.X[p] - sx) + (l.Z[p] - sz) * (l.Z[p] - sz), (l.X[p] - ex) * (l.X[p] - ex) + (l.Z[p] - ez) * (l.Z[p] - ez)) <= PadJoin * PadJoin)).ToList();
-            var x0 = Math.Max(0, (int)Math.Floor(corners.Min(c => c.X) / _spacing) - gx0);
-            var x1 = Math.Min(samples - 1, (int)Math.Ceiling(corners.Max(c => c.X) / _spacing) - gx0);
-            var z0 = Math.Max(0, (int)Math.Floor(corners.Min(c => c.Z) / _spacing) - gz0);
-            var z1 = Math.Min(samples - 1, (int)Math.Ceiling(corners.Max(c => c.Z) / _spacing) - gz0);
+            var x0 = Math.Max(0, (int)Math.Floor(corners.Min(c => c.X) / Sp) - gx0);
+            var x1 = Math.Min(samples - 1, (int)Math.Ceiling(corners.Max(c => c.X) / Sp) - gx0);
+            var z0 = Math.Max(0, (int)Math.Floor(corners.Min(c => c.Z) / Sp) - gz0);
+            var z1 = Math.Min(samples - 1, (int)Math.Ceiling(corners.Max(c => c.Z) / Sp) - gz0);
             if (x0 > x1 || z0 > z1)
                 continue;
 
@@ -326,14 +326,14 @@ public sealed partial class NetworkLines
             for (var z = z0; z <= z1; z++)
                 for (var x = x0; x <= x1; x++)
                 {
-                    var (t, w) = pad.Local((x + gx0) * (double)_spacing, (z + gz0) * (double)_spacing);
+                    var (t, w) = pad.Local((x + gx0) * (double)Sp, (z + gz0) * (double)Sp);
                     var along = MathF.Max(0f, MathF.Max(pad.From - t, t - pad.To));
                     var side = MathF.Abs(w) - pad.Half;
                     if (along > 0f)
                     {
                         // Past an end: under and beside the road running on, its own fill at its own height, falling away from its
                         // shoulders (the road's own shaping can't reach in here, the track having taken the ground near it).
-                        var (wx, wz) = ((x + gx0) * (double)_spacing, (z + gz0) * (double)_spacing);
+                        var (wx, wz) = ((x + gx0) * (double)Sp, (z + gz0) * (double)Sp);
                         var roadFill = float.MinValue;
                         foreach (var road in roads)
                             for (var i = 0; i + 1 < road.Count; i++)
@@ -393,7 +393,7 @@ public sealed partial class NetworkLines
                     if (heights[sample] > bed)
                         heights[sample] = bed;
                     // And clear of the bed as it's drawn, by more than its fade looks its shadow up under it.
-                    if (BedClearance((x + gx0) * (double)_spacing, (z + gz0) * (double)_spacing) is { } clear && heights[sample] > clear)
+                    if (BedClearance((x + gx0) * (double)Sp, (z + gz0) * (double)Sp) is { } clear && heights[sample] > clear)
                         heights[sample] = clear;
                 }
         }

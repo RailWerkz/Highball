@@ -18,7 +18,7 @@ public sealed partial class NetworkMeshes
     /// Rows along the switch; across each half, the points of the beds' own section (so the grid meets their sections
     /// point for point where they take over) and TopSteps more across the top.
     private const float SwitchBedStep = 0.5f;
-    private const int BedCurve = 8;
+    private const int BedCurve = 1;
     private const int TopSteps = 12;
     private const int HalfColumns = 1 + BedCurve + TopSteps;
 
@@ -42,7 +42,7 @@ public sealed partial class NetworkMeshes
 
     // As the routes' own beds (FarRail's Section).
     private const float BedWalk = 0.02f;
-    private const float BedTapers = 0.6f;
+    private const float BedTapers = 0.2f;
 
     private static readonly ConditionalWeakTable<Turnout, SwitchBedEnds> SwitchBeds = new();
 
@@ -122,14 +122,9 @@ public sealed partial class NetworkMeshes
             var run = Run(sink);
             if (d <= Half)
                 return h;
-            if (d < Half + run)
-            {
-                var eased = MathF.Pow((d - Half) / run, 0.72f);
-                return toe + (h - toe) * (1f - eased * eased * (3f - 2f * eased));
-            }
-
+            // A straight cut, as BedSection: straight down from the shoulder, on to just under the ground.
             var under = sink - MathF.Min(sink * 0.3f, 0.06f) - 0.03f;
-            return d < Half + run + BedTapers ? toe + (under - toe) * (d - Half - run) / BedTapers : under;
+            return MathF.Max(under, toe + (h - toe) * (1f - (d - Half) / run));
         }
 
     }
@@ -317,8 +312,8 @@ public sealed partial class NetworkMeshes
         Grid(0, HalfColumns, ballastN);
         Grid(count, count * 2 - 1, ballastR);
 
-        // The fades: Data.w how far in from where it gives out, below zero, so they're drawn with the fades.
-        foreach (var (inner, outer) in (ReadOnlySpan<(int, int)>)[(0, 1), (2, 3)])
+        // (No fades into the ground beyond its far sides: the bed's a straight cut.)
+        foreach (var (inner, outer) in (ReadOnlySpan<(int, int)>)[])
         {
             var start = (uint)builder.Vertices.Count;
             for (var r = 0; r < rows.Count; r++)

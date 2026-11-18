@@ -66,11 +66,16 @@ public sealed class Terrain : IDisposable
         /// The quads split the other way, to lie along the slope; null when none are.
         public bool[]? Flips { get; init; }
         public Dictionary<int, (BufferEx Buffer, int Count)>? OwnIndices;
+        /// The detail inserts over its holes (finest patches only): the ground round a structure shaped finer than its samples.
+        public Mesh? Insert;
+        public BufferEx InsertIndices;
+        public int InsertCount;
         public long Used;
     }
 
     /// Epoch: the edit count when the build started, so an edit made while it ran still leaves the patch stale.
-    private sealed record Built(Key Key, float3 Origin, TerrainVertex[] Vertices, bool[]? Valid, bool[]? Flips, int Epoch);
+    private sealed record Built(Key Key, float3 Origin, TerrainVertex[] Vertices, bool[]? Valid, bool[]? Flips, int Epoch,
+        TerrainVertex[]? InsertVertices = null, uint[]? InsertIndices = null);
 
     private readonly TerrainSource _source;
     private readonly Dictionary<Key, Patch> _patches = [];
@@ -160,7 +165,15 @@ public sealed class Terrain : IDisposable
 
             var mesh = Mesh.Create<TerrainVertex>(built.Vertices, TerrainVertex.Layout, later: true);
             var (centre, radius) = Bounds(built.Vertices);
-            _patches[built.Key] = new Patch { Key = built.Key, Origin = built.Origin, Mesh = mesh, Centre = centre, Radius = radius, Valid = built.Valid, Flips = built.Flips, Used = _frame };
+            var patch = new Patch { Key = built.Key, Origin = built.Origin, Mesh = mesh, Centre = centre, Radius = radius, Valid = built.Valid, Flips = built.Flips, Used = _frame };
+            if (built.InsertVertices is { Length: > 0 } insert && built.InsertIndices is { Length: > 0 } insertIndices)
+            {
+                patch.Insert = Mesh.Create<TerrainVertex>(insert, TerrainVertex.Layout, later: true);
+                patch.InsertIndices = Buffers.UploadLater(MemoryMarshal.AsBytes(insertIndices.AsSpan()), VkBufferUsageFlags.IndexBufferBit, "terrain.insert");
+                patch.InsertCount = insertIndices.Length;
+            }
+
+            _patches[built.Key] = patch;
         }
 
         _leaves.Clear();
@@ -346,6 +359,8 @@ public sealed class Terrain : IDisposable
     private static void Release(Patch patch)
     {
         patch.Mesh.Dispose();
+        patch.Insert?.Dispose();
+        Release(patch.InsertIndices);
         if (patch.OwnIndices is not null)
             foreach (var (buffer, _) in patch.OwnIndices.Values)
                 Release(buffer);
@@ -405,7 +420,178 @@ public sealed class Terrain : IDisposable
             }
         }
 
-        return new Built(k, origin, vertices, valid, Diagonals(vertices, spacing), epoch);
+        var (insertVertices, insertIndices) = k.Level == 0 ? Inserts(x0, z0, ref valid) : (null, null);
+        return new Built(k, origin, vertices, valid, Diagonals(vertices, spacing), epoch, insertVertices, insertIndices);
+    }
+
+    /// How far in from a detail region's edge its insert eases from the tiles' ground to its own, metres.
+    private const float InsertFeather = 2f;
+
+    /// A finest patch's detail inserts: for each detail region over it, its samples inside the region's edge made holes (so every grid
+    /// square in the region goes, and none outside it), and over those squares a grid DetailSub times finer, from the region's ground
+    /// shaped at that spacing. At the region's edge it's the tiles' ground exactly (along each square's side, straight between its
+    /// two samples, as the terrain draws it), easing to its own over InsertFeather, so the two meet without a seam.
+    private (TerrainVertex[]? Vertices, uint[]? Indices) Inserts(int x0, int z0, ref bool[]? valid)
+    {
+        const int width = Quads + 1;
+        const int cell = NetworkLines.CellQuads;
+        List<TerrainVertex>? vertices = null;
+        List<uint>? indices = null;
+        var spacing = _source.Spacing;
+        foreach (var region in _source.DetailRegions)
+        {
+            if (!region.Touches(x0, z0, x0 + Quads, z0 + Quads))
+                continue;
+            var sub = region.Sub;
+            var fine = _source.DetailHeights(region, out var n);
+            if (fine is null)
+                continue;
+
+            for (var gz = Math.Max(region.Gz0 + 1, z0); gz <= Math.Min(region.Gz1 - 1, z0 + Quads); gz++)
+                for (var gx = Math.Max(region.Gx0 + 1, x0); gx <= Math.Min(region.Gx1 - 1, x0 + Quads); gx++)
+                {
+                    valid ??= Enumerable.Repeat(true, width * width).ToArray();
+                    valid[(gz - z0) * width + gx - x0] = false;
+                }
+
+            // The cells round it: how much finer each is (0: the tiles' ground), for where it meets them. A cell in another patch counts
+            // as the tiles' ground: that patch may be drawn coarser, without its inserts, so the two can only meet on the tiles' ground.
+            const int perPatch = Quads / cell;
+            var round = new int[3, 3];
+            for (var j = -1; j <= 1; j++)
+                for (var i = -1; i <= 1; i++)
+                {
+                    var (cx, cz) = (region.Cx + i, region.Cz + j);
+                    var samePatch = TerrainSource.FloorDiv(cx, perPatch) == TerrainSource.FloorDiv(region.Cx, perPatch) &&
+                                    TerrainSource.FloorDiv(cz, perPatch) == TerrainSource.FloorDiv(region.Cz, perPatch);
+                    round[i + 1, j + 1] = samePatch ? _source.DetailSubAt(cx, cz) : 0;
+                }
+
+            // A cell's own ground at a place in the tiles' grid, straight between its finer samples (on its edge, straight along the
+            // edge between the samples it has there).
+            float CellAt(NetworkLines.DetailRegion other, double gxf, double gzf)
+            {
+                var heights = other == region ? fine : _source.DetailHeights(other, out _);
+                if (heights is null)
+                    return 0f;
+                var m = cell * other.Sub + 1;
+                var (fu, fv) = ((gxf - other.Gx0) * other.Sub, (gzf - other.Gz0) * other.Sub);
+                var (u, v) = (Math.Clamp((int)Math.Floor(fu), 0, m - 2), Math.Clamp((int)Math.Floor(fv), 0, m - 2));
+                var (tu, tv) = ((float)Math.Clamp(fu - u, 0.0, 1.0), (float)Math.Clamp(fv - v, 0.0, 1.0));
+                var top = heights[v * m + u] + (heights[v * m + u + 1] - heights[v * m + u]) * tu;
+                var bottom = heights[(v + 1) * m + u] + (heights[(v + 1) * m + u + 1] - heights[(v + 1) * m + u]) * tu;
+                return top + (bottom - top) * tv;
+            }
+
+            float Bilinear(double gxf, double gzf, Func<int, int, float> at)
+            {
+                var (gx, gz) = ((int)Math.Floor(gxf), (int)Math.Floor(gzf));
+                var (fx, fz) = ((float)(gxf - gx), (float)(gzf - gz));
+                var top = at(gx, gz) + (at(gx + 1, gz) - at(gx, gz)) * fx;
+                var bottom = at(gx, gz + 1) + (at(gx + 1, gz + 1) - at(gx, gz + 1)) * fx;
+                return top + (bottom - top) * fz;
+            }
+
+            // The ground drawn at a finer sample (u, v) of the cell. Where it meets the tiles' ground (a side, or a corner, with no
+            // cell past it) it's theirs exactly, easing to its own over InsertFeather. On a side or corner it shares with a coarser
+            // cell, it's that one's, so the two meet without a crack between their samples.
+            float Height(int u, int v)
+            {
+                u = Math.Clamp(u, 0, n - 1);
+                v = Math.Clamp(v, 0, n - 1);
+                var (gxf, gzf) = (region.Gx0 + u / (double)sub, region.Gz0 + v / (double)sub);
+                var unit = spacing / sub;
+                var (w0, e0, n0, s0) = (u * unit, (n - 1 - u) * unit, v * unit, (n - 1 - v) * unit);
+                var edge = float.MaxValue;
+                if (round[0, 1] == 0) edge = MathF.Min(edge, w0);
+                if (round[2, 1] == 0) edge = MathF.Min(edge, e0);
+                if (round[1, 0] == 0) edge = MathF.Min(edge, n0);
+                if (round[1, 2] == 0) edge = MathF.Min(edge, s0);
+                if (round[0, 0] == 0) edge = MathF.Min(edge, MathF.Sqrt(w0 * w0 + n0 * n0));
+                if (round[2, 0] == 0) edge = MathF.Min(edge, MathF.Sqrt(e0 * e0 + n0 * n0));
+                if (round[0, 2] == 0) edge = MathF.Min(edge, MathF.Sqrt(w0 * w0 + s0 * s0));
+                if (round[2, 2] == 0) edge = MathF.Min(edge, MathF.Sqrt(e0 * e0 + s0 * s0));
+                var w = Math.Clamp(edge / InsertFeather, 0f, 1f);
+                var coarse = Bilinear(gxf, gzf, (a, b) => _source.TryHeight(a, b, out var h) ? h : 0f);
+                if (w <= 0f)
+                    return coarse;
+
+                // (Of the cells sharing this place, the coarsest.)
+                var owner = region;
+                var (onW, onE, onN, onS) = (u == 0, u == n - 1, v == 0, v == n - 1);
+                if (onW || onE || onN || onS)
+                    for (var j = onN ? -1 : 0; j <= (onS ? 1 : 0); j++)
+                        for (var i = onW ? -1 : 0; i <= (onE ? 1 : 0); i++)
+                            if (round[i + 1, j + 1] is > 0 and var other && other < owner.Sub)
+                                owner = new NetworkLines.DetailRegion(region.Cx + i, region.Cz + j, other);
+                var own = (owner == region ? fine[v * n + u] : CellAt(owner, gxf, gzf)) + Bilinear(gxf, gzf, _source.EditAt);
+                return coarse + (own - coarse) * w;
+            }
+
+            // The squares of the cell in this patch, in finer samples from the cell's corner.
+            var (qx0, qz0) = (Math.Max(region.Gx0, x0), Math.Max(region.Gz0, z0));
+            var (qx1, qz1) = (Math.Min(region.Gx1, x0 + Quads), Math.Min(region.Gz1, z0 + Quads));
+            if (qx1 <= qx0 || qz1 <= qz0)
+                continue;
+            var (u0, v0, u1, v1) = ((qx0 - region.Gx0) * sub, (qz0 - region.Gz0) * sub, (qx1 - region.Gx0) * sub, (qz1 - region.Gz0) * sub);
+
+            vertices ??= [];
+            indices ??= [];
+            var first = (uint)vertices.Count;
+            var columns = u1 - u0 + 1;
+            var fineSpacing = spacing / sub;
+            var grounds = new Dictionary<(int, int), (float4 Cover, float4 Materials, float Ballast)>();
+            (float4 Cover, float4 Materials, float Ballast) GroundAt(int gx, int gz)
+            {
+                if (!grounds.TryGetValue((gx, gz), out var g))
+                {
+                    var (c, m) = _source.Ground(gx, gz, spacing);
+                    grounds[(gx, gz)] = g = (c, m, _source.BallastAt(gx, gz));
+                }
+
+                return g;
+            }
+
+            // (Each row's heights, and the rows either side, worked out once.)
+            var row = new float[columns];
+            var above = new float[columns];
+            var below = new float[columns];
+            for (var v = v0; v <= v1; v++)
+            {
+                for (var u = u0; u <= u1; u++)
+                    (row[u - u0], above[u - u0], below[u - u0]) = (Height(u, v), Height(u, v - 1), Height(u, v + 1));
+
+                for (var u = u0; u <= u1; u++)
+                {
+                    var h = row[u - u0];
+                    var left = u > u0 ? row[u - u0 - 1] : Height(u - 1, v);
+                    var right = u < u1 ? row[u - u0 + 1] : Height(u + 1, v);
+                    var normal = Normalize(new float3(left - right, 2f * fineSpacing, above[u - u0] - below[u - u0]));
+                    var (gx, tx) = Math.DivRem(u, sub);
+                    var (gz, tz) = Math.DivRem(v, sub);
+                    var (fx, fz) = (tx / (float)sub, tz / (float)sub);
+                    var (x, z) = (region.Gx0 + gx, region.Gz0 + gz);
+                    var (a, b, c, d) = (GroundAt(x, z), GroundAt(x + 1, z), GroundAt(x, z + 1), GroundAt(x + 1, z + 1));
+                    var (wa, wb, wc, wd) = ((1f - fx) * (1f - fz), fx * (1f - fz), (1f - fx) * fz, fx * fz);
+                    var position = new float3((x - x0 + fx) * spacing, h, (z - z0 + fz) * spacing);
+                    vertices.Add(new TerrainVertex(position, normal,
+                        a.Cover * wa + b.Cover * wb + c.Cover * wc + d.Cover * wd,
+                        a.Materials * wa + b.Materials * wb + c.Materials * wc + d.Materials * wd,
+                        a.Ballast * wa + b.Ballast * wb + c.Ballast * wc + d.Ballast * wd));
+                }
+            }
+
+            // Counter-clockwise seen from above, as Triangulate's.
+            for (var v = 0; v < v1 - v0; v++)
+                for (var u = 0; u < u1 - u0; u++)
+                {
+                    var i = first + (uint)(v * columns + u);
+                    var (right, down) = (i + 1, i + (uint)columns);
+                    indices.AddRange([i, down, right, right, down, down + 1]);
+                }
+        }
+
+        return (vertices?.ToArray(), indices?.ToArray());
     }
 
     /// How much further one way across a quad has to climb than the other, per metre of vertex spacing, before the quad's
@@ -585,6 +771,8 @@ public sealed class Terrain : IDisposable
             PatchesInView++;
             push(offset);
             patch.Mesh.DrawWith(cmd, indices, count);
+            if (patch.Insert is { } insert)
+                insert.DrawWith(cmd, patch.InsertIndices, patch.InsertCount);
         }
     }
 
@@ -599,6 +787,8 @@ public sealed class Terrain : IDisposable
 
             push(offset);
             patch.Mesh.DrawWith(cmd, indices, count);
+            if (patch.Insert is { } insert)
+                insert.DrawWith(cmd, patch.InsertIndices, patch.InsertCount);
         }
     }
 

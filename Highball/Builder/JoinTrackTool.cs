@@ -181,10 +181,10 @@ public sealed class JoinTrackTool(ToolContext context, IReadOnlySet<long> select
         Kit.BeginCard("Join ends", _a is null ? "pick an end" : _b is null ? "pick the other" : _fit?.Spiral == false ? "Bézier" : "spiral");
         var unit = imperial ? FeetPerMeter : 1f;
         var sample = _sample * unit;
-        if (ToolPanel.Value("join.sample", imperial ? "Sample back (ft)" : "Sample back (m)", ref sample, 10f * unit, 400f * unit, "0", log: true))
+        if (ToolPanel.Value("join.sample", "Sample back", ref sample, 10f * unit, 400f * unit, imperial ? "0' ft'" : "0' m'", log: true))
             _sample = sample / unit;
         var least = _minRadius * unit;
-        if (ToolPanel.Value("join.radius", imperial ? "Least radius (ft, 0 off)" : "Least radius (m, 0 off)", ref least, 0f, 1500f * unit, "0"))
+        if (ToolPanel.Value("join.radius", "Least radius", ref least, 0f, 1500f * unit, imperial ? "0' ft';;'off'" : "0' m';;'off'"))
             _minRadius = least / unit < 5f ? 0f : least / unit;
         Kit.Toggle("join.match", "Match curvature", ref _matchCurvature);
         if (_poseA is { } pa && _poseB is { } pb && _a is not null && _b is not null)

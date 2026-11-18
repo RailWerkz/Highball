@@ -47,8 +47,10 @@ public sealed class Settings
     public bool Vegetation { get; set; } = true;
     public bool AmbientOcclusion { get; set; } = true;
     public bool SunShadows { get; set; } = true;
-    /// The track's materials, pixels a side: 1024 or 2048.
+    /// The track's materials, pixels a side: 1024 or 2048. (Read only from older settings: TrackTextureQuality is what's used.)
     public int TrackTextureSize { get; set; } = 2048;
+    /// The track's materials' quality, 0 (Low) to 3 (Ultra): see TrackTextures.Qualities. 4K at most.
+    public int TrackTextureQuality { get; set; } = 1;
     /// The ground's materials: 0 as they come, 1 half the size, 2 a quarter.
     public int TerrainTextureDetail { get; set; }
     public bool TemporalAA { get; set; } = true;

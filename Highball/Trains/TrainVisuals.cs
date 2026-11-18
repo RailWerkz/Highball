@@ -181,10 +181,15 @@ public sealed class TrainVisuals : IDisposable
         return (turned, new double3(at.X + onBody.X - onTruck.X, at.Y + onBody.Y - onTruck.Y, at.Z + onBody.Z - onTruck.Z), degrees);
     }
 
-    /// What the renderer outlines this frame (VehicleOutline): the driven vehicle and the picked one.
+    /// Whether the driven vehicle gets its green outline. Off for now; set true to bring it back.
+    private const bool OutlineDriven = false;
+
+    /// What the renderer outlines this frame (VehicleOutline): the driven vehicle (if OutlineDriven) and the picked one.
     public IReadOnlyList<Outlined> Outlines(TrainCar? driven, TrainCar? picked)
     {
         _outlined.Clear();
+        if (!OutlineDriven)
+            driven = null;
         foreach (var placed in _placed)
         {
             if (placed.Car != driven && placed.Car != picked)

@@ -9,8 +9,7 @@ using RailWerkz.Vulkan;
 namespace Highball.World;
 
 /// Darkens the corners the sky can't reach: traced at half size from the depth once the world's drawn, blurred, settled over the
-/// frames the camera's been still, and laid over the
-/// colour (Content/Shaders/Occlusion). The renderer is forward, with no list of what each pixel's light was, so the laying over works
+/// frames each point's been seen (following it as the camera and the trains move), and laid over the colour (Content/Shaders/Occlusion). The renderer is forward, with no list of what each pixel's light was, so the laying over works
 /// out how much of a pixel's light is the sky's. The sun's isn't dimmed, as far as it can tell.
 public sealed unsafe class AmbientOcclusion : IDisposable
 {
@@ -20,6 +19,8 @@ public sealed unsafe class AmbientOcclusion : IDisposable
         public float4 Right;
         public float4 Up;
         public float4 Forward;
+        public float4x4 PreviousViewProjection;
+        public float4 Moved;
     }
 
     private readonly VkDescriptorSetLayout _traceSetLayout;
@@ -42,7 +43,10 @@ public sealed unsafe class AmbientOcclusion : IDisposable
     private readonly VkDescriptorSet[] _settleSets = new VkDescriptorSet[2];
     private readonly VkDescriptorSet[] _compositeSets = new VkDescriptorSet[2];
     private int _current;
-    private (double X, double Y, double Z, float Yaw, float Pitch, float Fov, float Aspect) _lastView;
+    private float4x4 _previousViewProjection;
+    private (double X, double Y, double Z) _previousCamera;
+    private bool _historyValid;
+    private StorageImage? _motion;
     private VkDescriptorPool _pool;
     private VkDescriptorSet _traceSet;
     private VkDescriptorSet _blurSet;
@@ -56,7 +60,7 @@ public sealed unsafe class AmbientOcclusion : IDisposable
         const VkDescriptorType uniform = VkDescriptorType.UniformBuffer;
         _traceSetLayout = MakeSetLayout(VkShaderStageFlags.ComputeBit, storage, sampled, uniform);
         _blurSetLayout = MakeSetLayout(VkShaderStageFlags.ComputeBit, storage, sampled, sampled, uniform);
-        _settleSetLayout = MakeSetLayout(VkShaderStageFlags.ComputeBit, storage, sampled, sampled, sampled, uniform);
+        _settleSetLayout = MakeSetLayout(VkShaderStageFlags.ComputeBit, storage, sampled, sampled, sampled, uniform, sampled);
         _compositeSetLayout = MakeSetLayout(VkShaderStageFlags.FragmentBit, sampled, sampled, uniform);
         _traceLayout = Pipelines.Layout(0, _traceSetLayout);
         _blurLayout = Pipelines.Layout(0, _blurSetLayout);
@@ -98,10 +102,10 @@ public sealed unsafe class AmbientOcclusion : IDisposable
     }
 
     /// New images and sets when the window or the world's target changes. Rare enough to afford to wait for the GPU.
-    private void Resize(RenderTarget target)
+    private void Resize(RenderTarget target, StorageImage motion)
     {
         var size = new int2(Math.Max(1, target.Size.X / 2), Math.Max(1, target.Size.Y / 2));
-        if (size == _size && _targetVersion == target.Version && _raw is not null)
+        if (size == _size && _targetVersion == target.Version && _raw is not null && ReferenceEquals(motion, _motion))
             return;
 
         Gpu.WaitIdle();
@@ -109,7 +113,8 @@ public sealed unsafe class AmbientOcclusion : IDisposable
         _blurred?.Dispose();
         _settled[0]?.Dispose();
         _settled[1]?.Dispose();
-        _lastView = default;
+        _historyValid = false;
+        _motion = motion;
         if (!_pool.IsNull())
             Gpu.Device.DestroyDescriptorPool(_pool, Gpu.Device.VkAllocator);
 
@@ -122,7 +127,7 @@ public sealed unsafe class AmbientOcclusion : IDisposable
 
         var sizes = stackalloc VkDescriptorPoolSize[3];
         sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageImage, DescriptorCount = 4 };
-        sizes[1] = new VkDescriptorPoolSize { Type = VkDescriptorType.CombinedImageSampler, DescriptorCount = 13 };
+        sizes[1] = new VkDescriptorPoolSize { Type = VkDescriptorType.CombinedImageSampler, DescriptorCount = 15 };
         sizes[2] = new VkDescriptorPoolSize { Type = VkDescriptorType.UniformBuffer, DescriptorCount = 6 };
         var pool = new VkDescriptorPoolCreateInfo { MaxSets = 6, PoolSizeCount = 3, PoolSizes = sizes };
         _pool = Gpu.Device.CreateDescriptorPool(in pool, Gpu.Device.VkAllocator);
@@ -137,6 +142,7 @@ public sealed unsafe class AmbientOcclusion : IDisposable
         var written1 = new VkDescriptorImageInfo { ImageView = _settled[1]!.View, ImageLayout = VkImageLayout.General };
         var read0 = new VkDescriptorImageInfo { Sampler = _settled[0]!.Sampler, ImageView = _settled[0]!.View, ImageLayout = VkImageLayout.General };
         var read1 = new VkDescriptorImageInfo { Sampler = _settled[1]!.Sampler, ImageView = _settled[1]!.View, ImageLayout = VkImageLayout.General };
+        var moving = new VkDescriptorImageInfo { Sampler = motion.Sampler, ImageView = motion.View, ImageLayout = VkImageLayout.General };
 
         _traceSet = Allocate(_traceSetLayout);
         _blurSet = Allocate(_blurSetLayout);
@@ -163,11 +169,13 @@ public sealed unsafe class AmbientOcclusion : IDisposable
             new VkWriteDescriptorSet { DstSet = _settleSets[0], DstBinding = 2, DescriptorCount = 1, DescriptorType = image, ImageInfo = &read1 },
             new VkWriteDescriptorSet { DstSet = _settleSets[0], DstBinding = 3, DescriptorCount = 1, DescriptorType = image, ImageInfo = &depth },
             new VkWriteDescriptorSet { DstSet = _settleSets[0], DstBinding = 4, DescriptorCount = 1, DescriptorType = uniform, BufferInfo = &buffer },
+            new VkWriteDescriptorSet { DstSet = _settleSets[0], DstBinding = 5, DescriptorCount = 1, DescriptorType = image, ImageInfo = &moving },
             new VkWriteDescriptorSet { DstSet = _settleSets[1], DstBinding = 0, DescriptorCount = 1, DescriptorType = stored, ImageInfo = &written1 },
             new VkWriteDescriptorSet { DstSet = _settleSets[1], DstBinding = 1, DescriptorCount = 1, DescriptorType = image, ImageInfo = &blurredRead },
             new VkWriteDescriptorSet { DstSet = _settleSets[1], DstBinding = 2, DescriptorCount = 1, DescriptorType = image, ImageInfo = &read0 },
             new VkWriteDescriptorSet { DstSet = _settleSets[1], DstBinding = 3, DescriptorCount = 1, DescriptorType = image, ImageInfo = &depth },
             new VkWriteDescriptorSet { DstSet = _settleSets[1], DstBinding = 4, DescriptorCount = 1, DescriptorType = uniform, BufferInfo = &buffer },
+            new VkWriteDescriptorSet { DstSet = _settleSets[1], DstBinding = 5, DescriptorCount = 1, DescriptorType = image, ImageInfo = &moving },
             new VkWriteDescriptorSet { DstSet = _compositeSets[0], DstBinding = 0, DescriptorCount = 1, DescriptorType = image, ImageInfo = &read0 },
             new VkWriteDescriptorSet { DstSet = _compositeSets[0], DstBinding = 1, DescriptorCount = 1, DescriptorType = image, ImageInfo = &depth },
             new VkWriteDescriptorSet { DstSet = _compositeSets[0], DstBinding = 2, DescriptorCount = 1, DescriptorType = uniform, BufferInfo = &buffer },
@@ -177,26 +185,29 @@ public sealed unsafe class AmbientOcclusion : IDisposable
         ], []);
     }
 
-    /// Outside any render pass, after the world's ended and before anything's laid over it. noiseFrame turns its noise each frame, for
-    /// temporal anti-aliasing to smooth out. bindWorld binds the sky, the shadows and
+    /// Outside any render pass, after the world's ended and the motion image's recorded (MotionVectors), before anything's laid
+    /// over it. noiseFrame turns its noise each frame, for the settling to average out. bindWorld binds the sky, the shadows and
     /// the clouds' shade to a layout.
-    public void Draw(CommandBuffer cmd, RenderTarget target, Camera camera, float aspect, int noiseFrame, Action<VkPipelineLayout> bindWorld)
+    public void Draw(CommandBuffer cmd, RenderTarget target, StorageImage motion, Camera camera, float aspect, int noiseFrame, Action<VkPipelineLayout> bindWorld)
     {
-        Resize(target);
-
-        // What's settled so far only holds while the view's the same as last frame.
-        var view = (camera.X, camera.Y, camera.Z, camera.Yaw, camera.Pitch, camera.FieldOfView, aspect);
-        var still = view == _lastView;
-        _lastView = view;
+        Resize(target, motion);
         _current = 1 - _current;
+        var viewProjection = camera.ViewProjection(aspect);
 
         var tanY = MathF.Tan(camera.FieldOfView * 0.5f);
         var uniforms = new Uniforms
         {
             Right = new float4(camera.Right * (tanY * aspect), noiseFrame % 64),
-            Up = new float4(camera.Up * tanY, still ? 1f : 0f),
+            Up = new float4(camera.Up * tanY, 0f),
             Forward = new float4(camera.Forward, camera.Near),
+            PreviousViewProjection = _previousViewProjection,
+            Moved = new float4(
+                (float)(camera.X - _previousCamera.X), (float)(camera.Y - _previousCamera.Y), (float)(camera.Z - _previousCamera.Z),
+                _historyValid ? 1f : 0f),
         };
+        _previousViewProjection = viewProjection;
+        _previousCamera = (camera.X, camera.Y, camera.Z);
+        _historyValid = true;
         cmd.UpdateBuffer(_uniforms.VkBuffer, ByteSize.Zero, MemoryMarshal.AsBytes(new ReadOnlySpan<Uniforms>(in uniforms)));
         var updated = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.TransferWriteBit, DstAccessMask = VkAccessFlags.UniformReadBit };
         cmd.PipelineBarrier(VkPipelineStageFlags.TransferBit, VkPipelineStageFlags.ComputeShaderBit | VkPipelineStageFlags.FragmentShaderBit, VkDependencyFlags.None, [updated], [], []);

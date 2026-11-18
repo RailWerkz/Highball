@@ -148,15 +148,15 @@ public sealed class LayYardTool(ToolContext context, RouteInfo route) : IEditorT
         var suffix = imperial ? "ft" : "m";
         Kit.BeginCard("Smoothing", FollowTool.Smoothing <= 0f ? "off" : null);
         var over = FollowTool.Smoothing * unit;
-        if (ToolPanel.Value("follow.smooth", $"Smooth over ({suffix}, 0 off)", ref over, 0f, 400f * unit, "0"))
+        if (ToolPanel.Value("follow.smooth", "Smooth over", ref over, 0f, 400f * unit, $"0' {suffix}';;'off'"))
             FollowTool.Smoothing = over / unit < 5f ? 0f : over / unit;
         if (FollowTool.Smoothing > 0f)
         {
             var off = FollowTool.MaxOffset * unit;
-            if (ToolPanel.Value("follow.offset", $"Stay within ({suffix}, 0 any)", ref off, 0f, 10f * unit, "0.0"))
+            if (ToolPanel.Value("follow.offset", "Stay within", ref off, 0f, 10f * unit, $"0.0' {suffix}';;'any'"))
                 FollowTool.MaxOffset = off / unit < 0.2f ? 0f : off / unit;
             var sample = FollowTool.Sample * unit;
-            if (ToolPanel.Value("follow.sample", $"Sample back ({suffix})", ref sample, 10f * unit, 400f * unit, "0", log: true))
+            if (ToolPanel.Value("follow.sample", "Sample back", ref sample, 10f * unit, 400f * unit, $"0' {suffix}'", log: true))
                 FollowTool.Sample = sample / unit;
             ToolPanel.Hint("Takes the hand-traced wobble out of the guide, easing into curves; carries on from a track end's heading and curve.");
         }

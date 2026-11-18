@@ -45,7 +45,7 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
 
         var graphics = NewTab("Graphics")
             .Add(new MenuItem { Label = "Quality", Value = () => Qualities[Math.Clamp(s.Quality, 0, 3)], OnChange = d => s.Quality = Math.Clamp(s.Quality + d, 0, 3) })
-            .Add(new MenuItem { Label = "Track textures", Value = () => s.TrackTextureSize >= 2048 ? "2K" : "1K", OnChange = _ => s.TrackTextureSize = s.TrackTextureSize >= 2048 ? 1024 : 2048 })
+            .Add(new MenuItem { Label = "Track textures", Value = () => TrackTextures.Describe(s.TrackTextureQuality), OnChange = d => s.TrackTextureQuality = (Math.Clamp(s.TrackTextureQuality, 0, 3) + d + 4) % 4 })
             .Add(new MenuItem { Label = "Terrain textures", Value = () => TerrainDetails[Math.Clamp(s.TerrainTextureDetail, 0, 2)], OnChange = d => s.TerrainTextureDetail = (Math.Clamp(s.TerrainTextureDetail, 0, 2) + d + 3) % 3 })
             .Add(new MenuItem { Label = "Anti-aliasing (MSAA)", Value = () => s.Msaa <= 1 ? "OFF" : $"{s.Msaa}x", OnChange = d => s.Msaa = StepMsaa(s.Msaa, d) })
             .Add(new MenuItem { Label = "View distance", Value = () => Distance(s.ViewDistance), Meter = () => (s.ViewDistance - MetersPerMile) / (20000f - MetersPerMile), OnChange = d => s.ViewDistance = StepDistance(s.ViewDistance, d) })

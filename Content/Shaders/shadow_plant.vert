@@ -21,7 +21,7 @@ layout(push_constant) uniform Push
 {
     mat4 light;
     vec4 shape;   // how much the wind moves it, how much its normal leans up, how far away it's gone, where its cut-out comes from
-    vec4 shift;   // moves the mesh to stand on its base; w: the camera's height
+    vec4 band;    // xy: from and to how far away it's drawn, each instance's own a little nearer or further (its detail levels)
     vec4 globals; // x: the ground's origin below the camera (minus its height), y: the flutter's phase, zw: the gusts' phases
     Cells cells;
     uint base;    // the first of this call's cells
@@ -38,15 +38,21 @@ void main()
     float away = length(standing);
     size *= 1.0 - smoothstep(0.75, 1.0, away / (pc.shape.z * mix(0.25, 1.0, random)));
 
+    // Outside its detail level's distances it collapses to nothing, the next level drawn there instead. Each instance moves the
+    // change by up to a tenth, the same for every level of it, so they don't all change at once.
+    float stagger = 0.9 + 0.2 * fract(random * 13.1);
+    if (away < pc.band.x * stagger || away >= pc.band.y * stagger)
+        size = 0.0;
+
     float turn = fract(random * 37.7) * 6.2831853;
     float c = cos(turn);
     float s = sin(turn);
-    vec3 model = (inPosition + pc.shift.xyz) * size;
+    vec3 model = inPosition * size;
     vec3 turned = vec3(model.x * c - model.z * s, model.y, model.x * s + model.z * c);
 
     if (pc.shape.x > 0.0)
     {
-        float up = max(inPosition.y + pc.shift.y, 0.0);
+        float up = max(inPosition.y, 0.0);
         turned.xz += windPush(cell.zw + inPlace.xz, away, vec3(pc.globals.zw, pc.globals.y), up * up * pc.shape.x * size);
     }
 

@@ -197,7 +197,10 @@ public sealed partial class NetworkMeshes : IDisposable
     /// tracks the whole way from one switch to the other, as they're laid: on one track (Spans, by line: its distances, the
     /// other track, and which side of it that is) its ties reach on under the other, and the other track's own ties and the
     /// crossover's are left out there (Skips, by line).
-    private readonly Dictionary<int, List<(float From, float To, Leg Other, int Across)>> _crossoverSpans = [];
+    private readonly Dictionary<int, List<(float From, float To, Leg Other, int Across, Leg Crossover)>> _crossoverSpans = [];
+
+    /// The least clear ballast between two switches' timber ends in a crossover; closer than that, long timbers span both tracks.
+    private const float CrossoverTieGap = 0.45f;
     private readonly Dictionary<int, List<(float From, float To)>> _crossoverSkips = [];
 
     private sealed record PlacedAt(PlacedObject Object, double X, double Z, float Y, CrossingDeck? Deck);
@@ -301,14 +304,42 @@ public sealed partial class NetworkMeshes : IDisposable
                     var shines = right * -sin + face * cos;
                     for (var lamp = 0; lamp < 2; lamp++)
                     {
-                        // Tools/Blender/lineside.py: the lenses 0.43 m either side of the mast, 2.9 m up, 0.1 m in front.
-                        var (px, pz) = (lamp == 0 ? -0.43f : 0.43f, 0.25f);
-                        var (rx, rz) = (px * cos - pz * sin, px * sin + pz * cos);
+                        var lens = FlasherLens(lamp);
+                        var (rx, rz) = (lens.X * cos - lens.Z * sin, lens.X * sin + lens.Z * cos);
                         var at = right * rx + face * rz;
-                        yield return (mx + at.X, y + 2.9, mz + at.Z, shines, FlashOf(lamp));
+                        yield return (mx + at.X, y + lens.Y, mz + at.Z, shines, FlashOf(lamp));
                     }
                 }
             }
+    }
+
+    private readonly float3?[] _flasherLenses = new float3?[2];
+
+    /// Where a crossing mast's flasher light goes, in the mast model's axes (x across, y up, z out the front): the middle of its
+    /// lens (FlashA_ the left, FlashB_ the right, in Track/crossing_mast.glb), a little out in front of the dome. Read off the
+    /// model, so the light stays on the lens however the mast's drawn.
+    private float3 FlasherLens(int lamp)
+    {
+        if (_flasherLenses[lamp] is { } known)
+            return known;
+
+        var prefix = lamp == 0 ? "FlashA_" : "FlashB_";
+        var found = new float3(lamp == 0 ? -0.5f : 0.5f, 3.4f, 0.25f);
+        if (_objectModels.GetValueOrDefault(PlacedKind.GradeCrossing) is { } parts
+            && parts.FirstOrDefault(p => p.Key.StartsWith(prefix, StringComparison.Ordinal)).Value is { Vertices.Length: > 0 } part)
+        {
+            var (lo, hi) = (new float3(float.MaxValue), new float3(float.MinValue));
+            foreach (var v in part.Vertices)
+            {
+                lo = new float3(MathF.Min(lo.X, v.Position.X), MathF.Min(lo.Y, v.Position.Y), MathF.Min(lo.Z, v.Position.Z));
+                hi = new float3(MathF.Max(hi.X, v.Position.X), MathF.Max(hi.Y, v.Position.Y), MathF.Max(hi.Z, v.Position.Z));
+            }
+
+            found = new float3((lo.X + hi.X) * 0.5f, (lo.Y + hi.Y) * 0.5f, hi.Z + 0.1f);
+        }
+
+        _flasherLenses[lamp] = found;
+        return found;
     }
 
     public SignalLamps LampsOf(long signal) => _lamps.GetValueOrDefault(signal, App.DevTools.Lamps ?? SignalLamps.Red);
@@ -919,17 +950,36 @@ public sealed partial class NetworkMeshes : IDisposable
 
             var solid = new List<uint>(Indices.Count);
             var fades = new List<uint>();
+            var broken = 0;
             for (var i = 0; i + 2 < Indices.Count; i += 3)
             {
+                // A triangle with a corner off at infinity (or NaN) is left out: kept, it would take the chunk's bounds with it, and
+                // the whole chunk (every bed and road in it) would be culled as never in view.
+                if (!Finite(Indices[i]) || !Finite(Indices[i + 1]) || !Finite(Indices[i + 2]))
+                {
+                    broken++;
+                    continue;
+                }
+
                 var into = Fade(Indices[i]) && Fade(Indices[i + 1]) && Fade(Indices[i + 2]) ? fades : solid;
                 into.Add(Indices[i]);
                 into.Add(Indices[i + 1]);
                 into.Add(Indices[i + 2]);
             }
 
+            if (broken > 0 && Interlocked.Increment(ref _brokenWarnings) <= 10)
+                RailWerkz.Core.Logging.Log.Warn($"Line meshes: {broken} triangles with a corner not finite left out, in the chunk at {Origin.X:0}, {Origin.Z:0}");
             return ([.. solid, .. fades], fades.Count);
         }
+
+        private bool Finite(uint index)
+        {
+            var p = Vertices[(int)index].Position;
+            return float.IsFinite(p.X) && float.IsFinite(p.Y) && float.IsFinite(p.Z);
+        }
     }
+
+    private static int _brokenWarnings;
 
     /// A centreline frame at a point: the point (relative to origin) and the horizontal right.
     private static (float3 Center, float3 Right) Frame(NetworkLine line, int p, float3 origin)
@@ -1134,11 +1184,11 @@ public sealed partial class NetworkMeshes : IDisposable
 
                 if (line.Rail)
                     FarRail(builder, lines, line, first, last, structure == Structure.Bridge);
-                else if (line.Mark && structure != Structure.Bridge)
-                    Mark(builder, lines, line, first, last);
                 else if (line.Mark)
-                    // A guide over a bridge: its strip of gravel along the deck (the bridge itself is its whole structure's, below).
-                    Sweep(builder, line, first, last, [(-line.Width * 0.5f, 0.07f), (line.Width * 0.5f, 0.07f)], _ => Code(LineMaterial.Gravel), (_, _, _) => -1f);
+                {
+                    // A mapped track's mark isn't drawn on the ground (the guides show where track goes); its bridge is still
+                    // its whole structure's, below.
+                }
                 else
                     Road(builder, lines, line, first, last, structure == Structure.Bridge);
             }
@@ -1164,21 +1214,19 @@ public sealed partial class NetworkMeshes : IDisposable
     {
         var sunken = line.Bed == TrackBed.Sunken && !bridge;
         var w = sunken ? line.BallastHalfTop - 0.7f : line.BallastHalfTop;
-        var fading = sunken ? Fading * 1.4f : Fading;
         var h = NetworkLine.BallastHeight;
         const float walk = 0.02f;
         const int curve = BedCurve;
-        const float tapers = 0.6f;
-        static float Fall(float t)
-        {
-            var eased = MathF.Pow(t, 0.72f);
-            return 1f - eased * eased * (3f - 2f * eased);
-        }
+        // A straight cut: flat on top, straight down each side.
+        static float Fall(float t) => 1f - t;
 
         var toeY = sink + walk;
         var run = MathF.Max(0.35f, (h - drop - toeY) * NetworkLine.BallastSlope * NetworkLine.BedRun);
-        // Under what Conform leaves the ground at.
+        // Under what Conform leaves the ground at: each side's slope runs straight on down to there, and there's no fade past it
+        // (the fade's point is the taper's).
         var underY = sink - MathF.Min(sink * 0.3f, 0.06f) - 0.03f;
+        var tapers = (toeY - underY) * run / MathF.Max(h - drop - toeY, 1e-3f);
+        var fading = tapers;
         var points = new (float, float)[curve * 2 + 6];
         var n = 0;
         points[n++] = (-w - left - run - fading, sink + GivesOut);
@@ -1225,20 +1273,11 @@ public sealed partial class NetworkMeshes : IDisposable
         {
             // The ballast, heaped as loose rock lies: rounded over from the top, down its slope, and easing out onto the ground, where
             // the last of it fades in among the ground's own. The lower the bed, the shorter its slope.
-            const float walk = 0.02f;
-            const int curve = 8;
+            // (A straight cut, BedSection: its slopes go on straight to just under the ground.)
+            const int curve = BedCurve;
             const int edges = curve * 2 + 5;
-            // The solid rock goes on from its toe to just under the ground, so there's no step for the ambient occlusion to find.
-            const float tapers = 0.6f;
             var gravel = Code(LineMaterial.Gravel);
             float Edge(int e) => e == 0 || e == edges - 1 ? gravel : ballast;
-
-            // From the shoulder (t = 0) to the toe (t = 1): more of the way spent on the long easing out than on rounding over the top.
-            static float Fall(float t)
-            {
-                var eased = MathF.Pow(t, 0.72f);
-                return 1f - eased * eased * (3f - 2f * eased);
-            }
 
             (float U, float Y)[] Section(float left, float right, float drop, float sink) => BedSection(line, bridge, left, right, drop, sink);
 
@@ -1250,6 +1289,9 @@ public sealed partial class NetworkMeshes : IDisposable
             var cuts = SwitchBedCuts(line);
             var widen = zones.Where(z => z.Normal).ToList();
             var under = zones.Where(z => !z.Normal).Select(z => z.Ballast).ToList();
+            // (And under another track's bed where it crosses it at a diamond, both level there: further, for the ballast's grain.)
+            var crossed = line.BedDrops;
+            const float crossedDepth = 0.012f;
             var depth = 0.003f * (1 + line.Index % 5);
             var at = new List<float> { line.S[first], line.S[last] };
             for (var p = first + 1; p < last; p++)
@@ -1263,7 +1305,7 @@ public sealed partial class NetworkMeshes : IDisposable
                 at.Add(zone.Ballast.To + 0.001f);
             }
 
-            foreach (var (from, to) in under)
+            foreach (var (from, to) in under.Concat(crossed))
                 at.AddRange((float[])[from - 0.5f, from, to, to + 0.5f]);
 
             foreach (var (from, to) in cuts)
@@ -1302,6 +1344,8 @@ public sealed partial class NetworkMeshes : IDisposable
                 var drop = 0f;
                 foreach (var (from, to) in under)
                     drop = MathF.Max(drop, depth * Math.Clamp(MathF.Min(s - from + 0.5f, to + 0.5f - s) / 0.5f, 0f, 1f));
+                foreach (var (from, to) in crossed)
+                    drop = MathF.Max(drop, crossedDepth * Math.Clamp(MathF.Min(s - from + 0.5f, to + 0.5f - s) / 0.5f, 0f, 1f));
 
                 var (center, across) = FrameAt(line, s, builder.Origin);
                 var profile = Section(left, right, drop, line.SinkAt(s));
@@ -1392,6 +1436,45 @@ public sealed partial class NetworkMeshes : IDisposable
                 BedEnd(line.S[first], -1f);
             if (last == line.Count - 1 && !lines.TrackContinues(line, line.X[last], line.Z[last]))
                 BedEnd(line.S[last], 1f);
+
+            // Where the bed runs onto a bridge, its section's closed off straight down into the ground: past the abutment's own width
+            // nothing else stands across its end, and the hollow under its slopes was left open.
+            void BedFace(float at, float way)
+            {
+                const float below = 4f;
+                var (centre, side) = FrameAt(line, at, builder.Origin);
+                var ahead = new float3(side.Z, 0f, -side.X) * way;
+                var profile = Section(0f, 0f, 0f, line.SinkAt(at));
+                var rock = Code(LineMaterial.Ballast, (line.Disused ? 8 : 0) + (line.BedHeight < 0.12f ? 16 : 0));
+                // (Both ways round: it's seen from under the bridge and from beside the bank.)
+                foreach (var facing in (float[])[1f, -1f])
+                {
+                    var normal = ahead * facing;
+                    var begin = (uint)builder.Vertices.Count;
+                    for (var e = 1; e < edges - 1; e++)
+                    {
+                        var (u, y) = profile[e];
+                        builder.Add(centre + side * u + new float3(0f, y, 0f), normal, new float4(u, (at + y) % Wrap, rock, railOffset));
+                        builder.Add(centre + side * u + new float3(0f, y - below, 0f), normal, new float4(u, (at + y - below) % Wrap, rock, railOffset));
+                    }
+
+                    for (var e = 0u; e + 1 < edges - 2; e++)
+                    {
+                        var q = begin + e * 2;
+                        if (facing > 0f)
+                            builder.Quad(q, q + 1, q + 2, q + 3);
+                        else
+                            builder.Quad(q + 2, q + 3, q, q + 1);
+                    }
+                }
+            }
+
+            // (Only where no finer ground's laid over its end: there the ground meets the abutment itself, and the face showed as a box
+            // hanging under the deck's end.)
+            if (first > 0 && line.Structures[first - 1] == Structure.Bridge && !lines.FineGroundAt(line.X[first], line.Z[first]))
+                BedFace(line.S[first], -1f);
+            if (last < line.Count - 1 && last < line.Structures.Length && line.Structures[last] == Structure.Bridge && !lines.FineGroundAt(line.X[last], line.Z[last]))
+                BedFace(line.S[last], 1f);
 
             return;
         }
@@ -2417,17 +2500,54 @@ public sealed partial class NetworkMeshes : IDisposable
                 if (line.Nodes.Any(n => n.Node != a.Node && n.Node != b.Node && switchNodes.Contains(n.Node) && line.S[n.Point] > MathF.Min(sa, sb) + 0.5f && line.S[n.Point] < MathF.Max(sa, sb) - 0.5f))
                     continue;
 
-                var (from, to) = (a.Normal.LineS(0f), a.Normal.LineS(bOnA.S));
+                // Each switch keeps its own timbers, lengthening from its points towards its frog; only where the two
+                // sets would run into each other (between the frogs, where the crossover track crosses the gap) do long
+                // timbers span both tracks, the way crossovers are timbered (AREMA plans, and the model sets' crossover pieces).
+                float Reach(Turnout t, float along) => (along >= 0f && along <= t.TimberEnd ? t.SpreadAt(along) : 0f) + TieLength * 0.5f;
+                float? first = null, last = null;
+                for (var u = 0f; u <= bOnA.S; u += 0.25f)
+                {
+                    var (x, z, _, _, _, _, _) = a.Normal.At(u);
+                    if (Turnout.Offset(b.Normal, x, z) is not { } onB)
+                        continue;
+                    var gap = MathF.Abs(onB.Offset) - Reach(a, u) - Reach(b, onB.S);
+                    if (gap < CrossoverTieGap)
+                        (first, last) = (first ?? u, u);
+                }
+
+                if (first is not { } f0 || last is not { } f1)
+                    continue;
+                var (from, to) = (a.Normal.LineS(f0), a.Normal.LineS(f1));
                 if (!_crossoverSpans.TryGetValue(a.Normal.Line.Index, out var spans))
                     _crossoverSpans[a.Normal.Line.Index] = spans = [];
-                spans.Add((MathF.Min(from, to), MathF.Max(from, to), b.Normal, a.Side * a.Normal.Direction));
-                Skip(b.Normal.Line, b.Normal.LineS(0f), b.Normal.LineS(aOnB.S));
-                Skip(line, sa, sb);
+                spans.Add((MathF.Min(from, to), MathF.Max(from, to), b.Normal, a.Side * a.Normal.Direction, a.Reverse));
+
+                // The other track's own ties, and the crossover track's, give way to the long timbers over the same stretch.
+                var ends = new List<float>();
+                var crossing = new List<float>();
+                foreach (var u in (ReadOnlySpan<float>)[f0, f1])
+                {
+                    var (x, z, _, _, _, _, _) = a.Normal.At(u);
+                    if (Turnout.Offset(b.Normal, x, z) is { } onB)
+                        ends.Add(b.Normal.LineS(onB.S));
+                }
+
+                for (var r = 0f; r <= a.Reverse.Length && r <= MathF.Abs(sb - sa) + 0.5f; r += 0.25f)
+                {
+                    var (x, z, _, _, _, _, _) = a.Reverse.At(r);
+                    if (Turnout.Offset(a.Normal, x, z) is { } onA && onA.S >= f0 - TieSpacing && onA.S <= f1 + TieSpacing)
+                        crossing.Add(a.Reverse.LineS(r));
+                }
+
+                if (ends.Count == 2)
+                    Skip(b.Normal.Line, ends[0] - TieSpacing * 0.5f, ends[1] + TieSpacing * 0.5f);
+                if (crossing.Count > 0)
+                    Skip(line, crossing.Min(), crossing.Max());
             }
     }
 
     private static void Ties(List<TieInstance> ties, List<TieInstance> plates, NetworkLine line, int first, int last, float offset, float railOffset,
-        float3 origin, int track, List<(float From, float To)>? covered = null, List<(float From, float To, Leg Other, int Across)>? spans = null)
+        float3 origin, int track, List<(float From, float To)>? covered = null, List<(float From, float To, Leg Other, int Across, Leg Crossover)>? spans = null)
     {
         var s = MathF.Ceiling(line.S[first] / TieSpacing) * TieSpacing;
         for (var p = first; p < last; p++)
@@ -2471,6 +2591,14 @@ public sealed partial class NetworkMeshes : IDisposable
                     ties.Add(new TieInstance(new float4(position + across * (spread * 0.5f), random), new float4(forward, (TieLength + spread) / TieLength)));
                     foreach (var u in (ReadOnlySpan<float>)[spread - railOffset, spread + railOffset])
                         plates.Add(new TieInstance(new float4(seat + across * u, random), new float4(u > spread ? forward * span.Across : -forward * span.Across, 0f)));
+                    // And the crossover track's rails, where it's crossing between them (off the two tracks' own rails).
+                    if (Turnout.Offset(span.Crossover, line.X[p] + (line.X[p + 1] - line.X[p]) * t, line.Z[p] + (line.Z[p + 1] - line.Z[p]) * t) is { } onCrossover)
+                    {
+                        var d = MathF.Abs(onCrossover.Offset);
+                        foreach (var u in (ReadOnlySpan<float>)[d - railOffset, d + railOffset])
+                            if (u > railOffset + 0.25f && u < spread - railOffset - 0.25f)
+                                plates.Add(new TieInstance(new float4(seat + across * u, random), new float4(u > d ? forward * span.Across : -forward * span.Across, 0f)));
+                    }
                 }
                 else if (zone?.Turnout is { } timbered)
                 {
@@ -2558,6 +2686,8 @@ public sealed partial class NetworkMeshes : IDisposable
         foreach (var vertex in vertices)
         {
             var p = vertex.Position;
+            if (!float.IsFinite(p.X) || !float.IsFinite(p.Y) || !float.IsFinite(p.Z))
+                continue; // (Left out of the drawing too: Builder.Sorted.)
             min = new float3(MathF.Min(min.X, p.X), MathF.Min(min.Y, p.Y), MathF.Min(min.Z, p.Z));
             max = new float3(MathF.Max(max.X, p.X), MathF.Max(max.Y, p.Y), MathF.Max(max.Z, p.Z));
         }

@@ -14,9 +14,27 @@ public sealed partial class TerrainSource
     /// Rebuilds the lines from the network as it is now. Only lines that came out different (or that the junctions
     /// they meet pulled to a new height) cost anything: their ground is sampled again and the tiles they reach are
     /// reshaped again. solveAgain: the saved track's thrown away and it's worked out afresh and saved.
+    /// Places the next rebuild lays the track and shapes the ground round again even though no way's changed there (a bridge's end
+    /// set by hand, which shapes the ground under it).
+    private readonly List<(double X, double Z)> _rebuildAround = [];
+
+    public void RebuildAround(double x, double z)
+    {
+        lock (_rebuildAround)
+            _rebuildAround.Add((x, z));
+    }
+
     public Task<NetworkChange> RebuildNetwork(bool solveAgain = false)
     {
         var ways = Network.Ways.Values.ToList(); // edits replace ways rather than change them, so this is a snapshot
+        var bridgeEdits = new Dictionary<long, BridgeEdit>(Bridges);
+        List<(double X, double Z)> around;
+        lock (_rebuildAround)
+        {
+            around = [.. _rebuildAround];
+            _rebuildAround.Clear();
+        }
+
         var tagged = new Dictionary<long, NetworkNode>(Network.Nodes);
         var previous = Lines!;
         var shapes = TrackEdits.Snapshot();
@@ -39,10 +57,11 @@ public sealed partial class TerrainSource
                 NetworkLines.ForgetSolved(_route);
 
             // Laid again near the edit only, if it was to track alone (LocalRebuild); otherwise in full.
-            var local = solveAgain ? null : LocalFor(previous, ways, crossings);
+            var local = solveAgain ? null : LocalFor(previous, ways, crossings, around);
             NetworkLines Lay(LocalRebuild? near, Action<string> stage)
             {
                 var laid = NetworkLines.Build(ways, _route, built, shapes, near);
+                laid.BridgeEdits = bridgeEdits;
                 stage("build");
                 laid.SetCrossings(crossings, _route.Projection!);
                 var sampled = laid.AdoptGround(previous).ToList();
@@ -113,6 +132,18 @@ public sealed partial class TerrainSource
                             tiles.Add(new TileId(i, j));
             }
 
+            // Places asked for by hand (a bridge's end set): the ground round them shaped again and its meshes made again, though the
+            // lines there come out as they were (what changed is how the ground meets them).
+            foreach (var (ax, az) in around)
+            {
+                const double reach = AroundReach;
+                areas.Add((ax - reach, az - reach, ax + reach, az + reach));
+                for (var j = (int)Math.Floor(-(az + reach) / size); j <= (int)Math.Floor(-(az - reach) / size); j++)
+                    for (var i = (int)Math.Floor((ax - reach) / size); i <= (int)Math.Floor((ax + reach) / size); i++)
+                        if (_tiles.ContainsKey(new TileId(i, j)))
+                            tiles.Add(new TileId(i, j));
+            }
+
             lines.InheritBallast(previous);
             var heights = new ConcurrentDictionary<TileId, float[]>();
             Parallel.ForEach(tiles, id =>
@@ -130,6 +161,10 @@ public sealed partial class TerrainSource
         });
     }
 
+    /// How far round a place asked for by hand (RebuildAround) the ground's shaped again, metres: a bridge end's walls run along what's
+    /// underneath up to WallMost either way.
+    private const double AroundReach = 150.0;
+
     /// How many rings of lines meeting those laid again are laid again round them and put back after (LocalRebuild.Halo).
     private const int HaloRings = 3;
 
@@ -140,7 +175,7 @@ public sealed partial class TerrainSource
     /// A local rebuild, if what's changed since the last lines were laid is track alone (no road, mapped track, crossing or
     /// anything else): the roads and marks with a point within LocalReach of the changed track (as it was and as it is) are laid
     /// again, the rest kept. Null for a full rebuild.
-    private LocalRebuild? LocalFor(NetworkLines previous, List<NetworkWay> ways, List<PlacedObject> crossings)
+    private LocalRebuild? LocalFor(NetworkLines previous, List<NetworkWay> ways, List<PlacedObject> crossings, List<(double X, double Z)> around)
     {
         if (previous.Ways is not { } was || !previous.SameCrossings(crossings))
             return null;
@@ -165,7 +200,7 @@ public sealed partial class TerrainSource
             return null;
 
         var projection = _route.Projection!;
-        var places = new List<(double X, double Z)>();
+        var places = new List<(double X, double Z)>(around);
         foreach (var way in changed)
             for (var i = 0; i < way.Lat.Length; i++)
             {
@@ -266,7 +301,7 @@ public sealed partial class TerrainSource
 
     private static bool SameProfile(NetworkLine a, NetworkLine b)
     {
-        if (a.Count != b.Count || a.TurnoutZones.Count != b.TurnoutZones.Count || !a.RailCuts.SequenceEqual(b.RailCuts) || !a.TieCuts.SequenceEqual(b.TieCuts))
+        if (a.Count != b.Count || a.TurnoutZones.Count != b.TurnoutZones.Count || !a.RailCuts.SequenceEqual(b.RailCuts) || !a.TieCuts.SequenceEqual(b.TieCuts) || !a.BedDrops.SequenceEqual(b.BedDrops))
             return false;
         for (var i = 0; i < a.Count; i++)
             if (MathF.Abs(a.Y[i] - b.Y[i]) > 0.01f || Math.Abs(a.X[i] - b.X[i]) > 0.01 || Math.Abs(a.Z[i] - b.Z[i]) > 0.01)

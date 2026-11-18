@@ -8,7 +8,7 @@ namespace Highball.Trains;
 /// How the trains sound, as tuned by ear in the Audio Editor (Builder/AudioEditor.cs) and kept in
 /// Content/Audio/AudioTuning.json: the mix (each group's level and the bus compressor over them all), each locomotive's
 /// sounds (levels, pitch, and where on it each sound comes from), and the running gear (levels, and when and how often
-/// the knocks come). Read live every frame, so a change is heard at once. What it doesn't say is as the game had it, so a
+/// the knocks come), and the grade crossings' bells. Read live every frame, so a change is heard at once. What it doesn't say is as the game had it, so a
 /// missing or empty file sounds the same as no file.
 public sealed class AudioTuning
 {
@@ -84,7 +84,28 @@ public sealed class AudioTuning
         public float[]? BellAt { get; set; }
     }
 
+    /// The grade crossings' bells (CrossingBells): each kind's level and pitch, how far they carry, how high they ring from,
+    /// and how quickly one dies away once its crossing's warning is off. Not part of the trains' mix or their compressor.
+    public sealed class CrossingTuning
+    {
+        public float Electronic { get; set; } = 1f;
+        public float Mechanical { get; set; } = 1f;
+        public float ElectronicPitch { get; set; } = 1f;
+        public float MechanicalPitch { get; set; } = 1f;
+
+        /// Full volume within this many metres, falling off beyond; not heard past Range.
+        public float FullWithin { get; set; } = 12f;
+        public float Range { get; set; } = 900f;
+
+        /// How high above the road the bell is, metres.
+        public float Height { get; set; } = 3.4f;
+
+        /// Seconds the ringing takes to fade once the crossing's off.
+        public float FadeOut { get; set; } = 0.25f;
+    }
+
     public MixTuning Mix { get; set; } = new();
+    public CrossingTuning Crossings { get; set; } = new();
     public GearTuning Gear { get; set; } = new();
     public Dictionary<string, VehicleTuning> Vehicles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 

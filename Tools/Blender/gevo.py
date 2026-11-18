@@ -227,11 +227,11 @@ def load_source():
     return body, bogie
 
 
-# The game reads a material's colour, normal and roughness, not the source's occlusion and specular maps, and the source's
-# full maps would make each part some 40 MB. So the game's parts have the occlusion laid into the colour (at this strength,
-# as the game draws its own), every map at most this size, roughness as one factor per material (the source has no map of
-# it), and the images written as JPEG.
-OCCLUSION = .6
+# The game reads a material's colour, normal, roughness and occlusion (glTF's, model.frag: how much of the sky reaches each
+# place, so a cab's inside isn't lit and reflecting as if it stood in the open), not the source's specular map, and the
+# source's full maps would make each part some 40 MB. So the game's parts have the occlusion as glTF's occlusion map (not
+# laid into the colour), every map at most this size, roughness as one factor per material (the source has no map of it),
+# and the images written as JPEG.
 MAX_SIZE = 2048
 ROUGHNESS = {"Gevo": .62, "Gevo CAB": .8, "Control": .7}  # exterior and running gear, cab interior, control stand
 
@@ -270,11 +270,7 @@ def game_materials():
         prefix = maps["Diffuse"].name.rsplit("_", 1)[0]
         colour = sized(maps["Diffuse"], f"{prefix}_Colour")
         ao = sized(maps["Ao"], f"{prefix}_Ao_Game", tuple(colour.size))
-        px, shade = read(colour), read(ao)
-        px[:, :3] *= 1 - OCCLUSION * (1 - shade[:, :1])
-        colour.pixels.foreach_set(px.ravel())
-        colour.pack()
-        bpy.data.images.remove(ao)
+        ao.colorspace_settings.name = "Non-Color"
         normal = sized(maps["Normal"], f"{prefix}_Normal_Game")
 
         nodes.clear()
@@ -291,6 +287,16 @@ def game_materials():
         bump = nodes.new("ShaderNodeNormalMap")
         links.new(tex.outputs["Color"], bump.inputs["Color"])
         links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+        # The occlusion, through the node group the glTF exporter reads it from.
+        group = bpy.data.node_groups.get("glTF Material Output")
+        if group is None:
+            group = bpy.data.node_groups.new("glTF Material Output", "ShaderNodeTree")
+            group.interface.new_socket("Occlusion", in_out="INPUT", socket_type="NodeSocketFloat")
+        tex = nodes.new("ShaderNodeTexImage")
+        tex.image = ao
+        shade = nodes.new("ShaderNodeGroup")
+        shade.node_tree = group
+        links.new(tex.outputs["Color"], shade.inputs["Occlusion"])
         mat.name = f"GEVO_{mat.name.replace(' ', '_')}"
         print("material", mat.name, tuple(colour.size), tuple(normal.size))
 

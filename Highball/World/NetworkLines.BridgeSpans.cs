@@ -17,6 +17,7 @@ public sealed partial class NetworkLines
     private readonly List<(NetworkLine A, float A0, float A1, NetworkLine B, float B0, float B1)> _sideBySide = [];
     private const float BridgeClear = 1.5f;
 
+
     /// How near a guide's bridged middle line a track has to run to take its bridge.
     private const double GuideBridgeReach = 3.0;
 

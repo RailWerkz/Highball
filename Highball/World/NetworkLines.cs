@@ -48,6 +48,8 @@ public sealed class NetworkLine
     /// Where a diamond cuts its rails (line distances, and which rail: +1 its right) and its ties (see Diamonds).
     public List<(float From, float To, int Side)> RailCuts { get; } = [];
     public List<(float From, float To)> TieCuts { get; } = [];
+    /// Where its bed lies just under another's, crossing it at a diamond at the same height (see Diamonds), so the two tops don't fight.
+    public List<(float From, float To)> BedDrops { get; } = [];
 
     // Rails.
     public int Tracks { get; init; } = 1;
@@ -120,9 +122,10 @@ public sealed class NetworkLine
     }
     public const float BallastSlope = 1.5f;
     public const float BallastToe = 0.15f;
-    /// How much longer a bed's curved flank runs than a straight slope would, and how far out from its toe it then fades into the ground.
-    public const float BedRun = 2.6f;
-    public const float BedFade = 2.4f;
+    /// How much longer a bed's flank runs than the plain slope (1: a straight cut at BallastSlope), and how far out from its toe
+    /// it fades into the ground (none: the bed stops at its toe).
+    public const float BedRun = 1f;
+    public const float BedFade = 0f;
 
     public float TrackOffset(int track) => (track - (Tracks - 1) * 0.5f) * TrackSpacing;
 
@@ -174,6 +177,7 @@ public sealed class NetworkLine
         copy.TurnoutZones.AddRange(TurnoutZones);
         copy.RailCuts.AddRange(RailCuts);
         copy.TieCuts.AddRange(TieCuts);
+        copy.BedDrops.AddRange(BedDrops);
         return copy;
     }
 
@@ -258,6 +262,9 @@ public sealed partial class NetworkLines
     }
     private readonly Dictionary<TileId, List<(int Line, int Point)>> _pointsByTile = [];
     private readonly float _spacing;
+    /// The sample spacing the ground's being shaped at: the tiles' own, or a finer grid's while ConformFine shapes one (this thread only).
+    [ThreadStatic] private static float t_fineSpacing;
+    private float Sp => t_fineSpacing > 0f ? t_fineSpacing : _spacing;
     private readonly int _quads;
 
     public IReadOnlyList<NetworkLine> Lines => _lines;
@@ -275,6 +282,7 @@ public sealed partial class NetworkLines
         {
             line.RailCuts.Clear();
             line.TieCuts.Clear();
+            line.BedDrops.Clear();
         }
 
         Layouts = Diamonds.Fit(this, TrackLayouts.Find(this, tagged));
@@ -485,7 +493,7 @@ public sealed partial class NetworkLines
             if (chain.Rail && chain.Class != (int)RailClass.Yard && !chain.Tags.ContainsKey(RouteNetwork.ExactTag))
                 EvenOut(xs, zs, nodes, pinned);
             // Track laid by hand goes through its control points as they are, but without the spline's wobble between them.
-            else if (chain.Rail && chain.Tags.ContainsKey(RouteNetwork.ExactTag) && xs.Count >= 2)
+            else if (chain.Rail && chain.Tags.ContainsKey(RouteNetwork.ExactTag) && !chain.Tags.ContainsKey(AlignmentTrack.Tag) && xs.Count >= 2)
             {
                 static (double X, double Z) Unit(double x, double z)
                 {
@@ -767,7 +775,9 @@ public sealed partial class NetworkLines
                         break;
 
                     var next = ends[node][0] == edge ? ends[node][1] : ends[node][0];
-                    if (next == edge || done.Contains(next.Id) || ShapeKey(next) != key || (edge.Rail && DoublesBack(edge, next, node)))
+                    // (Track laid by straights and curves is each way its own line: its corners and their curves are its own.)
+                    if (next == edge || done.Contains(next.Id) || ShapeKey(next) != key || (edge.Rail && DoublesBack(edge, next, node)) ||
+                        edge.Tags.ContainsKey(AlignmentTrack.Tag) || next.Tags.ContainsKey(AlignmentTrack.Tag))
                         break;
 
                     // Forwards, the next way should start at the node; backwards, end at it. One-way roads can't flip.
@@ -874,6 +884,33 @@ public sealed partial class NetworkLines
         var n = px.Count;
         if (n < 2)
             return (xs, zs, segs, nodes);
+
+        // Track laid by straights and curves is built from its corners exactly, not splined through them.
+        if (chain.Rail && n == chain.Points.Count && AlignmentTrack.Decode(chain.Tags.GetValueOrDefault(AlignmentTrack.Tag)) is { } curves && curves.Count == n - 2)
+        {
+            var corners = Enumerable.Range(1, n - 2).Select(i => new Corner(px[i], pz[i], curves[i - 1].Radius, curves[i - 1].Easing)).ToList();
+            if (AlignmentTrack.Build((px[0], pz[0]), corners, (px[^1], pz[^1]), PointSpacing) is { } built)
+            {
+                foreach (var (x, z) in built.Points)
+                {
+                    xs.Add(x);
+                    zs.Add(z);
+                }
+
+                for (var i = 0; i + 1 < built.Points.Count; i++)
+                {
+                    var leg = Math.Min(built.Legs[i + 1], structures.Count - 1);
+                    segs.Add(structures[leg]);
+                    segLayers.Add(layers[leg]);
+                }
+
+                nodes.Add((nodeIds[0], 0));
+                for (var c = 0; c < n - 2; c++)
+                    nodes.Add((nodeIds[c + 1], built.Middles[c]));
+                nodes.Add((nodeIds[^1], xs.Count - 1));
+                return (xs, zs, segs, nodes);
+            }
+        }
 
         (double X, double Z) P(int i)
         {
@@ -1248,8 +1285,8 @@ public sealed partial class NetworkLines
             if (_needGround is not null && !_needGround.Contains(l))
                 continue;
             var line = _lines[l];
-            var fx = (float)(line.X[p] / _spacing - gx0);
-            var fz = (float)(line.Z[p] / _spacing - gz0);
+            var fx = (float)(line.X[p] / Sp - gx0);
+            var fz = (float)(line.Z[p] / Sp - gz0);
             var x0 = Math.Clamp((int)MathF.Floor(fx), 0, samples - 2);
             var z0 = Math.Clamp((int)MathF.Floor(fz), 0, samples - 2);
             var tx = Math.Clamp(fx - x0, 0f, 1f);
@@ -1278,6 +1315,8 @@ public sealed partial class NetworkLines
 
     public void FinishProfiles()
     {
+        // (Bridges lengthened by hand first: the profiles carry each deck straight between its ends.)
+        ExtendBridges();
         _liftCells = null;
         _junctionRounds.Clear();
 
@@ -1358,6 +1397,10 @@ public sealed partial class NetworkLines
         }
 
         Junctions();
+        SmoothJoins();
+        // (After the joins and junctions have shaped the lines they leave: a siding takes its line's height as it's finished, and
+        // meets it at its switches exactly.)
+        FollowBeside();
         // The last word goes to headroom: a deck lifted clear of what's under it, its junctions already all but agreed.
         LiftBridges();
         Watch("junctions");
@@ -1372,6 +1415,8 @@ public sealed partial class NetworkLines
         // Cresting a bridge smooths its whole road, which can pull a road's end on a pad back down off the pad's level (leaving a
         // step where it meets the crossing's deck): they're brought back up to it.
         LevelRoadsAtPads();
+        // (Once the decks' heights are known: an end that nearly has room for a slope under it is given it.)
+        ExtendBridges(toFitSlopes: true);
 
         _widestAt.Clear();
         foreach (var road in _lines.Where(l => !l.Rail && !l.Mark))
@@ -1384,6 +1429,103 @@ public sealed partial class NetworkLines
         LevelRoutes();
         Before = null;
 
+    }
+
+    /// How far either side of a join between two rail lines their heights are fitted together, metres.
+    private const float JoinReach = 100f;
+
+    /// Where one rail line runs straight on into another (laid as two, ending on the same node with nothing else there), each
+    /// was smoothed on its own, its end following the ground with nothing past it to average with, and the two were then made to
+    /// meet at one height: a little hump or dip at the join. Here the profile JoinReach either side is fitted as one (a
+    /// parabola, so a crest or sag carries through) and each side eased onto that fit, wholly at the join and not at all
+    /// JoinReach away. A line kept from the last rebuild stays as it was, and the other side meets it.
+    private void SmoothJoins()
+    {
+        var ends = new Dictionary<long, List<(NetworkLine Line, bool AtStart)>>();
+        var through = new HashSet<long>();
+        foreach (var line in _lines)
+        {
+            if (!line.Rail || line.Mark || line.Count < 2)
+                continue;
+            foreach (var (node, point) in line.Nodes)
+            {
+                if (point == 0 || point == line.Count - 1)
+                {
+                    if (!ends.TryGetValue(node, out var list))
+                        ends[node] = list = [];
+                    list.Add((line, point == 0));
+                }
+                else
+                    through.Add(node);
+            }
+        }
+
+        var joined = 0;
+        foreach (var (node, list) in ends)
+        {
+            if (list.Count != 2 || through.Contains(node) || list[0].Line == list[1].Line)
+                continue;
+            var (a, b) = (list[0], list[1]);
+            if (a.Line.Frozen && b.Line.Frozen)
+                continue;
+
+            // Each side's points within reach of the join, by distance from it (negative along a, positive along b), on the
+            // ground only (a bridge deck is carried as it is).
+            List<(NetworkLine Line, int Point, float S)> Side((NetworkLine Line, bool AtStart) end, float sign)
+            {
+                var (line, atStart) = end;
+                var result = new List<(NetworkLine, int, float)>();
+                var from = atStart ? 0 : line.Count - 1;
+                for (var p = from; p >= 0 && p < line.Count; p += atStart ? 1 : -1)
+                {
+                    var away = MathF.Abs(line.S[p] - line.S[from]);
+                    if (away > JoinReach || !OnGround(line, p))
+                        break;
+                    result.Add((line, p, sign * away));
+                }
+
+                return result;
+            }
+
+            var points = Side(a, -1f).Concat(Side(b, 1f)).ToList();
+            if (points.Count < 6)
+                continue;
+
+            // y = c0 + c1 s + c2 s^2, by least squares.
+            double s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, y0 = 0, y1 = 0, y2 = 0;
+            foreach (var (line, p, at) in points)
+            {
+                double x = at, y = line.Y[p];
+                s0 += 1; s1 += x; s2 += x * x; s3 += x * x * x; s4 += x * x * x * x;
+                y0 += y; y1 += x * y; y2 += x * x * y;
+            }
+
+            double Det(double a1, double b1, double c1, double a2, double b2, double c2, double a3, double b3, double c3) =>
+                a1 * (b2 * c3 - b3 * c2) - b1 * (a2 * c3 - a3 * c2) + c1 * (a2 * b3 - a3 * b2);
+            var det = Det(s0, s1, s2, s1, s2, s3, s2, s3, s4);
+            if (Math.Abs(det) < 1e-9)
+                continue;
+            var c0 = Det(y0, s1, s2, y1, s2, s3, y2, s3, s4) / det;
+            var c1 = Det(s0, y0, s2, s1, y1, s3, s2, y2, s4) / det;
+            var c2 = Det(s0, s1, y0, s1, s2, y1, s2, s3, y2) / det;
+            double Fit(float at) => c0 + c1 * at + c2 * at * at;
+
+            // A side kept as it was holds the join's height: the fit's moved to meet it there.
+            var shift = a.Line.Frozen ? a.Line.Y[a.AtStart ? 0 : a.Line.Count - 1] - Fit(0f)
+                : b.Line.Frozen ? b.Line.Y[b.AtStart ? 0 : b.Line.Count - 1] - Fit(0f) : 0.0;
+            foreach (var (line, p, at) in points)
+            {
+                if (line.Frozen)
+                    continue;
+                var weight = 0.5f * (1f + MathF.Cos(MathF.PI * MathF.Abs(at) / JoinReach));
+                line.Y[p] += weight * (float)(Fit(at) + shift - line.Y[p]);
+            }
+
+            joined++;
+        }
+
+        if (joined > 0)
+            RailWerkz.Core.Logging.Log.Info($"Profiles: {joined} joins between rail lines smoothed over {JoinReach:0} m");
     }
 
     /// A switch's rails meet at its frog and its long timbers carry both routes, so its diverging route runs at the normal
@@ -1597,6 +1739,104 @@ public sealed partial class NetworkLines
     }
 
     /// Neither segment beside the point is on a bridge or in a tunnel.
+    /// How near a hand-laid track has to run to the line it leaves to take its height (FollowBeside), and how far out from there
+    /// it eases over to its own.
+    private const float BesideReach = 6.5f;
+    private const float BesideEase = 3f;
+
+    /// Track laid by hand (exact) that leaves a line at a switch, a siding or a track laid beside it, is at that line's height
+    /// wherever it runs beside it: a siding's laid level with its main line. Fitted to the ground on its own, as mapped track is, a
+    /// siding a few metres off a main line on a bank or in a cutting sits on natural ground a metre or more higher or lower, too
+    /// far apart in height for the smoothing that levels tracks side by side to draw them together (it's kept from levelling a
+    /// flyover's ramp climbing past a line), and humps or dips beside it. Mapped track is left as the smoothing has it.
+    private void FollowBeside()
+    {
+        // Every rail line at each node, and where on it.
+        var at = new Dictionary<long, List<(NetworkLine Line, int Point)>>();
+        foreach (var line in _lines.Where(l => l.Rail && !l.Disused && l.Count >= 2))
+            foreach (var (node, point) in line.Nodes)
+            {
+                if (!at.TryGetValue(node, out var list))
+                    at[node] = list = [];
+                list.Add((line, point));
+            }
+
+        // (One at a time: a siding off a siding reads the one it leaves as that's been laid.)
+        foreach (var line in _lines.Where(l => l.Rail && l.Exact && !l.Frozen && !l.Disused && l.Count >= 2))
+        {
+            // The lines it leaves: at a switch at either of its ends where it's the diverging route, the toe and the straight route
+            // (as the turnouts read them, Turnout.Arrange). Never the other way about: a main line doesn't follow its sidings.
+            var partners = new HashSet<NetworkLine>();
+            foreach (var (node, point) in line.Nodes)
+            {
+                if ((point != 0 && point != line.Count - 1) || !at.TryGetValue(node, out var meeting))
+                    continue;
+                var legs = new List<Leg>();
+                foreach (var (other, q) in meeting)
+                {
+                    if (q > 0)
+                        legs.Add(new Leg(other, q, -1));
+                    if (q < other.Count - 1)
+                        legs.Add(new Leg(other, q, 1));
+                }
+
+                if (legs.Count == 3 && Turnout.Arrange(legs, out var toe, out var normal, out var reverse, out _) && reverse.Line == line)
+                {
+                    partners.Add(toe.Line);
+                    partners.Add(normal.Line);
+                }
+            }
+
+            if (partners.Count == 0)
+                continue;
+
+            // And the rest of each of those tracks: the lines carrying on from them end to end, with nothing else at the join (a
+            // track laid in pieces, or cut where its kind changes), which a long siding runs beside as much as the line it left.
+            var open = new Queue<NetworkLine>(partners);
+            while (open.Count > 0 && partners.Count < 64)
+            {
+                var track = open.Dequeue();
+                foreach (var (node, point) in track.Nodes)
+                {
+                    if ((point != 0 && point != track.Count - 1) || !at.TryGetValue(node, out var joined) || joined.Count != 2)
+                        continue;
+                    var (next, q) = joined[0].Line == track ? joined[1] : joined[0];
+                    if (next != line && (q == 0 || q == next.Count - 1) && partners.Add(next))
+                        open.Enqueue(next);
+                }
+            }
+
+
+            for (var p = 0; p < line.Count; p++)
+            {
+                if (!OnGround(line, p))
+                    continue;
+                var (x, z) = (line.X[p], line.Z[p]);
+                (double Away, float Y)? best = null;
+                foreach (var other in partners)
+                {
+                    if (x < other.MinX - BesideReach - BesideEase || x > other.MaxX + BesideReach + BesideEase ||
+                        z < other.MinZ - BesideReach - BesideEase || z > other.MaxZ + BesideReach + BesideEase)
+                        continue;
+                    for (var i = 0; i + 1 < other.Count; i++)
+                    {
+                        var (dx, dz) = (other.X[i + 1] - other.X[i], other.Z[i + 1] - other.Z[i]);
+                        var t = Math.Clamp(((x - other.X[i]) * dx + (z - other.Z[i]) * dz) / Math.Max(dx * dx + dz * dz, 1e-9), 0.0, 1.0);
+                        var (ex, ez) = (other.X[i] + dx * t - x, other.Z[i] + dz * t - z);
+                        var away = Math.Sqrt(ex * ex + ez * ez);
+                        if (best is null || away < best.Value.Away)
+                            best = (away, other.Y[i] + (other.Y[i + 1] - other.Y[i]) * (float)t);
+                    }
+                }
+
+                if (best is not { } found || found.Away > BesideReach + BesideEase)
+                    continue;
+                var weight = 1f - Math.Clamp(((float)found.Away - BesideReach) / BesideEase, 0f, 1f);
+                line.Y[p] += (found.Y - line.Y[p]) * weight;
+            }
+        }
+    }
+
     private static bool OnGround(NetworkLine line, int p) =>
         (p == 0 || line.Structures[p - 1] == Structure.Ground) && (p >= line.Structures.Length || line.Structures[p] == Structure.Ground);
 
@@ -2277,8 +2517,8 @@ public sealed partial class NetworkLines
             for (var k = 0; k < NetworkLine.MarkPoints; k++)
             {
                 var u = line.Width * ((double)k / (NetworkLine.MarkPoints - 1) - 0.5);
-                var fx = (float)((line.X[p] - dz / length * u) / _spacing - gx0);
-                var fz = (float)((line.Z[p] + dx / length * u) / _spacing - gz0);
+                var fx = (float)((line.X[p] - dz / length * u) / Sp - gx0);
+                var fz = (float)((line.Z[p] + dx / length * u) / Sp - gz0);
                 var x0 = Math.Clamp((int)MathF.Floor(fx), 0, samples - 2);
                 var z0 = Math.Clamp((int)MathF.Floor(fz), 0, samples - 2);
                 var tx = Math.Clamp(fx - x0, 0f, 1f);
@@ -2299,8 +2539,41 @@ public sealed partial class NetworkLines
         if (!_byTile.TryGetValue(tile, out var list))
             return;
 
-        var gx0 = tile.I * _quads;
-        var gz0 = -(tile.J + 1) * _quads;
+        ConformCore(list, heights, samples, tile.I * _quads, -(tile.J + 1) * _quads, tile);
+    }
+
+    /// Shapes a square of ground finer than the tiles' (the base heights at that spacing, samples a side, its first sample at
+    /// (x0, z0) world metres, which are whole multiples of the spacing) to carry the lines as Conform does a tile's: where a
+    /// tile's samples are too far apart for what's there (a wall's face against the bank it holds), the terrain draws this
+    /// instead (Terrain's detail inserts).
+    public void ConformFine(float[] heights, int samples, double x0, double z0, float spacing)
+    {
+        var size = _quads * _spacing;
+        var extent = (samples - 1) * spacing;
+        var list = new SortedSet<int>();
+        for (var i = (int)Math.Floor(x0 / size); i <= (int)Math.Floor((x0 + extent) / size); i++)
+            for (var k = (int)Math.Floor(z0 / size); k <= (int)Math.Floor((z0 + extent) / size); k++)
+                if (_byTile.TryGetValue(new TileId(i, -k - 1), out var lines))
+                    list.UnionWith(lines);
+        if (list.Count == 0)
+            return;
+
+        t_fineSpacing = spacing;
+        try
+        {
+            ConformCore([.. list], heights, samples, (int)Math.Round(x0 / spacing), (int)Math.Round(z0 / spacing), null);
+        }
+        finally
+        {
+            t_fineSpacing = 0f;
+        }
+    }
+
+    private void ConformCore(List<int> list, float[] heights, int samples, int gx0, int gz0, TileId? tile)
+    {
+        // The ground as it came, before any shaping: where a bridge end's bank is cut back to its cone, a hillside's left standing.
+        var natural = (float[])heights.Clone();
+
 
         // How near the nearest formation is at each sample: a line's flat formation only takes ground no nearer
         // line's formation has taken, and its slopes only ground no formation has, so tracks side by side don't
@@ -2326,11 +2599,11 @@ public sealed partial class NetworkLines
                     if (!Grounded(line, a, b))
                         continue;
 
-                    var ax = line.X[a] / _spacing - gx0;
-                    var az = line.Z[a] / _spacing - gz0;
-                    var bx = line.X[b] / _spacing - gx0;
-                    var bz = line.Z[b] / _spacing - gz0;
-                    var r = reach / _spacing;
+                    var ax = line.X[a] / Sp - gx0;
+                    var az = line.Z[a] / Sp - gz0;
+                    var bx = line.X[b] / Sp - gx0;
+                    var bz = line.Z[b] / Sp - gz0;
+                    var r = reach / Sp;
                     var x0 = Math.Max(0, (int)Math.Floor(Math.Min(ax, bx) - r));
                     var x1 = Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(ax, bx) + r));
                     var z0 = Math.Max(0, (int)Math.Floor(Math.Min(az, bz) - r));
@@ -2346,14 +2619,23 @@ public sealed partial class NetworkLines
                     float Under(int p) => line.SinkOf(p) - MathF.Min(line.SinkOf(p) * 0.3f, 0.06f);
                     var ya = line.Y[a] + Under(a);
                     var yb = line.Y[b] + Under(b);
+                    // (Not on round past an end where a bridge with a slope or a wall under it starts: the bank there is that end's,
+                    // which shapes it to its wing walls. Fanned out round the end, a track's fill beside another's left a ridge and a
+                    // trench beside the deck.)
+                    bool Shaped(int point) => BridgeEndAt(line, point) is { Kind: BridgeEndKind.Slope or BridgeEndKind.Wall };
+                    var stopAtA = a > 0 && line.Structures[a - 1] == Structure.Bridge && Shaped(a);
+                    var stopAtB = b < line.Structures.Length && line.Structures[b] == Structure.Bridge && Shaped(b);
                     for (var z = z0; z <= z1; z++)
                     {
                         for (var x = x0; x <= x1; x++)
                         {
-                            var t = length2 > 0 ? Math.Clamp(((x - ax) * dx + (z - az) * dz) / length2, 0.0, 1.0) : 0.0;
+                            var along = length2 > 0 ? ((x - ax) * dx + (z - az) * dz) / length2 : 0.0;
+                            if ((stopAtA && along < 0.0) || (stopAtB && along > 1.0))
+                                continue;
+                            var t = Math.Clamp(along, 0.0, 1.0);
                             var ex = ax + dx * t - x;
                             var ez = az + dz * t - z;
-                            var d = (float)Math.Sqrt(ex * ex + ez * ez) * _spacing;
+                            var d = (float)Math.Sqrt(ex * ex + ez * ez) * Sp;
                             if (d <= reach)
                                 visit(index, line, z * samples + x, d, ya + (yb - ya) * (float)t, (float)ex, (float)ez, reach);
                         }
@@ -2370,7 +2652,7 @@ public sealed partial class NetworkLines
             if (line.Rail && d < near[sample].D)
                 near[sample] = (index, d, target, ex, ez);
             // (Track's flat ground runs a terrain triangle past its gravel, so a slope rising beside it can't bury the gravel's edge.)
-            var run = MathF.Max(0f, d - (line.Rail ? line.Formation + _spacing * 1.5f : line.Formation));
+            var run = MathF.Max(0f, d - (line.Rail ? line.Formation + Sp * 1.5f : line.Formation));
             if (run <= 0f ? d >= claimed[sample] : claimed[sample] < float.MaxValue)
                 return;
             if (run <= 0f)
@@ -2381,39 +2663,22 @@ public sealed partial class NetworkLines
             heights[sample] = h + (shaped - h) * fade;
         });
 
-        // How much of each sample is ballast run out over the ground: all of it out to the bed's toe, none past its fade.
+        // No ballast is run out over the ground: the bed stops at its toe, a straight cut.
+        if (tile is { } id)
         {
-            var map = new Dictionary<int, byte>();
-            for (var sample = 0; sample < heights.Length; sample++)
-            {
-                var n = near[sample];
-                if (n.Line < 0)
-                    continue;
-                var rail = _lines[n.Line];
-                if (rail.Embedded)
-                    continue;
-                var flank = MathF.Max(0.35f, rail.BedHeight * NetworkLine.BallastSlope * NetworkLine.BedRun);
-                var toe = rail.BallastHalfTop + flank;
-                var amount = Math.Clamp(1f - (n.D - toe) / NetworkLine.BedFade, 0f, 1f);
-                if (amount > 0f)
-                    map[sample] = (byte)MathF.Round(amount * 255f);
-            }
-
             _ballastSamples = samples;
-            if (map.Count > 0)
-                _ballast[tile] = map;
-            else
-                _ballast.TryRemove(tile, out _);
+            _ballast.TryRemove(id, out _);
         }
 
         // The nearest rail line on the far side of each sample from its nearest one.
-        var across = new (float D, float Y)[heights.Length];
-        Array.Fill(across, (float.MaxValue, 0f));
+        var across = new (float D, float Y, float Cos)[heights.Length];
+        Array.Fill(across, (float.MaxValue, 0f, 0f));
         Visit(true, (index, _, sample, d, target, ex, ez, _) =>
         {
             var n = near[sample];
-            if (index != n.Line && d < across[sample].D && n.Ex * ex + n.Ez * ez < 0)
-                across[sample] = (d, target);
+            var dot = n.Ex * ex + n.Ez * ez;
+            if (index != n.Line && d < across[sample].D && dot < 0)
+                across[sample] = (d, target, dot / MathF.Max(MathF.Sqrt((n.Ex * n.Ex + n.Ez * n.Ez) * (ex * ex + ez * ez)), 1e-6f));
         });
 
         // Between two rail lines near one another (a yard, tracks side by side, a wye's legs), the ground graded flat
@@ -2424,7 +2689,12 @@ public sealed partial class NetworkLines
             var (a, b) = (near[sample], across[sample]);
             if (a.Line < 0 || b.D == float.MaxValue || a.D + b.D > YardGap || MathF.Abs(a.Y - b.Y) > (a.D + b.D) * 0.06f)
                 continue;
-            heights[sample] = (a.Y * b.D + b.Y * a.D) / MathF.Max(a.D + b.D, 1e-3f);
+            // (Eased out as the two get further apart: past a track's end, the other's distance grows round it, and graded all or
+            // nothing the ground stopped in a step where it no longer counted.)
+            var graded = (a.Y * b.D + b.Y * a.D) / MathF.Max(a.D + b.D, 1e-3f);
+            // (And as the other stops being squarely across from it, the ways to them no longer opposite: round a track's end.)
+            var weight = Math.Clamp((YardGap - (a.D + b.D)) / YardFade, 0f, 1f) * Math.Clamp((-b.Cos - 0.2f) / 0.6f, 0f, 1f);
+            heights[sample] += (graded - heights[sample]) * weight;
         }
 
         // Under a road the ground follows the road point by point, a little below it: the shaping above works from every
@@ -2436,12 +2706,12 @@ public sealed partial class NetworkLines
             var line = _lines[index];
             if (line.Rail || line.Mark)
                 continue;
-            var r = line.Formation / _spacing;
+            var r = line.Formation / Sp;
             for (var p = 0; p + 1 < line.Count; p++)
             {
                 if (line.Structures[p] != Structure.Ground)
                     continue;
-                var (ax, az, bx, bz) = (line.X[p] / _spacing - gx0, line.Z[p] / _spacing - gz0, line.X[p + 1] / _spacing - gx0, line.Z[p + 1] / _spacing - gz0);
+                var (ax, az, bx, bz) = (line.X[p] / Sp - gx0, line.Z[p] / Sp - gz0, line.X[p + 1] / Sp - gx0, line.Z[p + 1] / Sp - gz0);
                 var (x0, x1) = (Math.Max(0, (int)Math.Floor(Math.Min(ax, bx) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(ax, bx) + r)));
                 var (z0, z1) = (Math.Max(0, (int)Math.Floor(Math.Min(az, bz) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(az, bz) + r)));
                 var (dx, dz) = (bx - ax, bz - az);
@@ -2451,7 +2721,7 @@ public sealed partial class NetworkLines
                     {
                         var t = length2 > 0 ? Math.Clamp(((x - ax) * dx + (z - az) * dz) / length2, 0.0, 1.0) : 0.0;
                         var (ex, ez) = (ax + dx * t - x, az + dz * t - z);
-                        var d = (float)Math.Sqrt(ex * ex + ez * ez) * _spacing;
+                        var d = (float)Math.Sqrt(ex * ex + ez * ez) * Sp;
                         var sample = z * samples + x;
 
                         // (Not where a track's formation lies nearer: that's the track's ground. But a road's own paving, and a
@@ -2477,12 +2747,12 @@ public sealed partial class NetworkLines
             if (line.Rail || line.Mark)
                 continue;
             lifts.Clear();
-            var r = (line.Formation + CrossingFillReach) / _spacing;
+            var r = (line.Formation + CrossingFillReach) / Sp;
             for (var p = 0; p + 1 < line.Count; p++)
             {
                 if (line.Structures[p] != Structure.Ground)
                     continue;
-                var (ax, az, bx, bz) = (line.X[p] / _spacing - gx0, line.Z[p] / _spacing - gz0, line.X[p + 1] / _spacing - gx0, line.Z[p + 1] / _spacing - gz0);
+                var (ax, az, bx, bz) = (line.X[p] / Sp - gx0, line.Z[p] / Sp - gz0, line.X[p + 1] / Sp - gx0, line.Z[p + 1] / Sp - gz0);
                 var (x0, x1) = (Math.Max(0, (int)Math.Floor(Math.Min(ax, bx) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(ax, bx) + r)));
                 var (z0, z1) = (Math.Max(0, (int)Math.Floor(Math.Min(az, bz) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(az, bz) + r)));
                 var (dx, dz) = (bx - ax, bz - az);
@@ -2507,7 +2777,7 @@ public sealed partial class NetworkLines
 
                         var t = Math.Clamp(((x - ax) * dx + (z - az) * dz) / length2, 0.0, 1.0);
                         var (ex, ez) = (ax + dx * t - x, az + dz * t - z);
-                        var d = (float)Math.Sqrt(ex * ex + ez * ez) * _spacing;
+                        var d = (float)Math.Sqrt(ex * ex + ez * ez) * Sp;
                         if (d > line.Formation + CrossingFillReach)
                             continue;
                         var lift = line.Y[p] + (line.Y[p + 1] - line.Y[p]) * (float)t - RoadClearance - MathF.Max(0f, d - line.Formation) * FillSlope;
@@ -2528,22 +2798,125 @@ public sealed partial class NetworkLines
         ConformPads(heights, samples, gx0, gz0, near);
 
         TrenchWalls(list, heights, samples, gx0, gz0);
+        // Every bridge's say first, then all of it at once: the least each sample may be (a bank brought up) and the most (kept clear
+        // under a deck), the second winning. Shaped a deck at a time, two decks side by side undid each other, one cutting down
+        // where the other had just brought the bank up.
+        var least = new float[heights.Length];
+        var most = new float[heights.Length];
+        // (And of those, what's under a deck itself: kept clear of it over everything after, the bed's slopes too.)
+        var deck = new float[heights.Length];
+        Array.Fill(least, float.MinValue);
+        Array.Fill(most, float.MaxValue);
+        Array.Fill(deck, float.MaxValue);
         foreach (var index in list)
             if (Array.IndexOf(_lines[index].Structures, Structure.Bridge) >= 0)
-                ClearBridges(index, heights, samples, gx0, gz0);
+                ClearBridges(index, heights, natural, least, most, deck, samples, gx0, gz0);
+        for (var sample = 0; sample < heights.Length; sample++)
+            heights[sample] = MathF.Min(MathF.Max(heights[sample], least[sample]), most[sample]);
+        // Each slope end's ground as its shape has it, over all of that.
+        var stamped = new bool[heights.Length];
+        StampEnds(heights, natural, stamped, samples, gx0, gz0);
+        // (Last: the bed's slopes over whatever the bank's been cut back to round a bridge's end, up to the deck's end and no further.)
+        if (t_fineSpacing > 0f)
+        {
+            // (The ground's no longer laid over the bed's slopes, BallastFlanks: the bed's a straight cut, drawn as it is, and the
+            // ground stays under it.)
+            // (Not where an end's shape has the ground: it keeps clear of its own deck.)
+            for (var sample = 0; sample < heights.Length; sample++)
+                if (!stamped[sample])
+                    heights[sample] = MathF.Min(heights[sample], deck[sample]);
+        }
+
+    }
+
+    /// How far over a ballast bed's slope the ground's laid, so it's drawn and the bed's own slope under it isn't.
+    private const float FlankOver = 0.10f;
+
+    /// In ground shaped finer than the tiles' (ConformFine), each grounded track's ballast slopes are the ground's own: from just past
+    /// the top's shoulder out to the toe it's brought up to the bed's section (NetworkMeshes.BedSection), a hair over it, and the
+    /// terrain lays the ballast's rock into it there (BallastAt). Two beds side by side meet as one heap, the higher of the two, not two
+    /// meshes through each other; a bed's end, or where it runs onto a bridge, is ground, not a sheet over nothing. (The tiles' ground,
+    /// drawn further off, is too coarse to: the bed's own slopes are drawn there.)
+    private void BallastFlanks(List<int> list, float[] heights, int samples, int gx0, int gz0)
+    {
+        foreach (var index in list)
+        {
+            var line = _lines[index];
+            if (!line.Rail || line.Mark || line.Embedded || line.Count < 2)
+                continue;
+            var section = NetworkMeshes.BedSection(line, false, 0f, 0f, 0f, 0f);
+            // (The right half, from the shoulder out to the toe.)
+            var half = line.Bed == TrackBed.Sunken ? line.BallastHalfTop - 0.7f : line.BallastHalfTop;
+            var right = section.Where(q => q.U >= half - 1e-3f).ToArray();
+            // (Its toe: the section's last three points are the toe, the taper under the ground and the fade's far edge, which the
+            // ground's own ballast blend has; only the heap itself, out to the toe, is laid.)
+            var toe = right[^3].U;
+            right = right[..^2];
+            float Profile(float u)
+            {
+                for (var k = 0; k + 1 < right.Length; k++)
+                    if (u <= right[k + 1].U)
+                    {
+                        var t = Math.Clamp((u - right[k].U) / MathF.Max(right[k + 1].U - right[k].U, 1e-4f), 0f, 1f);
+                        return right[k].Y + (right[k + 1].Y - right[k].Y) * t;
+                    }
+
+                return right[^1].Y;
+            }
+
+            var r = (toe + 0.5f) / Sp;
+            for (var p = 0; p + 1 < line.Count; p++)
+            {
+                if (line.Structures[p] != Structure.Ground)
+                    continue;
+                var (ax, az, bx, bz) = (line.X[p] / Sp - gx0, line.Z[p] / Sp - gz0, line.X[p + 1] / Sp - gx0, line.Z[p + 1] / Sp - gz0);
+                var (x0, x1) = (Math.Max(0, (int)Math.Floor(Math.Min(ax, bx) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(ax, bx) + r)));
+                var (z0, z1) = (Math.Max(0, (int)Math.Floor(Math.Min(az, bz) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(az, bz) + r)));
+                if (x0 > x1 || z0 > z1)
+                    continue;
+                var (dx, dz) = (bx - ax, bz - az);
+                var length2 = dx * dx + dz * dz;
+                if (length2 <= 0)
+                    continue;
+                // (Past a segment's end only where the bed goes on, or rounds its end as the bed's cap does.)
+                var openA = p == 0 || line.Structures[p - 1] == Structure.Ground;
+                var openB = p + 2 >= line.Count || (p + 1 < line.Structures.Length && line.Structures[p + 1] == Structure.Ground);
+                for (var z = z0; z <= z1; z++)
+                    for (var x = x0; x <= x1; x++)
+                    {
+                        var along = ((x - ax) * dx + (z - az) * dz) / length2;
+                        // (Past a segment's end only at the line's own ends, round its cap: elsewhere the next segment's, and
+                        // measured to its end a segment's slopes reached on round a bridge's end, heaped under the deck.)
+                        if ((along < -0.02 && (p > 0 || !openA)) || (along > 1.02 && (p + 2 < line.Count || !openB)))
+                            continue;
+                        var t = Math.Clamp(along, 0.0, 1.0);
+                        var (ex, ez) = (ax + dx * t - x, az + dz * t - z);
+                        var d = (float)Math.Sqrt(ex * ex + ez * ez) * Sp;
+                        if (d <= half + 0.15f || d >= toe)
+                            continue;
+                        var q = (int)Math.Round(p + t);
+                        var y = line.Y[p] + (line.Y[p + 1] - line.Y[p]) * (float)t + line.SinkOf(q) + Profile(d) + FlankOver;
+                        var sample = z * samples + x;
+                        if (heights[sample] < y)
+                            heights[sample] = y;
+                    }
+            }
+        }
     }
 
     /// Keeps the ground below a bridge's deck: it may rise from under the deck at the cut slope outward, and the requirement
     /// eases off over the last few metres to each end, where a deck meets the ground anyway. Mapped ends and lidar rarely agree
     /// to the metre, so a deck drawn between its ends can otherwise have the ground come up through it.
-    private void ClearBridges(int index, float[] heights, int samples, int gx0, int gz0)
+    private void ClearBridges(int index, float[] heights, float[] natural, float[] least, float[] most, float[] deck, int samples, int gx0, int gz0)
     {
         var line = _lines[index];
         var (half, depth) = line.Rail ? (line.BallastHalfTop + 0.9f, 1.8f) : (line.Width * 0.5f + 0.4f, 1.4f);
         var ends = BridgeEndsOf(line);
         // (Out far enough for a slope end's corners, which run off its sides at SpillRun to one for the deck's height.)
-        var corner = ends.Where(e => e.Kind == BridgeEndKind.Slope).Select(e => (line.Y[e.Point] - e.Floor) * SpillRun + 3f).DefaultIfEmpty(0f).Max();
-        var r = (half + MathF.Max(BridgeClearReach, corner)) / _spacing;
+        // (And for the bank coned round its wing walls, from the track's level down at the fill slope, easing out over ConeEase.)
+        var corner = ends.Where(e => e.Kind == BridgeEndKind.Slope).Select(e => (line.Y[e.Point] - e.Floor) * SpillRun + 4f + ConeEase).DefaultIfEmpty(0f).Max();
+        var reachMetres = half + MathF.Max(BridgeClearReach, corner);
+        var r = reachMetres / Sp;
         for (var from = 0; from < line.Structures.Length; from++)
         {
             if (line.Structures[from] != Structure.Bridge)
@@ -2558,7 +2931,7 @@ public sealed partial class NetworkLines
             var endEnd = ends.FirstOrDefault(e => e.Point == to + 1 && !e.Start);
             for (var p = from; p <= to; p++)
             {
-                var (ax, az, bx, bz) = (line.X[p] / _spacing - gx0, line.Z[p] / _spacing - gz0, line.X[p + 1] / _spacing - gx0, line.Z[p + 1] / _spacing - gz0);
+                var (ax, az, bx, bz) = (line.X[p] / Sp - gx0, line.Z[p] / Sp - gz0, line.X[p + 1] / Sp - gx0, line.Z[p + 1] / Sp - gz0);
                 var (x0, x1) = (Math.Max(0, (int)Math.Floor(Math.Min(ax, bx) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(ax, bx) + r)));
                 var (z0, z1) = (Math.Max(0, (int)Math.Floor(Math.Min(az, bz) - r)), Math.Min(samples - 1, (int)Math.Ceiling(Math.Max(az, bz) + r)));
                 var (dx, dz) = (bx - ax, bz - az);
@@ -2566,40 +2939,49 @@ public sealed partial class NetworkLines
                 for (var z = z0; z <= z1; z++)
                     for (var x = x0; x <= x1; x++)
                     {
-                        var t = length2 > 0 ? Math.Clamp(((x - ax) * dx + (z - az) * dz) / length2, 0.0, 1.0) : 0.0;
+                        var rawT = length2 > 0 ? ((x - ax) * dx + (z - az) * dz) / length2 : 0.0;
+                        var t = Math.Clamp(rawT, 0.0, 1.0);
                         var (ex, ez) = (ax + dx * t - x, az + dz * t - z);
-                        var d = (float)Math.Sqrt(ex * ex + ez * ez) * _spacing;
+                        var d = (float)Math.Sqrt(ex * ex + ez * ez) * Sp;
                         var s = line.S[p] + (line.S[p + 1] - line.S[p]) * (float)t;
                         var y = line.Y[p] + (line.Y[p + 1] - line.Y[p]) * (float)t;
                         var sample = z * samples + x;
+                        // (Behind the deck's end: the approach, on its own embankment. A sample off a segment's end is the next
+                        // segment's to shape, or past the deck's end, not the deck's at all: measured to the end of a segment further
+                        // in, a sample behind the deck's end was kept down as if under it, and cut the approach's bank away.)
+                        if ((rawT < -0.02 && p > from) || (rawT > 1.02 && p < to))
+                            continue;
+                        var behind = (p == from && rawT < 0.0) || (p == to && rawT > 1.0);
                         // The nearer end, and how far into the gap from it.
                         var (near, into) = s - start <= end - s ? (startEnd, s - start) : (endEnd, end - s);
                         var ease = near.Kind == BridgeEndKind.Joined ? 1f : Math.Clamp((into - bank) / BridgeEndEase, 0f, 1f);
-                        var limit = y - (depth + BridgeClearance) * ease + MathF.Max(0f, d - half) * CutSlope;
-                        if (near.Kind == BridgeEndKind.Slope && into <= near.Run + half + (line.Y[near.Point] - near.Floor) * SpillRun * 2f)
+                        if (near.Kind == BridgeEndKind.Wall && near.Under is not null)
                         {
-                            // The paved slope (see SlopeAt): under the deck, cut to the slab's underside, so the slab lies on it as a
-                            // slab. Beyond its sides the same plane carries on for SlopeCarriesOn, cutting a hillside down to it (as the
-                            // cutting the road below runs in would be), then rises to the ground at the cut slope; where the ground is
-                            // lower, it falls away from the plane at the fill slope.
-                            var (wx, wz) = (x * (double)_spacing + gx0 * (double)_spacing, z * (double)_spacing + gz0 * (double)_spacing);
-                            var off = near.FromUnder(wx, wz) - near.Under!.Formation - UnderShoulder;
-                            // (From the edge of the road's own flat ground: the shoulder short of the toe is at the road's level.)
-                            if (off > -UnderShoulder)
+                            // Behind a wall's face the deck sits on the abutment, not over a gap (on a skew, the wedge between its square
+                            // end and the wall along the road): the backfill comes up under it, kept only under its beams.
+                            var (wx, wz) = (x * (double)Sp + gx0 * (double)Sp, z * (double)Sp + gz0 * (double)Sp);
+                            if (near.FromUnder(wx, wz) > WallFaceOff(near))
                             {
-                                var plane = SlopeAt(line, near, wx, wz) - (line.Rail || off <= 0f ? 0f : SlabDepth);
-                                // (Flat the whole deck across: a railway deck reaches well past its ballast, for a walkway either side.)
-                                var across = MathF.Max(0f, d - half - (line.Rail ? 2.5f : 0.5f));
-                                if (across <= 0f)
-                                    heights[sample] = plane;
-                                else
-                                    heights[sample] = MathF.Min(MathF.Max(heights[sample], plane - across * FillSlope), MathF.Min(limit, plane + MathF.Max(0f, across - SlopeCarriesOn) * CutSlope));
+                                // (Only under the deck itself; past its end, the approach's own ground.)
+                                var seat = y - BridgePlanner.DeckDepth(line) - BridgeClearance;
+                                if (s > start && s < end && d <= BridgePlanner.DeckHalf(line) + 0.3f)
+                                {
+                                    most[sample] = MathF.Min(most[sample], seat);
+                                    deck[sample] = MathF.Min(deck[sample], seat);
+                                }
                                 continue;
                             }
                         }
 
-                        if (heights[sample] > limit)
-                            heights[sample] = limit;
+                        var limit = y - (depth + BridgeClearance) * ease + MathF.Max(0f, d - half) * CutSlope;
+                        // A slope end's ground is its shape's (BridgeEndShape, NetworkLines.StampEnds): behind its deck's end, nothing
+                        // here; under it, only kept clear of the deck.
+                        if (near.Kind == BridgeEndKind.Slope && behind)
+                            continue;
+
+                        most[sample] = MathF.Min(most[sample], limit);
+                        if (!behind)
+                            deck[sample] = MathF.Min(deck[sample], limit);
                     }
             }
 
@@ -2617,6 +2999,12 @@ public sealed partial class NetworkLines
     /// How far past a deck's side a slope end's plane carries on before the ground may rise from it.
     private const float SlopeCarriesOn = 4f;
     private const float BridgeClearReach = 8f;
+    /// How far, at the edge of what a slope end's bank shapes beside its deck, it eases back to the ground as it was.
+    private const float ConeEase = 6f;
+    /// How thick a slope end's wing walls are, standing just outside the deck's edge.
+    public const float SlopeWingThick = 0.6f;
+    /// How far short of YardGap the ground between two tracks is graded wholly, easing off to none at it.
+    private const float YardFade = 6f;
     private const float BridgeEndEase = 3f;
     /// How far under each end of a deck the bank stays as it is: past the abutment, whose seat's there, before the ground's cut away.
     private const float BridgeBank = 0.5f;
@@ -2644,12 +3032,11 @@ public sealed partial class NetworkLines
         var toe = rail.BallastHalfTop + flank;
         // (Taken half a grid square further out than d, where the shoulder's lower: so a triangle from a sample on the shoulder to
         // one further out stays under the shoulder's hollow toward its toe, between them.)
-        var t = Math.Clamp((d + _spacing * 0.71f - rail.BallastHalfTop) / flank, 0f, 1f);
-        var eased = MathF.Pow(t, 0.72f);
-        var bed = rail.BedHeight * (1f - eased * eased * (3f - 2f * eased));
+        var t = Math.Clamp((d + Sp * 0.71f - rail.BallastHalfTop) / flank, 0f, 1f);
+        var bed = rail.BedHeight * (1f - t);
         // (Level on out under the whole of the bed's fade too, the loose stone laid over the ground past its toe: ground come up
         // through it buries it, and the fade, its shadow looked up a little under its surface, goes dark.)
-        return y - CrossingUnderBallast + MathF.Max(bed, (d - toe - NetworkLine.BedFade - _spacing * level) * FillSlope);
+        return y - CrossingUnderBallast + MathF.Max(bed, (d - toe - NetworkLine.BedFade - Sp * level) * FillSlope);
     }
 
     /// How far under a track's drawn ballast bed (its rock and the fade past it) the ground's kept, where it's kept off it: more

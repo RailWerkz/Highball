@@ -331,9 +331,10 @@ public sealed partial class TrainPanel : IDisposable
         }
     }
 
-    // How near the pointer has to be to a coupling to pick it, and how far off they're shown.
+    // How near the pointer has to be to a coupling to pick it, and how near the camera has to be for it to be shown (and
+    // picked): 6 ft, so they come up only as you walk up to one.
     private const float CouplingReach = 16f;
-    private const double CouplingShown = 250.0;
+    private const double CouplingShown = 6.0 * 0.3048;
 
     /// The coupling nearest the pointer within reach on the screen, if there is one.
     private int? CouplingAt(float2 pointer, VehicleOverlay.Projector project, double3 camera)
@@ -385,7 +386,7 @@ public sealed partial class TrainPanel : IDisposable
                 _overlay.Tag(draw, placed, project, camera, clipMin, clipMax, placed.Car == picked);
     }
 
-    /// A small mark on each coupling near the camera while this window's open (brighter under the pointer), and a ring on
+    /// A small mark on each coupling within CouplingShown of the camera while this window's open (brighter under the pointer), and a ring on
     /// the picked one: green coupled with the air through, amber uncoupled or the air shut off, red venting.
     private void Couplings(ImDrawListPtr draw, VehicleOverlay.Projector project, double3 camera, float2 clipMin, float2 clipMax)
     {
@@ -397,7 +398,8 @@ public sealed partial class TrainPanel : IDisposable
         {
             var c = _couplings[k];
             var index = k - 1;
-            if (Far(c, camera) || project(c.X, c.Y, c.Z) is not { } s)
+            // (The picked one's ring stays wherever it's seen from.)
+            if ((Far(c, camera) && SelectedCoupling != index) || project(c.X, c.Y, c.Z) is not { } s)
                 continue;
             var color = CouplingColor(train, index);
             var picked = SelectedCoupling == index;

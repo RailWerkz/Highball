@@ -74,9 +74,33 @@ public sealed class TrackTextures : IDisposable
             ? Texture2D.FromPixels(d.Width, d.Height, d.Color, repeat: true, mipmaps: true, srgb: true, name: "ballast.color")
             : Texture2D.Solid(new byte4(110, 105, 100, 255));
 
-    private static int Wanted => Settings.Current.TrackTextureSize >= 2048 ? 2048 : 1024;
+    /// The texture quality settings (Settings.TrackTextureQuality), 4K at most: Low has everything at 1K, Medium at 2K, High at 2K
+    /// but the ballast and pole wood (seen closest) at 4K, Ultra everything at 4K. The ballast's never under 2K: its stones are a
+    /// few centimetres across, and blur at less. A texture that doesn't come in a size is loaded at the nearest it does
+    /// (TrackMaterials.Decode).
+    public static readonly string[] Qualities = ["Low", "Medium", "High", "Ultra"];
 
-    private static string Label(int size) => size >= 2048 ? "2K" : "1K";
+    /// The quality wanted, 0 (Low) to 3 (Ultra).
+    private static int Wanted => Math.Clamp(Settings.Current.TrackTextureQuality, 0, Qualities.Length - 1);
+
+    /// The size most textures are loaded at, at a quality.
+    private static string Label(int quality) => quality switch { <= 0 => "1K", >= 3 => "4K", _ => "2K" };
+
+    /// The size a slot's texture is loaded at, at a quality.
+    private static string SizeOf(TrackMaterials.Slot slot, int quality) => slot switch
+    {
+        TrackMaterials.Slot.Ballast => quality >= 2 ? "4K" : "2K",
+        TrackMaterials.Slot.PoleWood => quality >= 2 ? "4K" : Label(quality),
+        _ => Label(quality),
+    };
+
+    /// A quality as the settings show it.
+    public static string Describe(int quality)
+    {
+        quality = Math.Clamp(quality, 0, Qualities.Length - 1);
+        var name = Qualities[quality].ToUpperInvariant();
+        return quality == 2 ? $"{name} (2K, BALLAST 4K)" : $"{name} ({Label(quality)})";
+    }
 
     /// Every (texture, size) the current materials need.
     private static List<(string Id, string Size)> Needed(int size)
@@ -85,7 +109,7 @@ public sealed class TrackTextures : IDisposable
         var label = Label(size);
         var needed = new List<(string, string)>();
         foreach (var (slot, _, _, _) in TrackMaterials.Slots)
-            needed.Add((materials.TextureOf(slot), slot == TrackMaterials.Slot.PoleWood && size >= 2048 ? "4K" : label));
+            needed.Add((materials.TextureOf(slot), SizeOf(slot, size)));
         for (var i = 0; i < PaintCount; i++)
             needed.Add((materials.PaintOf(i).Texture, label));
         foreach (var id in SurfaceTextures.Bound(out _))
@@ -103,7 +127,7 @@ public sealed class TrackTextures : IDisposable
         Parallel.For(0, needed.Count, i => results[i] = TrackMaterials.Decode(needed[i].Id, needed[i].Size));
         for (var i = 0; i < needed.Count; i++)
             decoded[needed[i]] = results[i];
-        Log.Info($"Track textures: {decoded.Count} decoded at {Label(size)} in {clock.ElapsedMilliseconds} ms");
+        Log.Info($"Track textures: {decoded.Count} decoded at {Qualities[size]} quality in {clock.ElapsedMilliseconds} ms");
         return decoded;
     }
 
@@ -195,7 +219,7 @@ public sealed class TrackTextures : IDisposable
     {
         var materials = TrackMaterials.Current;
         var label = Label(_size);
-        Texture2D[] Of(TrackMaterials.Slot slot) => Maps(materials.TextureOf(slot), slot == TrackMaterials.Slot.PoleWood && _size >= 2048 ? "4K" : label);
+        Texture2D[] Of(TrackMaterials.Slot slot) => Maps(materials.TextureOf(slot), SizeOf(slot, _size));
 
         var palette = MakePalette(materials);
         var lines = new List<Texture2D>();

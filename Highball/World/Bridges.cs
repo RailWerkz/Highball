@@ -13,9 +13,14 @@ public enum DeckKind { Steel, Concrete }
 /// What's been set by hand on one bridge, by its key (Bridges.json). Piers: where they stand, metres along the bridge from its
 /// start (null: placed automatically, clear of whatever runs underneath). Room: how many more tracks (or lanes) of deck either side
 /// of what it carries now. Wings: each end's retaining walls, their length (null: as the bank needs) and how far they flare back
-/// from square, degrees.
+/// from square, degrees. Kind: what each end stands on, as picked (null: as worked out, BridgeEndKind). Setback: how far each end's
+/// wall or slope stands back from what runs underneath, towards the bank, metres. Nodes: the track's nodes at each end, which the
+/// ground's shaping finds those settings by (it works line by line, before the bridges are put together). Extend: how much further
+/// the deck carries on over the approach at each end, metres (the abutment then stands that much further back).
 public sealed record BridgeEdit(long Key, float[]? Piers = null, PierStyle Style = PierStyle.Auto, DeckKind Deck = DeckKind.Steel,
-    int RoomLeft = 0, int RoomRight = 0, float? StartWing = null, float? EndWing = null, float StartFlare = 0f, float EndFlare = 0f);
+    int RoomLeft = 0, int RoomRight = 0, float? StartWing = null, float? EndWing = null, float StartFlare = 0f, float EndFlare = 0f,
+    BridgeEndKind? StartKind = null, BridgeEndKind? EndKind = null, float StartSetback = 0f, float EndSetback = 0f,
+    long[]? StartNodes = null, long[]? EndNodes = null, float StartExtend = 0f, float EndExtend = 0f);
 
 /// The route's hand-set bridges: Bridges.json in its folder.
 public static class RouteBridges
@@ -217,10 +222,23 @@ public static class BridgePlanner
                 key = (long)Math.Round(guide.Mx) * 1_000_003L + (long)Math.Round(guide.Mz);
             else
             {
-                var ends = members.SelectMany(m => m.Line.Nodes.Where(n => n.Point == m.First || n.Point == m.Last).Select(n => n.Node)).ToList();
+                // (By its ends as they were before any lengthening by hand, which mustn't change it.)
+                var ends = members.SelectMany(m =>
+                {
+                    var (f, l) = lines.Unextended(m.Line, m.First, m.Last);
+                    return m.Line.Nodes.Where(n => n.Point == f || n.Point == l).Select(n => n.Node);
+                }).ToList();
+                var (rf, rl) = lines.Unextended(reference.Line, reference.First, reference.Last);
+                var (mx, mz) = (reference.Mx, reference.Mz);
+                if ((rf, rl) != (reference.First, reference.Last))
+                {
+                    // (Its middle as it was: worked out as when the bridge's span is first found.)
+                    var (ox, oz, _, _, _, _, _) = new Leg(reference.Line, 0, 1).At((reference.Line.S[rf] + reference.Line.S[rl]) * 0.5f);
+                    (mx, mz) = (ox, oz);
+                }
                 key = ends.Any(n => n >= 0) ? ends.Where(n => n >= 0).Min()
                     : ends.Count > 0 ? ends.Max()
-                    : (long)Math.Round(reference.Mx) * 1_000_003L + (long)Math.Round(reference.Mz);
+                    : (long)Math.Round(mx) * 1_000_003L + (long)Math.Round(mz);
             }
 
             var group = new BridgeGroup
@@ -281,7 +299,7 @@ public static class BridgePlanner
                 return Joined(m.Line, nearFirst == start ? m.First : m.Last);
             });
             (group.StartJoined, group.EndJoined) = (Side(true), Side(false));
-            static float Kept(BridgeEnd? end) => end is { Kind: BridgeEndKind.Slope or BridgeEndKind.Wall } e ? e.Run + PierOffSlope : 0f;
+            static float Kept(BridgeEnd? end) => end is { Kind: BridgeEndKind.Slope or BridgeEndKind.Wall } e ? MathF.Max(e.Run - e.Setback, 0f) + PierOffSlope : 0f;
             (group.StartClear, group.EndClear) = (Kept(lines.BridgeEndAt(group.Reference, group.First)), Kept(lines.BridgeEndAt(group.Reference, group.Last)));
         }
 

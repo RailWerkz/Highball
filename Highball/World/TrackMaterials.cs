@@ -230,7 +230,8 @@ public sealed class TrackMaterials
     /// the one: a zip or a folder of its own).
     public sealed record Choice(string Id, string Label, string Group, string[] Sizes);
 
-    private static readonly string[] SizeLabels = ["1K", "2K", "4K", "8K"];
+    // (4K at most: larger than that isn't used, see TrackTextures.Qualities.)
+    private static readonly string[] SizeLabels = ["1K", "2K", "4K"];
 
     /// Every texture under Content/Textures (the repository's and the build's), sorted by folder and name.
     public static List<Choice> Find()

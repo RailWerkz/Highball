@@ -26,7 +26,7 @@ namespace Highball.Builder;
 /// back to the Planner or leaving saves too).
 public sealed partial class EditorView : IDisposable, IToolHost
 {
-    private enum Tool { Look, Raise, Lower, Smooth, Flatten, Paint, Track, Pen, Circuits, Switches, Shape, Follow, Place, Parallel, Road, ClearBallast, Join }
+    private enum Tool { Look, Raise, Lower, Smooth, Flatten, Paint, Track, Pen, Circuits, Switches, Shape, Follow, Place, Parallel, Road, ClearBallast, Join, Draw, Siding }
 
     private const float FeetPerMeter = 3.28084f;
 
@@ -88,6 +88,10 @@ public sealed partial class EditorView : IDisposable, IToolHost
     private PenTool _pen => _penTrack.Pen;
     /// The Join tool: a smooth curve between two loose track ends.
     private readonly JoinTrackTool _joinTrack;
+    /// The Track tool: straights and curves, each running on from the last.
+    private readonly DrawTrackTool _drawTrack;
+    /// The Siding tool: a siding junction off a track, running beside it.
+    private readonly SidingTool _siding;
     /// The Roads tool.
     private readonly RoadsTool _roadTool;
     private RoadTool _road => _roadTool.Road;
@@ -180,6 +184,8 @@ public sealed partial class EditorView : IDisposable, IToolHost
         _editTrack = new EditTrackTool(_tools);
         _penTrack = new PenTrackTool(_tools, _editTrack.Selection);
         _joinTrack = new JoinTrackTool(_tools, _editTrack.Selection);
+        _drawTrack = new DrawTrackTool(_tools, _editTrack.Selection);
+        _siding = new SidingTool(_tools, route);
         _objects = new ObjectsTool(_tools, route);
         _parallelTool = new ParallelTool(_tools, route);
         _brushes = new TerrainBrush(_tools);
@@ -213,9 +219,17 @@ public sealed partial class EditorView : IDisposable, IToolHost
             _penTrack.Escape();
         else if (_tool == Tool.Road && _road.Busy)
             _roadTool.Escape();
+        else if (_tool == Tool.Draw && _drawTrack.Escape())
+        {
+            // (Let go of the track being drawn.)
+        }
         else if (_tool == Tool.Join && _joinTrack.Escape())
         {
             // (Let go of the ends picked.)
+        }
+        else if (_tool == Tool.Siding && _siding.Escape())
+        {
+            // (Let go of the siding being placed.)
         }
         else if (_tool == Tool.Place && _objects.Escape())
         {
@@ -515,7 +529,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
                 ShapeOp(source, op);
         }
 
-        if (_tool is Tool.Track or Tool.Pen or Tool.Join or Tool.Circuits or Tool.Switches or Tool.Shape or Tool.Follow or Tool.Place or Tool.Road or Tool.Parallel)
+        if (_tool is Tool.Track or Tool.Pen or Tool.Join or Tool.Draw or Tool.Siding or Tool.Circuits or Tool.Switches or Tool.Shape or Tool.Follow or Tool.Place or Tool.Road or Tool.Parallel)
             return;
 
         if (DevTools.SculptHold is { } hold && RailWerkz.Core.Time.Time.Now >= hold.From)
@@ -884,6 +898,17 @@ public sealed partial class EditorView : IDisposable, IToolHost
                 _joinTrack.Update(0f);
         }
 
+        if (_tool == Tool.Draw)
+        {
+            if (Blocked)
+                _drawTrack.Idle();
+            else
+                _drawTrack.Update(0f);
+        }
+
+        if (_tool == Tool.Siding)
+            _siding.Update(0f);
+
         if (_tool is not (Tool.Track or Tool.Pen) || Blocked)
         {
             _editTrack.Idle();
@@ -977,7 +1002,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
             Log.Info($"Track rebuild taken in, ms: terrain {applied}, line meshes {clock.ElapsedMilliseconds - applied} ({change.Areas.Count} areas)");
         }
         else
-            Log.Error($"Track rebuild: {done.Exception?.InnerException?.Message}");
+            Log.Error($"Track rebuild: {done.Exception?.InnerException}");
 
         if (_rebuildAgain)
         {
@@ -1001,6 +1026,18 @@ public sealed partial class EditorView : IDisposable, IToolHost
         if (_tool == Tool.Join)
         {
             _joinTrack.Draw(draw);
+            return;
+        }
+
+        if (_tool == Tool.Draw)
+        {
+            _drawTrack.Draw(draw);
+            return;
+        }
+
+        if (_tool == Tool.Siding)
+        {
+            _siding.Draw(draw);
             return;
         }
 
@@ -1070,9 +1107,9 @@ public sealed partial class EditorView : IDisposable, IToolHost
             _switchTool.Draw(draw);
         if (_tool == Tool.Shape)
             _shapeTool.Draw(draw);
-        if (_tool is Tool.Follow or Tool.Parallel || (_tool is Tool.Pen or Tool.Shape && _overlay != TrackOverlay.ClassMap))
+        if (_tool is Tool.Follow or Tool.Parallel || (_tool is Tool.Pen or Tool.Draw or Tool.Shape && _overlay != TrackOverlay.ClassMap))
             _guides?.Draw(draw, ProjectGround, _camera.X, _camera.Z, ViewReach);
-        if (_tool is Tool.Follow or Tool.Pen or Tool.Join or Tool.Parallel || (_tool == Tool.Place && _place.Mode is PlaceMode.Track or PlaceMode.Bridge))
+        if (_tool is Tool.Follow or Tool.Pen or Tool.Join or Tool.Draw or Tool.Parallel || (_tool == Tool.Place && _place.Mode is PlaceMode.Track or PlaceMode.Bridge))
             _tracks?.DrawAttach(draw, _camera.X, _camera.Z, ProjectGround, Input.MousePosition);
         if (_tool == Tool.Follow)
             _layYard.Draw(draw);
@@ -1088,7 +1125,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
 
         if (_tool == Tool.Follow)
             _area?.Draw(draw, ProjectGround, Style.Caution);
-        if (_gradeAt is { } at && !(_tool == Tool.Pen && _penMeasure is not null) && !(_tool == Tool.Join && _joinTrack.Measure is not null))
+        if (_gradeAt is { } at && !(_tool == Tool.Pen && _penMeasure is not null) && !(_tool == Tool.Join && _joinTrack.Measure is not null) && !(_tool == Tool.Draw && _drawTrack.Measure is not null))
         {
             var imperial = Settings.Current.Units == UnitSystem.Imperial;
             var height = imperial ? $"{at.Height * FeetPerMeter:#,0} ft" : $"{at.Height:#,0} m";
@@ -1354,6 +1391,10 @@ public sealed partial class EditorView : IDisposable, IToolHost
             _penTrack.Panel(imperial);
         if (_tool == Tool.Join)
             _joinTrack.Panel(imperial);
+        if (_tool == Tool.Draw)
+            _drawTrack.Panel(imperial);
+        if (_tool == Tool.Siding)
+            _siding.Panel(imperial);
         if (_tool == Tool.Circuits)
             _circuits?.Panel(imperial);
         if (_tool == Tool.Switches)
@@ -1364,7 +1405,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
             _layYard.Panel(imperial);
         if (_tool == Tool.Track)
             _editTrack.Panel(imperial);
-        if (_tool is Tool.Track or Tool.Pen or Tool.Join or Tool.Follow or Tool.Parallel || (_tool == Tool.Place && _place.Mode == PlaceMode.Track))
+        if (_tool is Tool.Track or Tool.Pen or Tool.Join or Tool.Draw or Tool.Siding or Tool.Follow or Tool.Parallel || (_tool == Tool.Place && _place.Mode == PlaceMode.Track))
         {
             ClassPanel();
             BedPanel();
@@ -1398,6 +1439,8 @@ public sealed partial class EditorView : IDisposable, IToolHost
         Tool.Track => ("Edit", "7"),
         Tool.Pen => ("Pen", "8"),
         Tool.Join => ("Join", null),
+        Tool.Draw => ("Track", null),
+        Tool.Siding => ("Siding", null),
         Tool.Shape => ("Shape", "-"),
         Tool.Follow => ("Lay", "="),
         Tool.Parallel => ("Parallel", "P"),
@@ -1499,6 +1542,8 @@ public sealed partial class EditorView : IDisposable, IToolHost
                 Tool.Circuits => _circuits?.Hints ?? [],
                 Tool.Pen => _penTrack.Hints,
                 Tool.Join => _joinTrack.Hints,
+                Tool.Draw => _drawTrack.Hints,
+                Tool.Siding => _siding.Hints,
                 _ => [("LMB", _tool.ToString()), ("[ ]", "Brush size"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save")],
             };
             return tool;

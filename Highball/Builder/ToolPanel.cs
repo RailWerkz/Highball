@@ -51,7 +51,17 @@ public static class ToolPanel
         var picked = current;
         // Wrapped rows keep one cell width: a short last row doesn't stretch.
         var gap = S(3f);
-        var cell = (Kit.Width - gap * (Math.Min(columns, labels.Length) - 1)) / Math.Min(columns, labels.Length);
+        var total = labels.Length;
+        float Cell(int across) => (Kit.Width - gap * (Math.Min(across, total) - 1)) / Math.Min(across, total);
+
+        // Fewer across where a label wouldn't fit its cell even set closer and a size smaller (as a cell draws it at the
+        // least): wrapped onto more rows rather than cut short.
+        var widest = 0f;
+        foreach (var label in labels)
+            widest = MathF.Max(widest, Canvas.SpacedWidth(Bold, S(11f), label.ToUpperInvariant(), 0.04f));
+        while (columns > 1 && Cell(columns) - S(16f) < widest)
+            columns--;
+        var cell = Cell(columns);
         for (var start = 0; start < labels.Length; start += columns)
         {
             var count = Math.Min(columns, labels.Length - start);
@@ -70,8 +80,17 @@ public static class ToolPanel
         var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
         var width = Kit.Width;
-        Canvas.Spaced(draw, Medium, S(12f), at, Rgba.Mix(TextFaint, TextDim, 0.7f), caption.ToUpperInvariant(), 0.18f);
-        Canvas.Text(draw, Mono, S(14f), new float2(at.X + width, at.Y - S(1f)), enabled ? Text : TextFaint, value.ToString(format, CultureInfo.InvariantCulture), Align.Right);
+        var shown = value.ToString(format, CultureInfo.InvariantCulture);
+        Canvas.Text(draw, Mono, S(14f), new float2(at.X + width, at.Y - S(1f)), enabled ? Text : TextFaint, shown, Align.Right);
+        // The caption in what's left beside the value: set closer if it must be, and only then cut short.
+        var room = width - Canvas.TextSize(Mono, S(14f), shown).X - S(10f);
+        var text = caption.ToUpperInvariant();
+        var tracking = 0.18f;
+        if (Canvas.SpacedWidth(Medium, S(12f), text, tracking) > room)
+            tracking = 0.04f;
+        while (text.Length > 2 && Canvas.SpacedWidth(Medium, S(12f), text, tracking) > room)
+            text = text[..^2].TrimEnd() + "…";
+        Canvas.Spaced(draw, Medium, S(12f), at, Rgba.Mix(TextFaint, TextDim, 0.7f), text, tracking);
         ImGui.Dummy(new float2(width, S(16f)));
 
         var t = log ? MathF.Log(MathF.Max(value, min) / min) / MathF.Log(max / min) : (value - min) / MathF.Max(max - min, 1e-6f);

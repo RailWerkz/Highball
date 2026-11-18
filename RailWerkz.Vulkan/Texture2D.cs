@@ -126,13 +126,85 @@ public sealed unsafe class Texture2D : IDisposable
             first++;
         var extent = dds.ImageExtent(first);
         var mips = (int)dds.Levels - first;
-        var texture = new Texture2D(extent.X, extent.Y, mips);
+
+        // Every level, one after another, in one staging buffer.
+        var levels = new (int Offset, int Width, int Height)[mips];
+        var data = new byte[Enumerable.Range(first, mips).Sum(level => dds.ImageSize(level))];
+        var offset = 0;
+        for (var level = 0; level < mips; level++)
+        {
+            var bytes = (int)dds.ImageSize(first + level);
+            new ReadOnlySpan<byte>(dds.ImageData(first + level, 0, 0), bytes).CopyTo(data.AsSpan(offset));
+            var size = dds.ImageExtent(first + level);
+            levels[level] = (offset, size.X, size.Y);
+            offset += bytes;
+        }
+
+        return FromBlocks(Path.GetFileName(path), format, extent.X, extent.Y, data, levels);
+    }
+
+    /// A block-compressed KTX2 from Content/Textures (BC1, BC3, BC4, BC5 or BC7, each level as it is or Zstandard-compressed),
+    /// uploaded as it is. srgb for colour maps: the blocks are read back linear whatever the file says.
+    public static Texture2D LoadKtx2(string relativePath, bool srgb)
+    {
+        var path = ContentPath.Texture(relativePath);
+        var file = File.ReadAllBytes(path);
+        ReadOnlySpan<byte> identifier = [0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A];
+        if (file.Length < 80 || !file.AsSpan(0, 12).SequenceEqual(identifier))
+            throw new InvalidDataException($"{relativePath} isn't a KTX2 file");
+
+        uint U32(int at) => BitConverter.ToUInt32(file, at);
+        var vkFormat = U32(12);
+        var (width, height) = ((int)U32(20), (int)U32(24));
+        var mips = Math.Max((int)U32(40), 1);
+        var supercompression = U32(44);
+        var format = vkFormat switch
+        {
+            131 or 132 or 133 or 134 => srgb ? VkFormat.Bc1RGBASRGBBlock : VkFormat.Bc1RGBAUNormBlock,
+            137 or 138 => srgb ? VkFormat.Bc3SRGBBlock : VkFormat.Bc3UNormBlock,
+            139 => VkFormat.Bc4UNormBlock,
+            141 => VkFormat.Bc5UNormBlock,
+            145 or 146 => srgb ? VkFormat.Bc7SRGBBlock : VkFormat.Bc7UNormBlock,
+            _ => throw new InvalidDataException($"{relativePath}: VkFormat {vkFormat} isn't a format this reads"),
+        };
+        if (supercompression is not (0 or 2))
+            throw new InvalidDataException($"{relativePath}: supercompression {supercompression} isn't one this reads");
+
+        // The level index: biggest first, each its place in the file, its length there, and its length unpacked.
+        var pieces = new byte[mips][];
+        using var zstd = supercompression == 2 ? new ZstdSharp.Decompressor() : null;
+        for (var level = 0; level < mips; level++)
+        {
+            var at = 80 + level * 24;
+            var (start, length, unpacked) = ((int)BitConverter.ToUInt64(file, at), (int)BitConverter.ToUInt64(file, at + 8), (int)BitConverter.ToUInt64(file, at + 16));
+            var stored = file.AsSpan(start, length);
+            pieces[level] = zstd is null ? stored.ToArray() : zstd.Unwrap(stored, unpacked).ToArray();
+        }
+
+        var levels = new (int Offset, int Width, int Height)[mips];
+        var data = new byte[pieces.Sum(p => p.Length)];
+        var offset = 0;
+        for (var level = 0; level < mips; level++)
+        {
+            pieces[level].CopyTo(data, offset);
+            levels[level] = (offset, Math.Max(width >> level, 1), Math.Max(height >> level, 1));
+            offset += pieces[level].Length;
+        }
+
+        return FromBlocks(Path.GetFileName(path), format, width, height, data, levels);
+    }
+
+    /// A texture of compressed blocks, every level in data one after another.
+    private static Texture2D FromBlocks(string name, VkFormat format, int width, int height, byte[] data, (int Offset, int Width, int Height)[] levels)
+    {
+        var mips = levels.Length;
+        var texture = new Texture2D(width, height, mips);
         texture._image = Gpu.Allocator.CreateImage(new ImageEx.CreateInfo
         {
-            Name = Path.GetFileName(path),
+            Name = name,
             ImageType = VkImageType._2D,
             ImageFormat = format,
-            ImageExtent = new VkExtent3D { Width = extent.X, Height = extent.Y, Depth = 1 },
+            ImageExtent = new VkExtent3D { Width = width, Height = height, Depth = 1 },
             ImageMipLevels = mips,
             ImageArrayLayers = 1,
             ImageSamples = VkSampleCountFlags._1Bit,
@@ -145,22 +217,15 @@ public sealed unsafe class Texture2D : IDisposable
         });
         texture._view = texture._image.CreateImageView(VkImageViewType._2D, Subresources.Full(VkImageAspectFlags.ColorBit), Gpu.Device.VkAllocator);
 
-        // Every level, one after another, in one staging buffer.
         var regions = new VkBufferImageCopy[mips];
-        var data = new byte[Enumerable.Range(first, mips).Sum(level => dds.ImageSize(level))];
-        var offset = 0;
         for (var level = 0; level < mips; level++)
         {
-            var bytes = (int)dds.ImageSize(first + level);
-            new ReadOnlySpan<byte>(dds.ImageData(first + level, 0, 0), bytes).CopyTo(data.AsSpan(offset));
-            var size = dds.ImageExtent(first + level);
             regions[level] = new VkBufferImageCopy
             {
-                BufferOffset = Brutal.ByteSize.Of(offset),
+                BufferOffset = Brutal.ByteSize.Of(levels[level].Offset),
                 ImageSubresource = new VkImageSubresourceLayers { AspectMask = VkImageAspectFlags.ColorBit, MipLevel = level, LayerCount = 1 },
-                ImageExtent = new VkExtent3D { Width = size.X, Height = size.Y, Depth = 1 },
+                ImageExtent = new VkExtent3D { Width = levels[level].Width, Height = levels[level].Height, Depth = 1 },
             };
-            offset += bytes;
         }
 
         using var staging = Buffers.Staging(data, "texture.staging");

@@ -97,12 +97,42 @@ internal sealed partial class ObjectsTool
     public void ApplyBridge(long key, BridgeEdit? edit)
     {
         var source = _terrain!.Source;
+        var was = source.Bridges.GetValueOrDefault(key);
         if (edit is null)
             source.Bridges.Remove(key);
         else
             source.Bridges[key] = edit;
         RouteBridges.Save(_route, source.Bridges.Values);
         _network?.BridgeChanged(key);
+
+        // What an end stands on, how far back, and how long its wall runs shape the ground under it too: the track's laid out again
+        // round the bridge, and its ground shaped again.
+        static object? Ground(BridgeEdit? e) => e is null ? null
+            : (e.StartKind, e.EndKind, e.StartSetback, e.EndSetback, e.StartWing, e.EndWing, e.StartExtend, e.EndExtend);
+        if (!Equals(Ground(was), Ground(edit)) && _network?.Bridges.FirstOrDefault(b => b.Key == key) is { } bridge)
+        {
+            RailWerkz.Core.Logging.Log.Info($"Bridge {key}: ends set ({edit?.StartKind}/{edit?.EndKind}, lengthened {edit?.StartExtend:0}/{edit?.EndExtend:0} m, " +
+                                            $"set back {edit?.StartSetback:0.0}/{edit?.EndSetback:0.0} m, nodes {edit?.StartNodes?.Length ?? 0}/{edit?.EndNodes?.Length ?? 0}): laying the track round it again");
+            source.RebuildAround(bridge.X, bridge.Z);
+            foreach (var p in (int[])[bridge.First, bridge.Last])
+                source.RebuildAround(bridge.Reference.X[p], bridge.Reference.Z[p]);
+            context.RebuildNetwork();
+        }
+    }
+
+    /// The track's nodes at one end of a bridge (its start: the end nearer the reference's first point), each of its tracks'.
+    private static long[] EndNodes(BridgeGroup bridge, bool start)
+    {
+        var (rx, rz) = (bridge.Reference.X[bridge.First], bridge.Reference.Z[bridge.First]);
+        var nodes = new List<long>();
+        foreach (var (line, first, last, _, _) in bridge.Members)
+        {
+            var nearFirst = Math.Pow(line.X[first] - rx, 2) + Math.Pow(line.Z[first] - rz, 2) < Math.Pow(line.X[last] - rx, 2) + Math.Pow(line.Z[last] - rz, 2);
+            if (NetworkLines.EndNode(line, nearFirst == start ? first : last, nearFirst == start ? last : first) is { } node)
+                nodes.Add(node);
+        }
+
+        return [.. nodes.Distinct()];
     }
 
     private void RemovePier(BridgeGroup bridge, int index)
@@ -311,19 +341,71 @@ internal sealed partial class ObjectsTool
 
         foreach (var start in (bool[])[true, false])
         {
-            Kit.BeginCard(start ? "Start walls" : "End walls", (start ? edit.StartWing : edit.EndWing) is null ? "Auto length" : null);
+            // What the end stands on, as worked out or as picked: a wall beside what's underneath, a slope down to it, or the bank.
+            var shownKind = _network!.EndKindOf(bridge, start);
+            Kit.BeginCard(start ? "Start abutment" : "End abutment", shownKind?.ToString());
+            // (What the built bridge has at this end now: if the settings haven't reached it, this says so.)
+            var built = _network.EndBuilt(bridge, start);
+            ToolPanel.Hint(string.Create(CultureInfo.InvariantCulture,
+                $"Built: {built.Kind?.ToString() ?? "none"}, deck +{built.Lengthened * factor:0} {unit}, set back {built.Setback * factor:0.0} {unit}"));
+            var kinds = new BridgeEndKind?[] { null, BridgeEndKind.Wall, BridgeEndKind.Slope, BridgeEndKind.Bank };
+            var setKind = start ? edit.StartKind : edit.EndKind;
+            var kindPick = ToolPanel.Mode(start ? "startkind" : "endkind", ["Auto", "Wall", "Slope", "Bank"], Array.IndexOf(kinds, setKind), 4);
+            if (kindPick >= 0 && kinds[kindPick] != setKind)
+            {
+                var nodes = EndNodes(bridge, start);
+                BridgeSet(bridge, start ? edit with { StartKind = kinds[kindPick], StartNodes = nodes } : edit with { EndKind = kinds[kindPick], EndNodes = nodes });
+                edit = EditOf(bridge);
+            }
+
+            // How much further the deck carries on over the approach, so its end (and the abutment) stands nearer the bank.
+            var extendId = start ? "startextend" : "endextend";
+            var extend = _bridgeDrafts.GetValueOrDefault(extendId, (start ? edit.StartExtend : edit.EndExtend) * factor);
+            ToolPanel.Value(extendId, "Lengthen deck", ref extend, 0f, 60f * factor, $"0' {unit}';;'none'", out var extendLet);
+            Draft(extendId, extend);
+            if (extendLet)
+            {
+                var nodes = EndNodes(bridge, start);
+                var value = extend < 0.25f ? 0f : extend / factor;
+                BridgeSet(bridge, start ? edit with { StartExtend = value, StartNodes = nodes } : edit with { EndExtend = value, EndNodes = nodes });
+                edit = EditOf(bridge);
+            }
+
+            // How far back from what's underneath its wall or slope stands, towards the bank (under the deck still).
+            var setbackId = start ? "startsetback" : "endsetback";
+            var setback = _bridgeDrafts.GetValueOrDefault(setbackId, (start ? edit.StartSetback : edit.EndSetback) * factor);
+            ToolPanel.Value(setbackId, "Set back", ref setback, 0f, 40f * factor, $"0.0' {unit}'", out var setLet);
+            Draft(setbackId, setback);
+            if (setLet)
+            {
+                var nodes = EndNodes(bridge, start);
+                var value = setback < 0.05f ? 0f : setback / factor;
+                BridgeSet(bridge, start ? edit with { StartSetback = value, StartNodes = nodes } : edit with { EndSetback = value, EndNodes = nodes });
+                edit = EditOf(bridge);
+            }
+
             var wingId = start ? "startwing" : "endwing";
             var wing = _bridgeDrafts.GetValueOrDefault(wingId, ((start ? edit.StartWing : edit.EndWing) ?? 0f) * factor);
-            ToolPanel.Value(wingId, $"Length ({unit}, 0 auto)", ref wing, 0f, 20f * factor, "0.0", out var let);
+            Kit.Caption(shownKind == BridgeEndKind.Wall ? "Walls along what's underneath" : "Wing walls");
+            ToolPanel.Value(wingId, "Length", ref wing, 0f, (shownKind == BridgeEndKind.Wall ? 60f : 20f) * factor, $"0.0' {unit}';;'auto'", out var let);
             Draft(wingId, wing);
             if (let)
-                BridgeSet(bridge, start ? edit with { StartWing = wing < 0.25f ? null : wing / factor } : edit with { EndWing = wing < 0.25f ? null : wing / factor });
-            var flareId = start ? "startflare" : "endflare";
-            var flare = _bridgeDrafts.GetValueOrDefault(flareId, start ? edit.StartFlare : edit.EndFlare);
-            ToolPanel.Value(flareId, "Flare (deg)", ref flare, -45f, 80f, "0", out var flared);
-            Draft(flareId, flare);
-            if (flared)
-                BridgeSet(bridge, start ? edit with { StartFlare = MathF.Round(flare) } : edit with { EndFlare = MathF.Round(flare) });
+            {
+                var nodes = EndNodes(bridge, start);
+                BridgeSet(bridge, start ? edit with { StartWing = wing < 0.25f ? null : wing / factor, StartNodes = nodes }
+                    : edit with { EndWing = wing < 0.25f ? null : wing / factor, EndNodes = nodes });
+            }
+            // (A wall beside what runs underneath runs along it: no flare.)
+            if (shownKind != BridgeEndKind.Wall)
+            {
+                var flareId = start ? "startflare" : "endflare";
+                var flare = _bridgeDrafts.GetValueOrDefault(flareId, start ? edit.StartFlare : edit.EndFlare);
+                ToolPanel.Value(flareId, "Flare", ref flare, -45f, 80f, "0'°'", out var flared);
+                Draft(flareId, flare);
+                if (flared)
+                    BridgeSet(bridge, start ? edit with { StartFlare = MathF.Round(flare) } : edit with { EndFlare = MathF.Round(flare) });
+            }
+
             Kit.EndCard();
         }
     }

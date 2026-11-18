@@ -93,6 +93,9 @@ public sealed partial class TerrainSource
             NetworkLines.ForgetSolved(route);
         var edits = TrackEdits.Load(route);
         var lines = NetworkLines.Build(network.Ways.Values, route, built, edits.Snapshot());
+        // (The bridges' hand settings before the ground's shaped: an end set to a wall or a slope shapes it.)
+        var bridgeEdits = RouteBridges.Load(route);
+        lines.BridgeEdits = bridgeEdits;
         var objects = RouteObjects.Load(route);
         lines.SetCrossings(objects, route.Projection!);
 
@@ -136,9 +139,11 @@ public sealed partial class TerrainSource
 
         var source = new TerrainSource(route, [.. tiles.OfType<Tile>()]) { Lines = lines, Network = network, TrackEdits = edits };
         source.Objects.AddRange(objects);
-        foreach (var (key, edit) in RouteBridges.Load(route))
+        foreach (var (key, edit) in bridgeEdits)
             source.Bridges[key] = edit;
         Log.Info($"Terrain: {source._tiles.Count} tiles and {lines.Lines.Count} lines opened in {watch.ElapsedMilliseconds} ms");
+        if (Environment.GetEnvironmentVariable("HB_BRIDGEAUDIT") == "1")
+            BridgeAudit.Run(source, route);
         return source;
     });
 
@@ -309,6 +314,91 @@ public sealed partial class TerrainSource
 
         return false;
     }
+
+    // --- Detail regions: ground shaped finer than the tiles' samples (NetworkLines.DetailRegion). ---
+
+    public IReadOnlyList<NetworkLines.DetailRegion> DetailRegions => Lines?.DetailRegions ?? [];
+
+    private long _detailShaped, _detailMs;
+
+    /// How many detail cells have been shaped, and the time it took (all threads together), for the performance overlay and logs.
+    public (long Cells, long Ms) DetailStats => (Interlocked.Read(ref _detailShaped), Interlocked.Read(ref _detailMs));
+
+    /// How much finer the detail cell at a cell of the grid is (0: none).
+    public int DetailSubAt(int cx, int cz) => Lines?.DetailSubAt(cx, cz) ?? 0;
+
+    /// The detail cell there, if there's one.
+    public NetworkLines.DetailRegion? DetailCell(int cx, int cz) => DetailSubAt(cx, cz) is > 0 and var sub ? new NetworkLines.DetailRegion(cx, cz, sub) : null;
+
+    /// A detail cell's ground at its Sub times the tiles' resolution, shaped to the lines (without the hand sculpting, which is added
+    /// where it's drawn): a square (CellQuads times Sub, plus one, a side) from (Gx0, Gz0).
+    /// Worked out once for each laying of the lines.
+    public float[]? DetailHeights(NetworkLines.DetailRegion region, out int samples)
+    {
+        var sub = region.Sub;
+        samples = NetworkLines.CellQuads * sub + 1;
+        if (Lines is not { } lines)
+            return null;
+        var n = samples;
+        return lines.DetailCache.GetOrAdd(region, r => new Lazy<float[]>(() =>
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var raw = new Dictionary<TileId, float[]?>();
+            // The ground as it was before any shaping (the tile as stored), at a sample of the tiles' grid.
+            float Raw(int gx, int gz)
+            {
+                gx = Math.Clamp(gx, MinGx, MaxGx);
+                gz = Math.Clamp(gz, MinGz, MaxGz);
+                if (!Canonical(gx, gz, out var tile, out var sx, out var sz))
+                    return 0f;
+                if (!raw.TryGetValue(tile.Id, out var heights))
+                    raw[tile.Id] = heights = _route.LoadTile(tile.Id).Heights;
+                return heights![sz * Samples + sx];
+            }
+
+            var heights = new float[n * n];
+            for (var v = 0; v < n; v++)
+                for (var u = 0; u < n; u++)
+                {
+                    var (gx, tx) = Math.DivRem(u, sub);
+                    var (gz, tz) = Math.DivRem(v, sub);
+                    var (fx, fz) = (tx / (float)sub, tz / (float)sub);
+                    var (x, z) = (r.Gx0 + gx, r.Gz0 + gz);
+                    var top = Raw(x, z) + (Raw(x + 1, z) - Raw(x, z)) * fx;
+                    var bottom = Raw(x, z + 1) + (Raw(x + 1, z + 1) - Raw(x, z + 1)) * fx;
+                    heights[v * n + u] = top + (bottom - top) * fz;
+                }
+
+            var spacing = Spacing / sub;
+            lines.ConformFine(heights, n, r.Gx0 * (double)Spacing, r.Gz0 * (double)Spacing, spacing);
+            var shaped = System.Threading.Interlocked.Increment(ref _detailShaped);
+            var ms = System.Threading.Interlocked.Add(ref _detailMs, watch.ElapsedMilliseconds);
+            if (shaped % 25 == 0)
+                Log.Info($"Terrain: {shaped} detail cells shaped, {ms / shaped} ms each on average");
+            return heights;
+        })).Value;
+    }
+
+    /// The ground under a place as it's drawn nearest the camera: from its detail cell where there's one (its inside: not its feathered
+    /// edge), otherwise the tiles'. For measuring (BridgeAudit).
+    public float FineHeightAt(double x, double z, bool edits = true)
+    {
+        var (gx, gz) = ((int)Math.Floor(x / Spacing), (int)Math.Floor(z / Spacing));
+        if (DetailCell(FloorDiv(gx, NetworkLines.CellQuads), FloorDiv(gz, NetworkLines.CellQuads)) is not { } cell || DetailHeights(cell, out var n) is not { } fine)
+            return float.NaN;
+        var (fu, fv) = ((x / Spacing - cell.Gx0) * cell.Sub, (z / Spacing - cell.Gz0) * cell.Sub);
+        var (u, v) = (Math.Clamp((int)Math.Floor(fu), 0, n - 2), Math.Clamp((int)Math.Floor(fv), 0, n - 2));
+        var (tu, tv) = ((float)(fu - u), (float)(fv - v));
+        var top = fine[v * n + u] + (fine[v * n + u + 1] - fine[v * n + u]) * tu;
+        var bottom = fine[(v + 1) * n + u] + (fine[(v + 1) * n + u + 1] - fine[(v + 1) * n + u]) * tu;
+        var (ex, ez) = (x / Spacing - gx, z / Spacing - gz);
+        var edit = EditAt(gx, gz) * (1 - ex) * (1 - ez) + EditAt(gx + 1, gz) * ex * (1 - ez) + EditAt(gx, gz + 1) * (1 - ex) * ez + EditAt(gx + 1, gz + 1) * ex * ez;
+        return top + (bottom - top) * tv + (edits ? (float)edit : 0f);
+    }
+
+    /// The hand sculpting's offset at a sample of the tiles' grid (0 where there's none).
+    public float EditAt(int gx, int gz) =>
+        Canonical(gx, gz, out var tile, out var sx, out var sz) && tile.Edits is { } edits ? edits[sz * Samples + sx] : 0f;
 
     /// The height at a sample: exact from the full heights when they're loaded, or at a coarse sample; otherwise
     /// interpolated between coarse samples. False outside the built tiles.

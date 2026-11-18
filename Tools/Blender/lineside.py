@@ -123,6 +123,41 @@ class Model:
                 j = (i + 1) % 4
                 bm.faces.new((loops[i][k], loops[i][k2], loops[j][k2], loops[j][k]))
 
+    def text(self, name, body, centre, along, height, rotate, y, depth=0.004):
+        """Raised letters on a board facing -Y: body centred along metres along the board (turned by rotate in the XZ plane, as
+        box turns one, about centre), cap height high, standing out from y towards -Y by depth. Blender's own font, made
+        geometry, so it needs no texture."""
+        curve = bpy.data.curves.new("letters", "FONT")
+        curve.body = body
+        curve.align_x, curve.align_y = "CENTER", "CENTER"
+        curve.extrude = depth * 0.5
+        obj = bpy.data.objects.new("letters", curve)
+        bpy.context.collection.objects.link(obj)
+        evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        mesh = evaluated.to_mesh()
+        xs = [v.co.x for v in mesh.vertices]
+        ys = [v.co.y for v in mesh.vertices]
+        # (Cap height: the tallest letter's, all capitals here.)
+        scale = height / max(max(ys) - min(ys), 1e-6)
+        mid_x, mid_y = (max(xs) + min(xs)) * 0.5, (max(ys) + min(ys)) * 0.5
+        cos, sin = math.cos(rotate), math.sin(rotate)
+        bm = self.bm(name)
+        made = []
+        for v in mesh.vertices:
+            u = (v.co.x - mid_x) * scale + along
+            w = (v.co.y - mid_y) * scale
+            # The letters' own z (their thickness) out of the board towards -Y.
+            out = y - depth * 0.5 - v.co.z
+            made.append(bm.verts.new((centre[0] + u * cos - w * sin, out, centre[2] + u * sin + w * cos)))
+        for poly in mesh.polygons:
+            try:
+                bm.faces.new([made[i] for i in poly.vertices])
+            except ValueError:
+                pass
+        evaluated.to_mesh_clear()
+        bpy.data.objects.remove(obj)
+        bpy.data.curves.remove(curve)
+
     def export(self, path):
         bpy.ops.wm.read_factory_settings(use_empty=True)
         objects = []
@@ -216,29 +251,61 @@ def hand_throw():
 
 def crossing_mast():
     m = Model()
-    m.post("Fixed_Concrete", 0.0, 0.0, -0.2, 0.2, 0.34)
-    m.post("Fixed_Galv", 0.0, 0.0, 0.2, 4.6, 0.055)
-    # The crossbuck on top.
-    for rotate in (math.radians(45), math.radians(-45)):
-        m.box("Fixed_White", (0.0, -0.08, 4.0), (0.62, 0.01, 0.1), rotate)
-        m.box("Fixed_Black", (0.0, -0.068, 4.0), (0.64, 0.01, 0.115), rotate)
-    # The bell and the crossarm with two flashers.
-    m.post("Fixed_Black", 0.0, -0.09, 3.35, 3.47, 0.11, 10)
-    m.box("Fixed_Galv", (0.0, -0.05, 2.9), (0.55, 0.024, 0.024))
-    # Each flasher's lens is a part of its own (FlashA_, FlashB_), so the game can light the two in turn while the crossing's
-    # working (NetworkMeshes.PlacedModel); dark, they're red glass.
-    for x, lens in ((-0.43, "FlashA_LensRed"), (0.43, "FlashB_LensRed")):
-        m.disc("Fixed_Black", x, -0.08, 2.9, 0.26, 0.02)
-        m.lens(lens, x, -0.1, 2.9, 0.12, bulge=0.025)
-        m.hood(x, -0.1, 2.9, 0.14)
-    # The gate's case, and its arm raised, red and white: behind the crossarm and the flashers' backs, clear of them. The arm's
-    # parts are Gate_, which the game swings down about (-0.26, 0.13, 1.6) towards -X, the road's side, while the crossing works
-    # (NetworkMeshes.GateArms).
-    m.box("Fixed_Black", (0.0, -0.05, 1.1), (0.17, 0.14, 0.4))
-    m.box("Fixed_Black", (-0.22, 0.1, 1.42), (0.09, 0.05, 0.14))
+    # The foundation, a base plate, and the mast, with a cap.
+    m.post("Fixed_Concrete", 0.0, 0.0, -0.3, 0.15, 0.3, 12)
+    m.box("Fixed_Galv", (0.0, 0.0, 0.17), (0.2, 0.2, 0.02))
+    m.post("Fixed_Galv", 0.0, 0.0, 0.19, 4.95, 0.06, 12)
+    m.post("Fixed_Galv", 0.0, 0.0, 4.95, 4.99, 0.075, 12)
+
+    # The bell on top: a black dome on a short stem.
+    m.post("Fixed_Black", 0.0, 0.0, 4.99, 5.06, 0.025, 8)
+    m.post("Fixed_Black", 0.0, 0.0, 5.06, 5.14, 0.13, 16)
+    m.post("Fixed_Black", 0.0, 0.0, 5.14, 5.2, 0.09, 16)
+
+    # The crossbuck: two white blades with black borders, one over the other, lettered RAIL ROAD (split either side of the
+    # crossing, which the front blade covers) and CROSSING. Each blade's border stands behind its face, the face behind its letters.
+    buck = (0.0, 0.0, 4.3)
+    for rotate, face_y, words in ((math.radians(-45), -0.075, (("RAIL", -0.37), ("ROAD", 0.37))),
+                                  (math.radians(45), -0.105, (("CROSSING", 0.0),))):
+        m.box("Fixed_Black", (buck[0], face_y + 0.009, buck[2]), (0.625, 0.008, 0.118), rotate)
+        m.box("Fixed_White", (buck[0], face_y, buck[2]), (0.61, 0.006, 0.104), rotate)
+        for word, along in words:
+            m.text("Fixed_Black", word, buck, along, 0.105, rotate, face_y - 0.006)
+    # The bracket holding it to the mast.
+    m.box("Fixed_Galv", (0.0, -0.04, 4.3), (0.04, 0.04, 0.04))
+
+    # The crossarm and its two flashers: black backgrounds with a white rim, the lens (FlashA_ left, FlashB_ right, which the game
+    # lights in turn while the crossing's working, NetworkMeshes.PlacedModel), a deep visor over each.
+    m.box("Fixed_Galv", (0.0, -0.05, 3.4), (0.66, 0.03, 0.035))
+    m.box("Fixed_Galv", (0.0, -0.04, 3.4), (0.05, 0.05, 0.08))
+    for x, lens in ((-0.5, "FlashA_LensRed"), (0.5, "FlashB_LensRed")):
+        m.disc("Fixed_Black", x, -0.1, 3.4, 0.3, 0.025, 24)
+        m.ring("Fixed_White", x, -0.1, 3.4, 0.27, 0.3, 0.004, 24)
+        m.lens(lens, x, -0.1, 3.4, 0.15, bulge=0.03)
+        m.hood(x, -0.1, 3.4, 0.17, length=0.28)
+        # Its mount behind, onto the crossarm.
+        m.post("Fixed_Galv", x, -0.06, 3.38, 3.42, 0.04, 8)
+
+    # The junction box behind the mast.
+    m.box("Fixed_Galv", (0.0, 0.17, 0.95), (0.16, 0.09, 0.22))
+    m.box("Fixed_Galv", (0.0, 0.17, 1.19), (0.17, 0.1, 0.015))
+
+    # The gate mechanism's case on the mast, and the hub the arm turns on.
+    m.box("Fixed_Galv", (0.0, -0.01, 1.3), (0.17, 0.15, 0.42))
+    m.box("Fixed_Galv", (0.0, -0.01, 1.74), (0.18, 0.16, 0.02))
+    m.disc("Fixed_Black", -0.17, 0.2, 1.6, 0.07, -0.09, 16)
+
+    # The arm, raised: striped red and white, with three red lights along it, and its counterweight hanging below the hub on the
+    # far side. All Gate_: the game swings them down about (-0.26, 0.13, 1.6) towards -X, the road's side, while the crossing
+    # works (NetworkMeshes.GateArms, GatePivot), so the counterweight comes up behind as the arm goes down.
     for k in range(6):
         paint = "Gate_Red" if k % 2 == 0 else "Gate_White"
         m.box(paint, (-0.26, 0.13, 1.6 + k * 0.85 + 0.42), (0.05, 0.025, 0.42))
+    for z in (2.9, 4.2, 5.6):
+        m.disc("Gate_Black", -0.26, 0.1, z, 0.06, 0.02, 12)
+        m.disc("Gate_LensRed", -0.26, 0.095, z, 0.04, 0.01, 12)
+    m.box("Gate_Black", (-0.26, 0.2, 1.3), (0.035, 0.03, 0.32))
+    m.box("Gate_Black", (-0.26, 0.2, 0.98), (0.11, 0.07, 0.1))
     return m, 6.8
 
 

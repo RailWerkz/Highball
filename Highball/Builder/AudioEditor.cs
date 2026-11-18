@@ -13,6 +13,8 @@ namespace Highball.Builder;
 ///   Locomotive    the picked locomotive's sounds: each one's level, the engine's pitch, and where each comes from on it,
 ///                 moved with handles drawn on the engine in the world
 ///   Running gear  the wheels, trucks and motors: each sound's level, and what sets off the knocks, and how often
+///   Crossings     the grade crossings' bells: each kind's level and pitch (with a ring to hear it by), how far they
+///                 carry, how high they ring from, and how quickly they die away
 ///
 /// Handles: drag one to move it across, hold Shift to move it up and down, right-click it to put it back where the game had it.
 public sealed class AudioEditor
@@ -22,7 +24,7 @@ public sealed class AudioEditor
     /// The handles over the picked locomotive are showing.
     public bool ShowPositions = true;
 
-    private int _tab = App.DevTools.AudioEditor switch { "locomotive" => 1, "gear" => 2, _ => 0 };
+    private int _tab = App.DevTools.AudioEditor switch { "locomotive" => 1, "gear" => 2, "crossings" => 3, _ => 0 };
     private SoundSpot? _hot;
     private SoundSpot? _dragging;
     private float2 _dragFrom;
@@ -38,7 +40,7 @@ public sealed class AudioEditor
         (SoundSpot.Bell, "Bell", Rgba.Hex(0xD9B26A)),
     ];
 
-    private static readonly string[] TabNames = ["Mix", "Locomotive", "Running gear"];
+    private static readonly string[] TabNames = ["Mix", "Locomotive", "Running gear", "Crossings"];
 
     /// A handle's under the pointer or being dragged: the editor's clicks shouldn't go to picking vehicles.
     public bool WantsPointer => _hot is not null || _dragging is not null;
@@ -69,8 +71,11 @@ public sealed class AudioEditor
                 case 1:
                     LocomotiveTab(picked);
                     break;
-                default:
+                case 2:
                     GearTab();
+                    break;
+                default:
+                    CrossingsTab();
                     break;
             }
 
@@ -205,6 +210,32 @@ public sealed class AudioEditor
         Number("gear.squeal.min", "Faster than", () => g.SquealMinSpeed, v => g.SquealMinSpeed = v, 0f, 10f, Mph);
         Number("gear.squeal.max", "Slower than", () => g.SquealMaxSpeed, v => g.SquealMaxSpeed = v, 0f, 30f, Mph);
         Number("gear.squeal.chance", "Chance a second", () => g.SquealChance, v => g.SquealChance = v, 0f, 3f, "{0:0.00}");
+        Kit.EndCard();
+    }
+
+    private static void CrossingsTab()
+    {
+        var c = Tuning.Crossings;
+        Kit.BeginCard("ELECTRONIC BELL", "A speaker");
+        Level("xing.e.level", "Level", () => c.Electronic, v => c.Electronic = v, 0f, 3f);
+        Number("xing.e.pitch", "Pitch", () => c.ElectronicPitch, v => c.ElectronicPitch = v, 0.5f, 1.5f, "x{0:0.000}");
+        if (Kit.Button("xing.e.test", "Ring once", Kit.Width))
+            CrossingBells.Preview(Highball.World.CrossingBell.Electronic);
+        Kit.EndCard();
+
+        Kit.BeginCard("MECHANICAL BELL", "A gong and hammer");
+        Level("xing.m.level", "Level", () => c.Mechanical, v => c.Mechanical = v, 0f, 3f);
+        Number("xing.m.pitch", "Pitch", () => c.MechanicalPitch, v => c.MechanicalPitch = v, 0.5f, 1.5f, "x{0:0.000}");
+        if (Kit.Button("xing.m.test", "Ring once", Kit.Width))
+            CrossingBells.Preview(Highball.World.CrossingBell.Mechanical);
+        Kit.EndCard();
+
+        Kit.BeginCard("WHERE IT'S HEARD", "Every crossing");
+        Number("xing.full", "Full volume within", () => c.FullWithin, v => c.FullWithin = v, 1f, 100f, "{0:0.0} m");
+        Number("xing.range", "Heard out to", () => c.Range, v => c.Range = v, 50f, 3000f, "{0:0} m");
+        Number("xing.height", "Bell height", () => c.Height, v => c.Height = v, 0f, 10f, "{0:0.0} m");
+        Number("xing.fade", "Fade out", () => c.FadeOut, v => c.FadeOut = v, 0f, 3f, "{0:0.00} s");
+        Kit.Note("Ringing bells follow these at once. Ring once plays at full volume, as if beside it.");
         Kit.EndCard();
     }
 

@@ -21,7 +21,8 @@ layout(push_constant) uniform Push
 {
     mat4 viewProjection;
     vec4 shape;
-    vec4 shift; // w: the camera's height
+    vec4 band;
+    vec4 globals; // x: minus the camera's height
 } pc;
 
 void main()
@@ -33,7 +34,7 @@ void main()
 
     float dist = length(vRelative);
     vec3 away = vRelative / max(dist, 1e-3);
-    vec3 n = normalize(vNormal);
+    vec3 n = normalize(vNormal + vec3(0.0, 1e-4, 0.0));
 
     // A solid thing shows the side it's lit from; a card of grass keeps its soft normal whichever way it's seen.
     if (pc.shape.y < 0.1 && dot(n, away) > 0.0)
@@ -57,5 +58,5 @@ void main()
     if (pc.shape.x > 0.0)
         color += s.albedo * SunColor * shade * pow(max(dot(away, sun), 0.0), 4.0) * 0.5;
 
-    outColor = vec4(applyFog(color, away, dist, pc.shift.w, sun), clamp((alpha - 0.3) / 0.25 + 0.3, 0.0, 1.0));
+    outColor = vec4(applyFog(color, away, dist, -pc.globals.x, sun), clamp((alpha - 0.3) / 0.25 + 0.3, 0.0, 1.0));
 }

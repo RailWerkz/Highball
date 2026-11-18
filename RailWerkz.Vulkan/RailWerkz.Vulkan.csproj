@@ -12,5 +12,6 @@
         <PackageReference Include="Ahwoo.Brutal.Vulkan.Vma" />
         <PackageReference Include="Ahwoo.Brutal.Stb" />
         <PackageReference Include="Ahwoo.Brutal.Gltf" />
+        <PackageReference Include="ZstdSharp.Port" />
     </ItemGroup>
 </Project>

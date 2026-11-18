@@ -43,3 +43,6 @@ Tools/Audio/**/*.wav
 # Vehicle LODs: made from the assembled models by Tools/Blender/lods.py
 Content/Models/**/Assembled/LOD1/
 Content/Models/**/Assembled/LOD2/
+
+# Downloaded crossing-signal source model (~850 MB, two files over GitHub's 100 MB limit); not loaded by the game.
+Content/Models/CrossingSignals/

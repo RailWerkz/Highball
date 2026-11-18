@@ -151,7 +151,7 @@ public sealed unsafe class SunShadows : IDisposable
             DepthBiasConstant = -60f, DepthBiasSlope = -1.75f,
         });
 
-        _plantLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(3));
+        _plantLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(4));
         using var plantVert = Shader.Load("shadow_plant.vert");
         using var plantFrag = Shader.Load("shadow_plant.frag");
         _plant = Pipelines.Create(new PipelineDesc

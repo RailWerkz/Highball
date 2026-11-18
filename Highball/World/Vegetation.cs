@@ -22,64 +22,91 @@ public struct PlantInstance(float4 placeAndScale, float4 tintAndRandom)
 }
 
 /// What the world has growing and lying on it, worked out from the land cover round the camera as it moves: grass and pebbles close
-/// to, shrubs, boulders and trees further out, in cells built on background threads. All of it is the same wherever it's seen from,
+/// to, bushes, boulders and trees further out, in cells built on background threads. All of it is the same wherever it's seen from,
 /// since each cell is seeded by its place. It keeps off track and roads.
+///
+/// The plants are two models: Grass.glb's clump of blades and EarthTrees.glb's fifteen trees and bushes, each with its levels of
+/// detail (full and reduced trunk and leaves, then a few crossed cards of the whole tree for the far distance), all textured from
+/// Terrain/GroundClutter. Every level of a plant draws the same instances; plant.vert collapses each outside its level's distances.
 public sealed unsafe class Vegetation : IDisposable
 {
     private const float NearCell = 32f;
     private const float NearReach = 110f;
-    private const float FarCell = 256f;
+    private const float FarCell = 128f;
     private const float FarReach = 1500f;
     private const int UploadsPerFrame = 6;
 
-    /// The tree models, with bark and leaves as two pieces drawn at the same place.
-    /// The plants' models: Shapespark's low-poly exterior plants kit (each plant a node, its trunk and branches each a material).
-    private const string KitFile = "Vegetation/shapespark_low_poly_exterior_plants_kit.glb";
-    /// The kit's trees used, big and small of each of its three. Each loads as its trunk (the first material) and its branches.
-    private static readonly string[] TreeNodes = ["Tree-01-1_0", "Tree-01-3_2", "Tree-02-2_5", "Tree-02-4_7", "Tree-03-1_8", "Tree-03-3_10"];
+    private const string GrassFile = "Vegetation/Grass.glb";
+    private const string TreeFile = "Vegetation/EarthTrees.glb";
+    private const string Clutter = "Terrain/GroundClutter/";
 
-    /// The kit's bush the scrub's drawn with.
-    private const string ShrubNode = "Bush-03_15";
+    // What a cell's instances are of: each slot is one plant or stone, every level of detail of it drawing the same instances.
+    private const int Grass = 0;
+    private const int Pebble = 1;
+    private const int Boulder = 2;
 
+    /// EarthTrees' last three (TreeType13 to 15): knee-high bushes.
+    private const int FirstShrub = 3;
+    private const int ShrubCount = 3;
+
+    /// EarthTrees' TreeType1 to 12: three forest giants of 30 m, six of 10 to 18 m and three of about 4 m.
+    private const int FirstTree = FirstShrub + ShrubCount;
+    private const int TreeCount = 12;
+    private const int SlotCount = FirstTree + TreeCount;
+
+    /// How many of each tree to try for in a far cell (128 m square, where forest is thick): the giants rarest.
+    private static readonly int[] TreeAttempts = [2, 2, 2, 5, 5, 5, 5, 5, 5, 5, 5, 5];
+
+    /// Where a plant's detail changes, in metres from the camera (each instance's own up to a tenth either way): from its full model
+    /// to its reduced one, then to its cards (the grass, its fewest-bladed clump).
+    private static readonly (float Reduced, float Far) TreeLevels = (55f, 300f);
+    private static readonly (float Reduced, float Far) ShrubLevels = (30f, 120f);
+    private static readonly (float Reduced, float Far) GrassLevels = (10f, 35f);
+
+    /// One draw of a slot's instances: a range of a mesh with its textures, drawn from Near to Far metres from the camera.
     private sealed class Kind
     {
-        public Mesh? Mesh;
-        public TextureBinding? Textures;
-        /// A model's materials, each drawn with its own textures (the kit's plants); null: Mesh whole with Textures.
-        public List<RenderModel.Part>? Parts;
+        public required Mesh Mesh;
+        public required TextureBinding Textures;
+        public required int Slot;
+        public int FirstIndex;
+        public int IndexCount = -1;
+        public float Near;
+        public float Far = float.PositiveInfinity;
         public float Wind;
         public float SoftNormal;
         public float Fade;
+
         /// Where its cut-out comes from: 0 its colour map's alpha, 1 a map of its own, 2 none (a solid thing).
-        public float Cutout;
+        public float Cutout = 1f;
+
+        /// The last shadow cascade it's drawn into; below 0, none.
         public int LastCascade;
-        public float3 Shift;
+
         /// Drawn instead of Mesh into the far shadow cascades (from FarCasterFrom out, past 250 m, where a texel is most of a
         /// metre): a solid shape the size of the thing. Null draws Mesh there.
         public Mesh? FarCaster;
+
         /// Left out of the far cascades, its partner's FarCaster standing for it (a tree's bark, inside its canopy's).
         public bool NoFarCaster;
+
+        public int Count => IndexCount < 0 ? Mesh.IndexCount : IndexCount;
     }
 
     /// The first shadow cascade things are drawn into as their FarCaster.
     private const int FarCasterFrom = 3;
 
-    private const int Grass = 0;
-    private const int Pebble = 1;
-    private const int Shrub = 2;
-    private const int Boulder = 3;
-    private const int FirstTree = 4;
-    private const int KindCount = FirstTree + 12;
-
-    /// Exactly what plant.vert's push constants hold.
+    /// plant.vert's and shadow_plant.vert's push constants (all 128 bytes of them). Where each draw's cell is comes from Cells, a
+    /// table on the GPU, indexed by Base plus the draw's place in its indirect call.
     [StructLayout(LayoutKind.Sequential)]
-    /// plant.vert's and shadow_plant.vert's push constants. Where each draw's cell is comes from Cells, a table on the GPU,
-    /// indexed by Base plus the draw's place in its indirect call.
     private struct Push
     {
         public float4x4 Matrix;
         public float4 Shape;
-        public float4 Shift;
+
+        /// xy: the distances it's drawn from and to.
+        public float4 Band;
+
         /// x: minus the camera's height; y: the flutter's phase; zw: the gusts' phases.
         public float4 Globals;
         public VkDeviceAddress Cells;
@@ -127,7 +154,10 @@ public sealed unsafe class Vegetation : IDisposable
     private VkDrawIndexedIndirectCommand[] _scratch = new VkDrawIndexedIndirectCommand[256];
     private float4[] _rows = new float4[256];
 
-    private readonly Kind[] _kinds = new Kind[KindCount];
+    private readonly List<Kind> _kinds = [];
+
+    /// How tall each slot's model is at a size of 1, for its cells' bounds.
+    private readonly float[] _heights = new float[SlotCount];
     private readonly List<IDisposable> _owned = [];
     private readonly Dictionary<Key, Cell> _cells = [];
     private readonly HashSet<Key> _inFlight = [];
@@ -145,8 +175,7 @@ public sealed unsafe class Vegetation : IDisposable
     /// marked: one that changed again while being rebuilt stays marked.
     private readonly Dictionary<Key, int> _stale = [];
     private int _stamp;
-    private volatile bool _treesWanted;
-    private bool _treesLoaded;
+    private bool _plantsLoaded;
 
     public bool Enabled { get; set; } = true;
     public int Instances { get; private set; }
@@ -154,28 +183,17 @@ public sealed unsafe class Vegetation : IDisposable
 
     public Vegetation()
     {
-        var grassAlbedo = Own(Texture2D.LoadDds("Terrain/GroundClutter/Grass_Diffuse.dds", srgb: true));
-        var grassOpacity = Own(Texture2D.LoadDds("Terrain/GroundClutter/Grass_Opacity.dds", srgb: false));
+        Array.Fill(_heights, 2f);
         var rock = Own(Texture2D.LoadDds("Terrain/Cliffs/Cliffs_Albedo.dds", srgb: true));
-        var twigs = Own(TwigTexture());
+        var rocks = Own(new TextureBinding(rock, rock, rock, rock));
 
-        _kinds[Grass] = new Kind
-        {
-            Mesh = Own(GrassMesh()), Textures = Own(new TextureBinding(grassAlbedo, grassOpacity, grassOpacity)), Wind = 0.07f, SoftNormal = 0.8f, Fade = NearReach * 0.92f, Cutout = 1f, LastCascade = 0,
-        };
         // Pebbles are a few centimetres across, so once split is plenty.
-        _kinds[Pebble] = new Kind { Mesh = Own(RockMesh(11, splits: 1)), Textures = Own(new TextureBinding(rock, rock, rock)), Fade = NearReach * 0.9f, Cutout = 2f, LastCascade = 0 };
-        _kinds[Shrub] = new Kind
+        _kinds.Add(new Kind { Mesh = Own(RockMesh(11, splits: 1)), Textures = rocks, Slot = Pebble, Fade = NearReach * 0.9f, Cutout = 2f, LastCascade = 0 });
+        _kinds.Add(new Kind
         {
-            Mesh = Own(ShrubMesh()), Textures = Own(new TextureBinding(twigs, twigs, twigs)), Wind = 0.02f, SoftNormal = 0.55f, Fade = FarReach * 0.9f, LastCascade = 3,
-        };
-        _kinds[Boulder] = new Kind
-        {
-            Mesh = Own(RockMesh(29)), FarCaster = Own(RockMesh(29, splits: 0)), Textures = Own(new TextureBinding(rock, rock, rock)), Fade = FarReach * 0.7f,
-            Cutout = 2f, LastCascade = 3,
-        };
-        for (var i = FirstTree; i < KindCount; i++)
-            _kinds[i] = new Kind { Fade = FarReach * 0.95f, LastCascade = 3 };
+            Mesh = Own(RockMesh(29)), FarCaster = Own(RockMesh(29, splits: 0)), Textures = rocks, Slot = Boulder, Fade = FarReach * 0.7f, Cutout = 2f,
+            LastCascade = 3,
+        });
     }
 
     private T Own<T>(T thing) where T : IDisposable
@@ -193,8 +211,8 @@ public sealed unsafe class Vegetation : IDisposable
         if (!Enabled)
             return;
 
-        if (!_treesLoaded)
-            LoadTrees();
+        if (!_plantsLoaded)
+            LoadPlants();
 
         // Other ground starts the cells again. New lines or edited ground only mark what they touched, which draws as it was until
         // it's been rebuilt, in the background.
@@ -381,27 +399,25 @@ public sealed unsafe class Vegetation : IDisposable
         void Segment(double ax, double az, double bx, double bz, float clear)
         {
             var spread = (int)Math.Ceiling((clear + TracksideReach) / NearCell);
+            var length = Math.Sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az));
+            var steps = Math.Max(1, (int)Math.Ceiling(length / (NearCell * 0.5)));
+            (int, int)? last = null;
+            for (var s = 0; s <= steps; s++)
             {
-                var length = Math.Sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az));
-                var steps = Math.Max(1, (int)Math.Ceiling(length / (NearCell * 0.5)));
-                (int, int)? last = null;
-                for (var s = 0; s <= steps; s++)
+                var t = (double)s / steps;
+                var cx = (int)Math.Floor((ax + (bx - ax) * t) / NearCell);
+                var cz = (int)Math.Floor((az + (bz - az) * t) / NearCell);
+                if (last == (cx, cz))
+                    continue;
+                last = (cx, cz);
+                for (var z = cz - spread; z <= cz + spread; z++)
                 {
-                    var t = (double)s / steps;
-                    var cx = (int)Math.Floor((ax + (bx - ax) * t) / NearCell);
-                    var cz = (int)Math.Floor((az + (bz - az) * t) / NearCell);
-                    if (last == (cx, cz))
-                        continue;
-                    last = (cx, cz);
-                    for (var z = cz - spread; z <= cz + spread; z++)
+                    for (var x = cx - spread; x <= cx + spread; x++)
                     {
-                        for (var x = cx - spread; x <= cx + spread; x++)
-                        {
-                            if (!grid.TryGetValue((x, z), out var list))
-                                grid[(x, z)] = list = [];
-                            if (list.Count == 0 || list[^1] != (ax, az, bx, bz, clear))
-                                list.Add((ax, az, bx, bz, clear));
-                        }
+                        if (!grid.TryGetValue((x, z), out var list))
+                            grid[(x, z)] = list = [];
+                        if (list.Count == 0 || list[^1] != (ax, az, bx, bz, clear))
+                            list.Add((ax, az, bx, bz, clear));
                     }
                 }
             }
@@ -469,9 +485,9 @@ public sealed unsafe class Vegetation : IDisposable
     private void Build(Key key, int generation, int stamp)
     {
         var size = key.Far ? FarCell : NearCell;
-        var perKind = new List<PlantInstance>[KindCount];
-        for (var i = 0; i < KindCount; i++)
-            perKind[i] = [];
+        var perSlot = new List<PlantInstance>[SlotCount];
+        for (var i = 0; i < SlotCount; i++)
+            perSlot[i] = [];
 
         var (originX, originZ) = (key.X * (double)size, key.Z * (double)size);
         var source = _source!;
@@ -479,7 +495,7 @@ public sealed unsafe class Vegetation : IDisposable
         var high = float.MinValue;
 
         // The land cover's costly to read, so it's sampled on a grid and blended.
-        var grid = key.Far ? 9 : 3;
+        var grid = key.Far ? 5 : 3;
         var covers = new float4[grid * grid];
         var materials = new float4[grid * grid];
         for (var j = 0; j < grid; j++)
@@ -509,7 +525,7 @@ public sealed unsafe class Vegetation : IDisposable
             return (Mix(covers), Mix(materials));
         }
 
-        void Place(int kind, uint salt, int attempts, Func<float4, float4, float, float, float, float> chance, Func<float, float4, float4, Random32, (float Scale, float3 Tint)> look, float minClear, float sink, float steepest)
+        void Place(int slot, uint salt, int attempts, Func<float4, float4, float, float, float, float> chance, Func<float, float4, float4, Random32, (float Scale, float3 Tint)> look, float minClear, float sink, float steepest)
         {
             var random = new Random32(Hash(key.X, key.Z, salt + (key.Far ? 1000u : 0u)));
             for (var n = 0; n < attempts; n++)
@@ -542,22 +558,25 @@ public sealed unsafe class Vegetation : IDisposable
 
                 var (scale, tint) = look(pick, cover, ground, random);
                 low = MathF.Min(low, y);
-                high = MathF.Max(high, y + scale * 2f);
-                perKind[kind].Add(new PlantInstance(new float4((float)(x - originX), y - sink * scale, (float)(z - originZ), scale), new float4(tint, pick)));
-                if (kind >= FirstTree && kind % 2 == 0)
-                    perKind[kind + 1].Add(new PlantInstance(new float4((float)(x - originX), y - sink * scale, (float)(z - originZ), scale), new float4(new float3(tint.X, tint.Y, tint.Z), pick)));
+                high = MathF.Max(high, y + scale * _heights[slot]);
+                perSlot[slot].Add(new PlantInstance(new float4((float)(x - originX), y - sink * scale, (float)(z - originZ), scale), new float4(tint, pick)));
             }
         }
 
-        // Soft grey cards, so colour comes all from here: drier and yellower than the ground it grows from.
+        // Drier and yellower than the ground it grows from: the grass's map is pale, so its colour comes mostly from here.
         static float3 Dry(float4 cover, float pick) =>
             new float3(cover.X * 2.4f + 0.13f, cover.Y * 2.2f + 0.12f, cover.Z * 2.0f + 0.07f) * (0.75f + 0.5f * pick);
 
+        // The trees' and bushes' maps have their own colours: only a little variety from one to the next.
+        static float3 Leafy(float pick) => new float3(0.85f + 0.3f * pick, 0.85f + 0.25f * pick, 0.8f + 0.2f * pick);
+
         if (!key.Far)
         {
-            Place(Grass, 1u, 420,
-                (_, ground, patches, clear, _) => (ground.X * 0.75f + ground.Y * 0.22f) * MathEx.SmoothStep(0.25f, 0.65f, patches) * MathEx.SmoothStep(0f, 1.5f, clear),
-                (pick, cover, _, _) => (0.45f + 0.6f * pick, Dry(cover, pick)), 0.2f, 0.03f, 0.8f);
+            // Clumps a metre and a half to two and a half across, overlapping into a sward where the cover's grassy. (Each covers a
+            // few times what the old cards did: many more than this and the overlapping blades cost far more to draw than they add.)
+            Place(Grass, 1u, 1600,
+                (_, ground, patches, clear, _) => (ground.X * 0.8f + ground.Y * 0.25f) * MathEx.SmoothStep(0.15f, 0.55f, patches) * MathEx.SmoothStep(0f, 1.5f, clear),
+                (pick, cover, _, _) => (0.4f + 0.35f * pick, Dry(cover, pick)), 0.2f, 0f, 0.8f);
 
             // Stones, thickest beside the line where the ground's been worked and ballast has strayed.
             Place(Pebble, 2u, 260,
@@ -572,11 +591,14 @@ public sealed unsafe class Vegetation : IDisposable
         else
         {
             // Spaced as scrub is: every few metres in shrubland, thinner on bare ground, none on the track's shoulders.
-            Place(Shrub, 3u, 1800,
-                (cover, ground, patches, clear, _) => (ground.X * (0.3f + cover.W * 1.2f) + ground.Y * 0.3f) * MathEx.SmoothStep(0.15f, 0.6f, patches) * MathEx.SmoothStep(0.5f, 3f, clear),
-                (pick, _, _, _) => (0.6f + 1.0f * pick, new float3(0.55f + 0.2f * pick, 0.62f + 0.2f * pick, 0.5f + 0.15f * pick)), 1f, 0.05f, 0.72f);
+            for (var b = 0; b < ShrubCount; b++)
+            {
+                Place(FirstShrub + b, 3u + (uint)b * 101u, 50,
+                    (cover, ground, patches, clear, _) => (ground.X * (0.3f + cover.W * 1.2f) + ground.Y * 0.3f) * MathEx.SmoothStep(0.15f, 0.6f, patches) * MathEx.SmoothStep(0.5f, 3f, clear),
+                    (pick, _, _, _) => (0.7f + 0.7f * pick, Leafy(pick)), 1f, 0f, 0.72f);
+            }
 
-            Place(Boulder, 4u, 60,
+            Place(Boulder, 4u, 15,
                 (_, ground, patches, clear, _) => (ground.Y * 0.5f + ground.X * 0.1f) * MathEx.SmoothStep(0.45f, 0.8f, patches) * MathEx.SmoothStep(1f, 4f, clear),
                 (pick, cover, _, _) =>
                 {
@@ -584,67 +606,139 @@ public sealed unsafe class Vegetation : IDisposable
                     return (size2, new float3(cover.X * 2.4f + 0.22f, cover.Y * 2.2f + 0.2f, cover.Z * 2f + 0.18f));
                 }, 2f, 0.3f, 0.5f);
 
-            // Trees only where the map says there's forest; the desert has none to speak of.
-            for (var t = 0; t < TreeNodes.Length; t++)
+            // Trees only where the map says there's forest (the small ones straying a little further out); the desert has none
+            // to speak of.
+            for (var t = 0; t < TreeCount; t++)
             {
-                var which = t;
-                Place(FirstTree + which * 2, 10u + (uint)which, 1280 / TreeNodes.Length,
-                    (cover, _, patches, clear, _) => MathEx.SmoothStep(0.35f, 0.75f, cover.W) * 0.8f * (0.3f + patches) * MathEx.SmoothStep(2f, 6f, clear),
-                    (pick, _, _, _) => (0.8f + 0.7f * pick, new float3(0.85f + 0.3f * pick, 0.85f + 0.25f * pick, 0.8f + 0.2f * pick)), 3f, 0.02f, 0.7f);
+                var small = t >= 9;
+                Place(FirstTree + t, 10u + (uint)t, TreeAttempts[t],
+                    (cover, _, patches, clear, _) => (small ? MathEx.SmoothStep(0.2f, 0.6f, cover.W) : MathEx.SmoothStep(0.35f, 0.75f, cover.W)) * 0.8f * (0.3f + patches) * MathEx.SmoothStep(2f, 6f, clear),
+                    (pick, _, _, _) => (0.75f + 0.45f * pick, Leafy(pick)), 3f, 0f, 0.7f);
             }
-
-            for (var t = FirstTree; t < KindCount; t++)
-                if (perKind[t].Count > 0)
-                    _treesWanted = true;
         }
 
-        // All kinds in one buffer, each sorted so the ones furthest fading are first.
-        var total = perKind.Sum(p => p.Count);
+        // All slots in one buffer, each sorted so the ones furthest fading are first.
+        var total = perSlot.Sum(p => p.Count);
         var instances = new PlantInstance[total];
-        var starts = new int[KindCount + 1];
+        var starts = new int[SlotCount + 1];
         var at = 0;
-        for (var i = 0; i < KindCount; i++)
+        for (var i = 0; i < SlotCount; i++)
         {
             starts[i] = at;
-            perKind[i].Sort((a, b) => b.TintAndRandom.W.CompareTo(a.TintAndRandom.W));
-            perKind[i].CopyTo(instances, at);
-            at += perKind[i].Count;
+            perSlot[i].Sort((a, b) => b.TintAndRandom.W.CompareTo(a.TintAndRandom.W));
+            perSlot[i].CopyTo(instances, at);
+            at += perSlot[i].Count;
         }
 
-        starts[KindCount] = at;
+        starts[SlotCount] = at;
         _built.Enqueue(new Built(key, generation, stamp, instances, starts, total > 0 ? low : 0f, total > 0 ? high : 0f));
     }
 
-    private void LoadTrees()
+    // --- The plants' models and textures. ---
+
+    /// Loads the grass and trees: every level of each into one mesh, each piece moved to stand on its own node's origin, and their
+    /// textures from Terrain/GroundClutter.
+    private void LoadPlants()
     {
-        _treesLoaded = true;
+        _plantsLoaded = true;
         var watch = System.Diagnostics.Stopwatch.StartNew();
-        for (var i = 0; i < TreeNodes.Length; i++)
+        var grassParts = Model.LoadParts(GrassFile);
+        var treeParts = Model.LoadParts(TreeFile);
+
+        var vertices = new List<Vertex>();
+        var indices = new List<uint>();
+
+        // A piece's range of the shared index buffer, and its bounds once moved onto its origin.
+        (int First, int Count, float3 Min, float3 Max) Add(Dictionary<string, Model.Part> parts, string name)
         {
-            // Trunk and branches share one mesh; each kind draws its own materials of it.
-            var tree = Own(new RenderModel(Model.Load(KitFile, nodeName: TreeNodes[i])));
-            var (min, max) = (tree.Mesh.BoundsMin, tree.Mesh.BoundsMax);
-            var shift = new float3(-(min.X + max.X) * 0.5f, -min.Y, -(min.Z + max.Z) * 0.5f);
+            if (!parts.TryGetValue(name, out var part))
+                throw new InvalidDataException($"The vegetation models have no {name}");
+            var (first, start) = (indices.Count, (uint)vertices.Count);
+            var (min, max) = (new float3(float.MaxValue), new float3(float.MinValue));
+            foreach (var v in part.Vertices)
+            {
+                var p = v.Position - part.Origin;
+                (min, max) = (float3.Min(min, p), float3.Max(max, p));
+                vertices.Add(v with { Position = p });
+            }
 
-            var (b, l) = (_kinds[FirstTree + i * 2], _kinds[FirstTree + i * 2 + 1]);
-            (b.Mesh, b.Parts, b.Textures, b.Shift) = (tree.Mesh, [tree.Parts[0]], tree.Parts[0].Textures, shift);
-            var leaves = Merged(tree.Parts.Skip(1));
-            (l.Mesh, l.Parts, l.Textures, l.Shift) = (tree.Mesh, [leaves], leaves.Textures, shift);
-            // (The canopy starts a quarter of the way up: the trunk below it is bare.)
-            l.FarCaster = Own(CanopyMesh(new float3(min.X, min.Y + (max.Y - min.Y) * 0.25f, min.Z), max));
-            b.NoFarCaster = true;
-
-            // A hundredth of its height at the top in the strongest gust, trunk and leaves together.
-            b.Wind = l.Wind = 0.01f / MathF.Max(max.Y - min.Y, 1f);
+            foreach (var i in part.Indices)
+                indices.Add(start + i);
+            return (first, part.Indices.Length, min, max);
         }
 
-        var bush = Own(new RenderModel(Model.Load(KitFile, nodeName: ShrubNode)));
-        var (bmin, bmax) = (bush.Mesh.BoundsMin, bush.Mesh.BoundsMax);
-        var shrub = _kinds[Shrub];
-        var twigs = Merged(bush.Parts);
-        (shrub.Mesh, shrub.Parts, shrub.Textures) = (bush.Mesh, [twigs], twigs.Textures);
-        shrub.Shift = new float3(-(bmin.X + bmax.X) * 0.5f, -bmin.Y, -(bmin.Z + bmax.Z) * 0.5f);
-        RailWerkz.Core.Logging.Log.Info($"Vegetation: {TreeNodes.Length} trees and a bush loaded from the plants kit in {watch.ElapsedMilliseconds} ms");
+        Texture2D Map(string name, bool srgb) => Own(Texture2D.LoadKtx2(Clutter + name, srgb));
+        TextureBinding Bind(Texture2D albedo, Texture2D opacity) => Own(new TextureBinding(albedo, opacity, opacity, opacity));
+
+        // The bark has no cut-out: a white map stands in for one.
+        var solid = Own(Texture2D.Solid(new byte4(255, 255, 255, 255)));
+        var bark = Bind(Map("Trunk_Diffuse.ktx2", true), solid);
+        var leaves = Bind(Map("Leaves_Diffuse.ktx2", true), Map("Leaves_Opacity.ktx2", false));
+        var grassAlbedo = Own(Texture2D.LoadDds(Clutter + "Grass_Diffuse.dds", srgb: true));
+        var grass = Bind(grassAlbedo, Own(Texture2D.LoadDds(Clutter + "Grass_Opacity.dds", srgb: false)));
+
+        var pending = new List<(Kind Kind, int First, int Count)>();
+
+        // The grass: its full clump close to, then fewer and fewer blades. It casts no shadow (its material says so, and it's
+        // too fine for the shadow map anyway).
+        var grassLevels = new[] { ("Grass_Lod0", 0f, GrassLevels.Reduced), ("Grass_Lod2", GrassLevels.Reduced, GrassLevels.Far), ("Grass_Lod3", GrassLevels.Far, float.PositiveInfinity) };
+        foreach (var (name, near, far) in grassLevels)
+        {
+            var piece = Add(grassParts, name);
+            _heights[Grass] = MathF.Max(_heights[Grass], piece.Max.Y);
+            pending.Add((new Kind
+            {
+                Mesh = null!, Textures = grass, Slot = Grass, Near = near, Far = far, Wind = 0.07f, SoftNormal = 0.8f, Fade = NearReach * 0.75f, LastCascade = -1,
+            }, piece.First, piece.Count));
+        }
+
+        // TreeType1 to 12 are the trees, 13 to 15 the bushes; each has its own cards' maps, Tree0Cards for TreeType1 and so on.
+        var canopies = new List<(Kind Kind, float3 Min, float3 Max)>();
+        for (var type = 1; type <= TreeCount + ShrubCount; type++)
+        {
+            var shrub = type > TreeCount;
+            var slot = shrub ? FirstShrub + type - TreeCount - 1 : FirstTree + type - 1;
+            var (reduced, far) = shrub ? ShrubLevels : TreeLevels;
+            var cards = Bind(Map($"Tree{type - 1}Cards_Diffuse.ktx2", true), Map($"Tree{type - 1}Cards_Opacity.ktx2", false));
+            var full = Add(treeParts, $"TreeType{type}_Lod0_Leaves");
+            var height = MathF.Max(full.Max.Y, 1f);
+            _heights[slot] = height;
+
+            // A hundredth of its height at the top in the strongest gust, every level of it alike.
+            var wind = 0.01f / height;
+            var fade = shrub ? FarReach * 0.6f : FarReach * 0.95f;
+
+            foreach (var (level, near, to) in new[] { (0, 0f, reduced), (2, reduced, far) })
+            {
+                var trunk = Add(treeParts, $"TreeType{type}_Lod{level}_Trunk");
+                var crown = level == 0 ? full : Add(treeParts, $"TreeType{type}_Lod{level}_Leaves");
+                var bole = new Kind
+                {
+                    Mesh = null!, Textures = bark, Slot = slot, Near = near, Far = to, Wind = wind, Fade = fade, LastCascade = 3, NoFarCaster = !shrub,
+                };
+                var canopy = new Kind { Mesh = null!, Textures = leaves, Slot = slot, Near = near, Far = to, Wind = wind, SoftNormal = 0.35f, Fade = fade, LastCascade = 3 };
+                pending.Add((bole, trunk.First, trunk.Count));
+                pending.Add((canopy, crown.First, crown.Count));
+                if (!shrub)
+                    canopies.Add((canopy, crown.Min, crown.Max));
+            }
+
+            var card = Add(treeParts, $"TreeType{type}_Lod3_Cards");
+            pending.Add((new Kind { Mesh = null!, Textures = cards, Slot = slot, Near = far, Wind = wind, SoftNormal = 0.5f, Fade = fade, LastCascade = 3 }, card.First, card.Count));
+        }
+
+        var mesh = Own(Mesh.Create(CollectionsMarshal.AsSpan(vertices), CollectionsMarshal.AsSpan(indices)));
+        foreach (var (kind, first, count) in pending)
+        {
+            (kind.Mesh, kind.FirstIndex, kind.IndexCount) = (mesh, first, count);
+            _kinds.Add(kind);
+        }
+
+        // (Each canopy's stand-in in the far cascades: its trunk's bare below a quarter of the way up.)
+        foreach (var (kind, min, max) in canopies)
+            kind.FarCaster = Own(CanopyMesh(new float3(min.X, MathF.Max(min.Y, max.Y * 0.25f), min.Z), max));
+
+        RailWerkz.Core.Logging.Log.Info($"Vegetation: grass and {TreeCount} trees and {ShrubCount} bushes, {_kinds.Count} draws, {indices.Count / 3} triangles, loaded in {watch.ElapsedMilliseconds} ms");
     }
 
     // --- Drawing. ---
@@ -667,30 +761,15 @@ public sealed unsafe class Vegetation : IDisposable
 
         var view = camera.View(aspect);
         var push = new Push { Matrix = camera.JitteredViewProjection(aspect), Globals = Globals(camera) };
-        for (var k = 0; k < KindCount; k++)
+        foreach (var kind in _kinds)
         {
-            var kind = _kinds[k];
-            if (kind.Mesh is null || !Gather(k, camera, kind, (centre, radius) => view.Sees(centre, radius)))
+            if (!Gather(camera, kind, (centre, radius) => view.Sees(centre, radius)))
                 continue;
 
             push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, kind.Cutout);
-            push.Shift = new float4(kind.Shift, (float)camera.Y);
-            if (kind.Parts is null)
-            {
-                kind.Textures!.Bind(cmd, layout);
-                DrawVisible(cmd, layout, ref push, kind.Mesh, 0, kind.Mesh.IndexCount);
-            }
-            else
-            {
-                if (kind.Parts.Count == 1)
-                    kind.Textures!.Bind(cmd, layout);
-                foreach (var part in kind.Parts)
-                {
-                    if (kind.Parts.Count > 1)
-                        part.Textures.Bind(cmd, layout);
-                    DrawVisible(cmd, layout, ref push, kind.Mesh, part.FirstIndex, part.IndexCount);
-                }
-            }
+            push.Band = Band(kind);
+            kind.Textures.Bind(cmd, layout);
+            DrawVisible(cmd, layout, ref push, kind.Mesh, kind.FirstIndex, kind.Count);
 
             foreach (var visible in _visible)
                 DrawnInstances += visible.Count;
@@ -705,33 +784,24 @@ public sealed unsafe class Vegetation : IDisposable
 
         var push = new Push { Matrix = light, Globals = Globals(camera) };
         var last = cascade >= FarCasterFrom;
-        for (var k = 0; k < KindCount; k++)
+        foreach (var kind in _kinds)
         {
-            var kind = _kinds[k];
-            if (kind.Mesh is null || cascade > kind.LastCascade || (last && kind.NoFarCaster) || !Gather(k, camera, kind, reaches))
+            if (cascade > kind.LastCascade || (last && kind.NoFarCaster) || !Gather(camera, kind, reaches))
                 continue;
 
             var standIn = last && kind.FarCaster is not null;
             push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, standIn ? 2f : kind.Cutout);
-            push.Shift = new float4(kind.Shift, (float)camera.Y);
-            if (standIn || kind.Parts is null)
-            {
-                var mesh = standIn ? kind.FarCaster! : kind.Mesh;
-                kind.Textures!.Bind(cmd, layout);
-                DrawVisible(cmd, layout, ref push, mesh, 0, mesh.IndexCount);
-                continue;
-            }
-
-            if (kind.Parts.Count == 1)
-                kind.Textures!.Bind(cmd, layout);
-            foreach (var part in kind.Parts)
-            {
-                if (kind.Parts.Count > 1)
-                    part.Textures.Bind(cmd, layout);
-                DrawVisible(cmd, layout, ref push, kind.Mesh, part.FirstIndex, part.IndexCount);
-            }
+            push.Band = Band(kind);
+            kind.Textures.Bind(cmd, layout);
+            if (standIn)
+                DrawVisible(cmd, layout, ref push, kind.FarCaster!, 0, kind.FarCaster!.IndexCount);
+            else
+                DrawVisible(cmd, layout, ref push, kind.Mesh, kind.FirstIndex, kind.Count);
         }
     }
+
+    /// The distances a kind's drawn between, for plant.vert (which can't take an infinity).
+    private static float4 Band(Kind kind) => new(kind.Near, float.IsPositiveInfinity(kind.Far) ? 1e9f : kind.Far, 0f, 0f);
 
     /// What every cell drawn this frame shares: the ground below the camera and the wind's phases.
     private static float4 Globals(Camera camera)
@@ -740,29 +810,44 @@ public sealed unsafe class Vegetation : IDisposable
         return new float4(-(float)camera.Y, phases.Z, phases.X, phases.Y);
     }
 
-    /// The cells with any of kind k to draw in this pass (those keep takes, by their sphere relative to the camera), and how
-    /// many of it each shows at its distance, into _visible. False if there are none.
-    private bool Gather(int k, Camera camera, Kind kind, Func<float3, float, bool> keep)
+    /// The cells with any of a kind to draw in this pass (those within its distances, and that keep takes by their sphere relative
+    /// to the camera), and how many of it each shows at its distance, into _visible. False if there are none.
+    private bool Gather(Camera camera, Kind kind, Func<float3, float, bool> keep)
     {
         _visible.Clear();
+        var slot = kind.Slot;
         foreach (var cell in _cells.Values)
         {
-            var count = cell.Starts[k + 1] - cell.Starts[k];
+            var count = cell.Starts[slot + 1] - cell.Starts[slot];
             if (count == 0)
                 continue;
 
             var size = cell.Key.Far ? FarCell : NearCell;
             var (ox, oz) = (cell.Key.X * (double)size - camera.X, cell.Key.Z * (double)size - camera.Z);
-            var centre = new float3((float)ox + size * 0.5f, (cell.Low + cell.High) * 0.5f - (float)camera.Y, (float)oz + size * 0.5f);
-            var radius = MathF.Sqrt(size * size * 0.5f + (cell.High - cell.Low) * (cell.High - cell.Low) * 0.25f) + 12f;
+
+            // Its nearest and furthest from the camera, against the kind's distances (which each instance moves by up to a tenth).
+            var (lowY, highY) = (cell.Low - (float)camera.Y, cell.High - (float)camera.Y);
+            var nx = MathF.Max(MathF.Max((float)-ox - size, (float)ox), 0f);
+            var nz = MathF.Max(MathF.Max((float)-oz - size, (float)oz), 0f);
+            var ny = MathF.Max(MathF.Max(lowY, -highY), 0f);
+            var nearest = MathF.Sqrt(nx * nx + ny * ny + nz * nz);
+            if (nearest >= kind.Far * 1.1f)
+                continue;
+            var fx = MathF.Max(MathF.Abs((float)ox), MathF.Abs((float)ox + size));
+            var fz = MathF.Max(MathF.Abs((float)oz), MathF.Abs((float)oz + size));
+            var fy = MathF.Max(MathF.Abs(lowY), MathF.Abs(highY));
+            if (MathF.Sqrt(fx * fx + fy * fy + fz * fz) < kind.Near * 0.9f)
+                continue;
+
+            var centre = new float3((float)ox + size * 0.5f, (lowY + highY) * 0.5f, (float)oz + size * 0.5f);
+            var radius = MathF.Sqrt(size * size * 0.5f + (highY - lowY) * (highY - lowY) * 0.25f) + 12f;
             if (!keep(centre, radius))
                 continue;
 
-            var showing = Showing(count, MathF.Max(MathEx.Length(centre) - radius, 0f), kind.Fade * Quality.PlantReach);
+            var showing = Showing(count, nearest, kind.Fade * Quality.PlantReach);
             if (showing == 0)
                 continue;
-            var nearest = MathF.Max(MathEx.Length(centre) - radius, 0f);
-            _visible.Add(new Visible(new float4((float)ox, (float)oz, WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size)), cell.Offset + cell.Starts[k], showing, nearest));
+            _visible.Add(new Visible(new float4((float)ox, (float)oz, WrapCell(cell.Key.X, size), WrapCell(cell.Key.Z, size)), cell.Offset + cell.Starts[slot], showing, nearest));
         }
 
         // Nearest first: what's drawn first fills the depth that hides what's behind it, so less is shaded only to be covered.
@@ -813,64 +898,7 @@ public sealed unsafe class Vegetation : IDisposable
         }
     }
 
-    /// A model's materials (in a row in its index buffer) as one, drawn with the first's textures: the kit's branches and
-    /// twigs are all cards of leaves alike, and one draw for them all is a fifth of the cost of one each.
-    private static RenderModel.Part Merged(IEnumerable<RenderModel.Part> parts)
-    {
-        var list = parts.OrderBy(p => p.FirstIndex).ToList();
-        var end = list.Max(p => p.FirstIndex + p.IndexCount);
-        return list[0] with { IndexCount = end - list[0].FirstIndex };
-    }
-
-    // --- Meshes and textures made here. ---
-
-    private static void Card(List<Vertex> vertices, List<uint> indices, float3 centre, float3 across, float height, float3 lean, float3 normal)
-    {
-        var first = (uint)vertices.Count;
-        var bottom = centre;
-        var top = centre + new float3(0f, height, 0f) + lean;
-        vertices.Add(new Vertex(bottom - across, normal, new float2(0f, 1f)));
-        vertices.Add(new Vertex(bottom + across, normal, new float2(1f, 1f)));
-        vertices.Add(new Vertex(top + across, normal, new float2(1f, 0f)));
-        vertices.Add(new Vertex(top - across, normal, new float2(0f, 0f)));
-        indices.AddRange([first, first + 1, first + 2, first, first + 2, first + 3]);
-    }
-
-    /// Three cards of grass crossing at the middle.
-    private static Mesh GrassMesh()
-    {
-        var vertices = new List<Vertex>();
-        var indices = new List<uint>();
-        for (var i = 0; i < 3; i++)
-        {
-            var (sin, cos) = MathF.SinCos(i * MathF.PI / 3f + 0.3f);
-            var across = new float3(cos * 0.55f, 0f, sin * 0.55f);
-            Card(vertices, indices, default, across, 1f, new float3(sin * 0.08f, 0f, -cos * 0.08f), new float3(0f, 1f, 0f));
-        }
-
-        return Mesh.Create(CollectionsMarshal.AsSpan(vertices), CollectionsMarshal.AsSpan(indices));
-    }
-
-    /// A rounded bush: cards round the middle, leaning out, with their normals pointing away from it so it lights like a solid dome.
-    private static Mesh ShrubMesh()
-    {
-        var vertices = new List<Vertex>();
-        var indices = new List<uint>();
-        var random = new Random32(99u);
-        for (var i = 0; i < 9; i++)
-        {
-            var angle = i * MathF.PI * 2f * 0.381966f;
-            var (sin, cos) = MathF.SinCos(angle);
-            var out1 = 0.15f + 0.3f * random.Next();
-            var outward = new float3(sin, 0f, -cos);
-            var across = new float3(cos * (0.55f + 0.2f * random.Next()), 0f, sin * (0.55f + 0.2f * random.Next()));
-            var height = 0.8f + 0.5f * random.Next();
-            var normal = MathEx.Normalize(outward + new float3(0f, 0.8f, 0f));
-            Card(vertices, indices, outward * out1, across, height, outward * 0.3f, normal);
-        }
-
-        return Mesh.Create(CollectionsMarshal.AsSpan(vertices), CollectionsMarshal.AsSpan(indices));
-    }
+    // --- Meshes made here. ---
 
     /// A lumpy stone, flat underneath: an icosahedron split splits times (80 triangles once, 320 twice) and pushed about by noise.
     private static Mesh RockMesh(int seed, int splits = 2)
@@ -971,73 +999,6 @@ public sealed unsafe class Vegetation : IDisposable
         }
 
         return (points, faces);
-    }
-
-    /// A card of twiggy desert shrub, drawn here: branching dark stems from the bottom middle, flecked with small pale leaves. Greys
-    /// only, so each shrub's tint gives it its colour. The clear parts keep a leaf's grey, so filtering doesn't darken the edges.
-    private static Texture2D TwigTexture()
-    {
-        const int size = 512;
-        var grey = new byte[size * size];
-        var alpha = new byte[size * size];
-        Array.Fill(grey, (byte)150);
-        var random = new Random32(4242u);
-
-        void Dot(float x, float y, float r, byte shade)
-        {
-            var (x0, x1) = ((int)(x - r - 1f), (int)(x + r + 1f));
-            var (y0, y1) = ((int)(y - r - 1f), (int)(y + r + 1f));
-            for (var py = Math.Max(y0, 0); py <= Math.Min(y1, size - 1); py++)
-            {
-                for (var px = Math.Max(x0, 0); px <= Math.Min(x1, size - 1); px++)
-                {
-                    var (dx, dy) = (px + 0.5f - x, py + 0.5f - y);
-                    var a = Math.Clamp(r + 0.5f - MathF.Sqrt(dx * dx + dy * dy), 0f, 1f);
-                    if (a <= 0f)
-                        continue;
-                    var i = py * size + px;
-                    grey[i] = (byte)(grey[i] + (shade - grey[i]) * a);
-                    alpha[i] = Math.Max(alpha[i], (byte)(a * 255f));
-                }
-            }
-        }
-
-        void Branch(float x, float y, float angle, float length, float width, int depth)
-        {
-            var steps = (int)(length / 2f);
-            for (var s = 0; s < steps; s++)
-            {
-                angle += (random.Next() - 0.5f) * 0.12f;
-                x += MathF.Sin(angle) * 2f;
-                y -= MathF.Cos(angle) * 2f;
-                var w = width * (1f - 0.5f * s / steps);
-                Dot(x, y, w, 60);
-                if (depth < 3 && random.Next() < 0.7f)
-                {
-                    var (ox, oy) = ((random.Next() - 0.5f) * 13f, (random.Next() - 0.5f) * 13f);
-                    Dot(x + ox, y + oy, 1.6f + random.Next() * 2.4f, (byte)(120 + random.Next() * 110f));
-                }
-            }
-
-            if (depth <= 0)
-                return;
-
-            var children = 2 + (int)(random.Next() * 2f);
-            for (var c = 0; c < children; c++)
-                Branch(x, y, angle + (random.Next() - 0.5f) * 1.5f, length * (0.55f + random.Next() * 0.2f), width * 0.65f, depth - 1);
-        }
-
-        for (var stem = 0; stem < 9; stem++)
-            Branch(size * 0.5f + (stem - 4) * 12f, size - 2f, (stem - 4) * 0.2f + (random.Next() - 0.5f) * 0.25f, 110f + random.Next() * 40f, 4f, 3);
-
-        var rgba = new byte[size * size * 4];
-        for (var i = 0; i < size * size; i++)
-        {
-            rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = grey[i];
-            rgba[i * 4 + 3] = alpha[i];
-        }
-
-        return Texture2D.FromPixels(size, size, rgba, repeat: false, mipmaps: true, srgb: true, name: "shrub.twigs");
     }
 
     public void Dispose()

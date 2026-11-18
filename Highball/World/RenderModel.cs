@@ -7,7 +7,9 @@ namespace Highball.World;
 /// Something the world renderer can draw whole: a mesh and, per material, its textures and PBR factors.
 public sealed class RenderModel : IDisposable
 {
-    public readonly record struct Part(int FirstIndex, int IndexCount, TextureBinding Textures, float4 BaseColor, float Metallic, float Roughness, float AlphaCutoff);
+    /// SeeThrough: drawn after everything solid, over what's behind it (glass), and casting no shadow.
+    public readonly record struct Part(int FirstIndex, int IndexCount, TextureBinding Textures, float4 BaseColor, float Metallic, float Roughness, float AlphaCutoff,
+        bool SeeThrough = false);
 
     private readonly List<Part> _parts = [];
     private readonly List<TextureBinding> _bindings = [];
@@ -16,6 +18,9 @@ public sealed class RenderModel : IDisposable
 
     public Mesh Mesh { get; }
     public IReadOnlyList<Part> Parts => _parts;
+
+    /// It has see-through parts (Part.SeeThrough), to be drawn after the solid world.
+    public bool HasSeeThrough { get; private set; }
 
     private readonly List<(RenderModel Model, float From)> _lods = [];
 
@@ -36,15 +41,15 @@ public sealed class RenderModel : IDisposable
         return chosen;
     }
 
-    /// All its parts as one run of the index buffer, when they lie end to end: drawn in one call where materials don't
-    /// matter (shadows, motion). Null if they don't.
+    /// All its solid parts as one run of the index buffer, when they lie end to end: drawn in one call where materials don't
+    /// matter (shadows, motion). Null if they don't. (See-through parts have no shape there: light passes them.)
     public (int FirstIndex, int IndexCount)? Whole
     {
         get
         {
             if (_whole is { } known)
                 return known.Count > 0 ? (known.First, known.Count) : null;
-            var sorted = _parts.OrderBy(p => p.FirstIndex).ToList();
+            var sorted = _parts.Where(p => !p.SeeThrough).OrderBy(p => p.FirstIndex).ToList();
             var contiguous = sorted.Count > 0;
             for (var i = 1; i < sorted.Count && contiguous; i++)
                 contiguous = sorted[i].FirstIndex == sorted[i - 1].FirstIndex + sorted[i - 1].IndexCount;
@@ -55,14 +60,15 @@ public sealed class RenderModel : IDisposable
 
     private (int First, int Count)? _whole;
 
-    /// Draws every instance of a run in as few calls as the parts allow, materials ignored.
+    /// Draws every instance of a run in as few calls as the parts allow, materials ignored: the solid parts only.
     public void DrawShape(CommandBuffer cmd, BufferEx instances, int count, int first)
     {
         if (Whole is { } whole)
             Mesh.DrawRangeInstanced(cmd, instances, whole.FirstIndex, whole.IndexCount, count, first);
         else
             foreach (var part in _parts)
-                Mesh.DrawRangeInstanced(cmd, instances, part.FirstIndex, part.IndexCount, count, first);
+                if (!part.SeeThrough)
+                    Mesh.DrawRangeInstanced(cmd, instances, part.FirstIndex, part.IndexCount, count, first);
     }
 
     /// A loaded model, which this now owns.
@@ -73,7 +79,8 @@ public sealed class RenderModel : IDisposable
         foreach (var sub in model.SubMeshes)
         {
             var surface = model.Surfaces[sub.Material];
-            _parts.Add(new Part(sub.FirstIndex, sub.IndexCount, Bind(surface.Texture, surface.MetallicRoughness, surface.Normal), surface.BaseColor, surface.Metallic, surface.Roughness, surface.AlphaCutoff));
+            _parts.Add(new Part(sub.FirstIndex, sub.IndexCount, Bind(surface.Texture, surface.MetallicRoughness, surface.Normal, surface.Occlusion), surface.BaseColor, surface.Metallic, surface.Roughness, surface.AlphaCutoff, surface.Blend));
+            HasSeeThrough |= surface.Blend;
         }
     }
 
@@ -82,13 +89,14 @@ public sealed class RenderModel : IDisposable
     {
         Mesh = mesh;
         _owned = [mesh, .. owned];
-        _parts.Add(new Part(0, mesh.IndexCount, Bind(albedo, null, null), baseColor, metallic, roughness, 0f));
+        _parts.Add(new Part(0, mesh.IndexCount, Bind(albedo, null, null, null), baseColor, metallic, roughness, 0f));
     }
 
-    private TextureBinding Bind(Texture2D? albedo, Texture2D? metallicRoughness, Texture2D? normal)
+    private TextureBinding Bind(Texture2D? albedo, Texture2D? metallicRoughness, Texture2D? normal, Texture2D? occlusion)
     {
         Texture2D White() => _white ??= Texture2D.Solid(new byte4(255, 255, 255, 255));
-        var binding = new TextureBinding(albedo ?? White(), metallicRoughness ?? White(), normal ?? White());
+        // (Fully lit by the sky where there's no occlusion map: white.)
+        var binding = new TextureBinding(albedo ?? White(), metallicRoughness ?? White(), normal ?? White(), occlusion ?? White());
         _bindings.Add(binding);
         return binding;
     }

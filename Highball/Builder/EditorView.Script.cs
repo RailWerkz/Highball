@@ -571,7 +571,7 @@ public sealed partial class EditorView
                     for (var p = 0; p < l.Count; p++)
                     {
                         var g = _route.Projection!.Inverse(new RoutePoint(l.X[p], -l.Z[p]));
-                        dump.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{l.X[p]:0.000} {l.Z[p]:0.000} {l.S[p]:0.00} {g.Lat:0.00000000} {g.Lon:0.00000000}"));
+                        dump.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{l.X[p]:0.000} {l.Z[p]:0.000} {l.S[p]:0.00} {g.Lat:0.00000000} {g.Lon:0.00000000} {l.Y[p]:0.000} {l.Ground[p]:0.000}"));
                     }
                 }
 
@@ -767,6 +767,20 @@ public sealed partial class EditorView
                 _parallelFollow.Clear();
                 break;
             }
+
+            case "siding":
+            {
+                // siding,lat,lon,lat,lon,side (+1 right, -1 left, leaving the first switch),size,spacing,passing|stub[,preview]:
+                // through the Siding tool's own steps; "preview" leaves it placed but not laid, to see.
+                _tool = Tool.Siding;
+                var laid = _siding.Script(At(1), At(3), (int)Number(5), (int)Number(6), (float)Number(7), parts[8] != "stub", parts.Length <= 9 || parts[9] != "preview");
+                Log.Info($"Siding op: {(laid ? "ok" : "refused")}");
+                break;
+            }
+
+            case "tool" when Enum.TryParse<Tool>(parts[1], true, out var picked):
+                _tool = picked;
+                break;
 
             case "view":
                 _tool = Tool.Follow;

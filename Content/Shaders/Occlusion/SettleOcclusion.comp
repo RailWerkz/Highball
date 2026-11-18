@@ -1,6 +1,9 @@
 #version 450
-// Averages the occlusion over the frames a pixel's stayed the same, so that with the camera still its noise, which turns each frame,
-// settles to nothing instead of crawling. Anything moved in front of a pixel, like a plant in the wind or a train, starts it over.
+// Averages the occlusion over the frames each point's been seen, so its noise, which turns each frame, settles to nothing
+// instead of crawling. Each pixel looks for where its point was last frame, the way temporal anti-aliasing does: the camera's
+// move takes care of the still world, and the motion image (MotionVectors) of what moves on its own, so a cab the camera rides
+// in settles as well as the ground does with the camera still. Where last frame saw something else there (it was hidden, or
+// off the screen), it starts over.
 // Red: the occlusion. Green: how far along the view it was. Blue: how many frames are in it.
 
 layout(local_size_x = 8, local_size_y = 8) in;
@@ -9,13 +12,18 @@ layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D result;
 layout(set = 0, binding = 1) uniform sampler2D current;
 layout(set = 0, binding = 2) uniform sampler2D history;
 layout(set = 0, binding = 3) uniform sampler2D sceneDepth;
+// xyz: from a full-size pixel's point to where that point was last frame, in metres; w: 1 where something moving is seen.
+layout(set = 0, binding = 5) uniform sampler2D motion;
 
 #define OCCLUSION_SET 0
 #define OCCLUSION_BINDING 4
 #include "OcclusionData.glsl"
 
-// More than a whole turn of the noise.
+// More than a whole turn of the noise, for a point that's stayed on the same pixel.
 const float MostFrames = 128.0;
+// For one that's slid across the pixels: each frame's history is a little off where it was, so less of it is kept, lest the
+// shading trail behind what it's on.
+const float MostFramesSliding = 24.0;
 
 void main()
 {
@@ -25,12 +33,42 @@ void main()
         return;
 
     ivec2 screen = textureSize(sceneDepth, 0);
-    float along = alongView(texelFetch(sceneDepth, min(pixel * 2, screen - 1), 0).r);
+    ivec2 full = min(pixel * 2, screen - 1);
+    float depth = texelFetch(sceneDepth, full, 0).r;
+    float along = alongView(depth);
     float now = texelFetch(current, pixel, 0).r;
-    vec4 past = texelFetch(history, pixel, 0);
 
-    // up.w: 1 when the camera's where it was last frame. (The depth shakes a little with temporal anti-aliasing's jitter.)
-    bool same = occlusion.up.w > 0.5 && abs(past.g - along) < along * 0.02 + 0.1;
-    float frames = same ? min(past.b + 1.0, MostFrames) : 1.0;
-    imageStore(result, pixel, vec4(same ? mix(past.r, now, 1.0 / frames) : now, along, frames, 1.0));
+    float frames = 1.0;
+    float settled = now;
+    if (occlusion.moved.w > 0.5 && depth > 0.0)
+    {
+        // Where this point was last frame, relative to where the camera was then.
+        vec3 here = placeAt((vec2(full) + 0.5) / vec2(screen), depth);
+        vec4 moving = texelFetch(motion, full, 0);
+        vec3 own = moving.w > 0.5 ? moving.xyz : vec3(0.0);
+        vec4 clip = occlusion.previousViewProjection * vec4(here + occlusion.moved.xyz + own, 1.0);
+        if (clip.w > 0.0)
+        {
+            vec2 uv = vec2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+            vec2 was = uv * vec2(size) - 0.5;
+            ivec2 at = ivec2(round(was));
+            if (all(greaterThanEqual(at, ivec2(0))) && all(lessThan(at, size)))
+            {
+                vec4 past = texelFetch(history, at, 0);
+                // The same point if it was as far along last frame's view as this one would have been. (The depth shakes a
+                // little with temporal anti-aliasing's jitter.)
+                if (past.b > 0.0 && abs(past.g - clip.w) < clip.w * 0.02 + 0.05)
+                {
+                    // (Measured from where this pixel's point is now, a quarter of a pixel off its middle.)
+                    vec2 stays = (vec2(full) + 0.5) / vec2(screen) * vec2(size) - 0.5;
+                    float slid = length(was - stays);
+                    float most = mix(MostFrames, MostFramesSliding, smoothstep(0.02, 0.25, slid));
+                    frames = min(past.b + 1.0, most);
+                    settled = mix(past.r, now, 1.0 / frames);
+                }
+            }
+        }
+    }
+
+    imageStore(result, pixel, vec4(settled, along, depth > 0.0 ? frames : 0.0, 1.0));
 }

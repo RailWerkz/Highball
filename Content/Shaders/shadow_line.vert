@@ -15,8 +15,11 @@ void main()
     // it goes in under the ground here, so it casts nothing onto it.
     vec3 place = inPosition + pc.offset.xyz;
     int code = int(inData.z + 0.5);
-    bool lowBed = (code & 7) == 0 && ((code >> 3) & 16) != 0;
-    if (inData.w < 0.0 || lowBed)
+    // Nor does a bed of ballast at all: heaped on the ground (or now laid into it, NetworkLines.BallastFlanks), the map's too coarse
+    // for its slopes, and it laid its own shadow down them in a black band. Its slopes shade by their own facing; the rails and ties
+    // cast theirs in the track's cascade.
+    bool ballast = (code & 7) == 0;
+    if (inData.w < 0.0 || ballast)
         place.y -= 1.5;
     gl_Position = pc.light * vec4(place, 1.0);
 }

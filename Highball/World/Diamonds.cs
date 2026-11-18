@@ -30,7 +30,7 @@ public sealed class CrossingAssembly
     /// The middle: where the two centrelines cross, and the height the castings lie at.
     public required double X { get; init; }
     public required double Z { get; init; }
-    public required float Y { get; init; }
+    public required float Y { get; set; }
     public required float Degrees { get; init; }
 
     /// How far a place is off a track, to its right, and where along it, starting the search from s.
@@ -119,8 +119,92 @@ public static class Diamonds
         }
 
         JoinNeighbours(lines);
+        Level(lines);
         return result;
     }
+
+    /// How far each track eases from a diamond's plane back onto its own grade.
+    private const float LevelEase = 15f;
+
+    /// A diamond's rails all lie in one plane, the two tracks' crowns meeting flush; each line's profile is fitted only for itself, so
+    /// two crossing tracks on their own grades meet at their shared node and part by centimetres either side of it, one's rails standing
+    /// proud of the other's. So every diamond (and diamonds run into one another, one track over a double track) is laid level: each
+    /// track's rails lie flat through the assembly, and its profile eases back to its own grade over LevelEase beyond.
+    /// (Before the ground's shaped round the track: its bed and the ground follow.)
+    private static void Level(NetworkLines lines)
+    {
+        var all = lines.CrossingAssemblies;
+        if (all.Count == 0)
+            return;
+
+        // Diamonds that share a track close by, as one.
+        var group = Enumerable.Range(0, all.Count).ToArray();
+        int Root(int i) => group[i] == i ? i : group[i] = Root(group[i]);
+        for (var a = 0; a < all.Count; a++)
+            for (var b = a + 1; b < all.Count; b++)
+            {
+                var shared = all[a].Tracks.Any(t => all[b].Tracks.Any(u => ReferenceEquals(t.Out.Line, u.Out.Line)));
+                var (dx, dz) = (all[a].X - all[b].X, all[a].Z - all[b].Z);
+                if (shared && dx * dx + dz * dz < 20.0 * 20.0)
+                    group[Root(a)] = Root(b);
+            }
+
+        // Each line's best claim to a level, point by point (the strongest, where two diamonds' easings overlap), from the profiles as fitted.
+        var claims = new Dictionary<NetworkLine, (float Weight, float Y)[]>();
+        foreach (var members in Enumerable.Range(0, all.Count).GroupBy(Root).Select(g => g.Select(i => all[i]).ToList()))
+        {
+            // The plane: level, at the tracks' mean height through it. (A track's rails lie level across it, so only a level plane has
+            // all four rails meet the other track's flush: tilted, every track but one along its fall would stand a rail proud.)
+            var (sum, n) = (0.0, 0);
+            foreach (var c in members)
+                for (var i = 0; i < 2; i++)
+                    for (var t = c.Range[i].From; t <= c.Range[i].To; t += 0.5f)
+                    {
+                        sum += c.Tracks[i].At(t).Y;
+                        n++;
+                    }
+
+            if (n == 0)
+                continue;
+            var level = (float)(sum / n);
+            foreach (var c in members)
+                c.Y = level;
+
+            // Each line's stretch under the group's assemblies, and its easing either side.
+            var spans = new Dictionary<NetworkLine, (float Lo, float Hi)>();
+            foreach (var c in members)
+                for (var i = 0; i < 2; i++)
+                {
+                    var track = c.Tracks[i];
+                    var (a, b) = (track.Out.LineS(c.Range[i].To), track.Back.LineS(-c.Range[i].From));
+                    var line = track.Out.Line;
+                    var (lo, hi) = (MathF.Min(a, b), MathF.Max(a, b));
+                    spans[line] = spans.TryGetValue(line, out var was) ? (MathF.Min(was.Lo, lo), MathF.Max(was.Hi, hi)) : (lo, hi);
+                }
+
+            foreach (var (line, (lo, hi)) in spans)
+            {
+                if (!claims.TryGetValue(line, out var claim))
+                    claims[line] = claim = new (float, float)[line.Count];
+                for (var p = 0; p < line.Count; p++)
+                {
+                    var away = MathF.Max(lo - line.S[p], line.S[p] - hi);
+                    if (away >= LevelEase)
+                        continue;
+                    var t = Math.Clamp(1f - away / LevelEase, 0f, 1f);
+                    var weight = t * t * (3f - 2f * t);
+                    if (weight > claim[p].Weight)
+                        claim[p] = (weight, level);
+                }
+            }
+        }
+
+        foreach (var (line, claim) in claims)
+            for (var p = 0; p < line.Count; p++)
+                if (claim[p].Weight > 0f)
+                    line.Y[p] += (claim[p].Y - line.Y[p]) * claim[p].Weight;
+    }
+
 
     /// How far apart two diamonds' ends along the same track can be and be joined into one run.
     private const float JoinGap = 3f;
@@ -264,6 +348,28 @@ public static class Diamonds
 
             if (from is { } a2 && to is { } b2)
                 leg.Line.TieCuts.Add((a2 - 0.3f, b2 + 0.3f));
+        }
+
+        // Level through the crossing (Level), the two beds' tops would lie in one plane and fight where they overlap: one lies just under
+        // the other's wherever its top reaches it.
+        // (Always the line later in the list: where one track crosses a double track, each pair agrees which bed's on top.)
+        var (over, below) = first[0].Line.Index < second[0].Line.Index ? (first, second) : (second, first);
+        var reachTop = first[0].Line.BallastHalfTop + second[0].Line.BallastHalfTop + 0.3f;
+        var run = reachTop / MathF.Max(MathF.Sin(angle), 0.14f) + 1f;
+        foreach (var leg in below)
+        {
+            float? from = null, to = null;
+            for (var s = 0f; s <= MathF.Min(run, leg.Length); s += 0.25f)
+            {
+                var (x, z, _, _, _, _, _) = leg.At(s);
+                if (!over.Any(f => Turnout.Offset(f, x, z) is { } off && MathF.Abs(off.Offset) < reachTop && off.S < run))
+                    continue;
+                var ls = leg.LineS(s);
+                (from, to) = (MathF.Min(from ?? ls, ls), MathF.Max(to ?? ls, ls));
+            }
+
+            if (from is { } a3 && to is { } b3)
+                leg.Line.BedDrops.Add((a3, b3));
         }
 
         return clash ?? "";

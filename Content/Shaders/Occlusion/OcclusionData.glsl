@@ -5,6 +5,8 @@ layout(set = OCCLUSION_SET, binding = OCCLUSION_BINDING) uniform OcclusionUnifor
     vec4 right;   // across the view, scaled to its edge; w: which frame, for the noise
     vec4 up;      // up the view, scaled to its edge
     vec4 forward; // w: the near distance
+    mat4 previousViewProjection; // last frame's, camera at the origin
+    vec4 moved;   // the camera's move since last frame; w: 1 when last frame's occlusion can be used
 } occlusion;
 
 // How far along the view a depth is. The depth buffer is reversed, with no far plane; 0 is the sky.

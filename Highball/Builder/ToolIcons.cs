@@ -4,7 +4,7 @@ using RailWerkz.UI;
 
 namespace Highball.Builder;
 
-public enum ToolIcon { Look, Edit, Pen, Shape, Lay, Parallel, Switches, Place, Circuits, Terrain, Signal, HandThrow, Crossing, Diamond, Undo, Redo, Road, Bridge, RemoveBridge, UtilityPole, LightPole, Ties, Consist, Pieces, Join }
+public enum ToolIcon { Look, Edit, Pen, Shape, Lay, Parallel, Switches, Place, Circuits, Terrain, Signal, HandThrow, Crossing, Diamond, Undo, Redo, Road, Bridge, RemoveBridge, UtilityPole, LightPole, Ties, Consist, Pieces, Join, Draw, Siding }
 
 /// The editor's icons, drawn as lines so they stay sharp at any interface scale. Each is lines (x, y, x, y...) and dots
 /// (x, y, radius) in a square from -1 to 1, y down.
@@ -38,6 +38,10 @@ public static class ToolIcons
             [[-0.72f, 0.55f, 0.15f], [-0.35f, 0.55f, 0.15f], [0.35f, 0.55f, 0.15f], [0.72f, 0.55f, 0.15f]]),
         // Two track ends and the curve between them.
         [ToolIcon.Join] = ([[-0.9f, 0.85f, -0.55f, 0.35f], [-0.55f, 0.35f, -0.3f, -0.15f, 0f, -0.35f, 0.3f, -0.15f, 0.55f, 0.35f], [0.55f, 0.35f, 0.9f, 0.85f]], [[-0.55f, 0.35f, 0.17f], [0.55f, 0.35f, 0.17f]]),
+        // A straight running on into a curve.
+        [ToolIcon.Draw] = ([[-0.9f, 0.8f, -0.2f, 0.1f, 0.05f, -0.2f, 0.35f, -0.5f, 0.9f, -0.75f]], [[-0.9f, 0.8f, 0.15f], [-0.2f, 0.1f, 0.12f]]),
+        // A track, and a siding leaving it, running beside it and coming back.
+        [ToolIcon.Siding] = ([[-0.95f, 0.55f, 0.95f, 0.55f], [-0.75f, 0.55f, -0.35f, -0.2f, 0.35f, -0.2f, 0.75f, 0.55f]], [[-0.75f, 0.55f, 0.13f], [0.75f, 0.55f, 0.13f]]),
         [ToolIcon.Diamond] = ([[0f, -0.85f, 0.85f, 0f, 0f, 0.85f, -0.85f, 0f, 0f, -0.85f]], []),
         [ToolIcon.Undo] = ([[-0.8f, -0.25f, 0.3f, -0.25f, 0.75f, 0f, 0.85f, 0.35f, 0.65f, 0.7f, 0.25f, 0.85f, -0.3f, 0.85f], [-0.35f, -0.7f, -0.8f, -0.25f, -0.35f, 0.2f]], []),
         [ToolIcon.Redo] = ([[0.8f, -0.25f, -0.3f, -0.25f, -0.75f, 0f, -0.85f, 0.35f, -0.65f, 0.7f, -0.25f, 0.85f, 0.3f, 0.85f], [0.35f, -0.7f, 0.8f, -0.25f, 0.35f, 0.2f]], []),

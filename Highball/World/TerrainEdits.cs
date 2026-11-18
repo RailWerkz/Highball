@@ -30,7 +30,8 @@ public sealed partial class TerrainSource
     private static float[]? LoadEdits(string folder, int samples)
     {
         var path = Path.Combine(folder, EditsFile);
-        if (!File.Exists(path))
+        // (HB_NOEDITS=1: the ground as the track and roads shape it alone, for a test run to look at; nothing's saved by it.)
+        if (!File.Exists(path) || Environment.GetEnvironmentVariable("HB_NOEDITS") == "1")
             return null;
 
         using var input = new GZipStream(File.OpenRead(path), CompressionMode.Decompress);

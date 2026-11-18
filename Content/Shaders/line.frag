@@ -230,148 +230,71 @@ vec3 bumped(vec3 n, vec3 bump, vec2 uv)
     return scale < 1e-20 ? n : normalize(t * bump.x - b * bump.y + n * bump.z * sqrt(scale));
 }
 
-// Moves a map's position by what its height does to the line of sight, so what stands proud covers what's behind it. relief: how many
-// metres the map's height spans, and tile how many metres it repeats over. Fades out with distance, where it'd only shimmer.
-vec2 parallax(sampler2D packed, vec2 uv, vec3 n, vec3 view, float relief, float tile, float dist)
+// The ballast's rock: one PBR material (colour, normal, and ambient occlusion, roughness and height packed), laid by where it is in
+// the world, as a world-aligned texture is, and given its relief by parallax occlusion mapping exactly as Godot 4's
+// StandardMaterial3D does it ("deep parallax", BaseMaterial3D in scene/resources/material.cpp) and LearnOpenGL teaches it
+// (Advanced Lighting, Parallax Mapping), both Tatarchuk's algorithm: the line of sight stepped down through the height map in
+// layers, between 8 looking straight down and 32 looking across, and the place it meets the stones taken between the last layer
+// above them and the first below. Its colour, roughness and occlusion are the maps' own; the lighting is the shared PBR.
+const float RockTile = 1.5;         // metres the rock maps repeat over
+const float RockDepth = 0.01;       // the texture's own material's heightmap_scale (1, times 0.01, as Godot takes it), in texture units
+const float RockMinLayers = 8.0;    // Godot's and LearnOpenGL's defaults
+const float RockMaxLayers = 32.0;
+// The rock's colour darkened to what track ballast is (crushed trap rock and granite, dusted with oil and brake dust): the texture's
+// own is a pale gravel.
+const vec3 RockShade = vec3(0.5, 0.49, 0.47);
+// How much of the texture's smoothness to keep: it's a smooth river gravel (roughness 0.42 to 0.73), and crushed ballast is matte
+// (about 0.85 to 0.95). Its roughness is taken towards fully rough by this, keeping the map's own variation stone to stone.
+const float RockSmoothness = 0.22;
+
+struct Rock { vec3 albedo; vec3 normal; float roughness; float occlusion; };
+
+// The rock at uv, laid along t and b (the world directions uv's x and y run, on the surface), on a surface facing n, seen from
+// toEye (unit, from the surface towards the eye).
+Rock rockAt(vec2 uv, vec3 t, vec3 b, vec3 n, vec3 toEye)
 {
-    float fade = 1.0 - smoothstep(12.0, 40.0, dist);
-    if (fade <= 0.0)
-        return uv;
+    // Read by uv's own rate of change throughout: the moved place jumps at each stone's edge, and the loop's reads aren't uniform.
+    vec2 dx = dFdx(uv);
+    vec2 dy = dFdy(uv);
 
-    vec3 t, b;
-    float scale = mapAxes(uv, n, t, b);
-    if (scale < 1e-20)
-        return uv;
-
-    float inverse = 1.0 / sqrt(scale);
-    // From the surface towards the eye, along the map's directions. Not too near the grazing, where it'd run away.
-    vec3 toEye = -view;
-    vec2 across = vec2(dot(toEye, t), dot(toEye, b)) * inverse / max(dot(toEye, n), 0.25);
-    vec2 reach = across * relief / tile * fade;
-
-    // Down the line of sight from the top of the relief to where it first goes in under the map's height.
-    const int steps = 10;
-    float lod = textureQueryLod(packed, uv).x;
-    float above = 1.0;
-    float gap = 1.0 - textureLod(packed, uv + reach * 0.5, lod).a;
-    for (int i = 1; i <= steps; i++)
+    // The line of sight in the texture's own frame (Godot's view_dir).
+    vec3 viewDir = normalize(vec3(dot(toEye, t), dot(toEye, b), dot(toEye, n)));
+    float numLayers = mix(RockMaxLayers, RockMinLayers, abs(viewDir.z));
+    float layerDepth = 1.0 / numLayers;
+    vec2 delta = viewDir.xy * RockDepth / numLayers;
+    vec2 ofs = uv;
+    float depth = 1.0 - textureGrad(rockPacked, ofs, dx, dy).a;
+    float currentDepth = 0.0;
+    for (int i = 0; i < 64 && currentDepth < depth; i++)
     {
-        float level = 1.0 - float(i) / float(steps);
-        float next = level - textureLod(packed, uv + reach * (level - 0.5), lod).a;
-        if (next <= 0.0)
-            return uv + reach * (mix(above, level, gap / max(gap - next, 1e-4)) - 0.5);
-        above = level;
-        gap = next;
+        ofs -= delta;
+        depth = 1.0 - textureGrad(rockPacked, ofs, dx, dy).a;
+        currentDepth += layerDepth;
     }
 
-    return uv - reach * 0.5;
+    vec2 prevOfs = ofs + delta;
+    float afterDepth = depth - currentDepth;
+    float beforeDepth = (1.0 - textureGrad(rockPacked, prevOfs, dx, dy).a) - currentDepth + layerDepth;
+    float weight = afterDepth / (afterDepth - beforeDepth);
+    ofs = mix(ofs, prevOfs, weight);
+
+    Rock r;
+    vec4 packed = textureGrad(rockPacked, ofs, dx, dy);
+    r.albedo = textureGrad(rockColor, ofs, dx, dy).rgb * RockShade;
+    r.occlusion = packed.r;
+    r.roughness = 1.0 - (1.0 - packed.g) * RockSmoothness;
+    // The normal map's green points up its image, against the way uv's y runs.
+    vec3 m = textureGrad(rockNormal, ofs, dx, dy).xyz * 2.0 - 1.0;
+    r.normal = normalize(t * m.x - b * m.y + n * m.z);
+    return r;
 }
 
-// The ballast's rock at where parallax took base to. What's read goes by base's own rate of change, since where stones overlap the
-// moved position jumps, and would pick a blurred mip all along each stone's edge.
-// A random shift for a corner of the hex grid, a whole tile's worth either way.
-vec2 hexShift(ivec2 corner)
+// The rock laid from above (a world-aligned texture's top projection): uv the world's x and z, its axes those laid onto the surface.
+Rock rockFromAbove(vec2 worldXZ, vec3 n, vec3 toEye)
 {
-    vec2 p = vec2(corner);
-    return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453);
-}
-
-// Where uv is in a grid of triangles: its three corners, and how near it is to each (the weights add to 1). Each corner is the middle
-// of a hexagon about HexSize tiles across, the region where it counts most. (Mikkelsen, "Practical Real-Time Hex-Tiling", 2022.)
-const float HexSize = 0.85;
-void hexGrid(vec2 uv, out vec3 w, out ivec2 c1, out ivec2 c2, out ivec2 c3)
-{
-    uv *= 1.7320508 / HexSize;
-    vec2 skewed = vec2(uv.x - 0.57735027 * uv.y, 1.15470054 * uv.y);
-    ivec2 cell = ivec2(floor(skewed));
-    vec3 t = vec3(fract(skewed), 0.0);
-    t.z = 1.0 - t.x - t.y;
-    float s = t.z < 0.0 ? 1.0 : 0.0;
-    float s2 = 2.0 * s - 1.0;
-    w = vec3(-t.z * s2, s - t.y * s2, s - t.x * s2);
-    c1 = cell + ivec2(int(s), int(s));
-    c2 = cell + ivec2(int(s), 1 - int(s));
-    c3 = cell + ivec2(1 - int(s), int(s));
-}
-
-// Where the rock maps are taken for a place: the three shifts, how near each corner is, and parallax's lift (by the shift that counts
-// most here). The rock maps repeat every tile, which the eye picks out along a line, so they're taken three times, each shifted at
-// random by a corner of a hex grid, and blended by how near each corner is and by height: the stones of one sit on those of another,
-// and no stone comes round again where it'd be seen.
-struct Hex { vec2 s1; vec2 s2; vec2 s3; vec3 w; vec2 lift; };
-
-Hex hexAt(vec2 base, vec3 n, vec3 view, float relief, float dist)
-{
-    Hex h;
-    ivec2 c1, c2, c3;
-    hexGrid(base, h.w, c1, c2, c3);
-    h.s1 = hexShift(c1);
-    h.s2 = hexShift(c2);
-    h.s3 = hexShift(c3);
-    vec2 most = h.w.x >= h.w.y && h.w.x >= h.w.z ? h.s1 : h.w.y >= h.w.z ? h.s2 : h.s3;
-    h.lift = parallax(rockPacked, base + most, n, view, relief, 1.5, dist) - (base + most);
-    return h;
-}
-
-// How much each of the three counts: sharpened towards the nearest corner, and towards whichever's stone stands highest.
-vec3 hexWeights(Hex h, vec3 heights)
-{
-    vec3 k = h.w * h.w * h.w * exp2((heights - max(heights.x, max(heights.y, heights.z))) * 12.0);
-    return k / (k.x + k.y + k.z);
-}
-
-// The stones' height there, at a mip level.
-float hexHeight(Hex h, vec2 base, float lod)
-{
-    vec3 heights = vec3(textureLod(rockPacked, base + h.s1 + h.lift, lod).a, textureLod(rockPacked, base + h.s2 + h.lift, lod).a,
-        textureLod(rockPacked, base + h.s3 + h.lift, lod).a);
-    return dot(hexWeights(h, heights), heights);
-}
-
-// The ballast's stone at base (tile units), taken as h says.
-void rock(vec2 base, Hex h, float weather, inout vec3 n, out vec3 albedo, out float roughness, out float occlusion)
-{
-    vec2 dx = dFdx(base);
-    vec2 dy = dFdy(base);
-    vec2 s1 = h.s1, s2 = h.s2, s3 = h.s3, lift = h.lift;
-    vec4 p1 = textureGrad(rockPacked, base + s1 + lift, dx, dy);
-    vec4 p2 = textureGrad(rockPacked, base + s2 + lift, dx, dy);
-    vec4 p3 = textureGrad(rockPacked, base + s3 + lift, dx, dy);
-    // Sharpened towards the nearest corner, and towards whichever's stone stands highest.
-    vec3 k = hexWeights(h, vec3(p1.a, p2.a, p3.a));
-
-    vec4 maps = p1 * k.x + p2 * k.y + p3 * k.z;
-    // The blend's sharp: mostly one copy carries it all. Copies that add under 2% aren't read for colour and bump at all, the
-    // rest share their weight, which can't be seen and saves most of the reads.
-    vec3 use = step(vec3(0.02), k) * k;
-    use /= use.x + use.y + use.z;
-    vec3 color = vec3(0.0);
-    vec3 bump = vec3(0.0);
-    if (use.x > 0.0)
-    {
-        color += textureGrad(rockColor, base + s1 + lift, dx, dy).rgb * use.x;
-        bump += textureGrad(rockNormal, base + s1 + lift, dx, dy).xyz * use.x;
-    }
-    if (use.y > 0.0)
-    {
-        color += textureGrad(rockColor, base + s2 + lift, dx, dy).rgb * use.y;
-        bump += textureGrad(rockNormal, base + s2 + lift, dx, dy).xyz * use.y;
-    }
-    if (use.z > 0.0)
-    {
-        color += textureGrad(rockColor, base + s3 + lift, dx, dy).rgb * use.z;
-        bump += textureGrad(rockNormal, base + s3 + lift, dx, dy).xyz * use.z;
-    }
-    bump = bump * 2.0 - 1.0;
-
-    // Crushed rock weathered by dust and oil.
-    albedo = color * vec3(0.46, 0.44, 0.42) * (0.8 + 0.3 * weather);
-    // Dark in the gaps between the stones whatever the light, which is what still reads from far off.
-    albedo *= mix(0.45, 1.0, smoothstep(0.25, 0.7, maps.a));
-    roughness = maps.g;
-    occlusion = 0.8 * maps.r;
-    bump.xy *= 1.5;
-    n = bumped(n, normalize(bump), base);
+    vec3 t = normalize(vec3(1.0, 0.0, 0.0) - n * n.x);
+    vec3 b = normalize(vec3(0.0, 0.0, 1.0) - n * n.z);
+    return rockAt(worldXZ / RockTile, t, b, n, toEye);
 }
 
 // A material's map seen straight down its strongest axis, so a part with no map of its own can still wear one.
@@ -417,11 +340,17 @@ void main()
 
     if (material == Ballast)
     {
-        float patches = fbm(tex * 0.35, pixel * 0.35);
-        // Along the track and across it as the surface runs, so the shoulder's stones aren't drawn out down its slope.
         vec3 shape = n;
-        vec2 base = vec2(u, v) / 1.5;
-        rock(base, hexAt(base, n, view, 0.06, dist), patches, n, albedo, roughness, occlusion);
+        // By where it is in the world, seen from above: loose stone has no grain to follow the track, and so every bed, switch and
+        // crossing reads the same stones at the same place and meets the next with no seam. (The world origin wraps every
+        // TexturePeriod, a whole number of tiles.)
+        Rock r = rockFromAbove(tex, n, -view);
+        albedo = r.albedo;
+        n = r.normal;
+        roughness = r.roughness;
+        occlusion = r.occlusion;
+        // Its highlights as its roughness has them.
+        specular = 1.0;
 
         int tracks = style & 7;
         bool disused = (style & 8) != 0;
@@ -540,37 +469,36 @@ void main()
     }
     else if (material == Gravel)
     {
-        // The ballast's rock run on: the edge of the bed, road shoulders, unpaved roads and the marks where track is to go.
-        // Data.w below zero is how far in from where it gives out: it fades into the ground, the tallest stones last, in patches.
-        // There the stones run on from the bed's, and lie flatter the further out, where a stone's relief would only smear what's kept.
-        bool fading = vData.w < 0.0;
-        // (Data.w starts from -0.3 at the outer edge, so multisampling reading it a little past the edge still finds it fading.)
-        float rise = fading ? clamp((-vData.w - 0.3) / 2.4, 0.0, 1.0) : 1.0;
-        fadeShadowDrop = 0.06 * (1.0 - rise);
-        // Lying on the ground, it's lit as the ground under it is: its shadow looked up straight above it, not off along its own
-        // normal, which tilts out across the bed's edge and would look it up in under whatever rises beside it (a road's fill).
-        if (fading)
-            shadowNormal = vec3(0.0, 1.0, 0.0);
-        // (Solid, by its strongest axis: on the ground that's its plan, as before, and on a wall it's the wall's face, not smeared.)
-        vec2 base = (fading ? vec2(u, v) : boxUv(local, n)) / 1.5;
-        Hex stone = hexAt(base, n, view, 0.06 * smoothstep(0.4, 1.0, rise), dist);
-        if (fading)
+        // The ballast's rock on road shoulders and unpaved roads: the same material, laid by its strongest axis (on the ground its
+        // plan, on a wall the wall's face).
+        vec3 a = abs(n);
+        vec3 t, b;
+        vec2 at;
+        if (a.y > a.x && a.y > a.z)
         {
-            // Where it's seen, so that what's left is stones and not the gaps between them.
-            // Filtered the same every way: a low view draws a stretched footprint out into streaks.
-            float footprint = max(length(dFdx(base)), length(dFdy(base))) * float(textureSize(rockPacked, 0).x);
-            float stones = hexHeight(stone, base, log2(max(footprint, 1.0)));
-            float drift = fbm(tex * 0.9, pixel * 0.9);
-            // The ground rises between the stones, filling the gaps first and leaving the tallest last. A stone's either there or
-            // not, never see-through, until it's too far off to make out one.
-            float ground = mix(1.05, 0.1, rise) + (0.5 - drift) * 0.5;
-            float soft = 0.03 + 0.04 * log2(max(footprint, 1.0));
-            // Wholly covering at its solid end, as the rock it runs on from is.
-            coverage = max(smoothstep(ground - soft, ground + soft, stones) * smoothstep(0.0, 0.15, rise), smoothstep(0.85, 1.0, rise));
+            at = local.xz;
+            t = vec3(1.0, 0.0, 0.0);
+            b = vec3(0.0, 0.0, 1.0);
         }
-
-        float patches = fbm(tex * 0.35, pixel * 0.35);
-        rock(base, stone, patches, n, albedo, roughness, occlusion);
+        else if (a.x > a.z)
+        {
+            at = local.zy;
+            t = vec3(0.0, 0.0, 1.0);
+            b = vec3(0.0, 1.0, 0.0);
+        }
+        else
+        {
+            at = local.xy;
+            t = vec3(1.0, 0.0, 0.0);
+            b = vec3(0.0, 1.0, 0.0);
+        }
+        t = normalize(t - n * dot(n, t));
+        b = normalize(b - n * dot(n, b));
+        Rock r = rockAt(at / RockTile, t, b, n, -view);
+        albedo = r.albedo;
+        n = r.normal;
+        roughness = r.roughness;
+        occlusion = r.occlusion;
     }
     else if (material == Concrete)
     {

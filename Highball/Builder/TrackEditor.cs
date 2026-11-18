@@ -223,6 +223,19 @@ public sealed class TrackEditor
     private NetworkWay Copy(NetworkWay way, long[] nodes, double[] lat, double[] lon)
     {
         var tags = new Dictionary<string, string>(way.Tags) { [RouteNetwork.EditedTag] = "yes" };
+        // Track laid by straights and curves keeps each corner's curve with its node, whatever's added or taken out round it
+        // (a corner new to it gets the gentlest curve it had, which on a straight it doesn't use).
+        if (way.Tags.TryGetValue(AlignmentTrack.Tag, out var tag) && AlignmentTrack.Decode(tag) is { } curves && curves.Count == way.Nodes.Length - 2 &&
+            nodes.Length >= 2 && !nodes.SequenceEqual(way.Nodes))
+        {
+            var byNode = new Dictionary<long, (double Radius, double Easing)>();
+            for (var i = 1; i < way.Nodes.Length - 1; i++)
+                byNode[way.Nodes[i]] = curves[i - 1];
+            (double Radius, double Easing) usual = curves.Count > 0 ? curves.MaxBy(c => c.Radius) : (500.0, AlignmentTrack.DefaultEasing(500.0));
+            tags[AlignmentTrack.Tag] = AlignmentTrack.Encode(nodes[1..^1].Select(n =>
+                byNode.TryGetValue(n, out var c) ? new Corner(0, 0, c.Radius, c.Easing) : new Corner(0, 0, usual.Radius, usual.Easing)));
+        }
+
         return new NetworkWay { Id = way.Id, Rail = way.Rail, Class = way.Class, Nodes = nodes, Lat = lat, Lon = lon, Tags = tags };
     }
 
@@ -603,7 +616,8 @@ public sealed class TrackEditor
     /// exact: yard track laid along a guide, as it's given, and left as it is by the fitting.
     /// along: the class of the mapped track it's laid along, if any: what it's laid as with no class in hand (exact track
     /// is yard otherwise).
-    public NetworkEdit? Lay(IReadOnlyList<LayPoint> laid, bool lead = true, bool exact = false, RailClass? along = null)
+    /// tags: put on the new track as well (track laid by straights and curves: its corners' curves).
+    public NetworkEdit? Lay(IReadOnlyList<LayPoint> laid, bool lead = true, bool exact = false, RailClass? along = null, IReadOnlyDictionary<string, string>? tags = null)
     {
         if (laid.Count < 2)
             return null;
@@ -642,15 +656,21 @@ public sealed class TrackEditor
             nodes[i] = _network.NewId();
             if (point.Split is { } split && _network.Ways.ContainsKey(split.Way))
             {
-                // Put the new node into the track it lands on, just after the segment's start.
+                // Put the new node into the track it lands on, after the segment's start (and after any node already put
+                // into the same segment nearer its start, as a siding's two switches on one long straight are).
                 var way = Current(split.Way);
-                var start = Array.IndexOf(way.Nodes, _network.Ways[split.Way].Nodes[split.Segment]);
+                var original = _network.Ways[split.Way];
+                var begin = Array.IndexOf(way.Nodes, original.Nodes[split.Segment]);
+                var start = begin + 1;
+                double Away(double a, double o) => (a - way.Lat[begin]) * (a - way.Lat[begin]) + (o - way.Lon[begin]) * (o - way.Lon[begin]);
+                while (start < way.Nodes.Length && Array.IndexOf(original.Nodes, way.Nodes[start]) < 0 && Away(way.Lat[start], way.Lon[start]) < Away(geo.Lat, geo.Lon))
+                    start++;
                 var n = way.Nodes.ToList();
                 var la = way.Lat.ToList();
                 var lo = way.Lon.ToList();
-                n.Insert(start + 1, nodes[i]);
-                la.Insert(start + 1, geo.Lat);
-                lo.Insert(start + 1, geo.Lon);
+                n.Insert(start, nodes[i]);
+                la.Insert(start, geo.Lat);
+                lo.Insert(start, geo.Lon);
                 changes[split.Way] = (changes.TryGetValue(split.Way, out var c) ? c.Before : way, Copy(way, [.. n], [.. la], [.. lo]));
             }
         }
@@ -677,6 +697,8 @@ public sealed class TrackEditor
         // through the join, rather than two lines meeting there at whatever angle each was fitted to.
         if ((Continued(laid[0]) ?? Continued(laid[^1])) is { } carried)
             track = SameKind(track, carried, keepClass: NewClass is not null, keepBed: NewBed is not null || NewBedHeight is not null, exact);
+        foreach (var (key, value) in tags ?? new Dictionary<string, string>())
+            track.Tags[key] = value;
         changes[id] = (null, track);
         return Commit([.. changes.Select(c => (c.Key, c.Value.Before, c.Value.After))]);
     }

@@ -10,7 +10,7 @@ layout(push_constant) uniform Push
 {
     mat4 light;
     vec4 shape;
-    vec4 shift; // w: the camera's height
+    vec4 band;
 } pc;
 
 void main()
