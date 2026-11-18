@@ -64,8 +64,8 @@ public sealed class Settings
 
     /// The finished picture's look, by ColorGrade's id.
     public string ColorGrade { get; set; } = "Filmic";
-    /// Samples per pixel in the 3D view: 1 (off), 2, 4 or 8.
-    public int Msaa { get; set; } = 4;
+    /// Samples per pixel in the 3D view: 1 (off), 2, 4 or 8. Capped at 2 while TemporalAA is on (RenderTarget.Wanted).
+    public int Msaa { get; set; } = 2;
 
     // Audio
     public float MasterVolume { get; set; } = 0.8f;

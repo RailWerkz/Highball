@@ -84,6 +84,25 @@ public sealed unsafe class SunShadows : IDisposable
     private readonly VkPipeline _plant;
     private readonly float4x4[] _matrices = new float4x4[Cascades];
 
+    /// The cascades from this one on are cached: drawn every other frame (taking turns), and in between read as they were
+    /// drawn, through their matrix moved to where the camera's gone. Far off, nothing moves enough in a frame to show it,
+    /// and they're half the casters. The near ones, where trains and their shadows are seen up close, are drawn every frame.
+    private const int CachedFrom = 2;
+
+    /// How far a cached cascade's centre may lag where it would be drawn now, as a share of its radius, before it's drawn
+    /// again whatever the turn. Cached cascades are drawn this much wider, so the view they're read for stays inside them.
+    private const float CacheDrift = 0.05f;
+
+    /// What each cascade was last drawn with: its centre in the world, its radius, the sun, the shadow map it went into
+    /// (and whether casters were drawn at all): a cached one is redrawn when any of these no longer holds.
+    private readonly (double X, double Y, double Z)[] _drawnCentre = new (double, double, double)[Cascades];
+    private readonly float[] _drawnRadius = new float[Cascades];
+    private readonly float3[] _drawnSun = new float3[Cascades];
+    private readonly ShadowMap?[] _drawnInto = new ShadowMap?[Cascades];
+    private readonly bool[] _drawnActive = new bool[Cascades];
+    private readonly float[] _drawnTexel = new float[Cascades];
+    private long _frame;
+
     public bool Enabled { get; set; } = !DevTools.NoShadows;
 
     /// The layout of the shadows' set: their uniforms, the depth array, the horizon map's two images, and the lamps and their grid.
@@ -247,6 +266,7 @@ public sealed unsafe class SunShadows : IDisposable
         var near = camera.Near;
         var texels = new float[Cascades];
 
+        _frame++;
         for (var c = 0; c < Cascades; c++)
         {
             var far = Reach[c];
@@ -254,12 +274,32 @@ public sealed unsafe class SunShadows : IDisposable
             // What this cascade is read for: its own slice, and the last tenth of the one before, where the two blend.
             var seenFrom = c == 0 ? 0f : near * 0.9f;
             near = far;
+            var cached = c >= CachedFrom;
+            if (cached)
+                radius *= 1f + CacheDrift;
             var texel = radius * 2f / _map.Size;
-            texels[c] = texel;
 
             // In whole texels of the world, not of the camera, so the map's grid stays put as the camera moves.
             centre += right * Snap(centre, right, camera, texel) + up * Snap(centre, up, camera, texel);
+
+            if (cached && !Redraw(c, camera, centre, radius, sun, active))
+            {
+                // As it was drawn: the same place in the world, relative to where the camera is now.
+                var (x, y, z) = _drawnCentre[c];
+                var then = new float3((float)(x - camera.X), (float)(y - camera.Y), (float)(z - camera.Z));
+                _matrices[c] = Matrix(then, right, up, sun, _drawnRadius[c]);
+                texels[c] = _drawnTexel[c];
+                continue;
+            }
+
+            texels[c] = texel;
             _matrices[c] = Matrix(centre, right, up, sun, radius);
+            _drawnCentre[c] = (camera.X + centre.X, camera.Y + centre.Y, camera.Z + centre.Z);
+            _drawnRadius[c] = radius;
+            _drawnSun[c] = sun;
+            _drawnInto[c] = _map;
+            _drawnActive[c] = active;
+            _drawnTexel[c] = texel;
 
             using (Profiler.Sample(CascadeNames[c], cmd))
             {
@@ -295,6 +335,21 @@ public sealed unsafe class SunShadows : IDisposable
         cmd.UpdateBuffer(_uniforms.VkBuffer, ByteSize.Zero, MemoryMarshal.AsBytes(new ReadOnlySpan<Uniforms>(in uniforms)));
         var barrier = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.TransferWriteBit, DstAccessMask = VkAccessFlags.UniformReadBit };
         cmd.PipelineBarrier(VkPipelineStageFlags.TransferBit, VkPipelineStageFlags.FragmentShaderBit, VkDependencyFlags.None, [barrier], [], []);
+    }
+
+    /// Whether a cached cascade has to be drawn this frame: on its turn, or whenever what it holds no longer fits (the sun's
+    /// moved, the view's left the room it was drawn with, the map's new, shadows came or went).
+    private bool Redraw(int c, Camera camera, float3 centre, float radius, float3 sun, bool active)
+    {
+        if (_drawnInto[c] != _map || _drawnActive[c] != active || MathEx.Dot(_drawnSun[c], sun) < 0.99999f)
+            return true;
+        var (x, y, z) = _drawnCentre[c];
+        var (dx, dy, dz) = (camera.X + centre.X - x, camera.Y + centre.Y - y, camera.Z + centre.Z - z);
+        var drift = Math.Sqrt(dx * dx + dy * dy + dz * dz) + Math.Abs(radius - _drawnRadius[c]);
+        if (drift > _drawnRadius[c] * CacheDrift)
+            return true;
+        // Taking turns, so no frame pays for both.
+        return (_frame + c) % 2 == 0;
     }
 
     /// The sphere round the part of the view between two distances, relative to the camera.
@@ -335,6 +390,10 @@ public sealed unsafe class SunShadows : IDisposable
     /// but the ground stands (a yard mast): a caster's sphere may be as wide as a patch of trees, but its shadow only reaches as
     /// far as its height throws it. (The terrain's own shadows aren't culled this way: a ridge can shade a valley kilometres off.)
     private const float ShadowSlack = 20f;
+
+    /// The screen height (pixels) and slack a cascade's level of detail is judged by (DrawCasters' lodFloor).
+    private const float ShadowLodReference = 1080f;
+    private const float ShadowLodSlack = 2f;
     private const float TallestCaster = 30f;
 
     private ModelInstances? _instances;
@@ -365,7 +424,12 @@ public sealed unsafe class SunShadows : IDisposable
             (forward, -seenTo),
         ];
         var lift = MathF.Max(sun.Y, 0.08f);
-        var edge = radius * 2f / _map.Size * 4f;
+        var texel = radius * 2f / _map.Size;
+        var edge = texel * 4f;
+
+        // Models are drawn no finer than the cascade's texels can show: at the level of detail they'd have on screen where a
+        // pixel is ShadowLodSlack texels wide (the filtering blurs a texel or two anyway). The nearest cascade keeps full detail.
+        var lodFloor = texel * ShadowLodReference / (2f * MathF.Tan(camera.FieldOfView * 0.5f)) * ShadowLodSlack;
 
         // Can its shadow fall anywhere this cascade's read for? Its sphere, swept away from the sun as far as a shadow from
         // its height could reach, must touch that part of the view: everything behind or beside the camera whose shadow
@@ -408,7 +472,7 @@ public sealed unsafe class SunShadows : IDisposable
         if (models is not null && _instances is not null)
         {
             _casters.Clear();
-            _instances.Add(models, camera, (draw, centre, size) => draw.CastsShadow && (size <= 0f || Reaches(centre, size)), _casters);
+            _instances.Add(models, camera, (draw, centre, size) => draw.CastsShadow && (size <= 0f || Reaches(centre, size)), _casters, lodFloor);
             if (_casters.Count > 0)
             {
                 cmd.BindPipeline(VkPipelineBindPoint.Graphics, _model);

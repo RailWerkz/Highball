@@ -49,8 +49,10 @@ public sealed class ModelInstances : IDisposable
     }
 
     /// Adds the draws keep accepts (given each one's bounding sphere, relative to the camera: centre and radius), gathered
-    /// into runs appended to into.
-    public void Add(IReadOnlyList<ModelDraw> draws, Camera camera, Func<ModelDraw, float3, float, bool>? keep, List<Batch> into)
+    /// into runs appended to into. Each draw's level of detail is picked for its distance from the camera, or lodFloor if that's
+    /// further: a shadow cascade passes the distance at which a pixel on screen is as wide as its texel, so it never draws more
+    /// detail than its texels can hold.
+    public void Add(IReadOnlyList<ModelDraw> draws, Camera camera, Func<ModelDraw, float3, float, bool>? keep, List<Batch> into, float lodFloor = 0f)
     {
         foreach (var list in _groups.Values)
             list.Clear();
@@ -68,7 +70,7 @@ public sealed class ModelInstances : IDisposable
 
             // Its lower-detail version by its distance (RenderModel.ForDistance).
             var relative = draw.RelativeTo(camera.X, camera.Y, camera.Z);
-            var model = draw.Model.ForDistance(MathF.Sqrt(relative.X * relative.X + relative.Y * relative.Y + relative.Z * relative.Z));
+            var model = draw.Model.ForDistance(MathF.Max(lodFloor, MathF.Sqrt(relative.X * relative.X + relative.Y * relative.Y + relative.Z * relative.Z)));
             var key = (model, draw.BaseColor, draw.Metallic, draw.Roughness);
             if (!_groups.TryGetValue(key, out var list))
                 _groups[key] = list = [];
