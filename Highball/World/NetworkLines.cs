@@ -1237,7 +1237,7 @@ public sealed partial class NetworkLines
         hash.Add(chain.Class);
         foreach (var node in chain.Nodes)
             hash.Add(node);
-        foreach (var (key, value) in chain.Tags.OrderBy(t => t.Key, StringComparer.Ordinal))
+        foreach (var (key, value) in chain.Tags.Where(t => t.Key != RouteNetwork.HeightsTag).OrderBy(t => t.Key, StringComparer.Ordinal))
         {
             hash.Add(key);
             hash.Add(value);
@@ -1319,6 +1319,7 @@ public sealed partial class NetworkLines
         ExtendBridges();
         _liftCells = null;
         _junctionRounds.Clear();
+        FindPins();
 
         // (Kept lines, in a local rebuild, are finished: every pass leaves them be, and reads them as the lines round them are
         // worked out.)
@@ -1337,6 +1338,7 @@ public sealed partial class NetworkLines
                 Bridge(line);
                 Median(line, RailMedian);
                 Smooth(line, 30f);
+                ApplyPins(line);
             }
             else
             {
@@ -1370,6 +1372,7 @@ public sealed partial class NetworkLines
             LimitGrade(line, SteepestGrade(line));
             Smooth(line, 40f);
             Smooth(line, 40f);
+            ApplyPins(line);
         });
 
         // Last, tracks right beside each other (and close in height) are made to agree exactly, so one's ballast never
@@ -1380,8 +1383,10 @@ public sealed partial class NetworkLines
         RailWerkz.Core.Logging.Log.Info($"Profiles: fitted in {surfaceWatch.ElapsedMilliseconds} ms");
         Parallel.ForEach(_lines.Where(l => l.Rail), line =>
         {
-            // The deck straight between its ends again, then the grade eased onto and off it over a short curve.
+            // The deck straight between its ends again, then the grade eased onto and off it over a short curve (and a pinned
+            // grade's ends rounded the same way).
             Bridge(line);
+            ApplyPins(line);
             Smooth(line, 15f);
         });
 
@@ -1401,6 +1406,9 @@ public sealed partial class NetworkLines
         // (After the joins and junctions have shaped the lines they leave: a siding takes its line's height as it's finished, and
         // meets it at its switches exactly.)
         FollowBeside();
+        // (Pinned track as it was pinned again, after sidings were drawn to their lines, before the junctions are read.)
+        foreach (var line in _linePins.Keys)
+            ApplyPins(line, ease: false);
         // The last word goes to headroom: a deck lifted clear of what's under it, its junctions already all but agreed.
         LiftBridges();
         Watch("junctions");
@@ -1809,7 +1817,7 @@ public sealed partial class NetworkLines
 
             for (var p = 0; p < line.Count; p++)
             {
-                if (!OnGround(line, p))
+                if (!OnGround(line, p) || Pinned(line, p))
                     continue;
                 var (x, z) = (line.X[p], line.Z[p]);
                 (double Away, float Y)? best = null;
@@ -2022,6 +2030,14 @@ public sealed partial class NetworkLines
         var held = new HashSet<long>();
         foreach (var (node, list) in uses)
         {
+            // (A pinned node's held where it's pinned, even on one line alone: so the line's eased between its junctions round it.)
+            if (_nodePins.TryGetValue(node, out var pin) && list.Any(u => u.Line.Rail && !u.Line.Frozen))
+            {
+                targets[node] = pin;
+                held.Add(node);
+                continue;
+            }
+
             if (list.Count < 2)
                 continue;
 

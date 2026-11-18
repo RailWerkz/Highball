@@ -133,6 +133,38 @@ public sealed class RouteNetwork
     public const string BedTag = "highball:bed";
     public const string BedHeightTag = "highball:bedheight";
 
+    /// Heights pinned by hand at a rail way's nodes (TrackEditor's Level and Grade): "node=metres;node=metres", metres the route's
+    /// heights the rails' formation is held to there (NetworkLines.FinishProfiles). Every rail way through a pinned node carries it.
+    public const string HeightsTag = "highball:heights";
+
+    /// A way's pinned heights by node (HeightsTag).
+    public static Dictionary<long, float> PinsOf(NetworkWay way)
+    {
+        var pins = new Dictionary<long, float>();
+        if (!way.Tags.TryGetValue(HeightsTag, out var text))
+            return pins;
+        foreach (var entry in text.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var at = entry.IndexOf('=');
+            if (at > 0 && long.TryParse(entry.AsSpan(0, at), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var node) &&
+                float.TryParse(entry.AsSpan(at + 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var metres) &&
+                float.IsFinite(metres))
+                pins[node] = metres;
+        }
+
+        return pins;
+    }
+
+    /// A way's pins written back to its tags (none: the tag taken off), only those at its own nodes.
+    public static void SetPins(NetworkWay way, IReadOnlyDictionary<long, float> pins)
+    {
+        var mine = way.Nodes.Distinct().Where(pins.ContainsKey).OrderBy(n => Array.IndexOf(way.Nodes, n)).ToList();
+        if (mine.Count == 0)
+            way.Tags.Remove(HeightsTag);
+        else
+            way.Tags[HeightsTag] = string.Join(';', mine.Select(n => string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{n}={pins[n]:0.###}")));
+    }
+
     /// A mapped track's mark on the ground, drawn where the track would go until it's laid by hand.
     public const string TrackMarkTag = "highball:trackmark";
 

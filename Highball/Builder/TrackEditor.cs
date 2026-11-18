@@ -86,12 +86,17 @@ public sealed class TrackEditor
         _rails.Clear();
         _uses.Clear();
         _waysAt.Clear();
+        _pins.Clear();
         var projection = _route.Projection!;
         foreach (var way in _network.Ways.Values)
         {
             if (!way.Rail || way.Nodes.Length < 2 || way.Lat.Length != way.Nodes.Length || RouteNetwork.IsGuide(way))
                 continue;
             _rails.Add(way);
+            if (way.Tags.ContainsKey(RouteNetwork.HeightsTag))
+                foreach (var (node, metres) in RouteNetwork.PinsOf(way))
+                    if (Array.IndexOf(way.Nodes, node) >= 0)
+                        _pins.TryAdd(node, metres);
             for (var i = 0; i < way.Nodes.Length; i++)
             {
                 var p = projection.Forward(new GeoPoint(way.Lat[i], way.Lon[i]));
@@ -1135,6 +1140,175 @@ public sealed class TrackEditor
         return new LayPoint(at.X + fx * length - fz * offset * side, at.Z + fz * length + fx * offset * side);
     }
 
+    // --- Pinned heights (RouteNetwork.HeightsTag). ---
+
+    /// Every pinned node's height, as the ways carry them.
+    public IReadOnlyDictionary<long, float> Pins
+    {
+        get
+        {
+            Refresh();
+            return _pins;
+        }
+    }
+
+    private readonly Dictionary<long, float> _pins = [];
+
+    /// Why the last Grade was refused, if it was.
+    public string? PinRefused { get; private set; }
+
+    /// Nodes pinned to heights (null: unpinned): every rail way through each one made to carry it.
+    public NetworkEdit? SetPins(IReadOnlyDictionary<long, float?> heights)
+    {
+        Refresh();
+        var touched = heights.Keys.Where(_waysAt.ContainsKey).SelectMany(n => _waysAt[n]).Distinct().ToList();
+        var changes = new List<(long, NetworkWay?, NetworkWay?)>();
+        foreach (var way in touched)
+        {
+            var pins = RouteNetwork.PinsOf(way);
+            var before = new Dictionary<long, float>(pins);
+            foreach (var (node, height) in heights)
+            {
+                if (Array.IndexOf(way.Nodes, node) < 0)
+                    continue;
+                if (height is { } metres)
+                    pins[node] = MathF.Round(metres * 1000f) / 1000f;
+                else
+                    pins.Remove(node);
+            }
+
+            if (pins.Count == before.Count && pins.All(p => before.TryGetValue(p.Key, out var was) && was == p.Value))
+                continue;
+            var after = Copy(way, way.Nodes, way.Lat, way.Lon);
+            RouteNetwork.SetPins(after, pins);
+            changes.Add((way.Id, way, after));
+        }
+
+        return Commit(changes, takesNewBed: false);
+    }
+
+    /// Every selected point pinned to one height: the ground's under them on average (heights: the track and ground at a node).
+    public NetworkEdit? Level(IReadOnlySet<long> selected, Func<long, (float Track, float Ground)?> heights)
+    {
+        var known = selected.Select(n => heights(n)).OfType<(float Track, float Ground)>().ToList();
+        if (known.Count == 0)
+            return null;
+        var level = known.Average(h => h.Ground);
+        return SetPins(selected.ToDictionary(n => n, _ => (float?)level));
+    }
+
+    /// The selected points pinned at one constant grade from one end of them to the other, along the track; each end where it's
+    /// pinned already, else where the track is now. They must be one run of track, end to end, no branches.
+    public NetworkEdit? Grade(IReadOnlySet<long> selected, Func<long, (float Track, float Ground)?> heights)
+    {
+        Refresh();
+        PinRefused = null;
+        var path = RunOf(selected);
+        if (path is null)
+            return null;
+
+        float? HeightOf(long node) => _pins.TryGetValue(node, out var pin) ? pin : heights(node)?.Track;
+        if (HeightOf(path[0]) is not { } from || HeightOf(path[^1]) is not { } to)
+            return null;
+        var along = Along(path);
+        var result = new Dictionary<long, float?>();
+        for (var i = 0; i < path.Count; i++)
+            result[path[i]] = from + (to - from) * (float)(along[^1] > 0 ? along[i] / along[^1] : 0);
+        return SetPins(result);
+    }
+
+    /// The selected points in order from one end to the other, if they're one run of track (neighbours along ways, no branches,
+    /// gaps or loops); null, with why in PinRefused, if not.
+    private List<long>? RunOf(IReadOnlySet<long> selected)
+    {
+        var nodes = selected.Where(_nodes.ContainsKey).ToHashSet();
+        if (nodes.Count < 2)
+        {
+            PinRefused = "Grade needs two or more points along a track.";
+            return null;
+        }
+
+        var next = nodes.ToDictionary(n => n, _ => new HashSet<long>());
+        foreach (var way in _rails)
+            for (var i = 0; i + 1 < way.Nodes.Length; i++)
+                if (nodes.Contains(way.Nodes[i]) && nodes.Contains(way.Nodes[i + 1]) && way.Nodes[i] != way.Nodes[i + 1])
+                {
+                    next[way.Nodes[i]].Add(way.Nodes[i + 1]);
+                    next[way.Nodes[i + 1]].Add(way.Nodes[i]);
+                }
+
+        var ends = nodes.Where(n => next[n].Count == 1).ToList();
+        if (ends.Count != 2 || nodes.Any(n => next[n].Count is 0 or > 2))
+        {
+            PinRefused = "Grade works along one run of track: select every point from one end to the other, with no branches or gaps.";
+            return null;
+        }
+
+        var path = new List<long> { ends[0] };
+        var seen = new HashSet<long> { ends[0] };
+        while (path.Count < nodes.Count)
+        {
+            var step = next[path[^1]].FirstOrDefault(n => !seen.Contains(n));
+            if (step == 0)
+                break;
+            path.Add(step);
+            seen.Add(step);
+        }
+
+        if (path.Count != nodes.Count)
+        {
+            PinRefused = "Grade works along one run of track, not a loop.";
+            return null;
+        }
+
+        return path;
+    }
+
+    /// Distance along a run of points from its first, metres.
+    private double[] Along(List<long> path)
+    {
+        var along = new double[path.Count];
+        for (var i = 1; i < path.Count; i++)
+        {
+            var (a, b) = (_nodes[path[i - 1]], _nodes[path[i]]);
+            along[i] = along[i - 1] + Math.Sqrt((b.X - a.X) * (b.X - a.X) + (b.Z - a.Z) * (b.Z - a.Z));
+        }
+
+        return along;
+    }
+
+    /// The selected points raised (or lowered) by metres: those pinned move their pin, the rest are pinned where the track is now.
+    public NetworkEdit? Raise(IReadOnlySet<long> selected, float metres, Func<long, (float Track, float Ground)?> heights)
+    {
+        Refresh();
+        var result = new Dictionary<long, float?>();
+        foreach (var node in selected)
+            if ((_pins.TryGetValue(node, out var pin) ? pin : heights(node)?.Track) is { } height)
+                result[node] = height + metres;
+        return SetPins(result);
+    }
+
+    /// The selected points' pins taken off.
+    public NetworkEdit? Unpin(IReadOnlySet<long> selected) => SetPins(selected.ToDictionary(n => n, _ => (float?)null));
+
+    /// For the panel: the selection's height (its lowest and highest, pinned or as built), and if it's one run of track, the grade
+    /// from its first point to its last (rise over run) and its length.
+    public (float Low, float High, float? Grade, double Length) HeightsOf(IReadOnlySet<long> selected, Func<long, (float Track, float Ground)?> heights)
+    {
+        Refresh();
+        float? HeightOf(long node) => _pins.TryGetValue(node, out var pin) ? pin : heights(node)?.Track;
+        var known = selected.Select(HeightOf).OfType<float>().ToList();
+        if (known.Count == 0)
+            return (float.NaN, float.NaN, null, 0);
+        var saved = PinRefused;
+        var path = selected.Count is >= 2 and <= 2000 ? RunOf(selected) : null;
+        PinRefused = saved;
+        if (path is null || HeightOf(path[0]) is not { } a || HeightOf(path[^1]) is not { } b)
+            return (known.Min(), known.Max(), null, 0);
+        var along = Along(path);
+        return (known.Min(), known.Max(), along[^1] > 0 ? (float)((b - a) / along[^1]) : null, along[^1]);
+    }
+
     /// What new track's laid on, by TrackBed's name, and how high in metres; null: as its class would have it, or the bed's usual height.
     public string? NewBed;
     public float? NewBedHeight;
@@ -1814,6 +1988,9 @@ public sealed class TrackEditor
         }
     }
 
+    /// The ring round a pinned point.
+    public static readonly Rgba PinColour = new(0.35f, 0.85f, 1f, 1f);
+
     public void Draw(ImDrawListPtr draw, double cx, double cz, Func<double, double, float2?> project, long? hover, IReadOnlySet<long> selected,
         (double X, double Z)? offset)
     {
@@ -1847,6 +2024,9 @@ public sealed class TrackEditor
             var picked = selected.Contains(node);
             var half = Style.S(node == hover ? 5f : picked ? 3.5f : 2.5f);
             draw.AddRectFilled(p - new float2(half), p + new float2(half), node == hover || picked ? Rgba.White : dot);
+            // A pinned height: a ring round it.
+            if (_pins.ContainsKey(node))
+                draw.AddCircle(p, half + Style.S(3f), PinColour, 16, Style.S(1.5f));
         }
     }
 }

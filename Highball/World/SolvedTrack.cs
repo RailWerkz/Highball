@@ -72,7 +72,8 @@ public sealed partial class NetworkLines
                 hash.Add(lat);
             foreach (var lon in way.Lon)
                 hash.Add(lon);
-            foreach (var (key, value) in way.Tags.OrderBy(t => t.Key, StringComparer.Ordinal))
+            // (Pinned heights only change the profiles, worked out every time: track saved before a pin's still the same track.)
+            foreach (var (key, value) in way.Tags.Where(t => t.Key != RouteNetwork.HeightsTag).OrderBy(t => t.Key, StringComparer.Ordinal))
             {
                 hash.Add(key);
                 hash.Add(value);

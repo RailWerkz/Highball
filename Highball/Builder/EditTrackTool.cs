@@ -178,6 +178,50 @@ public sealed class EditTrackTool(ToolContext context) : IEditorTool
         }
 
         Kit.EndCard();
+        HeightPanel(imperial);
+    }
+
+    /// The track's height and terrain at a control point as last built, if it's built.
+    private (float Track, float Ground)? HeightsAt(long node) => context.Source.Lines?.HeightsAt(node);
+
+    /// Pinned heights: the selection levelled, graded, raised or lowered, or let go back to the ground's.
+    private void HeightPanel(bool imperial)
+    {
+        var tracks = context.Tracks;
+        var pins = tracks.Pins;
+        var pinned = Selection.Count(pins.ContainsKey);
+        Kit.BeginCard("Height", Selection.Count == 0 ? $"{pins.Count} pinned" : $"{pinned} of {Selection.Count} pinned", pinned > 0 ? TrackEditor.PinColour : null);
+        var any = Selection.Count > 0;
+        var (unit, perMetre) = imperial ? ("ft", 3.28084f) : ("m", 1f);
+        if (any)
+        {
+            var (low, high, grade, length) = tracks.HeightsOf(Selection, HeightsAt);
+            if (!float.IsNaN(low))
+            {
+                var height = MathF.Abs(high - low) < 0.05f ? $"{low * perMetre:0.0} {unit}" : $"{low * perMetre:0.0} to {high * perMetre:0.0} {unit}";
+                Kit.Note(grade is { } g ? $"{height}, {MathF.Abs(g) * 100f:0.00}% {(g >= 0 ? "up" : "down")} over {length * perMetre:0} {unit}" : height);
+            }
+        }
+        else
+            Kit.Note("Select points, then Level a yard to one height or Grade a run at one steady grade. Pinned points get a ring.");
+
+        var hit = Kit.Buttons("pins0", ["Level", "Grade"], [any, Selection.Count >= 2]);
+        if (hit == 0)
+            context.Commit(tracks.Level(Selection, HeightsAt));
+        else if (hit == 1)
+        {
+            context.Commit(tracks.Grade(Selection, HeightsAt));
+            context.Refused = tracks.PinRefused;
+        }
+
+        // A step of a quarter metre, or a foot.
+        var step = imperial ? 0.3048f : 0.25f;
+        hit = Kit.Buttons("pins1", [imperial ? "Raise 1 ft" : "Raise 0.25 m", imperial ? "Lower 1 ft" : "Lower 0.25 m"], [any, any]);
+        if (hit >= 0)
+            context.Commit(tracks.Raise(Selection, hit == 0 ? step : -step, HeightsAt));
+        if (Kit.Button("unpin", "Unpin", enabled: pinned > 0))
+            context.Commit(tracks.Unpin(Selection));
+        Kit.EndCard();
     }
 
     public bool Escape()

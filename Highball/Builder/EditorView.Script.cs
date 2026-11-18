@@ -673,6 +673,43 @@ public sealed partial class EditorView
                 break;
             }
 
+            case "pins":
+            {
+                // pins,MODE,lat0,lon0,lat1,lon1,width: the control points within width metres of the line between the two places,
+                // levelled, graded, raised a metre, unpinned, or (show) their heights logged.
+                // (Or pins,MODE,nodes,id|id|...: those control points.)
+                var picked = parts[2] == "nodes" ? parts[3].Split('|').Select(long.Parse).Where(_tracks!.Has).ToHashSet() : PickedAlong();
+                HashSet<long> PickedAlong()
+                {
+                var (p0, p1, width) = (At(2), At(4), Number(6));
+                var (dx, dz) = (p1.X - p0.X, p1.Z - p0.Z);
+                return _tracks!.NodesNear((p0.X + p1.X) / 2, (p0.Z + p1.Z) / 2, Math.Sqrt(dx * dx + dz * dz) / 2 + width).Where(n =>
+                {
+                    var (x, z) = _tracks.PositionOf(n);
+                    var t = Math.Clamp(((x - p0.X) * dx + (z - p0.Z) * dz) / Math.Max(dx * dx + dz * dz, 1e-9), 0, 1);
+                    var (ex, ez) = (p0.X + dx * t - x, p0.Z + dz * t - z);
+                    return ex * ex + ez * ez <= width * width;
+                }).ToHashSet();
+                }
+
+                (float Track, float Ground)? Heights(long n) => lines.HeightsAt(n);
+                var mode = parts[1];
+                Committed(mode switch
+                {
+                    "level" => _tracks.Level(picked, Heights),
+                    "grade" => _tracks.Grade(picked, Heights),
+                    "raise" => _tracks.Raise(picked, 1f, Heights),
+                    "unpin" => _tracks.Unpin(picked),
+                    _ => null,
+                });
+                var (low, high, grade, length) = _tracks.HeightsOf(picked, Heights);
+                Log.Info(string.Create(CultureInfo.InvariantCulture, $"Pins {mode}: {picked.Count} points, {picked.Count(_tracks.Pins.ContainsKey)} pinned, {low:0.00} to {high:0.00} m, grade {grade * 100:0.00}% over {length:0} m{(_tracks.PinRefused is { } why && mode == "grade" ? $", refused: {why}" : "")}"));
+                foreach (var n in picked.OrderBy(n => _tracks.PositionOf(n).X))
+                    if (Heights(n) is { } h)
+                        Log.Info(string.Create(CultureInfo.InvariantCulture, $"  node {n}: track {h.Track:0.00} ground {h.Ground:0.00}{(_tracks.Pins.TryGetValue(n, out var pin) ? $" pin {pin:0.00}" : "")}"));
+                break;
+            }
+
             case "background":
                 (_showBackground, MapTiles.Background, _backgroundOpacity) = (parts[1] != "off", parts[1] == "satellite" ? MapBackground.Satellite : MapBackground.Map, 1f);
                 SetTopDown(true);
