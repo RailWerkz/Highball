@@ -91,7 +91,11 @@ zigzag, Brotli, plus land cover and the track files), `REGION.hbserver` (rail gr
 manifest with per-tile hashes for patches, verifies everything read back, and installs the packs for Single Player.
 The World route today: 115 tiles, 33.7 MB (~293 KB a tile).
 
-Next: smaller tiles on disk (byte-plane residuals, a stronger Brotli setting), the visual track and objects stored per tile
+**Done:** pack format v2: residuals as byte planes, Brotli quality 9 (`PackFile.TileQuality`; 11 saves another ~7% at 20x
+the time), tiles encoded in parallel. World: 32.2 → 23.5 MB (−27%), exported in 6 s, every tile verified on read-back,
+v1 packs still read, Single Player drives it.
+
+Next: the visual track and objects stored per tile
 (`docs/mmo.md`), and streaming tiles from packs on a background thread with transfer-queue uploads.
 
 ## Phase 6: single player and multiplayer from exported routes
@@ -104,5 +108,6 @@ authoritative headless server loading `.hbserver`, with the same code path for a
 
 ## Risks
 - Visual parity: every phase compares A/B screenshots against the previous step.
-- Temporal upscaling is a little softer than native; a texture mip bias of log2(scale) is the next fix for that.
+- Temporal upscaling is a little softer than native at geometric edges; textures get a mip bias of log2(scale) so their
+  detail matches native (applies to textures loaded after a Render resolution change).
 - Mesh shaders and VSM need fallbacks that are tested, not just compiled.

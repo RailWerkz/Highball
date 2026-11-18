@@ -51,6 +51,18 @@ public sealed unsafe class Texture2D : IDisposable
         }
     }
 
+    /// With the world drawn smaller than the screen (temporal upscaling), textures are read as sharp as they'd be at full size:
+    /// the GPU picks mips for the smaller image, so they're biased by log2 of its share (-0.42 at 75%). Temporal anti-aliasing
+    /// settles the extra detail. Read when a texture's made (a change of Render resolution applies to textures loaded after).
+    public static float UpscaleLodBias
+    {
+        get
+        {
+            var s = RailWerkz.Core.Settings.Settings.Current;
+            return s.TemporalAA ? MathF.Log2(Math.Clamp(s.RenderScale, 0.5f, 1f)) : 0f;
+        }
+    }
+
     public static Texture2D Solid(byte4 color)
     {
         Span<byte> pixel = [color.X, color.Y, color.Z, color.W];
@@ -93,6 +105,8 @@ public sealed unsafe class Texture2D : IDisposable
         }
 
         sampler.MaxLod = mips;
+        if (mips > 1)
+            sampler.MipLodBias = UpscaleLodBias;
         if (mips > 1 && Gpu.MaxAnisotropy > 0f)
         {
             sampler.AnisotropyEnable = new Brutal.Bool32(true);
@@ -242,6 +256,7 @@ public sealed unsafe class Texture2D : IDisposable
 
         var sampler = Presets.Sampler.SamplerLinearRepeat;
         sampler.MaxLod = mips;
+        sampler.MipLodBias = mips > 1 ? UpscaleLodBias : 0f;
         if (Gpu.MaxAnisotropy > 0f)
         {
             sampler.AnisotropyEnable = new Brutal.Bool32(true);
