@@ -26,6 +26,40 @@ public static class WorldExport
 
     public sealed record Result(string Folder, List<string> Lines);
 
+    /// How near rail the ground's kept exact in packs (PackFile.TerrainTolerance): the banks, cuttings and fields seen from a cab.
+    private const double KeepNearTrack = 300.0;
+
+    /// Whether ground is within KeepNearTrack of any rail, by 100 m cells (the packs' blocks fall on them).
+    private static PackFile.NearTrack NearTrack(RailGraph graph)
+    {
+        const double cell = 100.0;
+        var near = new HashSet<(long, long)>();
+        var reach = (int)Math.Ceiling(KeepNearTrack / cell) + 1;
+        foreach (var edge in graph.Edges)
+        {
+            for (var s = 0.0; ; s = Math.Min(s + 20.0, edge.Length))
+            {
+                var (x, _, z) = edge.Position(s);
+                var (east, north) = (x, -z);
+                var (ci, cj) = ((long)Math.Floor(east / cell), (long)Math.Floor(north / cell));
+                for (var dj = -reach; dj <= reach; dj++)
+                for (var di = -reach; di <= reach; di++)
+                {
+                    var (x0, z0) = ((ci + di) * cell, (cj + dj) * cell);
+                    var dx = Math.Max(0.0, Math.Max(x0 - east, east - (x0 + cell)));
+                    var dz = Math.Max(0.0, Math.Max(z0 - north, north - (z0 + cell)));
+                    if (dx * dx + dz * dz <= KeepNearTrack * KeepNearTrack)
+                        near.Add((ci + di, cj + dj));
+                }
+
+                if (s >= edge.Length)
+                    break;
+            }
+        }
+
+        return (east, north) => near.Contains(((long)Math.Floor(east / cell), (long)Math.Floor(north / cell)));
+    }
+
     public static Result Run(RouteInfo route, RailGraph graph, IReadOnlyList<PlacedObject> objects, Action<string>? progress = null)
     {
         if (route.Grid is not { } grid || route.Zone is not { } zone)
@@ -39,6 +73,7 @@ public static class WorldExport
         Directory.CreateDirectory(folder);
 
         var built = route.BuiltTiles();
+        var near = NearTrack(graph);
         var regions = RouteRegions.Load(route);
         var groups = built.GroupBy(t => regions.Of(t)?.ToString() ?? (regions.Tiles.Count == 0 ? "World" : "Unassigned"))
             .ToDictionary(g => g.Key, g => g.OrderBy(t => -t.J).ThenBy(t => t.I).ToList());
@@ -76,7 +111,7 @@ public static class WorldExport
                         if (LoadEdits(tileFolder, heights.Length) is { } edits)
                             for (var i = 0; i < heights.Length; i++)
                                 heights[i] += edits[i];
-                        blobs[k] = PackFile.EncodeTile(new PackFile.Tile(batch[k], heights.Min(), heights.Max(), tile.Meta.HeightSource, heights, tile.Cover), grid);
+                        blobs[k] = PackFile.EncodeTile(new PackFile.Tile(batch[k], heights.Min(), heights.Max(), tile.Meta.HeightSource, heights, tile.Cover), grid, near);
                     });
 
                     for (var k = 0; k < batch.Count; k++)
@@ -187,7 +222,7 @@ public static class WorldExport
         }
 
         // Rounding to decimetres is half of 0.1 m at most; a little more for float error.
-        if (worst > 0.06f)
+        if (worst > 0.06f + PackFile.TerrainTolerance / 10f)
             problems.Add($"heights differ by up to {worst:0.000} m");
 
         var world = RailGraphFile.Read(Path.Combine(folder, "World.hbserver")).Graph;
