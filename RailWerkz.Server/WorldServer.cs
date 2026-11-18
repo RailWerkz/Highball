@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Text.Json;
 using Highball.Trains;
 using RailWerkz.Core.Logging;
 using RailWerkz.Network;
@@ -6,9 +8,12 @@ namespace RailWerkz.Server;
 
 /// A world or region's server. It loads only the server track (RailGraphFile: the rail graph with heights, switches and
 /// signals; no terrain), and keeps what every player shares: how each switch is set, and every cut on the track with
-/// its latest state, so a player joining late sees everything as it stands. In this first version each player's game
-/// runs its own trains and the server passes their states on; running every train here (the Railway in RailWerkz.Sim)
-/// comes next.
+/// its latest state, so a player joining late sees everything as it stands.
+///
+/// A cut is run either by its player's game (the server passes its states on) or by the server itself: those it puts on
+/// its own Railway and steps at the simulation's rate (Train.TimeStep), driven by their players' Control messages, and
+/// sends every player their state. Switches a server-run train forces over by trailing through are set for everyone.
+/// The same class runs headless (Program) or on a thread inside the game of a player who hosts.
 public sealed class WorldServer : IDisposable
 {
     private sealed class Player
@@ -20,17 +25,29 @@ public sealed class WorldServer : IDisposable
 
     private sealed class SharedCut
     {
+        public required ulong Id;
         public required PeerId Owner;
         public required byte[] Added;
         public byte[]? State;
+
+        /// Run here (CutAdded's flag): its consist, and once its first state has placed it, its cut on the Railway.
+        public bool ServerRuns;
+        public Consist? Consist;
+        public Railway.Cut? Run;
     }
 
     private readonly Session _session = new();
     private readonly Dictionary<PeerId, Player> _players = [];
-    private readonly Dictionary<long, bool> _switches = [];
+    private readonly SwitchStates _switches = new();
     private readonly Dictionary<ulong, SharedCut> _cuts = [];
+    private readonly Dictionary<Railway.Cut, SharedCut> _run = [];
+    private readonly Railway _railway = new();
     private readonly List<Session.Event> _events = [];
     private readonly NetWriter _writer = new();
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private double _simulated;
+    private double _sentAt;
+    private bool _applyingSwitch;
     private int _nextNumber = 1;
     private volatile bool _stop;
 
@@ -42,6 +59,9 @@ public sealed class WorldServer : IDisposable
 
     public int PlayerCount => _players.Count;
 
+    /// How many cuts the server itself runs.
+    public int RunCount => _run.Count;
+
     public WorldServer(string serverFile, string world, int port)
     {
         Track = RailGraphFile.Read(serverFile);
@@ -49,6 +69,14 @@ public sealed class WorldServer : IDisposable
         Region = Track.Name;
         Port = port;
         Checksum = Track.Graph.Checksum();
+
+        Track.Graph.Reversed = _switches.Reversed;
+        _railway.Use(Track.Graph);
+        _railway.Switches = _switches;
+        _switches.Changed += SwitchChanged;
+        _railway.Removed += cut => Lost(cut, "taken off");
+        _railway.Replaced += (old, _) => Lost(old, "coupled or split");
+
         if (!_session.Host(port, 64, out var error))
             throw new InvalidOperationException($"couldn't host on port {port}: {error}");
         Log.Info($"Server: {world}/{Region} on port {port}: {Track.Graph.Edges.Count} edges, {Track.Graph.Switches.Count} switches, " +
@@ -61,11 +89,55 @@ public sealed class WorldServer : IDisposable
         while (!_stop)
         {
             Poll();
-            Thread.Sleep(5);
+            Simulate();
+            Thread.Sleep(2);
         }
     }
 
     public void Stop() => _stop = true;
+
+    /// Steps the trains run here up to now, in the simulation's fixed steps (at most a quarter of a second at once, so a stall
+    /// doesn't make it race), and sends their states every Protocol.StateEvery.
+    public void Simulate()
+    {
+        var now = _clock.Elapsed.TotalSeconds;
+        if (now - _simulated > 0.25)
+            _simulated = now - 0.25;
+        while (_simulated + Train.TimeStep <= now)
+        {
+            // Driven cuts stay awake while there's power or brake to answer.
+            foreach (var cut in _run.Keys)
+                if (cut.Train.Notch > 0 || cut.Train.Dynamic > 0.0)
+                    cut.Still = 0.0;
+            _railway.Step(Train.TimeStep);
+            _simulated += Train.TimeStep;
+        }
+
+        if (now - _sentAt < Protocol.StateEvery || _run.Count == 0)
+            return;
+        _sentAt = now;
+        foreach (var (cut, shared) in _run)
+        {
+            var state = WriteState(_writer, shared.Id, cut.Train).ToArray();
+            shared.State = state;
+            foreach (var (peer, player) in _players)
+                if (player.Ready)
+                    _session.Send(peer, state, Delivery.Unreliable);
+        }
+    }
+
+    /// A cut's state as CutState carries it: its front, each coupler's extension and each car's speed.
+    public static ReadOnlySpan<byte> WriteState(NetWriter writer, ulong id, Train train)
+    {
+        var w = writer.Begin(Protocol.Id(Protocol.CutState)).U64(id).I32(train.Head.Edge).F32((float)train.Head.S).I32(train.Head.Direction);
+        var body = train.Body;
+        w.U16((ushort)body.Velocity.Length);
+        for (var i = 0; i < body.Velocity.Length - 1; i++)
+            w.F32((float)(i < body.Extension.Length ? body.Extension[i] : 0.0));
+        for (var i = 0; i < body.Velocity.Length; i++)
+            w.F32((float)body.Velocity[i]);
+        return w.Span;
+    }
 
     public void Poll()
     {
@@ -133,7 +205,7 @@ public sealed class WorldServer : IDisposable
                 }
 
                 who.Ready = true;
-                foreach (var (node, reversed) in _switches)
+                foreach (var (node, reversed) in _switches.All)
                     _session.Send(from, _writer.Begin(Protocol.Id(Protocol.Switch)).I64(node).Bool(reversed).Span, Delivery.Reliable);
                 foreach (var cut in _cuts.Values)
                 {
@@ -142,7 +214,7 @@ public sealed class WorldServer : IDisposable
                         _session.Send(from, state, Delivery.Reliable);
                 }
 
-                Log.Info($"Server: {who.Name} ready, sent {_switches.Count} switches and {_cuts.Count} cuts");
+                Log.Info($"Server: {who.Name} ready, sent {_switches.All.Count()} switches and {_cuts.Count} cuts");
                 break;
             }
             case Protocol.CutAdded:
@@ -150,9 +222,16 @@ public sealed class WorldServer : IDisposable
                 var cut = r.U64();
                 if (Protocol.Owner(cut) != who.Number)
                     return;
-                _cuts[cut] = new SharedCut { Owner = from, Added = data };
+                var json = r.LongStr();
+                var serverRuns = r.Bool();
+                if (r.Overrun)
+                    serverRuns = false;
+                var shared = new SharedCut { Id = cut, Owner = from, Added = data, ServerRuns = serverRuns };
+                if (serverRuns)
+                    shared.Consist = JsonSerializer.Deserialize<Consist>(json);
+                _cuts[cut] = shared;
                 Pass(from, data, Delivery.Reliable);
-                Log.Info($"Server: {who.Name} put cut {cut:X} on the track");
+                Log.Info($"Server: {who.Name} put cut {cut:X} on the track{(serverRuns ? ", run here" : "")}");
                 break;
             }
             case Protocol.CutState:
@@ -160,8 +239,34 @@ public sealed class WorldServer : IDisposable
                 var cut = r.U64();
                 if (!_cuts.TryGetValue(cut, out var shared) || shared.Owner != from)
                     return;
+                if (shared.ServerRuns)
+                {
+                    // Its first state places it; from then on it's run here and its player's states are ignored.
+                    if (shared.Run is null)
+                        Place(shared, r, who);
+                    return;
+                }
+
                 shared.State = data;
                 Pass(from, data, Delivery.Unreliable);
+                break;
+            }
+            case Protocol.Control:
+            {
+                var cut = r.U64();
+                if (!_cuts.TryGetValue(cut, out var shared) || shared.Owner != from || shared.Run is not { } run)
+                    return;
+                var train = run.Train;
+                train.Reverser = Math.Clamp(r.U8() - 1, -1, 1);
+                train.Notch = Math.Clamp((int)r.U8(), 0, Train.Notches);
+                train.Brake = Math.Clamp(r.F32(), 0f, 1f);
+                train.Independent = Math.Clamp(r.F32(), 0f, 1f);
+                train.Dynamic = Math.Clamp(r.F32(), 0f, 1f);
+                train.Emergency = r.Bool();
+                train.Sand = r.Bool();
+                if (r.Overrun)
+                    return;
+                run.Still = 0.0;
                 break;
             }
             case Protocol.CutRemoved:
@@ -170,6 +275,12 @@ public sealed class WorldServer : IDisposable
                 if (_cuts.TryGetValue(cut, out var shared) && shared.Owner == from)
                 {
                     _cuts.Remove(cut);
+                    if (shared.Run is { } run)
+                    {
+                        _run.Remove(run);
+                        _railway.Remove(run);
+                    }
+
                     Pass(from, data, Delivery.Reliable);
                     Log.Info($"Server: {who.Name} took cut {cut:X} off");
                 }
@@ -179,11 +290,74 @@ public sealed class WorldServer : IDisposable
             case Protocol.Switch:
             {
                 var node = r.I64();
-                _switches[node] = r.Bool();
+                var reversed = r.Bool();
+                _applyingSwitch = true;
+                _switches.Set(node, reversed);
+                _applyingSwitch = false;
                 Pass(from, data, Delivery.Reliable);
                 break;
             }
         }
+    }
+
+    /// A server-run cut's first state: its train put where it says, moving as it says, on the Railway.
+    private void Place(SharedCut shared, NetReader r, Player who)
+    {
+        var head = new TrackPosition(r.I32(), r.F32(), r.I32());
+        var cars = r.U16();
+        var extension = new float[Math.Max(0, cars - 1)];
+        for (var i = 0; i < extension.Length; i++)
+            extension[i] = r.F32();
+        var velocity = new float[cars];
+        for (var i = 0; i < cars; i++)
+            velocity[i] = r.F32();
+        if (r.Overrun || head.Edge < 0 || head.Edge >= Track.Graph.Edges.Count || shared.Consist is null)
+            return;
+
+        var train = Train.Place(Track.Graph, shared.Consist, head, out var why, PlacedAs.Running);
+        if (train is null)
+        {
+            Log.Warn($"Server: couldn't run {who.Name}'s {shared.Consist.Name} ({why})");
+            return;
+        }
+
+        if (train.Cars.Count == cars)
+            train.Mirror(head, extension, velocity);
+        var cut = _railway.Add(train, null, out why);
+        if (cut is null)
+        {
+            Log.Warn($"Server: couldn't run {who.Name}'s {shared.Consist.Name} ({why})");
+            return;
+        }
+
+        shared.Run = cut;
+        _run[cut] = shared;
+        Log.Info($"Server: running {shared.Consist.Name} ({train.Cars.Count} vehicles) for {who.Name} on edge {head.Edge}");
+    }
+
+    /// A cut run here gone from the Railway on its own (hit, coupled, drawn apart): taken off for everyone.
+    private void Lost(Railway.Cut cut, string how)
+    {
+        if (!_run.Remove(cut, out var shared))
+            return;
+        shared.Run = null;
+        _cuts.Remove(shared.Id);
+        var message = _writer.Begin(Protocol.Id(Protocol.CutRemoved)).U64(shared.Id).Span.ToArray();
+        foreach (var (peer, player) in _players)
+            if (player.Ready)
+                _session.Send(peer, message, Delivery.Reliable);
+        Log.Info($"Server: {shared.Consist?.Name} {how}, taken off");
+    }
+
+    /// A switch a train run here forced over: set for every player.
+    private void SwitchChanged(long node, bool reversed)
+    {
+        if (_applyingSwitch)
+            return;
+        var message = _writer.Begin(Protocol.Id(Protocol.Switch)).I64(node).Bool(reversed).Span.ToArray();
+        foreach (var (peer, player) in _players)
+            if (player.Ready)
+                _session.Send(peer, message, Delivery.Reliable);
     }
 
     /// A message from one player passed on to every other player who's ready.
@@ -205,10 +379,16 @@ public sealed class WorldServer : IDisposable
     {
         if (!_players.Remove(peer, out var player))
             return;
-        foreach (var id in _cuts.Where(c => c.Value.Owner == peer).Select(c => c.Key).ToList())
+        foreach (var shared in _cuts.Values.Where(c => c.Owner == peer).ToList())
         {
-            _cuts.Remove(id);
-            Pass(peer, _writer.Begin(Protocol.Id(Protocol.CutRemoved)).U64(id).Span.ToArray(), Delivery.Reliable);
+            _cuts.Remove(shared.Id);
+            if (shared.Run is { } run)
+            {
+                _run.Remove(run);
+                _railway.Remove(run);
+            }
+
+            Pass(peer, _writer.Begin(Protocol.Id(Protocol.CutRemoved)).U64(shared.Id).Span.ToArray(), Delivery.Reliable);
         }
 
         Log.Info($"Server: {player.Name} left{(why is null ? "" : $" ({why})")}");

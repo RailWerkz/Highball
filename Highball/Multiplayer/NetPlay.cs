@@ -24,6 +24,9 @@ public sealed class NetPlay : IDisposable
         public float[] Velocity = [];
         public double At;
         public double Logged;
+
+        /// This player's own cut, run by the server (ServerRuns) and driven from here.
+        public bool Driven;
     }
 
     private const double SendEvery = 0.05;
@@ -51,6 +54,11 @@ public sealed class NetPlay : IDisposable
     public string World { get; private set; } = "";
     public string Region { get; private set; } = "";
     public bool Hosting => _server is not null;
+
+    /// This player's cuts are handed to the server to run once put on the track: they're then shown where it says, like
+    /// everyone else's, and driven by sending it their controls (Protocol.Control). Otherwise this game runs them and sends
+    /// their states.
+    public bool ServerRuns { get; set; } = App.DevTools.ServerRuns;
 
     /// Something to tell the player.
     public event Action<string>? Notice;
@@ -134,13 +142,27 @@ public sealed class NetPlay : IDisposable
                 var id = ((ulong)(uint)Number << 32) | _nextCut++;
                 _mine[cut] = id;
                 var consist = new Consist { Name = cut.Train.Name, Cars = [.. cut.Train.Cars.Select(c => new ConsistCar(c.Def.Id, c.Livery?.Id, c.Reversed, c.Fill > 0.0, c.Tag, c.Fill, c.Cargo))] };
-                _session.SendToHost(_writer.Begin(Protocol.Id(Protocol.CutAdded)).U64(id).LongStr(JsonSerializer.Serialize(consist)).Span, Delivery.Reliable);
+                _session.SendToHost(_writer.Begin(Protocol.Id(Protocol.CutAdded)).U64(id).LongStr(JsonSerializer.Serialize(consist)).Bool(ServerRuns).Span, Delivery.Reliable);
                 SendState(id, cut.Train);
+                if (ServerRuns)
+                {
+                    // Placed where it stands; from now on the server runs it and says where it is.
+                    railway.SetRemote(cut, true);
+                    var body = cut.Train.Body;
+                    _remote[id] = new Remote
+                    {
+                        Consist = consist, Cut = cut, Head = cut.Train.Head, Driven = true, At = _now,
+                        Extension = [.. body.Extension.Take(Math.Max(0, body.Velocity.Length - 1)).Select(e => (float)e)],
+                        Velocity = [.. body.Velocity.Select(v => (float)v)],
+                    };
+                    Log.Info($"Multiplayer: {consist.Name} handed to the server to run");
+                }
             }
 
         foreach (var (cut, id) in _mine.Where(m => !railway.Cuts.Contains(m.Key)).ToList())
         {
             _mine.Remove(cut);
+            _remote.Remove(id);
             _session.SendToHost(_writer.Begin(Protocol.Id(Protocol.CutRemoved)).U64(id).Span, Delivery.Reliable);
         }
 
@@ -148,7 +170,12 @@ public sealed class NetPlay : IDisposable
         {
             _sentAt = _now;
             foreach (var (cut, id) in _mine)
-                SendState(id, cut.Train);
+            {
+                if (_remote.TryGetValue(id, out var driven) && driven.Driven)
+                    SendControl(id, cut.Train);
+                else
+                    SendState(id, cut.Train);
+            }
         }
 
         // Everyone else's: carried on from where they last said, at the speed they had (no more than a third of a
@@ -163,6 +190,14 @@ public sealed class NetPlay : IDisposable
                 graph.Move(ref head, ahead);
             cut.Train.Mirror(head, remote.Extension, remote.Velocity);
         }
+    }
+
+    /// A cut the server runs: how it's being driven here.
+    private void SendControl(ulong id, Train train)
+    {
+        var w = _writer.Begin(Protocol.Id(Protocol.Control)).U64(id).U8((byte)(Math.Clamp(train.Reverser, -1, 1) + 1)).U8((byte)Math.Clamp(train.Notch, 0, Train.Notches))
+            .F32((float)train.Brake).F32((float)train.Independent).F32((float)train.Dynamic).Bool(train.Emergency).Bool(train.Sand);
+        _session.SendToHost(w.Span, Delivery.Unreliable);
     }
 
     private void SendState(ulong id, Train train)

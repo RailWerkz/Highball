@@ -113,6 +113,13 @@ public class Railway
         return cut;
     }
 
+    /// Makes a cut shown where it's said to be (remote: another machine runs it, Train.Mirror places it) or run here again.
+    public void SetRemote(Cut cut, bool remote)
+    {
+        cut.Remote = remote;
+        cut.Still = 0.0;
+    }
+
     /// A cut's train swapped for another made from it (turned end for end, say).
     public void Swap(Cut cut, Train train)
     {

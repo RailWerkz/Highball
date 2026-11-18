@@ -20,6 +20,7 @@ namespace Highball.App;
 ///   --route NAME                                    open that route in the Route Builder (made if there isn't one)
 ///   --host WORLD/REGION                             host a session of that installed pack on the port in Settings, and play it
 ///   --join ADDRESS                                  join a session at ADDRESS on the port in Settings
+///   --serverruns                                    with --host or --join, hand this player's trains to the server to run
 ///   --driveview VIEW                                with --pack, start in that camera: cab, orbit or free
 ///   --pack WORLD/REGION                             drive that installed pack, as Single Player does (with --train, --camera,
 ///                                                   --shot)
@@ -132,6 +133,9 @@ public static class DevTools
     public static bool HideWindows { get; set; }
     private static string? _host;
     private static string? _join;
+
+    /// In multiplayer, this player's trains are handed to the world server to run (NetPlay.ServerRuns).
+    public static bool ServerRuns { get; private set; }
 
     /// With --export: true once, for the editor to export as soon as its rail graph is built.
     public static bool TakeExport()
@@ -443,6 +447,9 @@ public static class DevTools
                     break;
                 case "--novsync":
                     NoVSync = true;
+                    break;
+                case "--serverruns":
+                    ServerRuns = true;
                     break;
                 case "--gputimes":
                     GpuTimes = true;
