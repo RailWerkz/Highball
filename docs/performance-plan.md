@@ -64,8 +64,10 @@ AO 0.6, ties 0.4, roads 0.3.
   Trackside at noon: sun shadows 1.66 -> 1.04 ms. Flying at 25 m/s it breaks even (redrawn every few frames).
 - **GPU caster culling** for plants (below), with every cascade's view culled in one dispatch.
 
-Next: virtual shadow maps (16k² virtual, 128² pages, only sampled pages drawn, static pages cached) as the long-term
-replacement for cascades, then optional ray-traced sun shadows (`VK_KHR_ray_query`) as an Ultra option.
+**Not done: virtual shadow maps.** Cascades now cost 1.0-1.5 ms (from 4.85) with the still cache; VSM's own costs
+(marking pages from a depth the world doesn't have until after shadows, allocating them, drawing casters per page) would
+likely be slower on this content until casters are culled per page on the GPU. Its win is quality: one texel size
+everywhere and no seams between cascades. Ray-traced sun shadows (`VK_KHR_ray_query`) for Ultra the same.
 
 ## Phase 3: GPU-driven drawing
 
@@ -75,6 +77,10 @@ reach) for the camera's view and every shadow cascade in one dispatch; each kind
 camera's, then draws, so the GPU doesn't stop between cascades (culling a cascade at a time cost 0.35 ms of stalls).
 Render thread CPU 1.9 -> 0.55 ms; GPU unchanged within noise. CPU culling stays as the fallback (no drawIndirectCount,
 or `HIGHBALL_CPU_CULLING`).
+
+**Done: plants' depth before the ground.** The alpha-tested plant depth is drawn first, so ground and track hidden under
+grass are never shaded; the shaded plants stay after the track's fades (equal depth test). Wind phases are taken once a
+frame so both passes bend the grass alike. Trackside: 8.60 -> 8.22 ms of GPU.
 
 **Measured, not done:** terrain and track multi-draw. Terrain records in 0.01 ms of CPU and costs no GPU time for its
 draws; merging them would lower the draw count and nothing else. The culling pass and `GpuRing` are there to extend to
@@ -87,8 +93,13 @@ Locomotives are 1.03 M / 257 k / 68 k triangles (LOD0/1/2), and their LODs are w
 **Done:** shadow and motion draws merge a model's solid parts into runs of the index buffer (a glass part in the middle
 used to send the whole model back to a draw a part).
 
-Next, when models are the cost (they're 0.7 ms today): an offline meshlet / cluster-LOD cooker, mesh-shader and
-compute-culled tiers, and bindless materials so a 64-material locomotive is a handful of draws.
+**Done: bindless model materials.** Every model texture sits in one descriptor array (`MaterialTable`); each draw's
+material is a row in a per-frame table that `model.frag` reads by `gl_DrawID`, so all of a model batch's parts are one
+indirect call. Trackside: models 141 -> 9 draws, 0.42 -> 0.35 ms.
+
+**Not done: meshlets and cluster LOD.** Models now cost 0.35 ms with the authored LOD0/1/2; a cluster hierarchy pays off
+with many 1M-triangle models in view at once, which the routes don't have yet. It needs meshoptimizer (not in the repo)
+or a cooker of our own, a mesh-shader tier and a compute fallback.
 
 ## Phase 5: route data for the whole USA
 
@@ -102,10 +113,18 @@ tasks and are evicted when far.
 - The track a player's game solves is kept in its pack cache between sessions (checked against a stamp of its inputs):
   World opens in 4.3 s, not 5.8.
 
+- Pack format v3: ground more than 300 m from rail kept every 10 m wherever that's within 1 m
+  (`PackFile.TerrainTolerance`), every 2 m elsewhere; tile borders judged on their own samples so neighbours match
+  exactly. World 23.5 -> 8.3 MB (terrain ~63 KB a tile; the mmo.md target is 40-60 KB). Lossless at 1 dm it doesn't
+  pay: lidar ground has sub-decimetre detail in 96% of 100 m blocks.
+
 **Measured, not done:** shipping the solved track in packs. It's 10 MB for World's 66 km, 18 times the network it's
 solved from, so it would cost far more in download than the second it saves.
 
-Next: region-to-region streaming (`docs/mmo.md`): opening still reads every tile and lays out all of a region's track.
+**Not done: region streaming.** Opening lays out all of a region's track (World: 4.3 s for 66 km). At that rate a
+quarter of the country's track would take tens of minutes, so streaming needs the track laid out (or loaded compactly)
+a window at a time round the train, with tiles and graph joined across window and zone borders. That's a redesign of
+`NetworkLines`' solve, not a loader change.
 
 ## Phase 6: single player and multiplayer from exported routes
 
@@ -118,8 +137,12 @@ notch, brakes, sand) and the server sends every player its state 20 times a seco
 for everyone. Protocol 3; `--serverruns` turns it on. Tested hosting World: notch 8 took the autorack train from 4 to
 45 mph on the server, the game showing it where the server said.
 
-Next: the cab's gauges for a server-run train (brake pressures aren't sent yet), coupling and splitting server-run
-cuts (they're taken off today), a menu option for it, and AI and timetabled trains run by the server.
+**Done:** server-run trains send their driver the brake gauges (main, equalizing, independent, every car's pipe and
+cylinder); couples and splits become new server-made cuts driven by whoever drove what they came from; a menu option
+(Multiplayer > Trains run by). Tested: notch 8 then brake 0.6, braked on the server from 31 to 26 mph, the cab at
+72 psi. Couples and splits on the server aren't tested yet; engine start-up state isn't mirrored.
+
+Next: AI and timetabled trains run by the server; interest management for many players.
 
 ## Risks
 - Visual parity: every phase compares A/B screenshots against the previous step.
