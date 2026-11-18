@@ -2702,7 +2702,7 @@ public sealed partial class NetworkMeshes : IDisposable
     /// Draws the lines' shapes into a shadow cascade, with a pipeline bound that takes just their positions.
     /// thinOnly: the track's own cascade (SunShadows.TrackReach), which takes the rails and the rest of the near meshes but not the
     /// beds and roads of the far ones.
-    public void DrawLineCasters(CommandBuffer cmd, double cx, double cy, double cz, int cascade, Func<float3, float, bool> reaches, Action<float3> push,
+    public void DrawLineCasters(CommandBuffer cmd, double cx, double cy, double cz, int cascade, SunShadows.CasterTest reaches, Action<float3> push,
         bool thinOnly = false)
     {
         foreach (var (key, near) in _drawList)
@@ -2717,7 +2717,7 @@ public sealed partial class NetworkMeshes : IDisposable
 
             var origin = OriginOf(key);
             var offset = new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz));
-            if (!reaches(offset + (mesh.BoundsMin + mesh.BoundsMax) * 0.5f, MathEx.Length(mesh.BoundsMax - mesh.BoundsMin) * 0.5f))
+            if (!reaches(offset + (mesh.BoundsMin + mesh.BoundsMax) * 0.5f, MathEx.Length(mesh.BoundsMax - mesh.BoundsMin) * 0.5f, offset.Y + mesh.BoundsMax.Y))
                 continue;
 
             push(offset);
@@ -2748,7 +2748,7 @@ public sealed partial class NetworkMeshes : IDisposable
 
     /// Draws the ties and, close by, the plates into a shadow cascade, cell by cell, with the part caster pipeline bound.
     /// coarse: the track's own cascade, which reaches far enough that the plates go in as plain blocks.
-    public void DrawPartCasters(CommandBuffer cmd, double cx, double cy, double cz, int cascade, Func<float3, float, bool> reaches, Action<float3> push,
+    public void DrawPartCasters(CommandBuffer cmd, double cx, double cy, double cz, int cascade, SunShadows.CasterTest reaches, Action<float3> push,
         bool coarse = false)
     {
         if (cascade > LastThinCascade)
@@ -2759,7 +2759,7 @@ public sealed partial class NetworkMeshes : IDisposable
             DrawCellCasters(cmd, cx, cy, cz, reaches, push, c => (c.Plates, c.PlateCells), coarse ? _plateFar : _plate.Mesh);
     }
 
-    private void DrawCellCasters(CommandBuffer cmd, double cx, double cy, double cz, Func<float3, float, bool> reaches, Action<float3> push, Func<Chunk, (BufferEx, int[])> instances, Mesh mesh)
+    private void DrawCellCasters(CommandBuffer cmd, double cx, double cy, double cz, SunShadows.CasterTest reaches, Action<float3> push, Func<Chunk, (BufferEx, int[])> instances, Mesh mesh)
     {
         foreach (var (key, near) in _drawList)
         {
@@ -2774,12 +2774,14 @@ public sealed partial class NetworkMeshes : IDisposable
             var origin = OriginOf(key);
             var height = (lines.BoundsMin.Y + lines.BoundsMax.Y) * 0.5f - (float)cy;
             var radius = CellSize * 0.75f + (lines.BoundsMax.Y - lines.BoundsMin.Y) * 0.5f + 3f;
+            // Ties and plates sit on the track, never above the highest of its lines here.
+            var top = lines.BoundsMax.Y - (float)cy + 0.5f;
             var pushed = false;
             var runStart = -1;
             for (var c = 0; c <= Cells * Cells; c++)
             {
                 var wanted = c < Cells * Cells && reaches(
-                    new float3((float)(origin.X + (c % Cells + 0.5f) * CellSize - cx), height, (float)(origin.Z + (c / Cells + 0.5f) * CellSize - cz)), radius);
+                    new float3((float)(origin.X + (c % Cells + 0.5f) * CellSize - cx), height, (float)(origin.Z + (c / Cells + 0.5f) * CellSize - cz)), radius, top);
                 if (wanted)
                 {
                     if (runStart < 0)

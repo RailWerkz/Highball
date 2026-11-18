@@ -304,6 +304,7 @@ public sealed unsafe class SunShadows : IDisposable
             using (Profiler.Sample(CascadeNames[c], cmd))
             {
                 _map.BeginLayer(cmd, c);
+                _receiverLow = LowestGround(terrain, camera, centre, radius);
                 if (active)
                     DrawCasters(cmd, camera, aspect, c, centre, right, up, sun, radius, seenFrom, far, terrain, models, vegetation, network, _matrices[c]);
                 _map.EndLayer(cmd);
@@ -320,6 +321,7 @@ public sealed unsafe class SunShadows : IDisposable
             using (Profiler.Sample("Track cascade", cmd))
             {
                 _map.BeginLayer(cmd, TrackLayer);
+                _receiverLow = LowestGround(terrain, camera, centre, radius);
                 if (active && network is not null)
                     DrawCasters(cmd, camera, aspect, TrackLayer, centre, right, up, sun, radius, 0f, TrackReach, null, null, null, network, uniforms.Track);
                 _map.EndLayer(cmd);
@@ -336,6 +338,48 @@ public sealed unsafe class SunShadows : IDisposable
         var barrier = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.TransferWriteBit, DstAccessMask = VkAccessFlags.UniformReadBit };
         cmd.PipelineBarrier(VkPipelineStageFlags.TransferBit, VkPipelineStageFlags.FragmentShaderBit, VkDependencyFlags.None, [barrier], [], []);
     }
+
+    /// The lowest ground under a cascade's sphere (relative to the camera's height), less ReceiverMargin: nothing it shades lies
+    /// lower. Measured at every sample of the ground's grid under it (with the hand sculpting and the track's detail), where that's
+    /// at most ReceiverSamples across; the ground's bilinear between its samples, so its lowest is at one of them. Wider, from the
+    /// tiles' own ranges, which can only be lower. Without terrain, negative infinity (casters reach as far as ShadowSlack says).
+    private static float LowestGround(Terrain? terrain, Camera camera, float3 centre, float radius)
+    {
+        if (terrain is null)
+            return float.NegativeInfinity;
+        var source = terrain.Source;
+        var spacing = source.Spacing;
+        var (x, z) = (camera.X + centre.X, camera.Z + centre.Z);
+        var across = (int)Math.Ceiling(2.0 * radius / spacing) + 2;
+        if (across <= ReceiverSamples)
+        {
+            var (sx, sz) = ((int)Math.Floor((x - radius) / spacing), (int)Math.Floor((z - radius) / spacing));
+            var lowest = float.MaxValue;
+            for (var j = 0; j < across; j++)
+            {
+                for (var i = 0; i < across; i++)
+                {
+                    var (px, pz) = ((sx + i) * (double)spacing, (sz + j) * (double)spacing);
+                    var h = source.HeightAt(px, pz);
+                    var fine = source.FineHeightAt(px, pz);
+                    lowest = MathF.Min(lowest, float.IsNaN(fine) ? h : MathF.Min(h, fine));
+                }
+            }
+
+            return (float)(lowest - camera.Y) - ReceiverMargin;
+        }
+
+        var gx0 = (int)Math.Floor((x - radius) / spacing);
+        var gz0 = (int)Math.Floor((z - radius) / spacing);
+        var gx1 = (int)Math.Ceiling((x + radius) / spacing) + 1;
+        var gz1 = (int)Math.Ceiling((z + radius) / spacing) + 1;
+        var (min, max) = source.HeightRange(gx0, gz0, gx1, gz1);
+        if (min >= max && min == 0f)
+            return float.NegativeInfinity; // no tiles there: no knowing
+        return (float)(min - camera.Y) - ReceiverMargin;
+    }
+
+    private float _receiverLow = float.NegativeInfinity;
 
     /// Whether a cached cascade has to be drawn this frame: on its turn, or whenever what it holds no longer fits (the sun's
     /// moved, the view's left the room it was drawn with, the map's new, shadows came or went).
@@ -391,10 +435,22 @@ public sealed unsafe class SunShadows : IDisposable
     /// far as its height throws it. (The terrain's own shadows aren't culled this way: a ridge can shade a valley kilometres off.)
     private const float ShadowSlack = 20f;
 
+    /// Whether something (its bounding sphere relative to the camera, and its top) could shade any part of the view a
+    /// cascade's read for. The top is how high its shadow starts: it's thrown as far as from there down to the lowest ground
+    /// the cascade covers, at the sun's angle (CasterReach).
+    public delegate bool CasterTest(float3 centre, float size, float top);
+
+    /// How far under the lowest ground sampled anything a cascade shades might still lie: between samples, the detail the track's
+    /// cells carve (a ditch) and what's drawn just over the ground's own surface.
+    private const float ReceiverMargin = 3f;
+
+    /// The most samples across a cascade the lowest ground is measured from; wider ones take the tiles' own ranges.
+    private const int ReceiverSamples = 33;
+
     /// The screen height (pixels) and slack a cascade's level of detail is judged by (DrawCasters' lodFloor).
     private const float ShadowLodReference = 1080f;
     private const float ShadowLodSlack = 2f;
-    private const float TallestCaster = 30f;
+    public const float TallestCaster = 30f;
 
     private ModelInstances? _instances;
     private readonly List<ModelInstances.Batch> _casters = [];
@@ -434,12 +490,19 @@ public sealed unsafe class SunShadows : IDisposable
         // Can its shadow fall anywhere this cascade's read for? Its sphere, swept away from the sun as far as a shadow from
         // its height could reach, must touch that part of the view: everything behind or beside the camera whose shadow
         // falls away from the view is left out.
-        bool Reaches(float3 relative, float size)
+        // How far towards the ground away from the sun a shadow from this high can be thrown: down to the cascade's lowest ground
+        // where that's known (a tie throws its shadow a metre, not a hundred), else as far as ShadowSlack allows.
+        var low = _receiverLow;
+        float CasterReach(float size, float top) => float.IsNegativeInfinity(low)
+            ? (MathF.Min(2f * size, TallestCaster) + ShadowSlack) / lift
+            : MathF.Max(top - low, 0f) / lift;
+
+        bool Reaches(float3 relative, float size, float top)
         {
             if (!InCascade(relative, size))
                 return false;
             var r = size + edge;
-            var end = relative - sun * MathF.Min((MathF.Min(2f * size, TallestCaster) + ShadowSlack) / lift, TowardsSun);
+            var end = relative - sun * MathF.Min(CasterReach(size, top), TowardsSun);
             foreach (var (n, d) in planesArray)
                 if (MathEx.Dot(n, relative) + d > r && MathEx.Dot(n, end) + d > r)
                     return false;
@@ -472,7 +535,7 @@ public sealed unsafe class SunShadows : IDisposable
         if (models is not null && _instances is not null)
         {
             _casters.Clear();
-            _instances.Add(models, camera, (draw, centre, size) => draw.CastsShadow && (size <= 0f || Reaches(centre, size)), _casters, lodFloor);
+            _instances.Add(models, camera, (draw, centre, size) => draw.CastsShadow && (size <= 0f || Reaches(centre, size, centre.Y + size)), _casters, lodFloor);
             if (_casters.Count > 0)
             {
                 cmd.BindPipeline(VkPipelineBindPoint.Graphics, _model);

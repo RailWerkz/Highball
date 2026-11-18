@@ -875,7 +875,7 @@ public sealed unsafe class Vegetation : IDisposable
         {
             var kind = _kinds[k];
             _gathered[k].Clear();
-            if (!Gather(camera, kind, (centre, radius) => view.Sees(centre, radius)))
+            if (!Gather(camera, kind, (centre, radius, _) => view.Sees(centre, radius)))
                 continue;
 
             _gathered[k].AddRange(_visible);
@@ -908,7 +908,7 @@ public sealed unsafe class Vegetation : IDisposable
     private readonly List<List<Visible>> _gathered = [];
 
     /// Draws what falls in one shadow cascade, with the pipeline bound.
-    public void DrawCasters(CommandBuffer cmd, VkPipelineLayout layout, Camera camera, float4x4 light, int cascade, Func<float3, float, bool> reaches)
+    public void DrawCasters(CommandBuffer cmd, VkPipelineLayout layout, Camera camera, float4x4 light, int cascade, SunShadows.CasterTest reaches)
     {
         if (!Enabled)
             return;
@@ -943,7 +943,7 @@ public sealed unsafe class Vegetation : IDisposable
 
     /// The cells with any of a kind to draw in this pass (those within its distances, and that keep takes by their sphere relative
     /// to the camera), and how many of it each shows at its distance, into _visible. False if there are none.
-    private bool Gather(Camera camera, Kind kind, Func<float3, float, bool> keep)
+    private bool Gather(Camera camera, Kind kind, SunShadows.CasterTest keep)
     {
         _visible.Clear();
         var slot = kind.Slot;
@@ -972,7 +972,8 @@ public sealed unsafe class Vegetation : IDisposable
 
             var centre = new float3((float)ox + size * 0.5f, (lowY + highY) * 0.5f, (float)oz + size * 0.5f);
             var radius = MathF.Sqrt(size * size * 0.5f + (highY - lowY) * (highY - lowY) * 0.25f) + 12f;
-            if (!keep(centre, radius))
+            // (The top: no plant stands taller than SunShadows.TallestCaster over the cell's highest ground.)
+            if (!keep(centre, radius, highY + SunShadows.TallestCaster))
                 continue;
 
             var showing = Showing(count, nearest, kind.Fade * Quality.PlantReach);
