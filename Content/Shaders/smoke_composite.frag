@@ -2,6 +2,7 @@
 // Lays the half-size marched smoke over the picture. Each pixel prefers the smoke samples that marched as far as it did, so
 // smoke behind an engine's roof doesn't bleed over its edge, nor the roof's clear sky into the smoke.
 
+layout(location = 0) in vec2 vNdc;
 layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform sampler2D smokeColor; // rgb: light it adds; a: how much of what's behind shows
@@ -22,8 +23,9 @@ layout(set = 0, binding = 3) uniform SmokeUniforms
 
 void main()
 {
-    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    // In the world's pixels, which may be fewer than the picture's it's laid over (Render resolution).
     ivec2 screen = textureSize(sceneDepth, 0);
+    ivec2 pixel = clamp(ivec2(vec2(vNdc.x * 0.5 + 0.5, 0.5 - vNdc.y * 0.5) * vec2(screen)), ivec2(0), screen - 1);
     ivec2 half_ = textureSize(smokeColor, 0);
     float here = u.forward.w / max(texelFetch(sceneDepth, pixel, 0).r, 1e-8);
 

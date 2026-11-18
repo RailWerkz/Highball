@@ -5,6 +5,7 @@
 layout(location = 0) out vec2 vCorner;
 layout(location = 1) out float vFade;
 layout(location = 2) out float vAlong;
+layout(location = 3) out vec4 vClip; // where it's drawn, for finding the world's depth there whatever its size
 
 layout(push_constant) uniform Push
 {
@@ -53,4 +54,5 @@ void main()
     vCorner = corner;
     gl_Position = pc.viewProjection * vec4(relative, 1.0);
     vAlong = gl_Position.w;
+    vClip = gl_Position;
 }

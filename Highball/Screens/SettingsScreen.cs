@@ -51,6 +51,12 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
             .Add(new MenuItem { Label = "View distance", Value = () => Distance(s.ViewDistance), Meter = () => (s.ViewDistance - MetersPerMile) / (20000f - MetersPerMile), OnChange = d => s.ViewDistance = StepDistance(s.ViewDistance, d) })
             .Add(new MenuItem { Label = "Field of view", Value = () => $"{s.FieldOfView:0}°", Meter = () => (s.FieldOfView - 40f) / 50f, OnChange = d => s.FieldOfView = Math.Clamp(s.FieldOfView + d * 5f, 40f, 90f), SeparatorAfter = true })
             .Add(new MenuItem { Label = "Temporal anti-aliasing", Value = () => OnOff(s.TemporalAA), OnChange = _ => s.TemporalAA = !s.TemporalAA })
+            .Add(new MenuItem
+            {
+                Label = "Render resolution",
+                Value = () => s.TemporalAA ? $"{MathF.Round(s.RenderScale * 100f):0}%" : "100% (NEEDS TAA)",
+                OnChange = d => s.RenderScale = StepScale(s.RenderScale, d),
+            })
             .Add(new MenuItem { Label = "Ambient occlusion", Value = () => OnOff(s.AmbientOcclusion), OnChange = _ => s.AmbientOcclusion = !s.AmbientOcclusion })
             .Add(new MenuItem { Label = "Sun shadows", Value = () => OnOff(s.SunShadows), OnChange = _ => s.SunShadows = !s.SunShadows })
             .Add(new MenuItem { Label = "Plants and rocks", Value = () => OnOff(s.Vegetation), OnChange = _ => s.Vegetation = !s.Vegetation })
@@ -106,6 +112,17 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
         var steps = ((int[])[1, 2, 4, 8]).Where(RailWerkz.Vulkan.RenderTarget.Supported).ToArray();
         var at = Math.Max(Array.IndexOf(steps, value), 0);
         return steps[(at + direction + steps.Length) % steps.Length];
+    }
+
+    /// The next render resolution: the shares temporal upscaling is tuned for.
+    private static float StepScale(float value, int direction)
+    {
+        float[] steps = [0.5f, 0.58f, 0.67f, 0.75f, 0.85f, 1f];
+        var at = 0;
+        for (var i = 0; i < steps.Length; i++)
+            if (MathF.Abs(steps[i] - value) < MathF.Abs(steps[at] - value))
+                at = i;
+        return steps[Math.Clamp(at + direction, 0, steps.Length - 1)];
     }
 
     private static string OnOff(bool on) => on ? "ON" : "OFF";

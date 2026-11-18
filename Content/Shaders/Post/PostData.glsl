@@ -12,6 +12,7 @@ layout(set = 0, binding = 4) uniform PostUniforms
     vec4 sunColor; // w: how strong the god rays and glare are, 0 for none
     vec4 grade;   // xyz: the white balance; w: saturation
     vec4 look;    // x: contrast; y: how much bloom; z: the set exposure; w: 1 to adjust it by what the image measures
+    vec4 jitter;  // xy: this frame's jitter, in clip space; zw: the world's size over the picture's (temporal upscaling)
 } post;
 
 const vec3 LumaWeights = vec3(0.2126, 0.7152, 0.0722);

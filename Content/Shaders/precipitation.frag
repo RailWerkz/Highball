@@ -4,6 +4,7 @@
 layout(location = 0) in vec2 vCorner;
 layout(location = 1) in float vFade;
 layout(location = 2) in float vAlong;
+layout(location = 3) in vec4 vClip;
 layout(location = 0) out vec4 outColor;
 
 layout(push_constant) uniform Push
@@ -20,7 +21,10 @@ layout(set = 0, binding = 0) uniform sampler2D sceneDepth;
 void main()
 {
     // Behind whatever's solid here.
-    if (pc.light.w / max(texelFetch(sceneDepth, ivec2(gl_FragCoord.xy), 0).r, 1e-8) < vAlong)
+    // (Drawn over the full-size picture; the world's depth may be smaller: Render resolution.)
+    vec2 uv = vec2(vClip.x / vClip.w * 0.5 + 0.5, 0.5 - vClip.y / vClip.w * 0.5);
+    ivec2 depthPixel = clamp(ivec2(uv * vec2(textureSize(sceneDepth, 0))), ivec2(0), textureSize(sceneDepth, 0) - 1);
+    if (pc.light.w / max(texelFetch(sceneDepth, depthPixel, 0).r, 1e-8) < vAlong)
         discard;
 
     vec3 light = pc.light.rgb;

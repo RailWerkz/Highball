@@ -24,7 +24,9 @@ layout(set = 0, binding = 2) uniform sampler3D noiseTexture;
 void main()
 {
     // In front of the column there's nothing for it to bend.
-    float ahead = pc.forward.w / max(texelFetch(sceneDepth, ivec2(gl_FragCoord.xy), 0).r, 1e-8);
+    // (Drawn over the full-size picture; the world's depth may be smaller: Render resolution.)
+    ivec2 depthPixel = ivec2(gl_FragCoord.xy * vec2(textureSize(sceneDepth, 0)) / vec2(textureSize(picture, 0)));
+    float ahead = pc.forward.w / max(texelFetch(sceneDepth, depthPixel, 0).r, 1e-8);
     float here = dot(vRelative, pc.forward.xyz);
     if (ahead < here - 0.3)
         discard;

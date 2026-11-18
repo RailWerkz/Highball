@@ -55,6 +55,10 @@ public sealed class Settings
     public int TerrainTextureDetail { get; set; }
     public bool TemporalAA { get; set; } = true;
 
+    /// The share of the screen's width and height the world is drawn at, 0.5 to 1, with temporal anti-aliasing building the
+    /// full-size picture from the jittered frames (temporal upscaling). Ignored (1) with TemporalAA off.
+    public float RenderScale { get; set; } = 0.75f;
+
     /// What's falling, by an id in Weather.Kinds, and how hard, 0 to 1.
     public string Weather { get; set; } = "Clear";
     public float WeatherAmount { get; set; } = 0.7f;

@@ -32,6 +32,7 @@ public sealed unsafe class PostProcess : IDisposable
         public float4 SunColor;
         public float4 Grade;
         public float4 Look;
+        public float4 Jitter; // xy: this frame's jitter, in clip space; zw: the world's size over the picture's
     }
 
     /// Bindings 0 to 4: an image written, up to three read, and the uniforms. Each pass uses what it needs.
@@ -208,9 +209,9 @@ public sealed unsafe class PostProcess : IDisposable
     }
 
     /// New images and sets when the window or the world's target changes. Rare enough to afford to wait for the GPU.
-    private void Resize(RenderTarget target, StorageImage motion)
+    private void Resize(RenderTarget target, int2 output, StorageImage motion)
     {
-        if (target.Size == _size && _targetVersion == target.Version && _history[0] is not null && ReferenceEquals(motion, _motion))
+        if (output == _size && _targetVersion == target.Version && _history[0] is not null && ReferenceEquals(motion, _motion))
             return;
         _motion = motion;
 
@@ -219,7 +220,7 @@ public sealed unsafe class PostProcess : IDisposable
         if (!_pool.IsNull())
             Gpu.Device.DestroyDescriptorPool(_pool, Gpu.Device.VkAllocator);
 
-        _size = target.Size;
+        _size = output;
         _targetVersion = target.Version;
         _historyValid = false;
         var (w, h) = (_size.X, _size.Y);
@@ -276,7 +277,8 @@ public sealed unsafe class PostProcess : IDisposable
             return result;
         }
 
-        var n = _frame % 8 + 1;
+        // More positions when the world's drawn smaller than the picture, so each of the picture's pixels is landed on now and then.
+        var n = _frame % 16 + 1;
         camera.Jitter = new float2((Halton(n, 2) - 0.5f) * 2f / size.X, (Halton(n, 3) - 0.5f) * 2f / size.Y);
     }
 
@@ -296,10 +298,10 @@ public sealed unsafe class PostProcess : IDisposable
 
     /// Outside any render pass, with the world and everything over it finished. motion: how what moves moved (MotionVectors).
     /// copyPicture: copy the picture into Picture first, for overPicture to sample.
-    public void Draw(CommandBuffer cmd, RenderTarget target, StorageImage motion, Camera camera, float aspect, Sky sky, Action<CommandBuffer>? overPicture = null,
+    public void Draw(CommandBuffer cmd, RenderTarget target, int2 output, StorageImage motion, Camera camera, float aspect, Sky sky, Action<CommandBuffer>? overPicture = null,
         bool copyPicture = false)
     {
-        Resize(target, motion);
+        Resize(target, output, motion);
 
         var s = Settings.Current;
         var grade = ColorGrade.Find(s.ColorGrade);
@@ -332,6 +334,7 @@ public sealed unsafe class PostProcess : IDisposable
             SunColor = new float4(sky.SunColor, rays),
             Grade = new float4(1f + warmth, 1f, 1f - warmth, grade.Saturation),
             Look = new float4(grade.Contrast, s.Bloom ? 0.05f : 0f, Exposure, MeasureExposure ? 1f : 0f),
+            Jitter = new float4(camera.Jitter.X, camera.Jitter.Y, target.Size.X / (float)output.X, target.Size.Y / (float)output.Y),
         };
         cmd.UpdateBuffer(_uniforms.VkBuffer, ByteSize.Zero, MemoryMarshal.AsBytes(new ReadOnlySpan<Uniforms>(in uniforms)));
         var updated = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.TransferWriteBit, DstAccessMask = VkAccessFlags.UniformReadBit };

@@ -230,9 +230,19 @@ public sealed unsafe class WorldRenderer : IDisposable
 
     private static float3 Normalize(float3 v) => v / MathF.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
 
-    /// Records the world into the HDR target. Outside any render pass.
-    public void Render(CommandBuffer cmd, int2 size, FrameScene scene)
+    /// The size the world's drawn at for a picture this size: the Render resolution setting's share of it with temporal
+    /// anti-aliasing on (which builds the full-size picture from it), all of it without.
+    public static int2 WorldSize(int2 output)
     {
+        var s = RailWerkz.Core.Settings.Settings.Current;
+        var scale = s.TemporalAA ? Math.Clamp(s.RenderScale, 0.5f, 1f) : 1f;
+        return new int2(Math.Max(1, (int)MathF.Round(output.X * scale)), Math.Max(1, (int)MathF.Round(output.Y * scale)));
+    }
+
+    /// Records the world into the HDR target, at WorldSize(output), and the finished picture at output. Outside any render pass.
+    public void Render(CommandBuffer cmd, int2 output, FrameScene scene)
+    {
+        var size = WorldSize(output);
         var (camera, terrain, network, models, outlined) = (scene.Camera, scene.Terrain, scene.Network, scene.Models, scene.Outlines);
         if (_pipelineSamples != RenderTarget.Samples)
         {
@@ -409,7 +419,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         using (Profiler.Sample("Motion", cmd))
             _motion.Record(cmd, _target, camera, aspect, _moving);
         (_outline.DrivenColor, _outline.PickedColor, _outline.Scale) = (scene.OutlineStyle.Driven, scene.OutlineStyle.Picked, scene.OutlineStyle.Scale);
-        _outline.Record(cmd, size, camera, aspect, outlined);
+        _outline.Record(cmd, output, camera, aspect, outlined);
 
         if (RailWerkz.Core.Settings.Settings.Current.AmbientOcclusion)
         {
@@ -434,7 +444,7 @@ public sealed unsafe class WorldRenderer : IDisposable
         {
             var falling = Precipitation.Falling(_weather);
             var haze = scene.Haze.Count > 0;
-            _post.Draw(cmd, _target, _motion.Image!, camera, aspect, Sky, !falling && !_smoke.Any && !haze ? null : over =>
+            _post.Draw(cmd, _target, output, _motion.Image!, camera, aspect, Sky, !falling && !_smoke.Any && !haze ? null : over =>
             {
                 // The haze bends what's behind it, so it goes first, from the picture as it was; the smoke over it, and rain
                 // and snow fall in front of both as much as behind.
