@@ -383,6 +383,17 @@ public sealed class AirBrakes
 
     /// Pulls a car's bleed rod: its auxiliary reservoir let down to the pipe and its cylinder exhausted, so a car with no air
     /// on it (or cut off from the brake valve) can be moved. A car charged from the pipe again releases as usual.
+    /// Shows another machine's brakes (a train the server runs): its main reservoir, equalizing reservoir and independent
+    /// cylinder, and each car's brake pipe and cylinder.
+    public void Mirror(double main, double equalizing, double independent, ReadOnlySpan<float> pipe, ReadOnlySpan<float> cylinder)
+    {
+        (Main, Equalizing, Independent) = (main, equalizing, independent);
+        for (var i = 0; i < Math.Min(Count, pipe.Length); i++)
+            Pipe[i] = pipe[i];
+        for (var i = 0; i < Math.Min(Count, cylinder.Length); i++)
+            Cylinder[i] = cylinder[i];
+    }
+
     public void Bleed(int car)
     {
         if (car < 0 || car >= Count)

@@ -34,6 +34,9 @@ public sealed class WorldServer : IDisposable
         public bool ServerRuns;
         public Consist? Consist;
         public Railway.Cut? Run;
+
+        /// The player number of whoever drives it (0: nobody).
+        public int Driver;
     }
 
     private readonly Session _session = new();
@@ -41,6 +44,10 @@ public sealed class WorldServer : IDisposable
     private readonly SwitchStates _switches = new();
     private readonly Dictionary<ulong, SharedCut> _cuts = [];
     private readonly Dictionary<Railway.Cut, SharedCut> _run = [];
+    /// Cuts the Railway made this step from ones run here (a couple, a split), and the cut each came from.
+    private readonly Dictionary<Railway.Cut, SharedCut> _heirs = [];
+    private uint _nextServerCut = 1;
+    private double _gaugesAt;
     private readonly Railway _railway = new();
     private readonly List<Session.Event> _events = [];
     private readonly NetWriter _writer = new();
@@ -75,7 +82,12 @@ public sealed class WorldServer : IDisposable
         _railway.Switches = _switches;
         _switches.Changed += SwitchChanged;
         _railway.Removed += cut => Lost(cut, "taken off");
-        _railway.Replaced += (old, _) => Lost(old, "coupled or split");
+        _railway.Replaced += (old, now) =>
+        {
+            if (_run.TryGetValue(old, out var shared))
+                _heirs.TryAdd(now, shared);
+            Lost(old, "coupled or split");
+        };
 
         if (!_session.Host(port, 64, out var error))
             throw new InvalidOperationException($"couldn't host on port {port}: {error}");
@@ -111,6 +123,15 @@ public sealed class WorldServer : IDisposable
                     cut.Still = 0.0;
             _railway.Step(Train.TimeStep);
             _simulated += Train.TimeStep;
+            Adopt();
+        }
+
+        if (now - _gaugesAt >= 0.1)
+        {
+            _gaugesAt = now;
+            foreach (var (cut, shared) in _run)
+                if (shared.Driver != 0 && PeerOf(shared.Driver) is { } driver)
+                    _session.Send(driver, WriteGauges(shared.Id, cut.Train), Delivery.Unreliable);
         }
 
         if (now - _sentAt < Protocol.StateEvery || _run.Count == 0)
@@ -124,6 +145,59 @@ public sealed class WorldServer : IDisposable
                 if (player.Ready)
                     _session.Send(peer, state, Delivery.Unreliable);
         }
+    }
+
+    /// Cuts on the Railway that nobody's told of: what a couple or split of cuts run here made. Each is run here under a new id,
+    /// driven by whoever drove the cut it came from (the half of a split that kept the controls; the other, nobody), and every
+    /// player's told.
+    private void Adopt()
+    {
+        foreach (var cut in _railway.Cuts)
+        {
+            if (cut.Remote || _run.ContainsKey(cut))
+                continue;
+            var driver = _heirs.TryGetValue(cut, out var from) && cut.Train.LeadUnit >= 0 ? from.Driver : 0;
+            var id = ((ulong)(uint)driver << 32) | (Protocol.ServerCut | _nextServerCut++);
+            var consist = new Consist
+            {
+                Name = cut.Train.Name,
+                Cars = [.. cut.Train.Cars.Select(c => new ConsistCar(c.Def.Id, c.Livery?.Id, c.Reversed, c.Fill > 0.0, c.Tag, c.Fill, c.Cargo))],
+            };
+            var added = _writer.Begin(Protocol.Id(Protocol.CutAdded)).U64(id).LongStr(JsonSerializer.Serialize(consist)).Bool(true).I32(driver).Span.ToArray();
+            var shared = new SharedCut
+            {
+                Id = id, Owner = PeerOf(driver) ?? default, Added = added, ServerRuns = true, Consist = consist, Run = cut, Driver = driver,
+            };
+            _cuts[id] = shared;
+            _run[cut] = shared;
+            foreach (var (peer, player) in _players)
+                if (player.Ready)
+                    _session.Send(peer, added, Delivery.Reliable);
+            Log.Info($"Server: {consist.Name} ({cut.Train.Cars.Count} vehicles) run here as {id:X}, driven by {(driver == 0 ? "nobody" : $"player {driver}")}");
+        }
+
+        _heirs.Clear();
+    }
+
+    private PeerId? PeerOf(int number)
+    {
+        foreach (var (peer, player) in _players)
+            if (player.Number == number)
+                return peer;
+        return null;
+    }
+
+    /// A cut's brakes as the cab shows them (Gauges).
+    private byte[] WriteGauges(ulong id, Train train)
+    {
+        var brakes = train.Body.Brakes;
+        var w = _writer.Begin(Protocol.Id(Protocol.Gauges)).U64(id).F32((float)brakes.Main).F32((float)brakes.Equalizing).F32((float)brakes.Independent)
+            .U16((ushort)brakes.Count);
+        for (var i = 0; i < brakes.Count; i++)
+            w.F32((float)brakes.Pipe[i]);
+        for (var i = 0; i < brakes.Count; i++)
+            w.F32((float)brakes.Cylinder[i]);
+        return w.Span.ToArray();
     }
 
     /// A cut's state as CutState carries it: its front, each coupler's extension and each car's speed.
@@ -226,7 +300,7 @@ public sealed class WorldServer : IDisposable
                 var serverRuns = r.Bool();
                 if (r.Overrun)
                     serverRuns = false;
-                var shared = new SharedCut { Id = cut, Owner = from, Added = data, ServerRuns = serverRuns };
+                var shared = new SharedCut { Id = cut, Owner = from, Added = data, ServerRuns = serverRuns, Driver = who.Number };
                 if (serverRuns)
                     shared.Consist = JsonSerializer.Deserialize<Consist>(json);
                 _cuts[cut] = shared;

@@ -413,6 +413,9 @@ public sealed class Train
     /// and the next whatever its coupling's stretched (or bunched, less). False, with how much track was missing, if it ran out.
     /// Puts the train where another copy of it says it is (another player's, over the network): its front, the slack
     /// in each coupler, and each car's speed. Not stepped here; the copy that's driven does that.
+    /// A train shown from another machine's (Mirror): its clock carried on with this one's, since it isn't stepped here.
+    public void Clock(double dt) => Time += dt;
+
     public bool Mirror(TrackPosition head, ReadOnlySpan<float> extension, ReadOnlySpan<float> velocity)
     {
         for (var i = 0; i < extension.Length && i < Body.Extension.Length; i++)

@@ -27,6 +27,9 @@ public sealed class NetPlay : IDisposable
 
         /// This player's own cut, run by the server (ServerRuns) and driven from here.
         public bool Driven;
+
+        /// One the server made from this player's (a couple, a split) for this player to drive: taken over once it's shown.
+        public bool TakeOver;
     }
 
     private const double SendEvery = 0.05;
@@ -58,7 +61,7 @@ public sealed class NetPlay : IDisposable
     /// This player's cuts are handed to the server to run once put on the track: they're then shown where it says, like
     /// everyone else's, and driven by sending it their controls (Protocol.Control). Otherwise this game runs them and sends
     /// their states.
-    public bool ServerRuns { get; set; } = App.DevTools.ServerRuns;
+    public bool ServerRuns { get; set; } = App.DevTools.ServerRuns || RailWerkz.Core.Settings.Settings.Current.ServerRunsTrains;
 
     /// Something to tell the player.
     public event Action<string>? Notice;
@@ -142,7 +145,7 @@ public sealed class NetPlay : IDisposable
                 var id = ((ulong)(uint)Number << 32) | _nextCut++;
                 _mine[cut] = id;
                 var consist = new Consist { Name = cut.Train.Name, Cars = [.. cut.Train.Cars.Select(c => new ConsistCar(c.Def.Id, c.Livery?.Id, c.Reversed, c.Fill > 0.0, c.Tag, c.Fill, c.Cargo))] };
-                _session.SendToHost(_writer.Begin(Protocol.Id(Protocol.CutAdded)).U64(id).LongStr(JsonSerializer.Serialize(consist)).Bool(ServerRuns).Span, Delivery.Reliable);
+                _session.SendToHost(_writer.Begin(Protocol.Id(Protocol.CutAdded)).U64(id).LongStr(JsonSerializer.Serialize(consist)).Bool(ServerRuns).I32(Number).Span, Delivery.Reliable);
                 SendState(id, cut.Train);
                 if (ServerRuns)
                 {
@@ -184,6 +187,7 @@ public sealed class NetPlay : IDisposable
         {
             if (remote.Cut is not { } cut || _graph is not { } graph)
                 continue;
+            cut.Train.Clock(dt);
             var head = remote.Head;
             var ahead = remote.Velocity.Length > 0 ? remote.Velocity[0] * Math.Min(_now - remote.At, 0.3) : 0.0;
             if (Math.Abs(ahead) > 1e-6)
@@ -277,8 +281,12 @@ public sealed class NetPlay : IDisposable
             {
                 var id = r.U64();
                 var consist = JsonSerializer.Deserialize<Consist>(r.LongStr()) ?? new Consist();
-                _remote[id] = new Remote { Consist = consist };
-                Notice?.Invoke($"Another driver put {consist.Name} on the track");
+                var serverRuns = r.Bool();
+                var driver = r.I32();
+                var mine = !r.Overrun && serverRuns && driver == Number && Number != 0;
+                _remote[id] = new Remote { Consist = consist, Driven = mine, TakeOver = mine };
+                if (!mine && Protocol.Owner(id) != Number)
+                    Notice?.Invoke($"Another driver put {consist.Name} on the track");
                 break;
             }
             case Protocol.CutState:
@@ -307,6 +315,15 @@ public sealed class NetPlay : IDisposable
                     }
 
                     remote.Cut = railway.AddRemote(train);
+                    if (remote.TakeOver)
+                    {
+                        // Made by the server from this player's train: driven from here as that one was.
+                        remote.TakeOver = false;
+                        _mine[remote.Cut] = id;
+                        railway.Controlled = remote.Cut;
+                        Notice?.Invoke($"Now driving {remote.Consist.Name}, {cars} vehicles");
+                    }
+
                     Log.Info($"Multiplayer: showing {remote.Consist.Name} ({cars} vehicles) for player {Protocol.Owner(id)} on edge {head.Edge}");
                 }
                 else if (_now - remote.Logged > 10.0)
@@ -316,6 +333,23 @@ public sealed class NetPlay : IDisposable
                     Log.Info($"Multiplayer: {remote.Consist.Name} at edge {head.Edge}, {velocity[0] * 2.2369363:0} mph, x {x:0} z {z:0}");
                 }
 
+                break;
+            }
+            case Protocol.Gauges:
+            {
+                var id = r.U64();
+                if (!_remote.TryGetValue(id, out var remote) || remote.Cut is not { } cut)
+                    return;
+                var (main, equalizing, independent) = (r.F32(), r.F32(), r.F32());
+                var count = r.U16();
+                var pipe = new float[count];
+                var cylinder = new float[count];
+                for (var i = 0; i < count; i++)
+                    pipe[i] = r.F32();
+                for (var i = 0; i < count; i++)
+                    cylinder[i] = r.F32();
+                if (!r.Overrun)
+                    cut.Train.Body.Brakes.Mirror(main, equalizing, independent, pipe, cylinder);
                 break;
             }
             case Protocol.CutRemoved:

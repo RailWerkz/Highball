@@ -100,6 +100,9 @@ public sealed class Settings
     public string LastHost { get; set; } = "127.0.0.1";
     public int Port { get; set; } = 27960;
 
+    /// In multiplayer, this player's trains are run by the server (driven from here by their controls) rather than by this game.
+    public bool ServerRunsTrains { get; set; }
+
     // Progress
     public string LastRoute { get; set; } = "TheRoute";
     public double MilesDriven { get; set; }
