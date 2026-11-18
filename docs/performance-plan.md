@@ -47,64 +47,79 @@ CPU work was ~3–5 ms; the rest of the frame was waiting on the GPU. **Draw cal
 | Caster reach | Shadows thrown from each caster's real top down to the cascade's measured lowest ground | 10.5 | 9.9 |
 | Motion | Only stock that actually moved is redrawn for motion vectors | | |
 
-**Now, High preset (2048 shadows) with 75% render resolution: 94–98 fps at dusk, 112–114 fps at noon** (from ~50 fps on
-Ultra). Ultra: ~88–93 fps.
+**After phase 1, High preset (2048 shadows) with 75% render resolution: 94–98 fps at dusk, 112–114 fps at noon** (from
+~50 fps on Ultra). Ultra: ~88–93 fps. After phase 2's still cache and GPU culling, High at dusk trackside is 8.9 ms of
+GPU (112 fps of GPU time, from 10.2 ms), and the render thread takes 0.55 ms of CPU.
 
 What's left in a frame (High, noon, trackside): shadows 1.9, plants 1.1, clouds 1.0, post 1.1, terrain 0.9, models 0.7,
 AO 0.6, ties 0.4, roads 0.3.
 
 ## Phase 2: shadows (you asked for this one)
 
-Cascaded shadow maps were the largest single cost and the place most likely to show artefacts. Done so far: texel-based
-LOD, cached far cascades, geometric caster culling. Next, in order:
+**Done:**
+- **Still/moving split** for cascades 0, 1 and the track's. What stands still (ground, track, standing stock and
+  objects) is drawn into a cached layer 12% wider than the view needs, kept while the view stays inside it, the sun
+  holds and a signature of what stands still there (terrain patches, track chunks, standing models) is unchanged; each
+  frame it's copied into the cascade and plants, moving stock, switch blades and crossing arms are drawn over it.
+  Trackside at noon: sun shadows 1.66 -> 1.04 ms. Flying at 25 m/s it breaks even (redrawn every few frames).
+- **GPU caster culling** for plants (below), with every cascade's view culled in one dispatch.
 
-1. **Static/dynamic split for the near cascades.** Terrain, track and placed objects cached per cascade and only re-drawn
-   when the cascade scrolls a set number of texels or the sun moves; trains and wind-moved plants drawn on top each frame.
-2. **Per-cascade GPU culling** (shares phase 3's culling pass): instances and track cells culled against the light
-   frustum and the receiver bounds on the GPU, so the CPU stops walking every caster five times (1.1 ms CPU today).
-3. **Virtual shadow maps** (16k² virtual, 128² pages, only pages the camera samples are drawn, static pages cached across
-   frames) as the long-term replacement for cascades on GPUs with sparse binding or a page-table fallback. One filter
-   width in world space everywhere, so there's no visible step in sharpness where cascades meet.
-4. Optional **ray-traced sun shadows** (`VK_KHR_ray_query`) for RTX-class cards as an Ultra option, with VSM as the
-   fallback.
+Next: virtual shadow maps (16k² virtual, 128² pages, only sampled pages drawn, static pages cached) as the long-term
+replacement for cascades, then optional ray-traced sun shadows (`VK_KHR_ray_query`) as an Ultra option.
 
 ## Phase 3: GPU-driven drawing
 
-- One geometry pool (`BufferArena` grows into it), bindless material table, instance table on the GPU.
-- Compute culling (frustum + two-phase Hi-Z occlusion) per view and per shadow cascade, writing
-  `vkCmdDrawIndexedIndirectCount`. Plants first (the biggest instance counts), then models, ties and plates.
-- Depth prepass from the culled set for everything with an expensive shader.
+**Done: plants culled on the GPU** (`plant_cull.comp`). One thread a cell runs Gather's tests (and SunShadows' caster
+reach) for the camera's view and every shadow cascade in one dispatch; each kind's kept cells are drawn from one
+`vkCmdDrawIndexedIndirectCount`. SunShadows plans its layers first, queues their plant passes, culls them all with the
+camera's, then draws, so the GPU doesn't stop between cascades (culling a cascade at a time cost 0.35 ms of stalls).
+Render thread CPU 1.9 -> 0.55 ms; GPU unchanged within noise. CPU culling stays as the fallback (no drawIndirectCount,
+or `HIGHBALL_CPU_CULLING`).
+
+**Measured, not done:** terrain and track multi-draw. Terrain records in 0.01 ms of CPU and costs no GPU time for its
+draws; merging them would lower the draw count and nothing else. The culling pass and `GpuRing` are there to extend to
+models, ties and plates when instance counts make it pay.
 
 ## Phase 4: geometry for 1M+ triangle models
 
-Today's locomotives are 1.03 M / 257 k / 68 k triangles (LOD0/1/2), and their LODs are well proportioned. Next:
-- Offline cooker (meshoptimizer): meshlets, a cluster LOD hierarchy, vertex quantisation.
-- Renderer tiers: mesh shaders (task-shader cluster culling), compute cluster culling + MDI, and today's path as the
-  reference.
-- Material merging: 61–64 materials per locomotive means 60+ draws per vehicle; texture arrays / bindless cut that to a
-  handful.
+Locomotives are 1.03 M / 257 k / 68 k triangles (LOD0/1/2), and their LODs are well proportioned.
+
+**Done:** shadow and motion draws merge a model's solid parts into runs of the index buffer (a glass part in the middle
+used to send the whole model back to a draw a part).
+
+Next, when models are the cost (they're 0.7 ms today): an offline meshlet / cluster-LOD cooker, mesh-shader and
+compute-culled tiers, and bindless materials so a 64-material locomotive is a handful of draws.
 
 ## Phase 5: route data for the whole USA
 
-**Already built:** `--export` (and the editor's export) writes `REGION.hbpack` (tiles: decimetre heights, 2D-predicted,
-zigzag, Brotli, plus land cover and the track files), `REGION.hbserver` (rail graph with heights and signals) and a
-manifest with per-tile hashes for patches, verifies everything read back, and installs the packs for Single Player.
-The World route today: 115 tiles, 33.7 MB (~293 KB a tile).
+**Already built:** `--export` writes `REGION.hbpack` (tiles: decimetre heights, 2D-predicted, zigzag, Brotli, land cover,
+the track files), `REGION.hbserver` (rail graph with heights and signals) and a manifest with per-tile hashes; verifies
+everything read back; installs for Single Player. Full-resolution tiles already stream from the pack on background
+tasks and are evicted when far.
 
-**Done:** pack format v2: residuals as byte planes, Brotli quality 9 (`PackFile.TileQuality`; 11 saves another ~7% at 20x
-the time), tiles encoded in parallel. World: 32.2 → 23.5 MB (−27%), exported in 6 s, every tile verified on read-back,
-v1 packs still read, Single Player drives it.
+**Done:**
+- Pack format v2: residuals as byte planes, Brotli quality 9, tiles encoded in parallel. World 32.2 -> 23.5 MB (-27%).
+- The track a player's game solves is kept in its pack cache between sessions (checked against a stamp of its inputs):
+  World opens in 4.3 s, not 5.8.
 
-Next: the visual track and objects stored per tile
-(`docs/mmo.md`), and streaming tiles from packs on a background thread with transfer-queue uploads.
+**Measured, not done:** shipping the solved track in packs. It's 10 MB for World's 66 km, 18 times the network it's
+solved from, so it would cost far more in download than the second it saves.
+
+Next: region-to-region streaming (`docs/mmo.md`): opening still reads every tile and lays out all of a region's track.
 
 ## Phase 6: single player and multiplayer from exported routes
 
-**Already built:** Single Player drives installed packs; `--host` / `--join` run sessions over RakNet; `RailWerkz.Server`
-exists. The design for the national world (zones, 2 km tiles, regions, servers) is in `docs/mmo.md`.
+**Already built:** Single Player drives installed packs; `--host` / `--join` over RakNet; the headless
+`RailWerkz.Server` loads `.hbserver`.
 
-Next: finish `docs/refactor-plan.md` (RouteWorld owns the route and trains, DriveScreen stops being the editor), then the
-authoritative headless server loading `.hbserver`, with the same code path for a local single-player server.
+**Done: the server can run trains itself.** A cut put on the track with CutAdded's new flag is placed by its first
+state, then stepped on the server's own Railway at the simulation's 120 Hz; its player sends only Control (reverser,
+notch, brakes, sand) and the server sends every player its state 20 times a second. Switches it trails through are set
+for everyone. Protocol 3; `--serverruns` turns it on. Tested hosting World: notch 8 took the autorack train from 4 to
+45 mph on the server, the game showing it where the server said.
+
+Next: the cab's gauges for a server-run train (brake pressures aren't sent yet), coupling and splitting server-run
+cuts (they're taken off today), a menu option for it, and AI and timetabled trains run by the server.
 
 ## Risks
 - Visual parity: every phase compares A/B screenshots against the previous step.
