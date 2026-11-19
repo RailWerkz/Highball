@@ -52,9 +52,14 @@ public sealed unsafe class Vegetation : IDisposable
     /// EarthTrees' TreeType1 to 12: three forest giants of 30 m, six of 10 to 18 m and three of about 4 m.
     private const int FirstTree = FirstShrub + ShrubCount;
 
-    /// Which of EarthTrees' TreeTypes a type's slot is drawn with: the two smallest sizes (the 4 m trees, 10 to 12, and the bushes, 13
-    /// to 15) aren't used, each taking the next size up (the 10 to 12 m trees, 7 to 9) in turn.
+    /// Which of EarthTrees' TreeTypes a tree slot is drawn with: its 4 m trees (10 to 12) aren't used, each taking one of the next size
+    /// up (the 10 to 12 m trees, 7 to 9). Its knee-high bushes (13 to 15) aren't used either: the shrub slots are ferns (FernFile).
     private static int UsedModel(int type) => type <= 9 ? type : 7 + (type - 10) % 3;
+
+    /// The undergrowth: two ferns of a low-poly pack (about 120 and 160 triangles, 1.6 to 2.2 m), far cheaper than any of EarthTrees'
+    /// models, one for each shrub slot in turn. Their colour map has the cut-out in its alpha.
+    private const string FernFile = "Vegetation/low_poly_vegetation_for_games_1k.glb";
+    private static readonly string[] Ferns = ["3_paporotnik_0", "4_paporotnik2_0"];
     private const int TreeCount = 12;
     private const int SlotCount = FirstTree + TreeCount;
 
@@ -673,6 +678,10 @@ public sealed unsafe class Vegetation : IDisposable
         static float3 Dry(float4 cover, float pick) =>
             new float3(cover.X * 2.4f + 0.13f, cover.Y * 2.2f + 0.12f, cover.Z * 2.0f + 0.07f) * (0.75f + 0.5f * pick);
 
+        // The ferns' map is a bright lime: taken most of the way to the ground they grow from, as the grass is, and a little darker.
+        static float3 Undergrowth(float4 cover, float pick) =>
+            new float3(cover.X * 1.6f + 0.18f, cover.Y * 1.5f + 0.2f, cover.Z * 1.4f + 0.1f) * (0.6f + 0.3f * pick);
+
         // The trees' and bushes' maps have their own colours: only a little variety from one to the next.
         static float3 Leafy(float pick) => new float3(0.85f + 0.3f * pick, 0.85f + 0.25f * pick, 0.8f + 0.2f * pick);
 
@@ -696,13 +705,13 @@ public sealed unsafe class Vegetation : IDisposable
         }
         else
         {
-            // (The bushes' slots now hold 10 to 12 m trees (UsedModel): placed as the small trees are, as many as they were, not as
-            // thick as scrub.)
+            // Ferns, as scrub is: every few metres in shrubland and at the woods' edges, thinner on bare ground, none on the track's
+            // shoulders; thickest along the railway, as the trees are. (Fewer tried for than the bushes were: each is bigger.)
             for (var b = 0; b < ShrubCount; b++)
             {
-                Place(FirstShrub + b, 3u + (uint)b * 101u, 5,
-                    (cover, _, patches, clear, _) => MathEx.SmoothStep(0.2f, 0.6f, cover.W) * 0.8f * (0.3f + patches) * MathEx.SmoothStep(TreeClearance, TreeClearanceSoft, clear),
-                    (pick, _, _, _) => (0.75f + 0.45f * pick, Leafy(pick)), TreeClearance, 0f, 0.7f, trackside: true);
+                Place(FirstShrub + b, 3u + (uint)b * 101u, 40,
+                    (cover, ground, patches, clear, _) => (ground.X * (0.3f + cover.W * 1.2f) + ground.Y * 0.3f) * MathEx.SmoothStep(0.15f, 0.6f, patches) * MathEx.SmoothStep(0.5f, 3f, clear),
+                    (pick, cover, _, _) => (0.8f + 0.7f * pick, Undergrowth(cover, pick)), 1f, 0f, 0.72f, trackside: true);
             }
 
             Place(Boulder, 4u, 15,
@@ -801,11 +810,10 @@ public sealed unsafe class Vegetation : IDisposable
 
         // TreeType1 to 12 are the trees, 13 to 15 the bushes; each has its own cards' maps, Tree0Cards for TreeType1 and so on.
         var canopies = new List<(Kind Kind, float3 Min, float3 Max)>();
-        for (var type = 1; type <= TreeCount + ShrubCount; type++)
+        for (var type = 1; type <= TreeCount; type++)
         {
-            var slot = type > TreeCount ? FirstShrub + type - TreeCount - 1 : FirstTree + type - 1;
-            // The two smallest sizes aren't used: the 4 m trees (TreeType10 to 12) and the bushes (13 to 15) each take one of the 10
-            // to 12 m trees (7 to 9) instead, and are drawn and placed as trees (UsedModel).
+            var slot = FirstTree + type - 1;
+            // (The 4 m trees, TreeType10 to 12, are drawn as the 10 to 12 m ones: UsedModel.)
             var model = UsedModel(type);
             var (reduced, far) = TreeLevels;
             var cards = Bind(Map($"Tree{model - 1}Cards_Diffuse.ktx2", true), Map($"Tree{model - 1}Cards_Opacity.ktx2", false));
@@ -835,6 +843,30 @@ public sealed unsafe class Vegetation : IDisposable
             pending.Add((new Kind { Mesh = null!, Textures = cards, Slot = slot, Near = far, Wind = wind, SoftNormal = 0.5f, Fade = fade, LastCascade = 3 }, card.First, card.Count));
         }
 
+        // The ferns in the shrub slots: one level each (there's little to take away from 120 triangles), out to a third of the trees'
+        // reach, casting into the two nearest cascades only.
+        var fernParts = Model.LoadParts(FernFile);
+        var fernMaps = new TextureBinding[Ferns.Length];
+        for (var f = 0; f < Ferns.Length; f++)
+        {
+            var model = Own(Model.Load(FernFile, nodeName: Ferns[f]));
+            var map = model.Surfaces[model.SubMeshes[0].Material].Texture ?? solid;
+            fernMaps[f] = Own(new TextureBinding(map, map, map, map));
+        }
+
+        for (var b = 0; b < ShrubCount; b++)
+        {
+            var fern = b % Ferns.Length;
+            var piece = Add(fernParts, Ferns[fern]);
+            var slot = FirstShrub + b;
+            _heights[slot] = MathF.Max(piece.Max.Y, 0.5f);
+            pending.Add((new Kind
+            {
+                Mesh = null!, Textures = fernMaps[fern], Slot = slot, Wind = 0.03f / _heights[slot], SoftNormal = 0.6f, Fade = FarReach * 0.33f,
+                Cutout = 0f, LastCascade = 1,
+            }, piece.First, piece.Count));
+        }
+
         var mesh = Own(Mesh.Create(CollectionsMarshal.AsSpan(vertices), CollectionsMarshal.AsSpan(indices)));
         foreach (var (kind, first, count) in pending)
         {
@@ -846,7 +878,7 @@ public sealed unsafe class Vegetation : IDisposable
         foreach (var (kind, min, max) in canopies)
             kind.FarCaster = Own(CanopyMesh(new float3(min.X, MathF.Max(min.Y, max.Y * 0.25f), min.Z), max));
 
-        RailWerkz.Core.Logging.Log.Info($"Vegetation: grass and {TreeCount + ShrubCount} trees (the two smallest sizes drawn as the next up), {_kinds.Count} draws, {indices.Count / 3} triangles, loaded in {watch.ElapsedMilliseconds} ms");
+        RailWerkz.Core.Logging.Log.Info($"Vegetation: grass, {TreeCount} trees (the 4 m ones drawn as the next size up) and {ShrubCount} ferns, {_kinds.Count} draws, {indices.Count / 3} triangles, loaded in {watch.ElapsedMilliseconds} ms");
     }
 
     // --- Drawing. ---
