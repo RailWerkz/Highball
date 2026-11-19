@@ -14,10 +14,14 @@ public static class SurfaceTextures
 
     /// How many are bound at once, and how many there can be in all (the lookup's width, and what the code's bits hold).
     public const int Slots = 16;
-    public const int Max = 63;
+    public const int Max = 62;
 
-    /// What every road's laid with.
-    public const string RoadAsphalt = "Asphalt/Road012C";
+    /// The surface code (NetworkMeshes.SurfaceBits) of unpaved roads' dirt, which is always in the second slot (TrackMaterials.RoadDirt);
+    /// the roads' asphalt is 0, always in the first.
+    public const int RoadDirtCode = 63;
+
+    /// The slots before the crossings': the roads' asphalt and dirt.
+    private const int RoadSlots = 2;
 
     private static string[][]? _found;
     private static string[]? _all;
@@ -55,7 +59,7 @@ public static class SurfaceTextures
             var used = _used.Values.Distinct().ToHashSet();
             var bound = _bound.Where(used.Contains).ToList();
             foreach (var n in used.Order())
-                if (!bound.Contains(n) && bound.Count < Slots - 1)
+                if (!bound.Contains(n) && bound.Count < Slots - RoadSlots)
                     bound.Add(n);
             if (!bound.SequenceEqual(_bound))
             {
@@ -65,7 +69,7 @@ public static class SurfaceTextures
         }
     }
 
-    /// What's bound in each slot: the roads' asphalt, then the rest in use, in the order they came into use ("" for none). And by
+    /// What's bound in each slot: the roads' asphalt and dirt, then the rest in use, in the order they came into use ("" for none). And by
     /// each texture's number, its slot and its kind, for line.frag to look up.
     public static string[] Bound(out (byte Slot, byte Kind)[] lookup)
     {
@@ -73,16 +77,18 @@ public static class SurfaceTextures
         var slots = new string[Slots];
         Array.Fill(slots, "");
         lookup = new (byte, byte)[Max];
-        slots[0] = all.FirstOrDefault(i => string.Equals(i, RoadAsphalt, StringComparison.OrdinalIgnoreCase)) ?? all.FirstOrDefault() ?? "";
+        var materials = TrackMaterials.Current;
+        slots[0] = materials.RoadAsphaltTexture;
+        slots[1] = materials.RoadDirtTexture;
         lock (Gate)
         {
-            for (var s = 0; s < _bound.Length && s + 1 < Slots; s++)
+            for (var s = 0; s < _bound.Length && s + RoadSlots < Slots; s++)
             {
                 var number = _bound[s];
                 if (number < 0 || number >= all.Count || number >= Max)
                     continue;
-                slots[s + 1] = all[number];
-                lookup[number] = ((byte)(s + 1), (byte)KindOf(number));
+                slots[s + RoadSlots] = all[number];
+                lookup[number] = ((byte)(s + RoadSlots), (byte)KindOf(number));
             }
         }
 

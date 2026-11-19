@@ -206,7 +206,62 @@ public sealed partial class NetworkMeshes : IDisposable
     private sealed record PlacedAt(PlacedObject Object, double X, double Z, float Y, CrossingDeck? Deck);
 
     /// The paints line.frag knows, by the name a placed model's parts use.
-    private static readonly string[] Paints = ["Black", "White", "Galv", "Yellow", "Red", "Green", "Concrete", "Wood", "Ballast", "LensRed", "LensYellow", "LensGreen"];
+    /// (After the lenses: their lit codes and the flashers' (LitLens, FlashLens), then a crossing mast's own paints, CrossingPaint.)
+    private static readonly string[] Paints = ["Black", "White", "Galv", "Yellow", "Red", "Green", "Concrete", "Wood", "Ballast", "LensRed", "LensYellow", "LensGreen",
+        "", "", "", "", "", "CrossingWhite", "CrossingBlack", "CrossingPole", "GateRed", "GateWhite"];
+
+    /// A crossing mast's part's paint: its own paints (TrackMaterials, the Crossings ones) in place of the shared ones its parts
+    /// are named for, so a crossing can be painted apart from the signals and poles.
+    private static float CrossingPaint(string name) => PaintOf(name switch
+    {
+        "Fixed_White" => "_CrossingWhite",
+        "Fixed_Black" or "Gate_Black" => "_CrossingBlack",
+        "Fixed_Galv" => "_CrossingPole",
+        "Gate_Red" => "_GateRed",
+        "Gate_White" => "_GateWhite",
+        _ => name,
+    });
+
+    /// A crossing mast with nothing on it but its crossbuck: its base, its post and the crossbuck (with its lettering), without the
+    /// flashers, their backboard and crossarm, or the box low down (everything off the post between its base and 3.75 m up), or the gate. Cut from the
+    /// mast's own parts once, the first time it's wanted.
+    private static Dictionary<string, Model.Part>? _crossbuckParts;
+
+    private static Dictionary<string, Model.Part> CrossbuckParts(Dictionary<string, Model.Part> parts)
+    {
+        if (_crossbuckParts is { } made)
+            return made;
+        var kept = new Dictionary<string, Model.Part>();
+        foreach (var (name, part) in parts)
+        {
+            if (name.StartsWith("Gate_", StringComparison.Ordinal) || name.StartsWith("FlashA_", StringComparison.Ordinal) || name.StartsWith("FlashB_", StringComparison.Ordinal))
+                continue;
+            var indices = new List<uint>();
+            for (var i = 0; i + 2 < part.Indices.Length; i += 3)
+            {
+                var (a, b, c) = (part.Vertices[part.Indices[i]].Position, part.Vertices[part.Indices[i + 1]].Position, part.Vertices[part.Indices[i + 2]].Position);
+                var y = (a.Y + b.Y + c.Y) / 3f;
+                var off = MathF.Max(MathF.Max(MathF.Sqrt(a.X * a.X + a.Z * a.Z), MathF.Sqrt(b.X * b.X + b.Z * b.Z)), MathF.Sqrt(c.X * c.X + c.Z * c.Z));
+                var post = off < 0.12f;
+                var drop = name switch
+                {
+                    "Fixed_Concrete" => false,
+                    // (Off the post from just over its base up to under the crossbuck: the box, the flashers, their backboard and crossarm.)
+                    _ => !post && y is > 0.4f and < 3.75f,
+                };
+                if (!drop)
+                    indices.AddRange([part.Indices[i], part.Indices[i + 1], part.Indices[i + 2]]);
+            }
+
+            if (indices.Count > 0)
+                kept[name] = part with { Indices = [.. indices] };
+        }
+
+        return _crossbuckParts = kept;
+    }
+
+    /// Whether a crossing's masts have flashers (and so a bell): Gates or Lights.
+    public static bool HasLights(PlacedObject o) => (CrossingWarning)o.Warning is CrossingWarning.Gates or CrossingWarning.Lights;
 
     /// How far on from a lens's paint the same lens lit is (line.frag, LitLensPaint).
     private const int LitLens = 3;
@@ -294,7 +349,7 @@ public sealed partial class NetworkMeshes : IDisposable
         foreach (var list in _objectsByChunk.Values)
             foreach (var placed in list)
             {
-                if (placed.Object.Kind != PlacedKind.GradeCrossing || placed.Deck is not { } deck || !CrossingLit(placed.Object.Id))
+                if (placed.Object.Kind != PlacedKind.GradeCrossing || placed.Deck is not { } deck || !CrossingLit(placed.Object.Id) || !HasLights(placed.Object))
                     continue;
                 var spin = placed.Object.Turn * MathF.PI / 180f;
                 var (cos, sin) = (MathF.Cos(spin), MathF.Sin(spin));
@@ -804,7 +859,7 @@ public sealed partial class NetworkMeshes : IDisposable
         {
             var mast = new float3((float)(mx - builder.Origin.X), y, (float)(mz - builder.Origin.Z));
             foreach (var (name, part) in arms)
-                Upright(builder, part, mast, toward, PaintOf(name), o.Turn * MathF.PI / 180f);
+                Upright(builder, part, mast, toward, CrossingPaint(name), o.Turn * MathF.PI / 180f);
         }
     }
 
@@ -1549,7 +1604,7 @@ public sealed partial class NetworkMeshes : IDisposable
 
     /// What a road's top is drawn in: its pavement with its markings, or gravel.
     private static float RoadSurface(NetworkLine line, int marks) => line.Unpaved
-        ? Code(LineMaterial.Gravel)
+        ? line.Mark ? Code(LineMaterial.Gravel) : Code(LineMaterial.Asphalt, SurfaceBits(SurfaceTextures.RoadDirtCode))
         : Code(LineMaterial.Asphalt, line.Lanes + (line.Oneway ? 8 : 0) + marks * 16 + (int)MathF.Round(line.Width * 4f) * 64);
 
     /// A road, but for the stretches a crossing's deck takes the place of.
@@ -2312,16 +2367,17 @@ public sealed partial class NetworkMeshes : IDisposable
         if (placed.Deck is not { } deck)
             return;
         // Working, its flashers' lenses (FlashA_ left, FlashB_ right) take the flashing codes the shader lights in turn.
-        var working = CrossingLit(o.Id);
+        var working = CrossingLit(o.Id) && HasLights(o);
+        var mastParts = (CrossingWarning)o.Warning == CrossingWarning.Crossbuck ? CrossbuckParts(parts) : parts;
         foreach (var (mx, mz, y, toward) in deck.Masts)
         {
             var mast = new float3((float)(mx - builder.Origin.X), y, (float)(mz - builder.Origin.Z));
-            foreach (var (name, part) in parts)
+            foreach (var (name, part) in mastParts)
             {
                 // The gate arms are a mesh of their own, swung (GateArms).
                 if (name.StartsWith("Gate_", StringComparison.Ordinal))
                     continue;
-                var paint = PaintOf(name);
+                var paint = CrossingPaint(name);
                 if (working && name.StartsWith("FlashA_", StringComparison.Ordinal))
                     paint = Code(LineMaterial.Painted, FlashLens);
                 else if (working && name.StartsWith("FlashB_", StringComparison.Ordinal))

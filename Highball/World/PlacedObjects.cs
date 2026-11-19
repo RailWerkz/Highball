@@ -14,9 +14,10 @@ public enum PlacedKind { Signal, HandThrow, GradeCrossing, PoleTelegraph, PoleDi
 /// between, governing trains that pass Node and then come to it on their way to Toward. Approach: how far out along each track a
 /// grade crossing's approach circuits reach, metres (0 for DefaultApproach). Bell: a grade crossing's bell (CrossingBell). Surface:
 /// which of its kind's textures a grade crossing's panels are, by id (SurfaceTextures.Of; null for the kind's first). Warning: what a
-/// grade crossing warns with (CrossingWarning).
+/// grade crossing warns with (CrossingWarning). Fill: a planked crossing's asphalt, by id (SurfaceTextures.Of(Asphalt); null for the
+/// first).
 public sealed record PlacedObject(long Id, PlacedKind Kind, double Lat, double Lon, double Heading, long? Node = null, float Width = 0f, bool Opposite = false, long? Run = null,
-    float Turn = 0f, int Style = 0, long? Toward = null, float Approach = 0f, int Bell = 0, string? Surface = null, int Warning = 0)
+    float Turn = 0f, int Style = 0, long? Toward = null, float Approach = 0f, int Bell = 0, string? Surface = null, int Warning = 0, string? Fill = null)
 {
     /// A grade crossing's approach circuits: half a mile out by default, a mile at most.
     public const float DefaultApproach = 804.672f;
@@ -34,8 +35,8 @@ public sealed record PlacedObject(long Id, PlacedKind Kind, double Lat, double L
 public enum CrossingStyle { Concrete = 0, Timber = 2, Asphalt = 3, Planked = 4 }
 
 /// What a grade crossing warns road traffic with: masts with flashers, a bell and gate arms (Gates); the masts, flashers and bell
-/// without arms (Lights); or nothing at all, no masts and no sound, only its crossbucks' worth of road (None).
-public enum CrossingWarning { Gates = 0, Lights = 1, None = 2 }
+/// without arms (Lights); a post with only its crossbuck, no lights and no sound (Crossbuck); or nothing at all (None).
+public enum CrossingWarning { Gates = 0, Lights = 1, None = 2, Crossbuck = 3 }
 
 /// What a grade crossing rings while it works: an electronic bell (a speaker), or a mechanical one (a gong struck by a hammer).
 /// Each time it starts it rings one of that kind's recordings, picked at random (Trains.CrossingBells).

@@ -119,6 +119,23 @@ layout(set = 4, binding = 82) uniform sampler2D surface15Color;
 layout(set = 4, binding = 83) uniform sampler2D surface15Normal;
 layout(set = 4, binding = 84) uniform sampler2D surface15Packed;
 layout(set = 4, binding = 85) uniform sampler2D surfaceLookup;
+// A grade crossing's own paints' maps (TrackMaterials.Paints after the shared seven: crossbuck white, crossing black, its post,
+// gate red, gate white), after the lookup; their palette entries are 7 to 11.
+layout(set = 4, binding = 86) uniform sampler2D paint7Color;
+layout(set = 4, binding = 87) uniform sampler2D paint7Normal;
+layout(set = 4, binding = 88) uniform sampler2D paint7Packed;
+layout(set = 4, binding = 89) uniform sampler2D paint8Color;
+layout(set = 4, binding = 90) uniform sampler2D paint8Normal;
+layout(set = 4, binding = 91) uniform sampler2D paint8Packed;
+layout(set = 4, binding = 92) uniform sampler2D paint9Color;
+layout(set = 4, binding = 93) uniform sampler2D paint9Normal;
+layout(set = 4, binding = 94) uniform sampler2D paint9Packed;
+layout(set = 4, binding = 95) uniform sampler2D paint10Color;
+layout(set = 4, binding = 96) uniform sampler2D paint10Normal;
+layout(set = 4, binding = 97) uniform sampler2D paint10Packed;
+layout(set = 4, binding = 98) uniform sampler2D paint11Color;
+layout(set = 4, binding = 99) uniform sampler2D paint11Normal;
+layout(set = 4, binding = 100) uniform sampler2D paint11Packed;
 
 // A surface texture's three maps, by slot. (With the derivatives worked out beforehand, outside the branches.)
 void surfaceMaps(int slot, vec2 uv, vec2 gx, vec2 gy, out vec3 color, out vec3 normal, out vec4 packed)
@@ -151,7 +168,12 @@ void paintMaps(int slot, vec2 uv, out vec3 color, out float rough, out vec3 bump
     else if (slot == 3) { color = texture(paint3Color, uv).rgb; rough = texture(paint3Packed, uv).g; bump = texture(paint3Normal, uv).xyz; }
     else if (slot == 4) { color = texture(paint4Color, uv).rgb; rough = texture(paint4Packed, uv).g; bump = texture(paint4Normal, uv).xyz; }
     else if (slot == 5) { color = texture(paint5Color, uv).rgb; rough = texture(paint5Packed, uv).g; bump = texture(paint5Normal, uv).xyz; }
-    else { color = texture(paint6Color, uv).rgb; rough = texture(paint6Packed, uv).g; bump = texture(paint6Normal, uv).xyz; }
+    else if (slot == 6) { color = texture(paint6Color, uv).rgb; rough = texture(paint6Packed, uv).g; bump = texture(paint6Normal, uv).xyz; }
+    else if (slot == 7) { color = texture(paint7Color, uv).rgb; rough = texture(paint7Packed, uv).g; bump = texture(paint7Normal, uv).xyz; }
+    else if (slot == 8) { color = texture(paint8Color, uv).rgb; rough = texture(paint8Packed, uv).g; bump = texture(paint8Normal, uv).xyz; }
+    else if (slot == 9) { color = texture(paint9Color, uv).rgb; rough = texture(paint9Packed, uv).g; bump = texture(paint9Normal, uv).xyz; }
+    else if (slot == 10) { color = texture(paint10Color, uv).rgb; rough = texture(paint10Packed, uv).g; bump = texture(paint10Normal, uv).xyz; }
+    else { color = texture(paint11Color, uv).rgb; rough = texture(paint11Packed, uv).g; bump = texture(paint11Normal, uv).xyz; }
 }
 
 // LineMaterial, and what each packs into vData (see LineVertex).
@@ -174,6 +196,8 @@ const int LitLensPaint = 12;
 // A grade crossing's flashers while it's working (NetworkMeshes.FlashLens): the left lens, then the right, lit red in turn at
 // FlashRate flashes a second on the clock in texOrigin.w, each easing on and off as a lamp's filament does (NetworkMeshes.FlashOf).
 const int FlashLensPaint = 15;
+// A grade crossing mast's own paints (NetworkMeshes.CrossingPaint), from here: palette entries 7 on.
+const int CrossingPaint = 17;
 const float FlashRate = 0.9;
 
 // NetworkMeshes: how far the tie models reach (TieReach), how far apart they lie (TieSpacing, 19.5 in), and half a tie's width.
@@ -410,14 +434,15 @@ void main()
         // A paved surface in one of the surface textures (SurfaceTextures): 0 the roads' own asphalt (always in the first slot);
         // otherwise 1 + its number (a crossing's panels), whose slot the lookup has; and its kind (asphalt, concrete, wood).
         int surface = (style >> 14) & 63;
-        vec2 found = surface == 0 ? vec2(0.0) : texelFetch(surfaceLookup, ivec2(surface - 1, 0), 0).rg * 255.0 + 0.5;
+        // (63: unpaved roads' dirt, always in the second slot; its kind 3.)
+        vec2 found = surface == 0 ? vec2(0.0) : surface == 63 ? vec2(1.5, 3.5) : texelFetch(surfaceLookup, ivec2(surface - 1, 0), 0).rg * 255.0 + 0.5;
         int slot = int(found.x);
         int kind = int(found.y);
         bool upright = abs(n.y) < 0.5;
         float wear = fbm(world.xz * 0.12, pixel * 0.12);
-        // Asphalt over 3 m and concrete over 2 m, laid by where it is; wood over 1.5 m, its grain along the panels (along the
-        // track on top, along the face on a side).
-        vec2 suv = kind == 2 ? (upright ? vec2(u, v) : vec2(v, u)) / 1.5 : (upright ? boxUv(local, n) : tex) / (kind == 0 ? 3.0 : 2.0);
+        // Asphalt over 3 m, concrete over 2 m and dirt over 2.5 m, laid by where it is; wood over 1.5 m, its grain along the panels
+        // (along the track on top, along the face on a side).
+        vec2 suv = kind == 2 ? (upright ? vec2(u, v) : vec2(v, u)) / 1.5 : (upright ? boxUv(local, n) : tex) / (kind == 0 ? 3.0 : kind == 3 ? 2.5 : 2.0);
         vec2 gx = dFdx(suv), gy = dFdy(suv);
         vec3 surfaceColor, surfaceNormal;
         vec4 surfacePacked;
@@ -428,7 +453,7 @@ void main()
         roughness = surfacePacked.y;
         n = bumped(n, surfaceNormal * 2.0 - 1.0, suv);
         puddle = kind == 0 && !upright ? smoothstep(0.55, 0.68, wear) : 0.0;
-        specular = kind == 0 ? 0.18 : kind == 1 ? 0.25 : 0.4;
+        specular = kind == 0 ? 0.18 : kind == 1 ? 0.25 : kind == 3 ? 0.08 : 0.4;
 
         int lanes = style & 7;
         bool oneway = (style & 8) != 0;
@@ -525,7 +550,7 @@ void main()
         specular = 0.5;
         n = bumped(n, texture(paintedNormal, worn).xyz * 2.0 - 1.0, worn);
     }
-    else if (material == Painted && style >= LensPaint)
+    else if (material == Painted && style >= LensPaint && style < CrossingPaint)
     {
         // Glass: dark and glossy, colourless until it's lit.
         albedo = vec3(0.012);
@@ -559,7 +584,7 @@ void main()
     else if (material == Painted)
     {
         // Galvanised steel, or paint, each weathered by its own texture (TrackMaterials: Metal024 unless changed).
-        int slot = clamp(style, 0, 6);
+        int slot = style >= CrossingPaint ? clamp(style - CrossingPaint + 7, 7, 11) : clamp(style, 0, 6);
         vec4 tint = texelFetch(paintPalette, ivec2(slot, 0), 0);
         vec4 finish = texelFetch(paintPalette, ivec2(slot, 1), 0);
         vec2 worn = boxUv(local, n) / 0.8;

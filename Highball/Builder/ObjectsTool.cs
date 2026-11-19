@@ -421,7 +421,7 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
                 PlacedChange(o, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, signal.Node, id: o.Id) with { Toward = signal.Toward });
                 break;
             case PlacedKind.GradeCrossing when PlaceTool.CrossingAt(lines, x, z) is { } crossing:
-                PlacedChange(o, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, o.Opposite, id: o.Id) with { Turn = o.Turn, Style = o.Style, Approach = o.Approach, Bell = o.Bell, Surface = o.Surface, Warning = o.Warning });
+                PlacedChange(o, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, o.Opposite, id: o.Id) with { Turn = o.Turn, Style = o.Style, Approach = o.Approach, Bell = o.Bell, Surface = o.Surface, Warning = o.Warning, Fill = o.Fill });
                 break;
             case PlacedKind.HandThrow when PlaceTool.SwitchAt(lines, x, z) is { } turnout && _terrain!.Source.Objects.All(p => p.Node != turnout.Node):
                 PlacedChange(o, Placed(PlacedKind.HandThrow, turnout.X, turnout.Z, 0.0, turnout.Node, opposite: o.Opposite, id: o.Id));
@@ -569,6 +569,17 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
                 PlacedChange(picked, picked with { Surface = textures[picks] });
         }
 
+        // A planked crossing's asphalt, between its planks.
+        var fills = SurfaceTextures.Of(SurfaceTextures.Kind.Asphalt);
+        if (styles[style] == CrossingStyle.Planked && fills.Count > 1)
+        {
+            Kit.Caption("Asphalt");
+            var fill = Math.Max(0, fills.ToList().FindIndex(t => string.Equals(t, picked.Fill, StringComparison.OrdinalIgnoreCase)));
+            var picks = ToolPanel.Mode("filltexture", fills.Select(SurfaceTextures.Label).ToArray(), fill, 2);
+            if (picks != fill)
+                PlacedChange(picked, picked with { Fill = fills[picks] });
+        }
+
         var turn = _crossingTurn ?? picked.Turn;
         ToolPanel.Value("gateturn", "Gate turn (degrees)", ref turn, -180f, 180f, "0", out var let);
         _crossingTurn = ImGui.IsItemActive() ? turn : null;
@@ -584,9 +595,11 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
 
         // What it warns with: masts with arms, masts with flashers only, or nothing (an unprotected crossing: no masts, no bell).
         Kit.Caption("Warning");
-        var warning = ToolPanel.Mode("warning", ["Gates", "Lights", "None"], Math.Clamp(picked.Warning, 0, 2), 3);
-        if (warning != picked.Warning)
-            PlacedChange(picked, picked with { Warning = warning });
+        var warnings = (CrossingWarning[])[CrossingWarning.Gates, CrossingWarning.Lights, CrossingWarning.Crossbuck, CrossingWarning.None];
+        var warned = Math.Max(0, Array.IndexOf(warnings, (CrossingWarning)picked.Warning));
+        var warning = ToolPanel.Mode("warning", ["Gates", "Lights", "Crossbuck", "None"], warned, 2);
+        if (warning != warned)
+            PlacedChange(picked, picked with { Warning = (int)warnings[warning] });
 
         // Its bell: a recording of that kind's picked at random each time it starts.
         Kit.Caption("Bell");

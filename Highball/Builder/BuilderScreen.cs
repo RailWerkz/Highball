@@ -301,7 +301,7 @@ public sealed class BuilderScreen : Screen, IWorldScreen
             if (editing && ImGui.BeginMenu("Route"))
             {
                 _editor!.MenuRoute();
-                if (ImGui.MenuItem("Track Materials...", "M", MaterialsWindow.Instance.Open, true))
+                if (ImGui.MenuItem("Material Editor...", "M", MaterialsWindow.Instance.Open, true))
                     MaterialsWindow.Instance.Toggle();
                 ImGui.EndMenu();
             }

@@ -7,8 +7,8 @@ using RailWerkz.Vulkan;
 
 namespace Highball.Builder;
 
-/// The Track Materials window: every part of the track and of what's placed beside it, the texture each is drawn with now, and
-/// a list of every texture under Content/Textures (or any path) to swap it for. A change shows on the next frame or two;
+/// The Material Editor: every part of the track, the roads and what's placed beside them (signals, poles, crossings), the texture
+/// each is drawn with now, and a list of every texture under Content/Textures (or any path) to swap it for. A change shows on the next frame or two;
 /// Save writes it to Content/Materials/Track.json for good (TrackMaterials).
 public sealed class MaterialsWindow : IDisposable
 {
@@ -51,7 +51,7 @@ public sealed class MaterialsWindow : IDisposable
 
         ImGui.SetNextWindowPos(new float2(ImGui.GetIO().DisplaySize.X - 500f, 60f), ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowSize(new float2(480f, 720f), ImGuiCond.FirstUseEver);
-        if (WindowBounds.Begin("Track Materials"u8, ref Open))
+        if (WindowBounds.Begin("Material Editor"u8, ref Open))
         {
             Toolbar();
             ImGui.Separator();
@@ -70,15 +70,28 @@ public sealed class MaterialsWindow : IDisposable
                         SlotRow(materials, slot);
                 }
 
+                if (ImGui.CollapsingHeader("Roads"u8, ImGuiTreeNodeFlags.DefaultOpen))
+                {
+                    TextureRow("roadasphalt", "Asphalt", "Paved roads (Content/Textures/Asphalt)", materials.RoadAsphaltTexture, TrackMaterials.DefaultRoadAsphalt, materials.SetRoadAsphalt,
+                        id => id.StartsWith("Asphalt/", StringComparison.OrdinalIgnoreCase));
+                    TextureRow("roaddirt", "Dirt", "Unpaved roads", materials.RoadDirtTexture, TrackMaterials.DefaultRoadDirt, materials.SetRoadDirt);
+                }
+
                 if (ImGui.CollapsingHeader("Signal lamps"u8, ImGuiTreeNodeFlags.DefaultOpen))
                 {
                     for (var i = 0; i < TrackMaterials.Lamps.Length; i++)
                         LampRow(materials, i);
                 }
 
-                if (ImGui.CollapsingHeader("Signals, hand throws, crossings and poles"u8, ImGuiTreeNodeFlags.DefaultOpen))
+                if (ImGui.CollapsingHeader("Signals, hand throws and poles"u8, ImGuiTreeNodeFlags.DefaultOpen))
                 {
-                    for (var i = 0; i < TrackMaterials.Paints.Length; i++)
+                    for (var i = 0; i < TrackMaterials.SharedPaints; i++)
+                        PaintRow(materials, i);
+                }
+
+                if (ImGui.CollapsingHeader("Grade crossings"u8, ImGuiTreeNodeFlags.DefaultOpen))
+                {
+                    for (var i = TrackMaterials.SharedPaints; i < TrackMaterials.Paints.Length; i++)
                         PaintRow(materials, i);
                 }
             }
@@ -152,6 +165,25 @@ public sealed class MaterialsWindow : IDisposable
         Header(id, label, help, id == fallback, TrackTextures.InUse.TryGetValue(slot.ToString(), out var used) && used.Length == 0);
         if (Picker(id, fallback) is { } picked)
             materials.SetTexture(slot, picked);
+        ImGui.EndGroup();
+        ImGui.PopID();
+        ImGui.Spacing();
+    }
+
+    /// A texture that isn't one of the track's slots (the roads'): what it is, and a picker (only among those `allowed` when it's
+    /// given: the roads' asphalt is one of the paved surfaces' textures).
+    private void TextureRow(string key, string label, string help, string id, string fallback, Action<string> set, Func<string, bool>? allowed = null)
+    {
+        ImGui.PushID(key);
+        Header(id, label, help, id == fallback, TrackTextures.InUse.TryGetValue(key, out var used) && used.Length == 0);
+        if (Picker(id, fallback) is { } picked)
+        {
+            if (allowed is null || allowed(picked))
+                set(picked);
+            else
+                _status = $"{label}: pick one under Content/Textures/Asphalt";
+        }
+
         ImGui.EndGroup();
         ImGui.PopID();
         ImGui.Spacing();

@@ -20,6 +20,7 @@ public sealed class TrackTextures : IDisposable
     /// in order); then the paints' palette. A tie's or plate's first three maps are in the same places, with the rest repeated so
     /// every binding fits the one layout.
     public static readonly int PaintCount = TrackMaterials.Paints.Length;
+    /// (A crossing's own paints' maps come last, after the surfaces' lookup, so the bindings before them stay where they were.)
     public static readonly int SetSize = 15 + PaintCount * 3 + 1 + SurfaceTextures.Slots * 3 + 1;
 
     /// What's to be loaded has changed: a texture in the Track Materials window, or another surface texture come into use.
@@ -225,7 +226,7 @@ public sealed class TrackTextures : IDisposable
         var lines = new List<Texture2D>();
         foreach (var slot in LineSlots)
             lines.AddRange(Of(slot));
-        for (var i = 0; i < PaintCount; i++)
+        for (var i = 0; i < TrackMaterials.SharedPaints; i++)
             lines.AddRange(Maps(materials.PaintOf(i).Texture, label));
         lines.Add(palette);
         // The paved surfaces' textures in use (SurfaceTextures), after it, then which slot each texture's in.
@@ -240,6 +241,8 @@ public sealed class TrackTextures : IDisposable
         }
         var surfaceLookup = Texture2D.FromPixels(SurfaceTextures.Max, 1, lookupPixels, repeat: false, mipmaps: false, linear: false, name: "surfaces");
         lines.Add(surfaceLookup);
+        for (var i = TrackMaterials.SharedPaints; i < PaintCount; i++)
+            lines.AddRange(Maps(materials.PaintOf(i).Texture, label));
 
         Texture2D[] Alone(Texture2D[] three) => [.. Enumerable.Range(0, SetSize - 1).Select(i => three[i % 3]), _neutral];
 

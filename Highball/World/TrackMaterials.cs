@@ -44,7 +44,43 @@ public sealed class TrackMaterials
         ("Red", new Paint("Metal/Metal024", [0.50f, 0.02f, 0.015f], 0.3f, false, 0.45f)),
         ("Green", new Paint("Metal/Metal024", [0.02f, 0.32f, 0.12f], 0.3f, false, 0.45f)),
         ("Concrete", new Paint("Metal/Metal024", [0.30f, 0.29f, 0.26f], 0.3f, false, 0.45f)),
+        // A grade crossing's own (NetworkMeshes.CrossingPaint): its crossbuck's white, the black of its lettering, flasher backs and
+        // gate counterweights, its post, and its gate arm's red and white stripes. Begun as the shared paints they took over from.
+        ("CrossingWhite", new Paint("Metal/Metal024", [0.62f, 0.62f, 0.60f], 0.3f, false, 0.45f)),
+        ("CrossingBlack", new Paint("Metal/Metal024", [0.018f, 0.018f, 0.018f], 0.3f, false, 0.45f)),
+        ("CrossingPole", new Paint("Metal/Metal024", [0.26f, 0.27f, 0.28f], 0.8f, true, 0.5f)),
+        ("GateRed", new Paint("Metal/Metal024", [0.50f, 0.02f, 0.015f], 0.3f, false, 0.45f)),
+        ("GateWhite", new Paint("Metal/Metal024", [0.62f, 0.62f, 0.60f], 0.3f, false, 0.45f)),
     ];
+
+    /// How many of the paints are the shared ones (signals, hand throws, poles); the rest are a crossing's own.
+    public const int SharedPaints = 7;
+
+    /// What roads are laid with: paved roads' asphalt (a texture under Content/Textures/Asphalt), and unpaved roads' dirt (any texture,
+    /// as the track's are named).
+    public const string DefaultRoadAsphalt = "Asphalt/Road012C";
+    public const string DefaultRoadDirt = "Terrain/Rocks/Ground079S";
+    public string? RoadAsphalt { get; set; }
+    public string? RoadDirt { get; set; }
+
+    public string RoadAsphaltTexture => string.IsNullOrWhiteSpace(RoadAsphalt) ? DefaultRoadAsphalt : RoadAsphalt;
+    public string RoadDirtTexture => string.IsNullOrWhiteSpace(RoadDirt) ? DefaultRoadDirt : RoadDirt;
+
+    public void SetRoadAsphalt(string id)
+    {
+        if (RoadAsphaltTexture == id)
+            return;
+        RoadAsphalt = id;
+        Changed(texture: true);
+    }
+
+    public void SetRoadDirt(string id)
+    {
+        if (RoadDirtTexture == id)
+            return;
+        RoadDirt = id;
+        Changed(texture: true);
+    }
 
     /// A signal's lamps, in line.frag's order (LensRed, LensYellow, LensGreen), with the game's own values as their defaults.
     public static readonly (string Name, Lamp Default)[] Lamps =
@@ -135,6 +171,10 @@ public sealed class TrackMaterials
                         loaded.Textures.TryAdd(slot, id);
                     foreach (var (name, paint) in defaults.PaintSettings)
                         loaded.PaintSettings.TryAdd(name, paint);
+                    // A crossing's own paints, new to an older file: as the shared ones it was painted with until now.
+                    foreach (var (own, shared) in (ReadOnlySpan<(string, string)>)[("CrossingWhite", "White"), ("CrossingBlack", "Black"), ("CrossingPole", "Galv"), ("GateRed", "Red"), ("GateWhite", "White")])
+                        if (loaded.PaintSettings.TryGetValue(shared, out var was) && loaded.PaintSettings[own] == defaults.PaintSettings[own])
+                            loaded.PaintSettings[own] = was;
                     loaded.LampSettings ??= [];
                     foreach (var (name, lamp) in defaults.LampSettings)
                         loaded.LampSettings.TryAdd(name, lamp);
@@ -557,6 +597,13 @@ public sealed class TrackMaterials
                 }
             }
         }
+
+        // The crossing mast's parts are painted with the crossing's own paints (NetworkMeshes.CrossingPaint), not the ones they're named for.
+        foreach (var (shared, own) in (ReadOnlySpan<(string, string)>)[("White", "CrossingWhite"), ("Black", "CrossingBlack"), ("Galv", "CrossingPole"), ("Red", "GateRed")])
+            if (users.TryGetValue(shared, out var from) && from.Remove("crossing mast") && users.TryGetValue(own, out var to))
+                to.Add("crossing mast");
+        if (users.TryGetValue("GateWhite", out var gate) && !gate.Contains("crossing mast"))
+            gate.Add("crossing mast");
 
         return users;
     }
