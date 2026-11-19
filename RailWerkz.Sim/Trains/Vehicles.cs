@@ -125,16 +125,38 @@ public sealed class EngineSoundDef
     public float MaxRpm { get; init; }
     public float RunRpm { get; init; }
 
-    /// Recordings at revs between idle and the run loop's, each with the rpm it was made at; used once IdleRpm and MaxRpm are.
+    /// Recordings at revs above idle, each with the rpm it was made at; used once IdleRpm and MaxRpm (or NotchRpm) are. With
+    /// these the run loop's not needed: the highest of them is pitched on up to notch 8's revs if it's short of them.
     public IReadOnlyList<EngineSoundLoop> Loops { get; init; } = [];
 
-    /// Its loops by the rpm they were recorded at, lowest first, the idle and run loops among them; empty for an engine
-    /// without its rpm given.
+    /// The governor's speed at idle and in each notch, rpm: nine of them, idle then notches 1 to 8, for an engine whose notches
+    /// aren't evenly spaced (a GE FDL's notch 1 runs at idle speed, and its last step, 7 to 8, is the biggest). Without them the
+    /// revs go evenly from IdleRpm to MaxRpm. Given, they set IdleRpm and MaxRpm where those aren't.
+    public IReadOnlyList<float> NotchRpm { get; init; } = [];
+
+    private bool HasNotchRpm => NotchRpm.Count == 9 && NotchRpm[8] > NotchRpm[0];
+    private float IdleSpeed => IdleRpm > 0f ? IdleRpm : HasNotchRpm ? NotchRpm[0] : 0f;
+    private float TopSpeed => MaxRpm > 0f ? MaxRpm : HasNotchRpm ? NotchRpm[8] : 0f;
+
+    /// The engine's rpm at revs (0 idle to 1 notch 8, the governor's: a notch is an eighth): along NotchRpm notch by notch, or
+    /// evenly from idle to notch 8.
+    public float RpmAt(float revs)
+    {
+        revs = Math.Clamp(revs, 0f, 1f);
+        if (!HasNotchRpm)
+            return IdleSpeed + revs * (TopSpeed - IdleSpeed);
+        var at = revs * 8f;
+        var notch = Math.Min((int)at, 7);
+        return NotchRpm[notch] + (at - notch) * (NotchRpm[notch + 1] - NotchRpm[notch]);
+    }
+
+    /// Its loops by the rpm they were recorded at, lowest first, the idle loop and the run loop (where there is one) among
+    /// them; empty for an engine without its rpm given.
     public IReadOnlyList<EngineSoundLoop> Ladder =>
-        IdleRpm > 0f && MaxRpm > IdleRpm
+        IdleSpeed > 0f && TopSpeed > IdleSpeed
             ? Loops.Where(l => l.Path.Length > 0 && l.Rpm > 0f)
-                .Append(new EngineSoundLoop { Path = Idle, Rpm = IdleRpm })
-                .Append(new EngineSoundLoop { Path = Run, Rpm = RunRpm > 0f ? RunRpm : MaxRpm })
+                .Append(new EngineSoundLoop { Path = Idle, Rpm = IdleSpeed })
+                .Concat(Run.Length > 0 ? [new EngineSoundLoop { Path = Run, Rpm = RunRpm > 0f ? RunRpm : TopSpeed }] : [])
                 .OrderBy(l => l.Rpm).ToList()
             : [];
 
@@ -562,7 +584,8 @@ public static class VehicleCatalog
                         Was = l.Was ?? [],
                     }).ToList(),
                 Cargoes = Loads.Where(c => !string.IsNullOrWhiteSpace(c.Id)).Select(c => new Cargo(c.Id!, c.Name ?? c.Id!)).ToList(),
-                EngineSound = EngineSound is { Idle.Length: > 0, Run.Length: > 0 } ? EngineSound : null,
+                // An idle loop and something to rev up to: the run loop, or recordings by rpm (Ladder).
+                EngineSound = EngineSound is { Idle.Length: > 0 } && (EngineSound.Run.Length > 0 || EngineSound.Ladder.Count > 1) ? EngineSound : null,
             };
         }
     }

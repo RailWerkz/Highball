@@ -183,7 +183,7 @@ public sealed class EngineSound(EngineSoundDef def, float detune, string vehicle
     /// a little with the load, as the run loop does.
     private void Rungs(float idleRunning, float running, float sag)
     {
-        var rpm = def.IdleRpm + _revs * (def.MaxRpm - def.IdleRpm);
+        var rpm = def.RpmAt(_revs);
         var below = 0;
         while (below < _ladder.Count - 1 && _ladder[below + 1].Rpm <= rpm)
             below++;
