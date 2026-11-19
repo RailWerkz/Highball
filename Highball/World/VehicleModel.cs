@@ -6,6 +6,10 @@ namespace Highball.World;
 /// One truck of a vehicle's model, with the place on the plan it swivels about (its middle, in the model's axes).
 public sealed record TruckPart(RenderModel Model, float3 Pivot);
 
+/// One coupler of a vehicle's model (Coupler_Front, Coupler_Rear: Meshes/Couplers/coupler.glb put in place), with its draft pivot
+/// (the node's origin, in the model's axes), about which it swings to meet the coupler it's coupled to (TrainVisuals.Couplers).
+public sealed record CouplerPart(RenderModel Model, float3 Pivot);
+
 /// A vehicle's model in parts: its trucks with their wheelsets, which stay on the rail and swivel to follow it, and
 /// everything they carry (body, doors, couplers, load), which settles and rolls on the springs. An assembled model names
 /// its trucks Truck_A and Truck_B (or Truck_Front and Truck_Rear) with the wheelsets under them; one that doesn't is all
@@ -24,6 +28,11 @@ public sealed class VehicleModel : IDisposable
     /// Both trucks as one, for a model whose trucks aren't named one by one. Null when they're apart (FrontTruck and
     /// RearTruck) or there are none: then Body is the whole thing and shouldn't be moved.
     public RenderModel? Trucks { get; }
+
+    /// The couplers, each on its own so it can swing: the front one (towards the model's +z) and the rear. Null when the model
+    /// doesn't name them both (then they're part of the body).
+    public CouplerPart? FrontCoupler { get; private init; }
+    public CouplerPart? RearCoupler { get; private init; }
 
     /// It has trucks apart from its body, whether one by one or together.
     public bool HasTrucks => Trucks is not null || FrontTruck is not null;
@@ -60,6 +69,11 @@ public sealed class VehicleModel : IDisposable
                 }
 
                 model.Body.AddLod(lod.Body, from);
+                // (The couplers split the same way or the body would draw them twice, or not at all.)
+                if (model.FrontCoupler is { } fc && lod.FrontCoupler is { } lfc)
+                    fc.Model.AddLod(lfc.Model, from);
+                if (model.RearCoupler is { } rc && lod.RearCoupler is { } lrc)
+                    rc.Model.AddLod(lrc.Model, from);
                 if (lod.Trucks is { } trucks)
                     model.Trucks!.AddLod(trucks, from);
                 if (lod.FrontTruck is { } front)
@@ -78,13 +92,36 @@ public sealed class VehicleModel : IDisposable
 
     private static VehicleModel LoadOne(string relativePath)
     {
+        // The couplers on their own, if both are named so; the rest's loaded without them.
+        var couplerFront = LoadPart(relativePath, "Coupler_Front");
+        var couplerRear = couplerFront is null ? null : LoadPart(relativePath, "Coupler_Rear");
+        if (couplerRear is null)
+        {
+            couplerFront?.Dispose();
+            couplerFront = null;
+        }
+
+        var model = LoadParts(relativePath, couplerFront is not null ? ",Coupler_*" : "");
+        if (couplerFront is null || couplerRear is null)
+            return model;
+        var (cf, cr) = couplerFront.Origin.Z >= couplerRear.Origin.Z ? (couplerFront, couplerRear) : (couplerRear, couplerFront);
+        return new VehicleModel(model.Body, model.Trucks, model.FrontTruck, model.RearTruck)
+        {
+            FrontCoupler = new CouplerPart(new RenderModel(cf), cf.Origin),
+            RearCoupler = new CouplerPart(new RenderModel(cr), cr.Origin),
+        };
+    }
+
+    /// Its body and trucks: skip, more nodes the body leaves out (",Coupler_*" when the couplers are drawn on their own).
+    private static VehicleModel LoadParts(string relativePath, string skip)
+    {
         // Each truck on its own, if they're named so: the one further towards +z is the front.
         var a = LoadPart(relativePath, "Truck_Front,Truck_A");
         var b = a is null ? null : LoadPart(relativePath, "Truck_Rear,Truck_B");
         if (a is not null && b is not null)
         {
             var (front, rear) = a.Center.Z >= b.Center.Z ? (a, b) : (b, a);
-            var rest = Model.Load(relativePath, skipNode: TruckNodes);
+            var rest = Model.Load(relativePath, skipNode: TruckNodes + skip);
             return new VehicleModel(new RenderModel(rest), null, Part(front), Part(rear));
         }
 
@@ -104,7 +141,7 @@ public sealed class VehicleModel : IDisposable
             Log.Warn($"Vehicle model {relativePath}: trucks unreadable ({e.Message}); drawn whole");
         }
 
-        var body = trucks is null ? Model.Load(relativePath) : Model.Load(relativePath, skipNode: TruckNodes);
+        var body = trucks is null ? Model.Load(relativePath, skipNode: skip.Length > 0 ? skip[1..] : null) : Model.Load(relativePath, skipNode: TruckNodes + skip);
         return new VehicleModel(new RenderModel(body), trucks is null ? null : new RenderModel(trucks), null, null);
     }
 
@@ -129,5 +166,7 @@ public sealed class VehicleModel : IDisposable
         Trucks?.Dispose();
         FrontTruck?.Model.Dispose();
         RearTruck?.Model.Dispose();
+        FrontCoupler?.Model.Dispose();
+        RearCoupler?.Model.Dispose();
     }
 }

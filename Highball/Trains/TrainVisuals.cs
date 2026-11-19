@@ -46,6 +46,23 @@ public sealed class TrainVisuals : IDisposable
     private readonly List<VehicleOverlay.Placed> _placed = [];
     private readonly List<Outlined> _outlined = [];
 
+    /// This frame's bodies as drawn, by car (with last frame's), for the couplers to meet across.
+    private readonly List<(VehicleModel? Model, float4 Rotation, double3 At, float4 Was, double3 WasAt)> _bodies = [];
+
+    /// The most a coupler swings either way on its striker, degrees: a locomotive's alignment-control coupler (held near centre by
+    /// its draft gear's wings past this), a long car's extended draft gear (an 89 ft autorack or flat), any other freight car's.
+    public const double LocomotiveSwing = 17.0;
+    public const double LongCarSwing = 20.0;
+    public const double FreightSwing = 15.0;
+
+    /// Past this a car's counted long (its extended draft gear's wider swing), metres over its couplers.
+    private const double LongCar = 25.0;
+
+    /// The most any coupler swung this frame, degrees, and whether one was held at its striker's limit.
+    public double WorstCoupler { get; private set; }
+    public bool CouplerAtLimit { get; private set; }
+
+
     /// The cars' models, to draw.
     public IReadOnlyList<ModelDraw> Draws => _draws;
 
@@ -96,6 +113,7 @@ public sealed class TrainVisuals : IDisposable
         train.Pose(pose, state.Facings);
         var hadPrevious = previous.Count > 0;
         var hadTrucks = trucksWere.Count > 0;
+        _bodies.Clear();
         for (var i = 0; i < train.Cars.Count; i++)
         {
             var car = train.Cars[i];
@@ -137,10 +155,12 @@ public sealed class TrainVisuals : IDisposable
                     if (model.RearTruck is { } rear)
                         _draws.Add(new ModelDraw(rear.Model, default, Rotation: rearRotation, At: rearAt, PreviousRotation: wasRearRotation, PreviousAt: wasRearAt));
                     _draws.Add(new ModelDraw(model.Body, default, Rotation: bodyRotation, At: bodyAt, PreviousRotation: wasBodyRotation, PreviousAt: wasBodyAt));
+                    _bodies.Add((model, bodyRotation, bodyAt, wasBodyRotation, wasBodyAt));
                 }
                 else
                 {
                     _draws.Add(new ModelDraw(model.Body, default, Rotation: rotation, At: at, PreviousRotation: wasRotation, PreviousAt: wasAt));
+                    _bodies.Add((model, rotation, at, wasRotation, wasAt));
                 }
 
                 _placed.Add(new VehicleOverlay.Placed(car, car.ModelPath!, rotation, at));
@@ -152,14 +172,93 @@ public sealed class TrainVisuals : IDisposable
                 if (car.Def.Exhaust is { } exhaust)
                     Exhaust(train, pose, i, systems, exhaust, bodyRotation, bodyAt, dt);
             }
+            if (found is null)
+                _bodies.Add((null, rotation, at, wasRotation, wasAt));
             if (hadPrevious)
                 previous[i] = (rotation, at, bodyRotation, bodyAt);
             else
                 previous.Add((rotation, at, bodyRotation, bodyAt));
         }
 
+        Couplers(train);
         return worst;
     }
+
+    /// Each car's couplers swung on their draft pivots to meet: a coupled pair lies along the line between their two pivots (as the
+    /// knuckles' locked heads do round a curve, each swinging its share), held to each car's striker (LocomotiveSwing and the rest).
+    /// An end coupled to nothing lies straight.
+    private void Couplers(Train train)
+    {
+        WorstCoupler = 0.0;
+        CouplerAtLimit = false;
+        if (_bodies.Count != train.Cars.Count)
+            return;
+
+        // A car's coupler at its train-order front (ahead) or rear, and where its pivot is.
+        (CouplerPart Part, double3 Pivot)? End(int i, bool ahead)
+        {
+            var (model, rotation, at, _, _) = _bodies[i];
+            if (model is null)
+                return null;
+            var front = ahead != train.Cars[i].Reversed;
+            if ((front ? model.FrontCoupler : model.RearCoupler) is not { } part)
+                return null;
+            var p = VehicleOverlay.Rotate(rotation, part.Pivot);
+            return (part, new double3(at.X + p.X, at.Y + p.Y, at.Z + p.Z));
+        }
+
+        for (var i = 0; i < train.Cars.Count; i++)
+        {
+            foreach (var ahead in (ReadOnlySpan<bool>)[true, false])
+            {
+                if (End(i, ahead) is not { } mine)
+                    continue;
+                var j = ahead ? i - 1 : i + 1;
+                var other = j >= 0 && j < train.Cars.Count ? End(j, !ahead) : null;
+                var yaw = other is { } theirs ? SwingTo(i, mine.Part, mine.Pivot, theirs.Pivot, train.Cars[i].Def) : 0.0;
+                var (_, rotation, at, was, wasAt) = _bodies[i];
+                var (s, c) = Math.SinCos(yaw * 0.5 * Math.PI / 180.0);
+                var turn = new float4(0f, (float)s, 0f, (float)c);
+                var (place, placeAt) = Swung(rotation, at, turn, mine.Part.Pivot);
+                var (wasPlace, wasPlaceAt) = Swung(was, wasAt, turn, mine.Part.Pivot);
+                _draws.Add(new ModelDraw(mine.Part.Model, default, Rotation: place, At: placeAt, PreviousRotation: wasPlace, PreviousAt: wasPlaceAt));
+            }
+        }
+    }
+
+    /// How far (degrees about the body's vertical) car i's coupler swings to point from its pivot at the coupled one's, held to the
+    /// car's striker.
+    private double SwingTo(int i, CouplerPart part, double3 pivot, double3 toward, VehicleDef? def)
+    {
+        var (_, rotation, _, _, _) = _bodies[i];
+        // The way to the other pivot in the body's own axes; the coupler's own way out is +z at the front, -z at the rear.
+        var inverse = new float4(-rotation.X, -rotation.Y, -rotation.Z, rotation.W);
+        var local = VehicleOverlay.Rotate(inverse, new float3((float)(toward.X - pivot.X), (float)(toward.Y - pivot.Y), (float)(toward.Z - pivot.Z)));
+        var outward = part.Pivot.Z >= 0f ? 1.0 : -1.0;
+        var yaw = Math.Atan2(local.X * outward, local.Z * outward) * 180.0 / Math.PI;
+        var limit = def is null ? FreightSwing
+            : def.Kind == VehicleKind.Locomotive ? LocomotiveSwing
+            : def.Length >= LongCar ? LongCarSwing : FreightSwing;
+        WorstCoupler = Math.Max(WorstCoupler, Math.Abs(yaw));
+        if (Math.Abs(yaw) > limit)
+        {
+            CouplerAtLimit = true;
+            yaw = Math.CopySign(limit, yaw);
+        }
+
+        // (The same turn either end: about +y it takes the front's +z, and the rear's -z, towards whichever side the other pivot's on.)
+        return yaw;
+    }
+
+    /// A part turned (turn, in the body's frame) about its pivot, on a body placed so.
+    private static (float4 Rotation, double3 At) Swung(float4 rotation, double3 at, float4 turn, float3 pivot)
+    {
+        var turned = Multiply(rotation, turn);
+        var onBody = VehicleOverlay.Rotate(rotation, pivot);
+        var onPart = VehicleOverlay.Rotate(turned, pivot);
+        return (turned, new double3(at.X + onBody.X - onPart.X, at.Y + onBody.Y - onPart.Y, at.Z + onBody.Z - onPart.Z));
+    }
+
 
     /// A truck turned to face the way the track runs under it (facing, on the plan), pitched as its body is, and moved so its
     /// middle stays where the body has it. (dx, dy, dz) is the body's way along the car; rotation and at place the body.

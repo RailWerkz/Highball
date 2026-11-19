@@ -59,6 +59,13 @@ public static class VehicleDraws
         {
             into.Add(new ModelDraw(model.Body, at, Yaw: yaw));
         }
+
+        // Its couplers straight, on the body.
+        var body = model.HasTrucks ? at + new float3(0f, -sag, 0f) : at;
+        if (model.FrontCoupler is { } frontCoupler)
+            into.Add(new ModelDraw(frontCoupler.Model, body, Yaw: yaw));
+        if (model.RearCoupler is { } rearCoupler)
+            into.Add(new ModelDraw(rearCoupler.Model, body, Yaw: yaw));
     }
 }
 
