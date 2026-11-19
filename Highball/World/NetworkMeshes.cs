@@ -1073,7 +1073,7 @@ public sealed partial class NetworkMeshes : IDisposable
 
     private static float Code(LineMaterial material, int style = 0) => (int)material + 8 * style;
 
-    /// An asphalt code's surface texture (line.frag): 0 the roads' own, otherwise 1 + its number (SurfaceTextures.All). Above the
+    /// An asphalt code's surface texture (line.frag): 0 the roads' asphalt, 1 their dirt, otherwise 2 + its number (SurfaceTextures.All). Above the
     /// markings' lanes, way, marks and half width (bits 0 to 13); kept under 2^20 so the code's exact as a float.
     private static int SurfaceBits(int surface) => surface << 14;
 

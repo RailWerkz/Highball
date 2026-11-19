@@ -429,7 +429,7 @@ public sealed partial class NetworkMeshes
         };
         var number = SurfaceTextures.Number(kind, surface);
         SurfaceTextures.Use(id, number);
-        return Code(LineMaterial.Asphalt, SurfaceBits(1 + number));
+        return Code(LineMaterial.Asphalt, SurfaceBits(SurfaceTextures.FirstNumberCode + number));
     }
 
     /// A planked crossing's asphalt, between and outside its planks: the asphalt texture it's set to (fill; null the kind's first),
@@ -438,7 +438,7 @@ public sealed partial class NetworkMeshes
     {
         var number = SurfaceTextures.Number(SurfaceTextures.Kind.Asphalt, fill);
         SurfaceTextures.Use(~id, number);
-        return Code(LineMaterial.Asphalt, SurfaceBits(1 + number));
+        return Code(LineMaterial.Asphalt, SurfaceBits(SurfaceTextures.FirstNumberCode + number));
     }
 
     /// The deck across every track the road meets here, built as a crossing is: standard panels laid along each track over the

@@ -7,18 +7,21 @@ namespace Highball.World;
 /// Only the ones in use are loaded: the roads' own, and whichever each crossing's laid with (Use, as its deck's built). line.frag
 /// has Slots of them bound (TrackTextures, after the paints' palette), the roads' always in the first, and a lookup from a
 /// texture's number (its place in All) to the slot it's in. A line's asphalt code carries which it's laid with
-/// (NetworkMeshes.SurfaceBits): 0 for the roads' own, otherwise 1 + its number.
+/// (NetworkMeshes.SurfaceBits): 0 for the roads' asphalt, 1 for their dirt, otherwise 2 + its number.
 public static class SurfaceTextures
 {
     public enum Kind { Asphalt, Concrete, Wood }
 
     /// How many are bound at once, and how many there can be in all (the lookup's width, and what the code's bits hold).
     public const int Slots = 16;
-    public const int Max = 62;
+    public const int Max = 61;
 
     /// The surface code (NetworkMeshes.SurfaceBits) of unpaved roads' dirt, which is always in the second slot (TrackMaterials.RoadDirt);
-    /// the roads' asphalt is 0, always in the first.
-    public const int RoadDirtCode = 63;
+    /// the roads' asphalt is 0, always in the first; a texture's is FirstNumberCode + its number. (Kept small: the code rides in a
+    /// float the GPU interpolates across each triangle, and near 2^23 that's a whole number out, which turned dirt's pixels into
+    /// other materials in triangles. Dirt was 63 at first.)
+    public const int RoadDirtCode = 1;
+    public const int FirstNumberCode = 2;
 
     /// The slots before the crossings': the roads' asphalt and dirt.
     private const int RoadSlots = 2;

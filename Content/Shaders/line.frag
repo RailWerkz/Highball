@@ -432,10 +432,10 @@ void main()
     else if (material == Asphalt)
     {
         // A paved surface in one of the surface textures (SurfaceTextures): 0 the roads' own asphalt (always in the first slot);
-        // otherwise 1 + its number (a crossing's panels), whose slot the lookup has; and its kind (asphalt, concrete, wood).
+        // 1 their dirt (always in the second slot, its kind 3); otherwise 2 + its number (a crossing's panels), whose slot the lookup
+        // has; and its kind (asphalt, concrete, wood).
         int surface = (style >> 14) & 63;
-        // (63: unpaved roads' dirt, always in the second slot; its kind 3.)
-        vec2 found = surface == 0 ? vec2(0.0) : surface == 63 ? vec2(1.5, 3.5) : texelFetch(surfaceLookup, ivec2(surface - 1, 0), 0).rg * 255.0 + 0.5;
+        vec2 found = surface == 0 ? vec2(0.0) : surface == 1 ? vec2(1.5, 3.5) : texelFetch(surfaceLookup, ivec2(surface - 2, 0), 0).rg * 255.0 + 0.5;
         int slot = int(found.x);
         int kind = int(found.y);
         bool upright = abs(n.y) < 0.5;
@@ -446,7 +446,7 @@ void main()
         vec2 gx = dFdx(suv), gy = dFdy(suv);
         vec3 surfaceColor, surfaceNormal;
         vec4 surfacePacked;
-        bool roadTop = (surface == 0 || surface == 63) && !upright;
+        bool roadTop = (surface == 0 || surface == 1) && !upright;
         if (!roadTop)
             surfaceMaps(slot, suv, gx, gy, surfaceColor, surfaceNormal, surfacePacked);
 
@@ -472,9 +472,18 @@ void main()
         albedo = surfaceColor * (0.9 + 0.2 * wear);
         occlusion = surfacePacked.x;
         roughness = surfacePacked.y;
-        n = bumped(n, surfaceNormal * 2.0 - 1.0, suv);
+        // Dirt's matte: loose earth has no sheen, and a ground map's strong relief tilted toward the sky at a low angle only showed
+        // the sky in it, in blue streaks. Its relief's halved, its roughness kept high, and it has hardly any reflection (below).
+        vec3 relief = surfaceNormal * 2.0 - 1.0;
+        if (kind == 3)
+        {
+            relief = vec3(relief.xy * 0.5, relief.z);
+            roughness = max(roughness, 0.9);
+        }
+
+        n = bumped(n, relief, suv);
         puddle = kind == 0 && !upright ? smoothstep(0.55, 0.68, wear) : 0.0;
-        specular = kind == 0 ? 0.18 : kind == 1 ? 0.25 : kind == 3 ? 0.08 : 0.4;
+        specular = kind == 0 ? 0.18 : kind == 1 ? 0.25 : kind == 3 ? 0.03 : 0.4;
 
         int lanes = style & 7;
         bool oneway = (style & 8) != 0;
