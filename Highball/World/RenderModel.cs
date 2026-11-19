@@ -24,9 +24,17 @@ public sealed class RenderModel : IDisposable
 
     private readonly List<(RenderModel Model, float From)> _lods = [];
 
-    /// Gives it a lower-detail version to draw from a distance on (metres from the camera), which it then owns.
+    /// Gives it a lower-detail version to draw from a distance on (metres from the camera), which it then owns. A hand-made one
+    /// takes the place of every one made as it was loaded.
     public void AddLod(RenderModel lod, float from)
     {
+        if (!lod._generated)
+            foreach (var made in _lods.Where(l => l.Model._generated).ToList())
+            {
+                _lods.Remove(made);
+                made.Model.Dispose();
+            }
+
         _lods.Add((lod, from));
         _lods.Sort((a, b) => a.From.CompareTo(b.From));
     }
@@ -83,7 +91,33 @@ public sealed class RenderModel : IDisposable
             _parts.Add(new Part(sub.FirstIndex, sub.IndexCount, Bind(surface.Texture, surface.MetallicRoughness, surface.Normal, surface.Occlusion), surface.BaseColor, surface.Metallic, surface.Roughness, surface.AlphaCutoff, surface.Blend));
             HasSeeThrough |= surface.Blend;
         }
+
+        // Its lower-detail versions (Model.Levels), each drawn from where its error's about a pixel and a half across (at 60 degrees
+        // over about 1400 pixels), and never nearer than 15 m or the one before it.
+        var size = MathF.Max(model.Size.X, MathF.Max(model.Size.Y, model.Size.Z));
+        var nearest = 0f;
+        foreach (var level in model.Levels)
+        {
+            var parts = new List<Part>();
+            for (var i = 0; i < level.SubMeshes.Count && i < _parts.Count; i++)
+                parts.Add(_parts[i] with { FirstIndex = level.SubMeshes[i].FirstIndex, IndexCount = level.SubMeshes[i].IndexCount });
+            nearest = MathF.Max(nearest + 10f, MathF.Max(15f, level.Error * size * 900f));
+            _lods.Add((new RenderModel(this, parts), nearest));
+        }
     }
+
+    /// A version made as its model was loaded (Model.Levels): the same mesh and textures as the full one's, which keeps them; other
+    /// index ranges.
+    private RenderModel(RenderModel full, List<Part> parts)
+    {
+        Mesh = full.Mesh;
+        _owned = [];
+        _generated = true;
+        _parts.AddRange(parts);
+        HasSeeThrough = full.HasSeeThrough;
+    }
+
+    private readonly bool _generated;
 
     /// A generated mesh of one material. It and anything in owned (its texture, say) now belong to this.
     public RenderModel(Mesh mesh, Texture2D? albedo, float4 baseColor, float metallic, float roughness, params IDisposable[] owned)

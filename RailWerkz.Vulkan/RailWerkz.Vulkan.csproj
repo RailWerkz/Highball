@@ -12,6 +12,8 @@
         <PackageReference Include="Ahwoo.Brutal.Vulkan.Vma" />
         <PackageReference Include="Ahwoo.Brutal.Stb" />
         <PackageReference Include="Ahwoo.Brutal.Gltf" />
+        <PackageReference Include="Ahwoo.Brutal.MeshOptimizer" />
+        <PackageReference Include="Ahwoo.Brutal.MeshOptimizer.Native" />
         <PackageReference Include="ZstdSharp.Port" />
     </ItemGroup>
 </Project>

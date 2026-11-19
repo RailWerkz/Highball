@@ -14,6 +14,8 @@
         <PackageVersion Include="Ahwoo.Brutal.RakNet" Version="2026.10.2" />
         <PackageVersion Include="Ahwoo.Brutal.Stb" Version="2026.10.2" />
         <PackageVersion Include="Ahwoo.Brutal.Gltf" Version="2026.10.2" />
+        <PackageVersion Include="Ahwoo.Brutal.MeshOptimizer" Version="2026.10.2" />
+        <PackageVersion Include="Ahwoo.Brutal.MeshOptimizer.Native" Version="2026.10.2" />
         <PackageVersion Include="Ahwoo.Brutal.Concurrency" Version="2026.10.2" />
         <!-- Managed MP3 decoder for the music (OpenAL plays PCM, it does not read files). -->
         <PackageVersion Include="NLayer" Version="3.0.0" />

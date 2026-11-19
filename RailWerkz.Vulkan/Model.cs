@@ -39,6 +39,10 @@ public sealed class Model : IDisposable
     /// Where the named node's own origin ended up, for a model loaded by node name: the pivot a turret turns about.
     public float3 Origin { get; private init; }
 
+    /// Lower-detail versions made as it was loaded (MeshOptimize), finest first: index ranges into the same mesh. Empty for a
+    /// small or skinned model.
+    public IReadOnlyList<MeshOptimize.Level> Levels { get; private init; } = [];
+
     /// The bones, for a model loaded skinned; null for a static one.
     public Skeleton? Skeleton { get; }
 
@@ -168,6 +172,13 @@ public sealed class Model : IDisposable
         if (vertices.Count == 0)
             throw new InvalidDataException($"{relativePath} has no triangles");
 
+        // Reordered for the GPU, and lower-detail versions made of a dense model (not of one that's itself a hand-made LOD1 or LOD2).
+        var slashed = relativePath.Replace('\\', '/');
+        // (Nor of a LOD0 with a hand-made LOD1 beside it: those take its place.)
+        var handLod = slashed.Contains("/LOD1/", StringComparison.OrdinalIgnoreCase) || slashed.Contains("/LOD2/", StringComparison.OrdinalIgnoreCase) ||
+            (slashed.Contains("/LOD0/", StringComparison.OrdinalIgnoreCase) && File.Exists(Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(path)!)!, "LOD1", Path.GetFileName(path))));
+        var levels = MeshOptimize.Process(path, $"{nodeName}|{skipNode}", vertices, indices, subMeshes, lods: !handLod);
+
         var surfaces = LoadSurfaces(loader, perMaterial.Keys.DefaultIfEmpty().Max() + 1);
 
         if (frame is { } f)
@@ -218,7 +229,7 @@ public sealed class Model : IDisposable
         if (targetLength > 0f || frame is not null)
             pivot = (pivot - placement.Origin) * placement.Scale;
 
-        return new Model(mesh, subMeshes, surfaces, min, max, placement) { Origin = pivot };
+        return new Model(mesh, subMeshes, surfaces, min, max, placement) { Origin = pivot, Levels = levels };
     }
 
     private static HashSet<string> SkipSet(string? skipNode) => NamePatterns(skipNode);
