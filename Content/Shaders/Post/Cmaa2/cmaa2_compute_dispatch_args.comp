@@ -1,0 +1,51 @@
+#version 450
+
+// Builds indirect dispatch arguments for two later passes. Dispatch size 2 by 1 selects candidate
+// processing. Dispatch size 1 by 2 selects deferred color apply and resets the append counters.
+// The first three output values match VkDispatchIndirectCommand. Control element 3 stores the exact
+// item count.
+
+#define CMAA2_KERNEL_COMPUTE_DISPATCH_ARGS 1
+#include "cmaa2_common.glsl"
+
+layout (local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+void main()
+{
+    // Build the candidate processing dispatch.
+    if( gl_WorkGroupID.x == 1u )
+    {
+        uint shapeCandidateCount = g_workingControlBuffer[4];
+
+        // Clamp to the allocated candidate buffer.
+        shapeCandidateCount = min( shapeCandidateCount, g_candidateCapacity );
+
+        g_workingExecuteIndirectBuffer[0] = ( shapeCandidateCount + uint(CMAA2_PROCESS_CANDIDATES_NUM_THREADS) - 1u ) / uint(CMAA2_PROCESS_CANDIDATES_NUM_THREADS);
+        g_workingExecuteIndirectBuffer[1] = 1u;
+        g_workingExecuteIndirectBuffer[2] = 1u;
+
+        // Keep the exact count for bounds checks in the shader.
+        g_workingControlBuffer[3] = shapeCandidateCount;
+    }
+    // Build the deferred apply dispatch.
+    else if( gl_WorkGroupID.y == 1u )
+    {
+        uint blendLocationCount = g_workingControlBuffer[8];
+
+        // Clamp to the allocated blend location buffer.
+        blendLocationCount = min( blendLocationCount, g_blendLocationCapacity );
+
+        // Group count is stored in Y because X contains the four pixels of each quad.
+        g_workingExecuteIndirectBuffer[0] = 1u;
+        g_workingExecuteIndirectBuffer[1] = ( blendLocationCount + uint(CMAA2_DEFERRED_APPLY_NUM_THREADS) - 1u ) / uint(CMAA2_DEFERRED_APPLY_NUM_THREADS);
+        g_workingExecuteIndirectBuffer[2] = 1u;
+
+        // Keep the exact count for bounds checks in the shader.
+        g_workingControlBuffer[3] = blendLocationCount;
+
+        // Reset append counters for the next frame.
+        g_workingControlBuffer[4]  = 0u;
+        g_workingControlBuffer[8]  = 0u;
+        g_workingControlBuffer[12] = 0u;
+    }
+}

@@ -61,6 +61,9 @@ public sealed class Settings
     /// that blending frames softens. Nothing with TemporalAA off.
     public float Sharpening { get; set; } = 0.5f;
 
+    /// Conservative morphological anti-aliasing (CMAA2) on the finished picture: smooths the jagged edges left, with or without TAA.
+    public bool Cmaa2 { get; set; }
+
     /// The share of the screen's width and height the world is drawn at, 0.5 to 1, with temporal anti-aliasing building the
     /// full-size picture from the jittered frames (temporal upscaling). Ignored (1) with TemporalAA off.
     public float RenderScale { get; set; } = 0.75f;

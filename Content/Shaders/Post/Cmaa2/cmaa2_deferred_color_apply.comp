@@ -1,0 +1,67 @@
+#version 450
+
+// Pass 5 applies queued blend samples. Four lanes handle one 2 by 2 quad. Each lane walks the
+// same linked list but only accumulates samples for its pixel. Simple shapes use weight 0.8 and
+// complex shapes use weight 1.8. Only touched pixels are written. FinalUAVStore converts the linear
+// result back to display gamma.
+
+#define CMAA2_KERNEL_DEFERRED_COLOR_APPLY 1
+#include "cmaa2_common.glsl"
+
+layout (local_size_x = 4, local_size_y = CMAA2_DEFERRED_APPLY_NUM_THREADS, local_size_z = 1) in;
+
+void main()
+{
+    const uint numCandidates        = g_workingControlBuffer[3];
+    const uint currentCandidate     = gl_GlobalInvocationID.y;
+    const uint currentQuadOffsetXY  = gl_LocalInvocationID.x;
+
+    if( currentCandidate >= numCandidates )
+        return;
+
+    uint pixelID    = g_workingDeferredBlendLocationList[currentCandidate];
+    uvec2 quadPos   = uvec2( pixelID >> 16, pixelID & 0xFFFFu );
+    const ivec2 qeOffsets[4] = ivec2[4]( ivec2( 0, 0 ), ivec2( 1, 0 ), ivec2( 0, 1 ), ivec2( 1, 1 ) );
+    ivec2 pixelPos  = ivec2( quadPos * 2u ) + qeOffsets[currentQuadOffsetXY];
+
+    uint counterIndexWithHeader = imageLoad( g_workingDeferredBlendItemListHeads, ivec2( quadPos ) ).x;
+
+    vec4 outColors = vec4( 0, 0, 0, 0 );
+
+    const uint maxLoops = 32u;   // Limit corrupted lists so they cannot hang the GPU.
+    {
+        for( uint i = 0u; (counterIndexWithHeader != 0xFFFFFFFFu) && ( i < maxLoops ); i++ )
+        {
+            // Header layout: 2 quad offset bits, 3 unused sample bits, 1 complex shape bit,
+            // and 26 item index bits.
+            uint offsetXY           = (counterIndexWithHeader >> 30) & 0x03u;
+            bool isComplexShape     = ( (counterIndexWithHeader >> 26) & 0x01u ) != 0u;
+
+            uint itemIndex = counterIndexWithHeader & ((1u << 26) - 1u);
+            // Vulkan buffer reads outside the allocation are undefined. This check only fails for
+            // corrupted list data because StoreColorSample already validates each append.
+            if( itemIndex >= g_blendItemCapacity )
+                break;
+
+            uvec2 val = g_workingDeferredBlendItemList[itemIndex];
+
+            counterIndexWithHeader  = val.x;
+
+            if( offsetXY == currentQuadOffsetXY )
+            {
+                vec3 color      = InternalUnpackColor( val.y );
+                float weight    = 0.8 + 1.0 * float(isComplexShape);
+                outColors += vec4( color * weight, weight );
+            }
+        }
+    }
+
+    if( outColors.a == 0.0 )
+        return;
+
+    {
+        vec4 outColor = outColors;
+        outColor.rgb /= outColor.a;
+        FinalUAVStore( pixelPos, outColor.rgb );
+    }
+}

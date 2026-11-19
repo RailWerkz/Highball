@@ -51,6 +51,7 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
             .Add(new MenuItem { Label = "View distance", Value = () => Distance(s.ViewDistance), Meter = () => (s.ViewDistance - MetersPerMile) / (20000f - MetersPerMile), OnChange = d => s.ViewDistance = StepDistance(s.ViewDistance, d) })
             .Add(new MenuItem { Label = "Field of view", Value = () => $"{s.FieldOfView:0}°", Meter = () => (s.FieldOfView - 40f) / 50f, OnChange = d => s.FieldOfView = Math.Clamp(s.FieldOfView + d * 5f, 40f, 90f), SeparatorAfter = true })
             .Add(new MenuItem { Label = "Temporal anti-aliasing", Value = () => OnOff(s.TemporalAA), OnChange = _ => s.TemporalAA = !s.TemporalAA })
+            .Add(new MenuItem { Label = "Edge smoothing (CMAA2)", Value = () => OnOff(s.Cmaa2), OnChange = _ => s.Cmaa2 = !s.Cmaa2 })
             .Add(new MenuItem
             {
                 Label = "Sharpening", Value = () => s.TemporalAA ? $"{MathF.Round(s.Sharpening * 100f):0}%" : "OFF (NEEDS TAA)", Meter = () => s.Sharpening,

@@ -1,0 +1,158 @@
+#version 450
+
+// Pass 1 detects edges for one 2 by 2 pixel quad per thread. Shared memory provides neighboring
+// edge values for local contrast adjustment. The outer thread ring acts as a halo, so each 16 by 16
+// group writes 28 by 28 pixels. Every output edge is written, including zero values, so data from
+// the previous frame cannot affect shape tracing.
+//
+// Intel's shader relies on unsigned wraparound for negative halo coordinates. This Vulkan port uses
+// signed coordinates and checks every image access.
+
+#define CMAA2_KERNEL_EDGES_COLOR 1
+#include "cmaa2_common.glsl"
+
+layout (local_size_x = CMAA2_CS_INPUT_KERNEL_SIZE_X, local_size_y = CMAA2_CS_INPUT_KERNEL_SIZE_Y, local_size_z = 1) in;
+
+void main()
+{
+    // Include one neighboring quad above and to the left.
+    ivec2 pixelPos = ivec2(gl_WorkGroupID.xy) * ivec2( CMAA2_CS_OUTPUT_KERNEL_SIZE_X, CMAA2_CS_OUTPUT_KERNEL_SIZE_Y ) + ivec2(gl_LocalInvocationID.xy) - ivec2( 1, 1 );
+    pixelPos *= 2;
+
+    const ivec2 qeOffsets[4]        = ivec2[4]( ivec2( 0, 0 ), ivec2( 1, 0 ), ivec2( 0, 1 ), ivec2( 1, 1 ) );
+    const uint rowStride2x2         = CMAA2_CS_INPUT_KERNEL_SIZE_X;
+    const uint centerAddr2x2        = gl_LocalInvocationID.x + gl_LocalInvocationID.y * rowStride2x2;
+    const bool inOutputKernel       = !any( bvec4( gl_LocalInvocationID.x == ( CMAA2_CS_INPUT_KERNEL_SIZE_X - 1 ), gl_LocalInvocationID.x == 0, gl_LocalInvocationID.y == ( CMAA2_CS_INPUT_KERNEL_SIZE_Y - 1 ), gl_LocalInvocationID.y == 0 ) );
+
+    int i;
+    vec2 qe0, qe1, qe2, qe3;
+    uvec4 outEdges = uvec4( 0, 0, 0, 0 );
+
+    // Calculate fractional edge strengths.
+#if CMAA2_EDGE_DETECTION_LUMA_PATH == 0
+    vec3 pixelColors[3 * 3 - 1];
+    for( i = 0; i < 3 * 3 - 1; i++ )
+        pixelColors[i] = LoadSourceColor( pixelPos, ivec2( i % 3, i / 3 ) ).rgb;
+
+    for( i = 0; i < 3 * 3 - 1; i++ )
+        pixelColors[i] = ProcessColorForEdgeDetect( pixelColors[i] );
+
+    qe0 = ComputeEdge( 0, 0, pixelColors );
+    qe1 = ComputeEdge( 1, 0, pixelColors );
+    qe2 = ComputeEdge( 0, 1, pixelColors );
+    qe3 = ComputeEdge( 1, 1, pixelColors );
+#else // Calculate luma from the source color.
+    float pixelLumas[3 * 3 - 1];
+    for( i = 0; i < 3 * 3 - 1; i++ )
+    {
+        vec3 color = LoadSourceColor( pixelPos, ivec2( i % 3, i / 3 ) ).rgb;
+        pixelLumas[i] = RGBToLumaForEdges( color );
+    }
+    qe0 = ComputeEdgeLuma( 0, 0, pixelLumas );
+    qe1 = ComputeEdgeLuma( 1, 0, pixelLumas );
+    qe2 = ComputeEdgeLuma( 0, 1, pixelLumas );
+    qe3 = ComputeEdgeLuma( 1, 1, pixelLumas );
+#endif
+
+    g_groupShared2x2FracEdgesV[centerAddr2x2] = vec4( qe0.x, qe1.x, qe2.x, qe3.x );
+    g_groupShared2x2FracEdgesH[centerAddr2x2] = vec4( qe0.y, qe1.y, qe2.y, qe3.y );
+
+    barrier();
+
+    if( inOutputKernel )
+    {
+        // Bottom edge from the row above.
+        vec2 topRow         = g_groupShared2x2FracEdgesH[ centerAddr2x2 - rowStride2x2 ].zw;
+        // Right edge from the column to the left.
+        vec2 leftColumn     = g_groupShared2x2FracEdgesV[ centerAddr2x2 - 1u ].yw;
+
+        bool someNonZeroEdges = any( notEqual( vec4( qe0, qe1 ) + vec4( qe2, qe3 ) + vec4( topRow[0], topRow[1], leftColumn[0], leftColumn[1] ), vec4( 0.0 ) ) );
+
+        if( someNonZeroEdges )
+        {
+            // Reset the list head only for quads that may contain an edge. Quads outside the image
+            // cannot produce candidates and are skipped.
+            if( IsInScreen( pixelPos ) )
+                imageStore( g_workingDeferredBlendItemListHeads, pixelPos / 2, uvec4( 0xFFFFFFFFu ) );
+
+            vec4 ce[4];
+
+            // Remove weak edges near stronger local edges.
+            vec2 dummyd0, dummyd1, dummyd2;
+            vec2 neighbourhood[4][4];
+
+            // Load the surrounding edge values from shared memory. Reuse values already held by
+            // this thread instead of loading them again.
+            GroupsharedLoadQuadHV( centerAddr2x2 - rowStride2x2 - 1u , dummyd0, dummyd1, dummyd2, neighbourhood[0][0] );
+            GroupsharedLoadQuadHV( centerAddr2x2 - rowStride2x2      , dummyd0, dummyd1, neighbourhood[1][0], neighbourhood[2][0] );
+            GroupsharedLoadQuadHV( centerAddr2x2 - rowStride2x2 + 1u , dummyd0, dummyd1, neighbourhood[3][0], dummyd2 );
+            GroupsharedLoadQuadHV( centerAddr2x2 - 1u                , dummyd0, neighbourhood[0][1], dummyd1, neighbourhood[0][2] );
+            GroupsharedLoadQuadHV( centerAddr2x2 + 1u                , neighbourhood[3][1], dummyd0, neighbourhood[3][2], dummyd1 );
+            GroupsharedLoadQuadHV( centerAddr2x2 - 1u + rowStride2x2 , dummyd0, neighbourhood[0][3], dummyd1, dummyd2 );
+            GroupsharedLoadQuadHV( centerAddr2x2 + rowStride2x2      , neighbourhood[1][3], neighbourhood[2][3], dummyd0, dummyd1 );
+            neighbourhood[1][0].y = topRow[0]; // Already available in this thread.
+            neighbourhood[2][0].y = topRow[1]; // Already available in this thread.
+            neighbourhood[0][1].x = leftColumn[0]; // Already available in this thread.
+            neighbourhood[0][2].x = leftColumn[1]; // Already available in this thread.
+            neighbourhood[1][1] = qe0; // Already available in this thread.
+            neighbourhood[2][1] = qe1; // Already available in this thread.
+            neighbourhood[1][2] = qe2; // Already available in this thread.
+            neighbourhood[2][2] = qe3; // Already available in this thread.
+
+            topRow[0]     = float( ( topRow[0]     - ComputeLocalContrastH( 0, -1, neighbourhood ) ) > GetActualEdgeThreshold() );
+            topRow[1]     = float( ( topRow[1]     - ComputeLocalContrastH( 1, -1, neighbourhood ) ) > GetActualEdgeThreshold() );
+            leftColumn[0] = float( ( leftColumn[0] - ComputeLocalContrastV( -1, 0, neighbourhood ) ) > GetActualEdgeThreshold() );
+            leftColumn[1] = float( ( leftColumn[1] - ComputeLocalContrastV( -1, 1, neighbourhood ) ) > GetActualEdgeThreshold() );
+
+            ce[0].x = float( ( qe0.x - ComputeLocalContrastV( 0, 0, neighbourhood ) ) > GetActualEdgeThreshold() );
+            ce[0].y = float( ( qe0.y - ComputeLocalContrastH( 0, 0, neighbourhood ) ) > GetActualEdgeThreshold() );
+            ce[1].x = float( ( qe1.x - ComputeLocalContrastV( 1, 0, neighbourhood ) ) > GetActualEdgeThreshold() );
+            ce[1].y = float( ( qe1.y - ComputeLocalContrastH( 1, 0, neighbourhood ) ) > GetActualEdgeThreshold() );
+            ce[2].x = float( ( qe2.x - ComputeLocalContrastV( 0, 1, neighbourhood ) ) > GetActualEdgeThreshold() );
+            ce[2].y = float( ( qe2.y - ComputeLocalContrastH( 0, 1, neighbourhood ) ) > GetActualEdgeThreshold() );
+            ce[3].x = float( ( qe3.x - ComputeLocalContrastV( 1, 1, neighbourhood ) ) > GetActualEdgeThreshold() );
+            ce[3].y = float( ( qe3.y - ComputeLocalContrastH( 1, 1, neighbourhood ) ) > GetActualEdgeThreshold() );
+
+            // Fill left edge values.
+            ce[0].z = leftColumn[0];
+            ce[1].z = ce[0].x;
+            ce[2].z = leftColumn[1];
+            ce[3].z = ce[2].x;
+
+            // Fill top edge values.
+            ce[0].w = topRow[0];
+            ce[1].w = topRow[1];
+            ce[2].w = ce[0].y;
+            ce[3].w = ce[1].y;
+
+            for( i = 0; i < 4; i++ )
+            {
+                const ivec2 localPixelPos = pixelPos + qeOffsets[i];
+
+                const vec4 edges = ce[i];
+
+                // A corner with two connected edges needs shape processing.
+                bool isCandidate = ( edges.x * edges.y + edges.y * edges.z + edges.z * edges.w + edges.w * edges.x ) != 0.0;
+                if( isCandidate )
+                {
+                    uint counterIndex = atomicAdd( g_workingControlBuffer[4], 1u );
+                    // Vulkan does not discard invalid buffer writes, so check the capacity here.
+                    if( counterIndex < g_candidateCapacity )
+                        g_workingShapeCandidates[counterIndex] = (uint(localPixelPos.x) << 18) | uint(localPixelPos.y);
+                }
+
+                // Write zero values too so old edges cannot remain in the texture.
+                outEdges[i] = PackEdges( edges );
+            }
+        }
+    }
+
+    // Store two 4 bit edge masks per texel. Skip pixels outside the image.
+    if( inOutputKernel && pixelPos.x < ScreenSize().x )
+    {
+        if( pixelPos.y + 0 < ScreenSize().y )
+            imageStore( g_workingEdges, ivec2( pixelPos.x / 2, pixelPos.y + 0 ), uvec4( (outEdges[1] << 4) | outEdges[0] ) );
+        if( pixelPos.y + 1 < ScreenSize().y )
+            imageStore( g_workingEdges, ivec2( pixelPos.x / 2, pixelPos.y + 1 ), uvec4( (outEdges[3] << 4) | outEdges[2] ) );
+    }
+}
