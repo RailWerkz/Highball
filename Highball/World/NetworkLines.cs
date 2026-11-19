@@ -1468,6 +1468,12 @@ public sealed partial class NetworkLines
             }
         }
 
+        // How many rail lines touch each node: a side of a join stops short of any other junction on its line.
+        var touching = new Dictionary<long, int>();
+        foreach (var line in _lines.Where(l => l.Rail && !l.Mark))
+            foreach (var node in line.Nodes.Select(n => n.Node).Distinct())
+                touching[node] = touching.GetValueOrDefault(node) + 1;
+
         var joined = 0;
         foreach (var (node, list) in ends)
         {
@@ -1478,18 +1484,23 @@ public sealed partial class NetworkLines
                 continue;
 
             // Each side's points within reach of the join, by distance from it (negative along a, positive along b), on the
-            // ground only (a bridge deck is carried as it is).
-            List<(NetworkLine Line, int Point, float S)> Side((NetworkLine Line, bool AtStart) end, float sign)
+            // ground only (a bridge deck is carried as it is), and how far that side reaches: JoinReach, but no further than half
+            // its line (its other end has a join of its own to keep) or the next junction on it (agreed with the lines there).
+            List<(NetworkLine Line, int Point, float S, float Reach)> Side((NetworkLine Line, bool AtStart) end, float sign)
             {
                 var (line, atStart) = end;
-                var result = new List<(NetworkLine, int, float)>();
                 var from = atStart ? 0 : line.Count - 1;
+                var reach = MathF.Min(JoinReach, line.S[^1] * 0.5f);
+                foreach (var (other, q) in line.Nodes)
+                    if (q != from && touching.GetValueOrDefault(other) > 1)
+                        reach = MathF.Min(reach, MathF.Abs(line.S[q] - line.S[from]));
+                var result = new List<(NetworkLine, int, float, float)>();
                 for (var p = from; p >= 0 && p < line.Count; p += atStart ? 1 : -1)
                 {
                     var away = MathF.Abs(line.S[p] - line.S[from]);
-                    if (away > JoinReach || !OnGround(line, p))
+                    if (away > reach || !OnGround(line, p))
                         break;
-                    result.Add((line, p, sign * away));
+                    result.Add((line, p, sign * away, MathF.Max(reach, 1f)));
                 }
 
                 return result;
@@ -1501,7 +1512,7 @@ public sealed partial class NetworkLines
 
             // y = c0 + c1 s + c2 s^2, by least squares.
             double s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, y0 = 0, y1 = 0, y2 = 0;
-            foreach (var (line, p, at) in points)
+            foreach (var (line, p, at, _) in points)
             {
                 double x = at, y = line.Y[p];
                 s0 += 1; s1 += x; s2 += x * x; s3 += x * x * x; s4 += x * x * x * x;
@@ -1521,11 +1532,11 @@ public sealed partial class NetworkLines
             // A side kept as it was holds the join's height: the fit's moved to meet it there.
             var shift = a.Line.Frozen ? a.Line.Y[a.AtStart ? 0 : a.Line.Count - 1] - Fit(0f)
                 : b.Line.Frozen ? b.Line.Y[b.AtStart ? 0 : b.Line.Count - 1] - Fit(0f) : 0.0;
-            foreach (var (line, p, at) in points)
+            foreach (var (line, p, at, reach) in points)
             {
                 if (line.Frozen)
                     continue;
-                var weight = 0.5f * (1f + MathF.Cos(MathF.PI * MathF.Abs(at) / JoinReach));
+                var weight = 0.5f * (1f + MathF.Cos(MathF.PI * MathF.Min(MathF.Abs(at) / reach, 1f)));
                 line.Y[p] += weight * (float)(Fit(at) + shift - line.Y[p]);
             }
 
@@ -1601,6 +1612,10 @@ public sealed partial class NetworkLines
     /// the other's instead of fighting it in the depth buffer.
     private const float LayerStep = 0.003f;
 
+    /// How far from where tracks join (a switch, one track carrying on as another) a line's layer comes in: at the join every
+    /// line's at its own height, so the rails meet there without a step.
+    private const float LayerEase = 15f;
+
     /// Rail lines whose ballast tops overlap anywhere (crossings, junctions, lines drawn over each other) are set a few
     /// millimetres apart: each takes the first layer none of the lines it overlaps has taken, mains first, and is
     /// lowered LayerStep per layer below the top.
@@ -1616,6 +1631,18 @@ public sealed partial class NetworkLines
                 if (!cells.TryGetValue(key, out var list))
                     cells[key] = list = [];
                 list.Add((line, p));
+            }
+
+        // The nodes where tracks join: a rail line ends there and another touches it. (Not where two only cross: a diamond keeps
+        // its layers right through.)
+        var touching = new Dictionary<long, int>();
+        var ending = new HashSet<long>();
+        foreach (var line in rails)
+            foreach (var (node, point) in line.Nodes)
+            {
+                touching[node] = touching.GetValueOrDefault(node) + 1;
+                if (point == 0 || point == line.Count - 1)
+                    ending.Add(node);
             }
 
         var layers = new Dictionary<NetworkLine, int>();
@@ -1643,9 +1670,16 @@ public sealed partial class NetworkLines
             while (taken.Contains(mine))
                 mine++;
             layers[line] = mine;
-            if (mine > 0)
-                for (var p = 0; p < line.Count; p++)
-                    line.Y[p] -= mine * LayerStep;
+            if (mine == 0)
+                continue;
+            var joins = line.Nodes.Where(n => ending.Contains(n.Node) && touching[n.Node] > 1).Select(n => line.S[n.Point]).ToArray();
+            for (var p = 0; p < line.Count; p++)
+            {
+                var near = LayerEase;
+                foreach (var at in joins)
+                    near = MathF.Min(near, MathF.Abs(line.S[p] - at));
+                line.Y[p] -= mine * LayerStep * Ease(near / LayerEase);
+            }
         }
 
         RailWerkz.Core.Logging.Log.Info($"Profiles: {layers.Values.Count(l => l > 0)} of {rails.Count} rail lines layered, {(layers.Count > 0 ? layers.Values.Max() + 1 : 0)} layers");
@@ -1751,6 +1785,8 @@ public sealed partial class NetworkLines
     /// it eases over to its own.
     private const float BesideReach = 6.5f;
     private const float BesideEase = 3f;
+    /// How far from a junction with track it doesn't follow a siding comes into following its own (FollowBeside).
+    private const float FollowHold = 20f;
 
     /// Track laid by hand (exact) that leaves a line at a switch, a siding or a track laid beside it, is at that line's height
     /// wherever it runs beside it: a siding's laid level with its main line. Fitted to the ground on its own, as mapped track is, a
@@ -1769,7 +1805,10 @@ public sealed partial class NetworkLines
                 list.Add((line, point));
             }
 
-        // (One at a time: a siding off a siding reads the one it leaves as that's been laid.)
+        // The tracks each siding follows, first; then each laid after the tracks it follows (and theirs before them), so a siding off
+        // a siding reads the one it leaves as that's been laid, and meets it at their switch exactly. (In the lines' own order, a
+        // siding laid before the track it left was moved would be left standing a few centimetres off it at the switch.)
+        var follows = new Dictionary<NetworkLine, HashSet<NetworkLine>>();
         foreach (var line in _lines.Where(l => l.Rail && l.Exact && !l.Frozen && !l.Disused && l.Count >= 2))
         {
             // The lines it leaves: at a switch at either of its ends where it's the diverging route, the toe and the straight route
@@ -1814,7 +1853,32 @@ public sealed partial class NetworkLines
                 }
             }
 
+            follows[line] = partners;
+        }
 
+        var order = new List<NetworkLine>();
+        var visited = new HashSet<NetworkLine>();
+        void Visit(NetworkLine line)
+        {
+            if (!visited.Add(line))
+                return;
+            foreach (var other in follows[line])
+                if (follows.ContainsKey(other))
+                    Visit(other);
+            order.Add(line);
+        }
+
+        foreach (var line in follows.Keys)
+            Visit(line);
+
+        foreach (var line in order)
+        {
+            var partners = follows[line];
+            // Where it meets track it neither follows nor is followed by (a switch at its far end, onto another line): the
+            // junctions have agreed its height there with that track's, so it's held there and eases into following away from it.
+            var held = line.Nodes.Where(n => at.TryGetValue(n.Node, out var meeting) &&
+                    meeting.Any(m => m.Line != line && !partners.Contains(m.Line) && !(follows.TryGetValue(m.Line, out var theirs) && theirs.Contains(line))))
+                .Select(n => line.S[n.Point]).ToArray();
             for (var p = 0; p < line.Count; p++)
             {
                 if (!OnGround(line, p) || Pinned(line, p))
@@ -1840,6 +1904,8 @@ public sealed partial class NetworkLines
                 if (best is not { } found || found.Away > BesideReach + BesideEase)
                     continue;
                 var weight = 1f - Math.Clamp(((float)found.Away - BesideReach) / BesideEase, 0f, 1f);
+                foreach (var s in held)
+                    weight *= Ease(Math.Clamp(MathF.Abs(line.S[p] - s) / FollowHold, 0f, 1f));
                 line.Y[p] += (found.Y - line.Y[p]) * weight;
             }
         }
