@@ -16,8 +16,18 @@ public sealed unsafe class SunShadows : IDisposable
     public const int Cascades = 4;
     private static readonly string[] CascadeNames = ["Cascade 0", "Cascade 1", "Cascade 2", "Cascade 3"];
 
-    /// How far each cascade reaches along the view, in metres. Past the last there are no shadows.
+    /// How far each cascade reaches along the view, in metres. Past the last there are no shadows. The last is the Shadow
+    /// distance setting (1500 by default) and the third scales with it; the first two stay put, so shadows close by stay as sharp.
     private static readonly float[] Reach = [15f, 60f, 250f, 1500f];
+
+    public const float MinDistance = 400f;
+    public const float MaxDistance = 3000f;
+
+    private static void SetReach()
+    {
+        var far = Math.Clamp(RailWerkz.Core.Settings.Settings.Current.ShadowDistance, MinDistance, MaxDistance);
+        (Reach[2], Reach[3]) = (MathF.Max(120f, 250f * far / 1500f), far);
+    }
 
     /// The track's own cascade, a fifth layer after the four: only the thin parts of the track (rails, ties, plates, switch
     /// blades), out to TrackReach, so their shadows on the ballast carry on past the second cascade without the others drawing
@@ -238,6 +248,7 @@ public sealed unsafe class SunShadows : IDisposable
     public void Render(CommandBuffer cmd, Camera camera, float aspect, float3 sun, Terrain? terrain, IReadOnlyList<ModelDraw>? models, ModelInstances instances, Vegetation? vegetation = null, NetworkMeshes? network = null)
     {
         _instances = instances;
+        SetReach();
         // The Quality setting's changed: the old map's freed once the frames using it are done.
         if (_map.Size != Quality.ShadowSize)
         {

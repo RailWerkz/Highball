@@ -454,11 +454,12 @@ public sealed unsafe class Vegetation : IDisposable
 
     /// Trees and bushes crowd along the railway and thin out away from it: TracksidePeak times what the land cover alone would
     /// grow out to TracksideDense metres from the track's edge, easing down to Background by TracksideFalloff and staying there.
-    /// Peak and Background are balanced so about as many grow in view as when they were spread evenly.
-    public const float TracksideDense = 110f;
-    public const float TracksideFalloff = 320f;
-    public const float TracksidePeak = 4.2f;
-    public const float Background = 0.15f;
+    /// Peak and Background are balanced so about as many grow in view (out to the trees' 1.4 km) as when they were spread evenly:
+    /// tighter to the line than they were (110 m, to 320 m, 4.2 and 0.15), half again as many within 150 m of it, half as many far off.
+    public const float TracksideDense = 70f;
+    public const float TracksideFalloff = 200f;
+    public const float TracksidePeak = 7.05f;
+    public const float Background = 0.08f;
 
     /// How far a tree's trunk keeps from the track bed's edge (ballast and walkway), and where it's no longer thinned by it.
     public const float TreeClearance = 5f;

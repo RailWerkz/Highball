@@ -30,6 +30,8 @@ public sealed class Settings
     public int Quality { get; set; } = 2; // 0 LOW, 1 MEDIUM, 2 HIGH, 3 ULTRA
     public float ViewDistance { get; set; } = 8000f;
     public float FieldOfView { get; set; } = 60f;
+    /// How far the sun's shadows reach, metres (400 to 3000; SunShadows).
+    public float ShadowDistance { get; set; } = 1500f;
     public string Skybox { get; set; } = "Procedural";
     /// The procedural sky's date and time, as a clock on the route would show them (see SunPosition).
     public int SkyYear { get; set; } = 2026;

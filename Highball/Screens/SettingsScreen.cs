@@ -59,6 +59,13 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
             })
             .Add(new MenuItem { Label = "Ambient occlusion", Value = () => OnOff(s.AmbientOcclusion), OnChange = _ => s.AmbientOcclusion = !s.AmbientOcclusion })
             .Add(new MenuItem { Label = "Sun shadows", Value = () => OnOff(s.SunShadows), OnChange = _ => s.SunShadows = !s.SunShadows })
+            .Add(new MenuItem
+            {
+                Label = "Shadow distance", Value = () => ShadowDistance(s.ShadowDistance),
+                Meter = () => (s.ShadowDistance - SunShadows.MinDistance) / (SunShadows.MaxDistance - SunShadows.MinDistance),
+                OnChange = d => s.ShadowDistance = Math.Clamp(MathF.Round(s.ShadowDistance / 100f) * 100f + d * 100f, SunShadows.MinDistance, SunShadows.MaxDistance),
+                Enabled = () => s.SunShadows,
+            })
             .Add(new MenuItem { Label = "Plants and rocks", Value = () => OnOff(s.Vegetation), OnChange = _ => s.Vegetation = !s.Vegetation })
             .Add(new MenuItem { Label = "Bloom", Value = () => OnOff(s.Bloom), OnChange = _ => s.Bloom = !s.Bloom })
             .Add(new MenuItem { Label = "God rays and glare", Value = () => OnOff(s.GodRays), OnChange = _ => s.GodRays = !s.GodRays })
@@ -214,6 +221,9 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
     private const float MetersPerMile = 1609.344f;
 
     private static bool Imperial => Settings.Current.Units == UnitSystem.Imperial;
+
+    /// How far shadows reach: in feet or metres, the player's units.
+    private static string ShadowDistance(float meters) => Imperial ? $"{meters * 3.28084f:#,0} FT" : $"{meters:#,0} M";
 
     private static string Distance(float meters) => Imperial ? $"{meters / MetersPerMile:0} MI" : $"{meters / 1000f:0} KM";
 
