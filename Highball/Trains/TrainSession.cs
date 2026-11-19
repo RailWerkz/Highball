@@ -24,6 +24,7 @@ public sealed class TrainSession : IDisposable
     private DriveView _view = DriveView.Free;
     private bool _placeOrbit;
     private readonly CrossingBells _bells = new();
+    private readonly EnvironmentAudio _environment = new();
 
     /// The route's saved stock has been put back on the track (once, on the first rail graph). Until then nothing's saved
     /// over it, so a save before the track's ready doesn't lose it.
@@ -139,6 +140,9 @@ public sealed class TrainSession : IDisposable
 
         Panel.Hear(_camera, dt);
         _bells.Update(_world, _camera);
+        var origin = _world.Route.Origin;
+        var ground = _world.Source is { } source ? source.HeightAt(_camera.X, _camera.Z) : (float)_camera.Y;
+        _environment.Update(dt, origin.Latitude, origin.Longitude, (float)_camera.Y - ground, InCab);
     }
 
     /// --train: the named consist placed where it says, facing the way the camera does, and set going.
@@ -221,6 +225,7 @@ public sealed class TrainSession : IDisposable
     public void Dispose()
     {
         _bells.Dispose();
+        _environment.Dispose();
         Panel.Dispose();
     }
 }

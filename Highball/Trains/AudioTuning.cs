@@ -104,7 +104,34 @@ public sealed class AudioTuning
         public float FadeOut { get; set; } = 0.25f;
     }
 
+    /// The world's own sound round the camera (EnvironmentAudio): each sound's level, how often the ones that come now and then
+    /// come (seconds), how hard it must rain for thunder, how much is heard of the outside from a cab, and how high above the ground
+    /// (metres) the wildlife's gone.
+    public sealed class EnvironmentTuning
+    {
+        public float Master { get; set; } = 1f;
+        public float Background { get; set; } = 0.45f;
+        public float Birds { get; set; } = 0.55f;
+        public float Crows { get; set; } = 0.45f;
+        public float Cicadas { get; set; } = 0.3f;
+        public float Crickets { get; set; } = 0.45f;
+        public float Rain { get; set; } = 0.8f;
+        public float Thunder { get; set; } = 0.9f;
+
+        public float BirdEveryMin { get; set; } = 4f;
+        public float BirdEveryMax { get; set; } = 14f;
+        public float CrowEveryMin { get; set; } = 25f;
+        public float CrowEveryMax { get; set; } = 80f;
+        public float ThunderEveryMin { get; set; } = 15f;
+        public float ThunderEveryMax { get; set; } = 70f;
+        public float ThunderAbove { get; set; } = 0.5f;
+
+        public float CabMuffle { get; set; } = 0.35f;
+        public float HighFade { get; set; } = 150f;
+    }
+
     public MixTuning Mix { get; set; } = new();
+    public EnvironmentTuning Environment { get; set; } = new();
     public CrossingTuning Crossings { get; set; } = new();
     public GearTuning Gear { get; set; } = new();
     public Dictionary<string, VehicleTuning> Vehicles { get; set; } = new(StringComparer.OrdinalIgnoreCase);

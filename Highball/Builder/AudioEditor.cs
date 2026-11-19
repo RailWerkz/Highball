@@ -24,7 +24,7 @@ public sealed class AudioEditor
     /// The handles over the picked locomotive are showing.
     public bool ShowPositions = true;
 
-    private int _tab = App.DevTools.AudioEditor switch { "locomotive" => 1, "gear" => 2, "crossings" => 3, _ => 0 };
+    private int _tab = App.DevTools.AudioEditor switch { "locomotive" => 1, "gear" => 2, "crossings" => 3, "environment" => 4, _ => 0 };
     private SoundSpot? _hot;
     private SoundSpot? _dragging;
     private float2 _dragFrom;
@@ -40,7 +40,7 @@ public sealed class AudioEditor
         (SoundSpot.Bell, "Bell", Rgba.Hex(0xD9B26A)),
     ];
 
-    private static readonly string[] TabNames = ["Mix", "Locomotive", "Running gear", "Crossings"];
+    private static readonly string[] TabNames = ["Mix", "Locomotive", "Running gear", "Crossings", "Environment"];
 
     /// A handle's under the pointer or being dragged: the editor's clicks shouldn't go to picking vehicles.
     public bool WantsPointer => _hot is not null || _dragging is not null;
@@ -74,8 +74,11 @@ public sealed class AudioEditor
                 case 2:
                     GearTab();
                     break;
-                default:
+                case 3:
                     CrossingsTab();
+                    break;
+                default:
+                    EnvironmentTab();
                     break;
             }
 
@@ -236,6 +239,45 @@ public sealed class AudioEditor
         Number("xing.height", "Bell height", () => c.Height, v => c.Height = v, 0f, 10f, "{0:0.0} m");
         Number("xing.fade", "Fade out", () => c.FadeOut, v => c.FadeOut = v, 0f, 3f, "{0:0.00} s");
         Kit.Note("Ringing bells follow these at once. Ring once plays at full volume, as if beside it.");
+        Kit.EndCard();
+    }
+
+    private static void EnvironmentTab()
+    {
+        var e = Tuning.Environment;
+        Kit.BeginCard("LEVELS", "The world round the camera");
+        Level("env.master", "All of it", () => e.Master, v => e.Master = v, 0f, 2f);
+        Level("env.background", "Background", () => e.Background, v => e.Background = v, 0f, 2f);
+        Level("env.cicadas", "Cicadas (summer days)", () => e.Cicadas, v => e.Cicadas = v, 0f, 2f);
+        Level("env.crickets", "Crickets (night)", () => e.Crickets, v => e.Crickets = v, 0f, 2f);
+        Level("env.rain", "Rain", () => e.Rain, v => e.Rain = v, 0f, 2f);
+        Kit.EndCard();
+
+        Kit.BeginCard("BIRDS", "By day, from round about");
+        Level("env.birds", "Songbirds", () => e.Birds, v => e.Birds = v, 0f, 2f);
+        Number("env.bird.min", "Every, at least", () => e.BirdEveryMin, v => e.BirdEveryMin = v, 1f, 60f, "{0:0} s");
+        Number("env.bird.max", "Every, at most", () => e.BirdEveryMax, v => e.BirdEveryMax = v, 1f, 120f, "{0:0} s");
+        Level("env.crows", "Crows", () => e.Crows, v => e.Crows = v, 0f, 2f);
+        Number("env.crow.min", "Every, at least", () => e.CrowEveryMin, v => e.CrowEveryMin = v, 5f, 300f, "{0:0} s");
+        Number("env.crow.max", "Every, at most", () => e.CrowEveryMax, v => e.CrowEveryMax = v, 5f, 600f, "{0:0} s");
+        var hit = Kit.Buttons("env.test.birds", ["Bird", "Crow", "Crickets"]);
+        if (hit >= 0)
+            EnvironmentAudio.Preview(hit switch { 0 => "bird", 1 => "crow", _ => "crickets" });
+        Kit.EndCard();
+
+        Kit.BeginCard("THUNDER", "In heavy rain");
+        Level("env.thunder", "Level", () => e.Thunder, v => e.Thunder = v, 0f, 2f);
+        Number("env.thunder.above", "When rain's over", () => e.ThunderAbove, v => e.ThunderAbove = v, 0f, 1f, "{0:0.00}");
+        Number("env.thunder.min", "Every, at least", () => e.ThunderEveryMin, v => e.ThunderEveryMin = v, 3f, 300f, "{0:0} s");
+        Number("env.thunder.max", "Every, at most", () => e.ThunderEveryMax, v => e.ThunderEveryMax = v, 3f, 600f, "{0:0} s");
+        if (Kit.Button("env.test.thunder", "Thunder once", Kit.Width))
+            EnvironmentAudio.Preview("thunder");
+        Kit.EndCard();
+
+        Kit.BeginCard("WHERE IT'S HEARD", "Cab and height");
+        Number("env.cab", "From a cab, outside at", () => e.CabMuffle, v => e.CabMuffle = v, 0f, 1f, "{0:0.00}");
+        Number("env.high", "Wildlife gone by", () => e.HighFade, v => e.HighFade = v, 20f, 1000f, "{0:0} m up");
+        Kit.Note("Birds sing by day, crickets at night, cicadas on summer days; all fall quiet in rain. Rain and thunder follow the Weather setting.");
         Kit.EndCard();
     }
 
