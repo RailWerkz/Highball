@@ -203,7 +203,7 @@ public sealed class EditTrackTool(ToolContext context) : IEditorTool
             }
         }
         else
-            Kit.Note("Select points, then Level a yard to one height or Grade a run at one steady grade. Pinned points get a ring.");
+            Kit.Note("Level: box-select a yard to make it one flat height. Grade: select a run's two end points for one steady grade between them. Pinned points get a ring.");
 
         var hit = Kit.Buttons("pins0", ["Level", "Grade"], [any, Selection.Count >= 2]);
         if (hit == 0)

@@ -1203,9 +1203,11 @@ public sealed class TrackEditor
     {
         Refresh();
         PinRefused = null;
-        var path = RunOf(selected);
+        // (Just its two ends selected: the track between them.)
+        var path = selected.Count == 2 && TrackBetween(selected.First(), selected.Last()) is { } between ? between : RunOf(selected);
         if (path is null)
             return null;
+        PinRefused = null;
 
         float? HeightOf(long node) => _pins.TryGetValue(node, out var pin) ? pin : heights(node)?.Track;
         if (HeightOf(path[0]) is not { } from || HeightOf(path[^1]) is not { } to)
@@ -1240,7 +1242,7 @@ public sealed class TrackEditor
         var ends = nodes.Where(n => next[n].Count == 1).ToList();
         if (ends.Count != 2 || nodes.Any(n => next[n].Count is 0 or > 2))
         {
-            PinRefused = "Grade works along one run of track: select every point from one end to the other, with no branches or gaps.";
+            PinRefused = "Grade works along one run of track: select just its two ends, or every point from one end to the other with no branches or gaps.";
             return null;
         }
 
@@ -1261,6 +1263,80 @@ public sealed class TrackEditor
             return null;
         }
 
+        return path;
+    }
+
+    /// The control points along the track from one to another, both included, by the shortest way (Dijkstra over the rail ways'
+    /// points); null if no track joins them within a few kilometres. A way through a switch goes in at its toe and out at one leg,
+    /// never from one leg back out of the other.
+    private List<long>? TrackBetween(long from, long to)
+    {
+        if (!_nodes.ContainsKey(from) || !_nodes.ContainsKey(to) || from == to)
+            return null;
+        var next = new Dictionary<long, List<long>>();
+        foreach (var way in _rails)
+            for (var i = 0; i + 1 < way.Nodes.Length; i++)
+            {
+                var (a, b) = (way.Nodes[i], way.Nodes[i + 1]);
+                if (a == b)
+                    continue;
+                (next.TryGetValue(a, out var la) ? la : next[a] = []).Add(b);
+                (next.TryGetValue(b, out var lb) ? lb : next[b] = []).Add(a);
+            }
+
+        double Length(long a, long b)
+        {
+            var (pa, pb) = (_nodes[a], _nodes[b]);
+            return Math.Sqrt((pb.X - pa.X) * (pb.X - pa.X) + (pb.Z - pa.Z) * (pb.Z - pa.Z));
+        }
+
+        // States are (node, the node come from), so a turn back through a switch's V (one leg in, the other out) can be refused.
+        bool Turns(long previous, long node, long onward)
+        {
+            var (p, n, o) = (_nodes[previous], _nodes[node], _nodes[onward]);
+            return (n.X - p.X) * (o.X - n.X) + (n.Z - p.Z) * (o.Z - n.Z) < 0;
+        }
+
+        var best = new Dictionary<(long, long), double> { [(from, 0L)] = 0 };
+        var back = new Dictionary<(long, long), (long, long)>();
+        var queue = new PriorityQueue<(long Node, long From), double>();
+        queue.Enqueue((from, 0L), 0);
+        (long, long)? reached = null;
+        while (queue.TryDequeue(out var state, out var distance))
+        {
+            if (distance > best.GetValueOrDefault(state, double.MaxValue) || distance > 20000)
+                continue;
+            if (state.Node == to)
+            {
+                reached = state;
+                break;
+            }
+
+            foreach (var onward in next.GetValueOrDefault(state.Node) ?? [])
+            {
+                if (onward == state.From || (state.From != 0 && Turns(state.From, state.Node, onward)))
+                    continue;
+                var key = (onward, state.Node);
+                var far = distance + Length(state.Node, onward);
+                if (far >= best.GetValueOrDefault(key, double.MaxValue))
+                    continue;
+                best[key] = far;
+                back[key] = state;
+                queue.Enqueue(key, far);
+            }
+        }
+
+        if (reached is not { } end)
+            return null;
+        var path = new List<long>();
+        for (var at = end; ; at = back[at])
+        {
+            path.Add(at.Item1);
+            if (!back.ContainsKey(at))
+                break;
+        }
+
+        path.Reverse();
         return path;
     }
 
@@ -1301,7 +1377,7 @@ public sealed class TrackEditor
         if (known.Count == 0)
             return (float.NaN, float.NaN, null, 0);
         var saved = PinRefused;
-        var path = selected.Count is >= 2 and <= 2000 ? RunOf(selected) : null;
+        var path = selected.Count == 2 ? TrackBetween(selected.First(), selected.Last()) ?? RunOf(selected) : selected.Count is > 2 and <= 2000 ? RunOf(selected) : null;
         PinRefused = saved;
         if (path is null || HeightOf(path[0]) is not { } a || HeightOf(path[^1]) is not { } b)
             return (known.Min(), known.Max(), null, 0);
