@@ -1225,7 +1225,9 @@ public sealed partial class NetworkMeshes : IDisposable
         // Under what Conform leaves the ground at: each side's slope runs straight on down to there, and there's no fade past it
         // (the fade's point is the taper's).
         var underY = sink - MathF.Min(sink * 0.3f, 0.06f) - 0.03f;
-        var tapers = (toeY - underY) * run / MathF.Max(h - drop - toeY, 1e-3f);
+        // (No further than a switch's surface tapers, BedTapers: on a bed only an inch or two high the slope's all but flat, and carried
+        // on at it down to under the ground the taper ran out metres over the ground, showing through it in patches.)
+        var tapers = MathF.Min((toeY - underY) * run / MathF.Max(h - drop - toeY, 1e-3f), BedTapers);
         var fading = tapers;
         var points = new (float, float)[curve * 2 + 6];
         var n = 0;
