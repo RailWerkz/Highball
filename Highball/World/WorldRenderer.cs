@@ -635,8 +635,14 @@ public sealed unsafe class WorldRenderer : IDisposable
 
             // About three pixels at any distance, on a screen a thousand high.
             var pixel = MathF.Tan(camera.FieldOfView * 0.5f) * 2f / 1000f * 3f;
-            push.PlaceSize = new float4((float)(light.X - camera.X), (float)(light.Y - camera.Y), (float)(light.Z - camera.Z), light.Glow);
-            push.Color = new float4(light.GlowColor * glowShows, pixel);
+            var relative = new float3((float)(light.X - camera.X), (float)(light.Y - camera.Y), (float)(light.Z - camera.Z));
+            // Dimmed by the air between, as the world is (and gone past the view distance, where the world's gone into the haze).
+            var dist = MathF.Sqrt(RailWerkz.Core.Utils.MathEx.Dot(relative, relative));
+            var through = Sky.Through(relative / MathF.Max(dist, 1e-3f), dist, (float)camera.Y);
+            if (through.X + through.Y + through.Z < 0.006f)
+                continue;
+            push.PlaceSize = new float4(relative, light.Glow);
+            push.Color = new float4(light.GlowColor * through * glowShows, pixel);
             cmd.PushConstants(_layout, Stages, ByteSize.Zero, push);
             cmd.Draw(6, 1, 0, 0);
         }

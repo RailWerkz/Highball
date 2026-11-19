@@ -210,6 +210,28 @@ public sealed unsafe class Sky : IDisposable
         Apply(in applied);
     }
 
+    /// How much of the light from something dist metres off along dir (a unit vector) gets through the air to an eye at eyeHeight,
+    /// per colour: atmosphere.glsl's applyFog, worked out on the CPU, for what's added over the picture rather than drawn into it
+    /// (the lamps' glows): the air, the weather's haze, and the view distance setting's fade.
+    public float3 Through(float3 dir, float dist, float eyeHeight)
+    {
+        static float AirAlong(float dy, float dist, float eye, float falloff)
+        {
+            var rise = dy * dist * falloff;
+            var integral = MathF.Abs(rise) > 1e-4f ? (1f - MathF.Exp(-rise)) / rise : 1f;
+            return dist * MathF.Exp(-falloff * MathF.Max(eye, 0f)) * integral;
+        }
+
+        var (rayleigh, mie) = (AirAlong(dir.Y, dist, eyeHeight, 1f / 8000f), 12e-6f * AirAlong(dir.Y, dist, eyeHeight, 1f / 1200f));
+        const float dust = 1.2f;
+        var haze = _extraHaze * dist;
+        var through = new float3(MathF.Exp(-(5.8e-6f * rayleigh + mie) * dust - haze), MathF.Exp(-(11e-6f * rayleigh + mie) * dust - haze),
+            MathF.Exp(-(20e-6f * rayleigh + mie) * dust - haze));
+        if (_viewLimit > 0f)
+            through *= 1f - RailWerkz.Core.Utils.MathEx.SmoothStep(_viewLimit * 0.7f, _viewLimit, dist);
+        return through;
+    }
+
     /// How much thicker the weather makes the air, per metre. Small changes aren't worth a new buffer.
     public void SetExtraHaze(float haze)
     {
