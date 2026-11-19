@@ -34,6 +34,7 @@ public sealed unsafe class PostProcess : IDisposable
         public float4 Look;
         public float4 Jitter; // xy: this frame's jitter, in clip space; zw: the world's size over the picture's
         public float4 Tone;   // xyz: the look's shadow lift; w: its vignette
+        public float4 Sharpen; // x: how much the picture's sharpened after temporal anti-aliasing, 0 for none
     }
 
     /// Bindings 0 to 4: an image written, up to three read, and the uniforms. Each pass uses what it needs.
@@ -337,6 +338,7 @@ public sealed unsafe class PostProcess : IDisposable
             Look = new float4(grade.Contrast, s.Bloom ? 0.05f : 0f, Exposure, MeasureExposure ? 1f : 0f),
             Jitter = new float4(camera.Jitter.X, camera.Jitter.Y, target.Size.X / (float)output.X, target.Size.Y / (float)output.Y),
             Tone = new float4(grade.LiftR, grade.LiftG, grade.LiftB, grade.Vignette),
+            Sharpen = new float4(s.TemporalAA ? Math.Clamp(s.Sharpening, 0f, 1f) : 0f, 0f, 0f, 0f),
         };
         cmd.UpdateBuffer(_uniforms.VkBuffer, ByteSize.Zero, MemoryMarshal.AsBytes(new ReadOnlySpan<Uniforms>(in uniforms)));
         var updated = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.TransferWriteBit, DstAccessMask = VkAccessFlags.UniformReadBit };

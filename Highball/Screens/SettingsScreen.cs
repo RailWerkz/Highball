@@ -53,6 +53,11 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
             .Add(new MenuItem { Label = "Temporal anti-aliasing", Value = () => OnOff(s.TemporalAA), OnChange = _ => s.TemporalAA = !s.TemporalAA })
             .Add(new MenuItem
             {
+                Label = "Sharpening", Value = () => s.TemporalAA ? $"{MathF.Round(s.Sharpening * 100f):0}%" : "OFF (NEEDS TAA)", Meter = () => s.Sharpening,
+                OnChange = d => s.Sharpening = Math.Clamp(MathF.Round(s.Sharpening * 10f + d) / 10f, 0f, 1f), Enabled = () => s.TemporalAA,
+            })
+            .Add(new MenuItem
+            {
                 Label = "Render resolution",
                 Value = () => s.TemporalAA ? $"{MathF.Round(s.RenderScale * 100f):0}%" : "100% (NEEDS TAA)",
                 OnChange = d => s.RenderScale = StepScale(s.RenderScale, d),

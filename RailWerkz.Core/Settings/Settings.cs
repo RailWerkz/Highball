@@ -57,6 +57,10 @@ public sealed class Settings
     public int TerrainTextureDetail { get; set; }
     public bool TemporalAA { get; set; } = true;
 
+    /// How much the picture's sharpened after temporal anti-aliasing, 0 to 1, giving back the fine detail (leaves, ballast, far rails)
+    /// that blending frames softens. Nothing with TemporalAA off.
+    public float Sharpening { get; set; } = 0.5f;
+
     /// The share of the screen's width and height the world is drawn at, 0.5 to 1, with temporal anti-aliasing building the
     /// full-size picture from the jittered frames (temporal upscaling). Ignored (1) with TemporalAA off.
     public float RenderScale { get; set; } = 0.75f;

@@ -42,9 +42,39 @@ vec3 glare(vec2 uv, float visible, float air)
     return post.sunColor.rgb * glow * visible * min(post.sunColor.w * 4.0, 1.0);
 }
 
+// Bright things squeezed (as the temporal pass does), so sharpening doesn't ring round a lamp or the sun.
+vec3 squeeze(vec3 c)
+{
+    return c / (1.0 + luma(c));
+}
+
+vec3 unsqueeze(vec3 c)
+{
+    return c / max(1.0 - luma(c), 1e-3);
+}
+
+// After temporal anti-aliasing, which softens fine detail as it blends frames: each pixel pushed away from the average of its four
+// neighbours, as far as amount says, but never past the darkest or brightest of them, so edges get crisper without halos.
+vec3 sharpened(vec2 uv, float amount)
+{
+    vec3 c = texture(hdr, uv).rgb;
+    if (amount <= 0.0)
+        return c;
+    vec2 texel = 1.0 / vec2(textureSize(hdr, 0));
+    vec3 n = squeeze(texture(hdr, uv + vec2(0.0, -texel.y)).rgb);
+    vec3 s = squeeze(texture(hdr, uv + vec2(0.0, texel.y)).rgb);
+    vec3 e = squeeze(texture(hdr, uv + vec2(texel.x, 0.0)).rgb);
+    vec3 w = squeeze(texture(hdr, uv + vec2(-texel.x, 0.0)).rgb);
+    vec3 mid = squeeze(c);
+    vec3 low = min(mid, min(min(n, s), min(e, w)));
+    vec3 high = max(mid, max(max(n, s), max(e, w)));
+    vec3 pushed = mid + (mid - (n + s + e + w) * 0.25) * amount * 2.0;
+    return unsqueeze(clamp(pushed, low, high));
+}
+
 void main()
 {
-    vec3 color = mix(texture(hdr, vUv).rgb, texture(bloom, vUv).rgb, post.look.y);
+    vec3 color = mix(sharpened(vUv, post.sharpen.x), texture(bloom, vUv).rgb, post.look.y);
     vec2 reading = texelFetch(measured, ivec2(0), 0).rg;
 
     vec2 rayed = texture(rays, vUv).rg;
