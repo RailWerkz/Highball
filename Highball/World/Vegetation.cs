@@ -472,7 +472,13 @@ public sealed unsafe class Vegetation : IDisposable
     public const float TracksideDense = 70f;
     public const float TracksideFalloff = 200f;
     public const float TracksidePeak = 7.05f;
-    public const float Background = 0.08f;
+    public const float Background = 0.06f;
+
+    /// The belt of trees along the railway that grows whatever the land cover (Place): its chance near the line, from TracksideBeltNear
+    /// metres from the track's edge easing out by TracksideBeltReach.
+    public const float TracksideBelt = 0.45f;
+    public const float TracksideBeltNear = 25f;
+    public const float TracksideBeltReach = 120f;
 
     /// How far a tree's trunk keeps from the track bed's edge (ballast and walkway), and where it's no longer thinned by it.
     public const float TreeClearance = 5f;
@@ -646,7 +652,8 @@ public sealed unsafe class Vegetation : IDisposable
             {
                 var (u, v, roll, pick) = (random.Next(), random.Next(), random.Next(), random.Next());
                 var (x, z) = (originX + u * size, originZ + v * size);
-                if (crowd && random.Next() * cellPeak > TracksideDensity(TrackDistance(field!, x, z)))
+                var fromTrack = crowd ? TrackDistance(field!, x, z) : float.MaxValue;
+                if (crowd && random.Next() * cellPeak > TracksideDensity(fromTrack))
                     continue;
                 var (cover, ground) = Sample(u, v);
                 if (ground.Z + ground.W > 0.15f)
@@ -657,7 +664,11 @@ public sealed unsafe class Vegetation : IDisposable
                     continue;
 
                 var patches = Patches(x, z, key.Far ? 90f : 14f);
-                if (roll > chance(cover, ground, patches, clear, pick))
+                // Along the railway trees grow whatever the land cover says (the map's forest is coarse, and a line's verges and
+                // fence rows are wooded through farmland): a belt TracksideBelt strong near it, gone by TracksideBeltReach, on any
+                // ground but water and bare rock, clumped as the rest are.
+                var belt = crowd ? TracksideBelt * (1f - MathEx.SmoothStep(TracksideBeltNear, TracksideBeltReach, fromTrack)) * (0.4f + patches) * (ground.X + 0.5f * ground.Y) : 0f;
+                if (roll > MathF.Max(chance(cover, ground, patches, clear, pick), belt * MathEx.SmoothStep(minClear, minClear * 2f, clear)))
                     continue;
 
                 var fx = x / source.Spacing;
