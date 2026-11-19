@@ -6,6 +6,7 @@ using Highball.Multiplayer;
 using Highball.Routes;
 using Highball.Trains;
 using RailWerkz.UI;
+using RailWerkz.Vulkan;
 using static RailWerkz.UI.Style;
 
 namespace Highball.Screens;
@@ -79,6 +80,8 @@ public sealed class DriveScreen : Screen, IWorldScreen
                 _view.View = DriveView.Free;
             else if (ImGui.IsKeyPressed(ImGuiKey.C))
                 _view.TrainWindow.Open = !_view.TrainWindow.Open;
+            else if (ImGui.IsKeyPressed(ImGuiKey.F))
+                _stats = !_stats;
             else if (ImGui.IsKeyPressed(ImGuiKey.Escape) && !_view.TrainWindow.Placing)
                 HighballApp.Instance.Push(new PauseScreen(this));
         }
@@ -149,17 +152,51 @@ public sealed class DriveScreen : Screen, IWorldScreen
 
         Canvas.Hints(draw, new float2(x + S(8f), size.Y - (height - S(22f)) * 0.5f), Hints);
 
+        // With F, the frame's numbers at the far right (averaged over the profiler's last two seconds or so), any notice left of them.
+        var edge = size.X - S(24f);
+        if (_stats)
+            edge = Stats(draw, edge, y) - S(28f);
+
         var noticing = RailWerkz.Core.Time.Time.Now - _noticeAt < NoticeSeconds;
         var right = noticing ? _notice : _view.TrainWindow.Notice ?? "";
         if (right.Length > 0)
-            Canvas.Text(draw, Medium, S(13f), new float2(size.X - S(24f), _footerTop + (height - S(13f)) * 0.5f), noticing ? Style.Text : TextDim, right, Align.Right);
+            Canvas.Text(draw, Medium, S(13f), new float2(edge, _footerTop + (height - S(13f)) * 0.5f), noticing ? Style.Text : TextDim, right, Align.Right);
+    }
+
+    /// Shown with F: frames a second, triangles and draw calls last frame, and the CPU's and GPU's milliseconds a frame on average.
+    private bool _stats = System.Environment.GetEnvironmentVariable("HB_FOOTERSTATS") is not null;
+
+    /// The frame's numbers, right-aligned to right; returns where they start.
+    private static float Stats(ImDrawListPtr draw, float right, float y)
+    {
+        var frame = Profiler.FrameTimes.Average();
+        var items = new (string Label, string Value)[]
+        {
+            ("FPS", $"{1000f / MathF.Max(frame, 0.01f):0}"),
+            ("TRIS", Profiler.Triangles >= 1_000_000 ? $"{Profiler.Triangles / 1_000_000f:0.00}M" : $"{Profiler.Triangles / 1000f:0}K"),
+            ("DRAWS", $"{Profiler.DrawCalls:#,0}"),
+            ("CPU", $"{Profiler.CpuAverage:0.0} MS"),
+            ("GPU", $"{Profiler.GpuFrameTimes.Average():0.0} MS"),
+        };
+        var x = right;
+        for (var i = items.Length - 1; i >= 0; i--)
+        {
+            var (label, value) = items[i];
+            x -= Canvas.TextSize(Mono, S(14f), value).X;
+            Canvas.Text(draw, Mono, S(14f), new float2(x, y), Style.Text, value);
+            x -= S(8f) + Canvas.SpacedWidth(Medium, S(10f), label, 0.18f);
+            Canvas.Spaced(draw, Medium, S(10f), new float2(x, y + S(2f)), TextFaint, label, 0.18f);
+            x -= S(22f);
+        }
+
+        return x + S(22f);
     }
 
     private (string Key, string Action)[] Hints => _view.View switch
     {
-        DriveView.Free => [("RMB", "Look"), ("WASD", "Move"), ("WHEEL", "Speed"), ("T", "Throw switch"), ("C", "Consist"), ("ESC", "Menu")],
-        DriveView.Cab => [("RMB", "Look round"), ("WHEEL", "Zoom"), ("T", "Throw switch"), ("C", "Consist"), ("ESC", "Menu")],
-        _ => [("RMB", "Look"), ("WASD", "Move round the train"), ("WHEEL", "Speed"), ("T", "Throw switch"), ("C", "Consist"), ("ESC", "Menu")],
+        DriveView.Free => [("RMB", "Look"), ("WASD", "Move"), ("WHEEL", "Speed"), ("T", "Throw switch"), ("C", "Consist"), ("F", "Stats"), ("ESC", "Menu")],
+        DriveView.Cab => [("RMB", "Look round"), ("WHEEL", "Zoom"), ("T", "Throw switch"), ("C", "Consist"), ("F", "Stats"), ("ESC", "Menu")],
+        _ => [("RMB", "Look"), ("WASD", "Move round the train"), ("WHEEL", "Speed"), ("T", "Throw switch"), ("C", "Consist"), ("F", "Stats"), ("ESC", "Menu")],
     };
 
     public override void DrawWindows()

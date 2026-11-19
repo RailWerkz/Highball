@@ -51,6 +51,9 @@ public static class Profiler
     public static int DrawCalls { get; private set; }
     public static long Triangles { get; private set; }
 
+    /// The CPU's milliseconds a frame on everything timed (the top sections together), averaged over the history.
+    public static float CpuAverage => Roots.Sum(r => r.Average);
+
     /// Milliseconds the GPU spent on the longest timed section of each frame, which is the one round them all; same order as FrameTimes.
     public static float[] GpuFrameTimes { get; } = new float[History];
     private static float _gpuLongest;
