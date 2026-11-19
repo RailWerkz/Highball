@@ -27,9 +27,10 @@ public sealed record PlacedObject(long Id, PlacedKind Kind, double Lat, double L
     public float ApproachLength => Approach > 0f ? Math.Clamp(Approach, MinApproach, MaxApproach) : DefaultApproach;
 }
 
-/// What a grade crossing's laid with: precast concrete panels, timber planks, or asphalt poured level with the rails, each in one
-/// of its kind's textures (SurfaceTextures; PlacedObject.Surface). (1 was rubber panels, now laid as concrete.)
-public enum CrossingStyle { Concrete = 0, Timber = 2, Asphalt = 3 }
+/// What a grade crossing's laid with: precast concrete panels, timber planks, asphalt poured level with the rails, or asphalt with a
+/// timber flangeway plank either side of each rail (Planked), each in one of its kind's textures (SurfaceTextures;
+/// PlacedObject.Surface: Planked's picks its planks' wood). (1 was rubber panels, now laid as concrete.)
+public enum CrossingStyle { Concrete = 0, Timber = 2, Asphalt = 3, Planked = 4 }
 
 /// What a grade crossing rings while it works: an electronic bell (a speaker), or a mechanical one (a gong struck by a hammer).
 /// Each time it starts it rings one of that kind's recordings, picked at random (Trains.CrossingBells).

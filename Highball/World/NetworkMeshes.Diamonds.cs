@@ -423,12 +423,20 @@ public sealed partial class NetworkMeshes
     {
         var kind = style switch
         {
-            CrossingStyle.Timber => SurfaceTextures.Kind.Wood,
+            CrossingStyle.Timber or CrossingStyle.Planked => SurfaceTextures.Kind.Wood,
             CrossingStyle.Asphalt => SurfaceTextures.Kind.Asphalt,
             _ => SurfaceTextures.Kind.Concrete,
         };
         var number = SurfaceTextures.Number(kind, surface);
         SurfaceTextures.Use(id, number);
+        return Code(LineMaterial.Asphalt, SurfaceBits(1 + number));
+    }
+
+    /// A planked crossing's asphalt, between and outside its planks: the asphalt kind's first texture, brought into use as its own.
+    private static float PlankFill(long id)
+    {
+        var number = SurfaceTextures.Number(SurfaceTextures.Kind.Asphalt, null);
+        SurfaceTextures.Use(~id, number);
         return Code(LineMaterial.Asphalt, SurfaceBits(1 + number));
     }
 
@@ -692,7 +700,7 @@ public sealed partial class NetworkMeshes
 
         // The surface, all of it one mesh: road, ramps, panels and the fill round them, lying on the track's own bed.
         var mesh = BuildCrossingMesh(o.Id, cx, cz, dx, dz, half, rampLow, rampHigh, DeckHeight, offLow, offHigh, tracks, panels, reach, g, railTop,
-            paint, style != CrossingStyle.Asphalt, road, baseX, baseZ);
+            paint, style is not (CrossingStyle.Asphalt or CrossingStyle.Planked), road, baseX, baseZ, style == CrossingStyle.Planked ? PlankFill(o.Id) : null);
         return new CrossingDeck(quads, [.. masts], road, stretch, covered, mesh);
     }
 

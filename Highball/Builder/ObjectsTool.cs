@@ -552,9 +552,9 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
     private void CrossingPanel(PlacedObject picked)
     {
         Kit.Caption("Surface");
-        var styles = (CrossingStyle[])[CrossingStyle.Concrete, CrossingStyle.Timber, CrossingStyle.Asphalt];
+        var styles = (CrossingStyle[])[CrossingStyle.Concrete, CrossingStyle.Timber, CrossingStyle.Asphalt, CrossingStyle.Planked];
         var style = Math.Max(0, Array.IndexOf(styles, (CrossingStyle)picked.Style));
-        var chosen = ToolPanel.Mode("surface", styles.Select(CrossingStyleName).ToArray(), style, 3);
+        var chosen = ToolPanel.Mode("surface", styles.Select(CrossingStyleName).ToArray(), style, 2);
         if (chosen != style)
             PlacedChange(picked, picked with { Style = (int)styles[chosen], Surface = null });
 
@@ -607,12 +607,13 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
     {
         CrossingStyle.Timber => "Wood",
         CrossingStyle.Asphalt => "Asphalt",
+        CrossingStyle.Planked => "Asphalt + planks",
         _ => "Concrete",
     };
 
     private static SurfaceTextures.Kind SurfaceKind(CrossingStyle style) => style switch
     {
-        CrossingStyle.Timber => SurfaceTextures.Kind.Wood,
+        CrossingStyle.Timber or CrossingStyle.Planked => SurfaceTextures.Kind.Wood,
         CrossingStyle.Asphalt => SurfaceTextures.Kind.Asphalt,
         _ => SurfaceTextures.Kind.Concrete,
     };

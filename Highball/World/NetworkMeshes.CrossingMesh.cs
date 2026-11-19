@@ -20,6 +20,8 @@ public sealed partial class NetworkMeshes
     private const float FootUnder = 0.15f;
     /// How deep a rail's slot through the panels is, and how wide its walls; a panel joint's dip.
     private const float SlotDepth = 0.06f;
+    /// How wide a planked crossing's timber is, either side of each rail's flangeway (a 12 in plank).
+    private const float PlankWidth = 0.30f;
     private const float SlotWall = 0.012f;
     private const float JointDip = 0.01f;
 
@@ -44,7 +46,7 @@ public sealed partial class NetworkMeshes
     private CrossingMesh? BuildCrossingMesh(long id, double cx, double cz, double dx, double dz,
         float half, float rampLow, float rampHigh, Func<float, float, float> deck, float offLow, float offHigh,
         List<(Leg Leg, float S, float Offset)> trackList, List<(int Line, float From, float To)> covered, float reach, float g, float railTop,
-        float paint, bool joints, DeckRoad? road, double baseX, double baseZ)
+        float paint, bool joints, DeckRoad? road, double baseX, double baseZ, float? fill = null)
     {
         var (nx, nz) = (-dz, dx);
         (double X, double Z) World(double t, double w) => (cx + dx * t + nx * w, cz + dz * t + nz * w);
@@ -620,12 +622,22 @@ public sealed partial class NetworkMeshes
         // Each track's panels as one slab, square to the track as they're laid (not cut along the road's edges): their top level
         // with the rail tops, with its slots and joints; their four sides straight down to the ballast (or the ground, or into the
         // road's box where they lie in it), in the panels' own material.
+        //
+        // Planked (fill): only a timber plank either side of each rail's slot is wood; the rest of the slab, between the rails and out to
+        // its edges, is asphalt (fill), all of it level with the rail tops. Each strip has its own vertices where the two meet.
+        float PaintAcross(double lat) => fill is { } asphalt && !slots.Any(s => lat > s.From - PlankWidth && lat < s.To + PlankWidth) ? asphalt : paint;
         foreach (var track in tracks)
         {
             var lats = new List<double> { -reach, reach };
             foreach (var (from, to) in slots)
+            {
                 lats.AddRange([from, from + SlotWall, to - SlotWall, to]);
+                if (fill is not null)
+                    lats.AddRange([from - PlankWidth, to + PlankWidth]);
+            }
+
             lats = [.. lats.Where(l => l >= -reach - 1e-6 && l <= reach + 1e-6).Distinct().Order()];
+            var bands = Enumerable.Range(0, lats.Count - 1).Select(i => PaintAcross((lats[i] + lats[i + 1]) * 0.5)).ToArray();
             var alongs = new List<double> { track.From, track.To };
             for (var a = track.From + 0.5; a < track.To - 0.05; a += 0.5)
                 alongs.Add(a);
@@ -634,7 +646,6 @@ public sealed partial class NetworkMeshes
                     alongs.AddRange([a - 0.01, a, a + 0.01]);
             alongs = [.. alongs.Distinct().Order()];
 
-            var grid = new int[lats.Count, alongs.Count];
             var tops = new float[lats.Count, alongs.Count];
             var at = new (double X, double Z)[lats.Count, alongs.Count];
             for (var i = 0; i < lats.Count; i++)
@@ -642,21 +653,29 @@ public sealed partial class NetworkMeshes
                 {
                     at[i, j] = track.World(lats[i], alongs[j]);
                     tops[i, j] = PanelHeight(track, at[i, j].X, at[i, j].Z, out _);
-                    var pt = Relative(at[i, j].X, at[i, j].Z, tops[i, j]);
-                    grid[i, j] = points.Count;
-                    points.Add(pt);
-                    normals.Add(new float3(0f, 0f, 0f));
-                    data.Add(new float4((float)lats[i], (float)(alongs[j] - track.From), paint, 0f));
                 }
+
+            // A vertex for each grid point in each paint that meets there (one, but where a plank meets the asphalt).
+            var grid = new Dictionary<(int I, int J, float Paint), int>();
+            int SlabTop(int i, int j, float band)
+            {
+                if (grid.TryGetValue((i, j, band), out var index))
+                    return index;
+                points.Add(Relative(at[i, j].X, at[i, j].Z, tops[i, j]));
+                normals.Add(new float3(0f, 0f, 0f));
+                data.Add(new float4((float)lats[i], (float)(alongs[j] - track.From), band, 0f));
+                return grid[(i, j, band)] = points.Count - 1;
+            }
 
             for (var i = 0; i + 1 < lats.Count; i++)
                 for (var j = 0; j + 1 < alongs.Count; j++)
                 {
-                    Triangle(grid[i, j], grid[i + 1, j], grid[i + 1, j + 1], up, true);
-                    Triangle(grid[i, j], grid[i + 1, j + 1], grid[i, j + 1], up, true);
+                    var band = bands[i];
+                    Triangle(SlabTop(i, j, band), SlabTop(i + 1, j, band), SlabTop(i + 1, j + 1, band), up, true);
+                    Triangle(SlabTop(i, j, band), SlabTop(i + 1, j + 1, band), SlabTop(i, j + 1, band), up, true);
                 }
 
-            // Its sides, edge by edge round it: (i, j) of each corner, and the way out.
+            // Its sides, edge by edge round it: (i, j) of each corner, and the way out; each stretch in the paint of the strip it's under.
             void Wall((int I, int J)[] run, double fx, double fz)
             {
                 var toward = new float3((float)fx, 0f, (float)fz);
@@ -664,6 +683,7 @@ public sealed partial class NetworkMeshes
                 for (var k = 0; k + 1 < run.Length; k++)
                 {
                     var (a, b) = (run[k], run[k + 1]);
+                    var side = bands[Math.Min(Math.Min(a.I, b.I), bands.Length - 1)];
                     var length = Math.Sqrt((at[b.I, b.J].X - at[a.I, a.J].X) * (at[b.I, b.J].X - at[a.I, a.J].X) + (at[b.I, b.J].Z - at[a.I, a.J].Z) * (at[b.I, b.J].Z - at[a.I, a.J].Z));
                     int Corner((int I, int J) c, bool bottom, double cu)
                     {
@@ -671,7 +691,7 @@ public sealed partial class NetworkMeshes
                         var y = bottom ? MathF.Min(tops[c.I, c.J], Floor(x, z)) - 0.05f : tops[c.I, c.J];
                         points.Add(Relative(x, z, y));
                         normals.Add(toward);
-                        data.Add(new float4((float)cu, y, paint, 0f));
+                        data.Add(new float4((float)cu, y, side, 0f));
                         return points.Count - 1;
                     }
 
