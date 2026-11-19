@@ -247,16 +247,25 @@ public static class Kit
         return clicked;
     }
 
-    /// A row of buttons sharing the width. Returns the one clicked, or -1.
-    public static int Buttons(string id, ReadOnlySpan<string> labels, ReadOnlySpan<bool> enabled = default)
+    /// A row of buttons sharing the width (evenly, or by weights, one each). Returns the one clicked, or -1.
+    public static int Buttons(string id, ReadOnlySpan<string> labels, ReadOnlySpan<bool> enabled = default, ReadOnlySpan<float> weights = default)
     {
         var gap = S(6f);
-        var width = (Width - gap * (labels.Length - 1)) / labels.Length;
+        var share = Width - gap * (labels.Length - 1);
+        var sum = 0f;
+        for (var i = 0; i < labels.Length; i++)
+            sum += weights.IsEmpty ? 1f : weights[i];
         var at = ImGui.GetCursorScreenPos();
         var hit = -1;
+        var x = 0f;
         for (var i = 0; i < labels.Length; i++)
-            if (Cell($"{id}.{i}", labels[i], at + new float2(i * (width + gap), 0f), new float2(width, S(31f)), false, enabled.IsEmpty || enabled[i], null, out _))
+        {
+            var width = share * (weights.IsEmpty ? 1f : weights[i]) / sum;
+            if (Cell($"{id}.{i}", labels[i], at + new float2(x, 0f), new float2(width, S(31f)), false, enabled.IsEmpty || enabled[i], null, out _))
                 hit = i;
+            x += width + gap;
+        }
+
         ImGui.SetCursorScreenPos(at);
         ImGui.Dummy(new float2(Width, S(31f)));
         return hit;

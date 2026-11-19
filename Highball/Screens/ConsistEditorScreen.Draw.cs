@@ -360,11 +360,9 @@ public sealed partial class ConsistEditorScreen
         // How full the selected car is loaded: dragged from empty to its rated load, one undo step a drag.
         DrawLoad(draw, has ? car : null, left, right, y);
         y += S(44f);
-        if (car?.Def is { Cargoes.Count: > 0 } cargoDef)
-        {
-            DrawCargo(draw, car, cargoDef, left, right, y);
-            y += S(44f);
-        }
+        // Always there, so the list under it never jumps when a car with cargo to pick is selected.
+        DrawCargo(draw, car, left, right, y);
+        y += S(44f);
 
         // The list.
         var footer = S(58f);
@@ -434,24 +432,28 @@ public sealed partial class ConsistEditorScreen
         Canvas.Text(draw, Mono, S(13f), new float2(right, midY - S(8f)), loadable ? Style.Text : TextFaint, readout, Align.Right);
     }
 
-    /// What the selected car is seen carrying (a well car's stacks), picked once it carries anything; the first unless
-    /// another is.
-    private void DrawCargo(ImDrawListPtr draw, ConsistCar car, VehicleDef def, float left, float right, float y)
+    /// What the selected car is seen carrying once it's loaded (a well car's stacks): stepped through with the arrows (or a
+    /// click on its name), the first unless another's picked. Dimmed when there's nothing to pick.
+    private void DrawCargo(ImDrawListPtr draw, ConsistCar? car, float left, float right, float y)
     {
         var height = S(34f);
         Canvas.Spaced(draw, Medium, S(10f), new float2(left, y + height * 0.5f - S(7f)), TextFaint, "CARGO", 0.14f);
-        var loaded = car.Fill > 0.0;
-        var current = car.CargoId;
+        var cargoes = car?.Def?.Cargoes ?? [];
+        var at = cargoes.Count > 0 ? Math.Max(0, cargoes.ToList().FindIndex(c => c.Id == car!.CargoId)) : -1;
+        var on = cargoes.Count > 1;
         var x0 = left + S(52f);
         var gap = S(4f);
-        var width = (right - x0 - gap * (def.Cargoes.Count - 1)) / def.Cargoes.Count;
-        for (var i = 0; i < def.Cargoes.Count; i++)
-        {
-            var cargo = def.Cargoes[i];
-            var kind = loaded && cargo.Id == current ? ButtonKind.Primary : ButtonKind.Secondary;
-            if (Widgets.Button(draw, $"consist.cargo.{i}", cargo.Name, new float2(x0 + i * (width + gap), y), new float2(width, height), kind, loaded))
-                SetCargo(_selected, cargo.Id);
-        }
+        var arrow = S(40f);
+        var name = cargoes.Count == 0 ? car is null ? "No car picked" : "No cargo to pick" : $"{cargoes[at].Name}   {at + 1} / {cargoes.Count}";
+        var step = 0;
+        if (Widgets.Button(draw, "consist.cargo.back", "<", new float2(x0, y), new float2(arrow, height), ButtonKind.Secondary, on))
+            step = -1;
+        if (Widgets.Button(draw, "consist.cargo.name", name, new float2(x0 + arrow + gap, y), new float2(right - x0 - 2f * (arrow + gap), height), ButtonKind.Secondary, on))
+            step = 1;
+        if (Widgets.Button(draw, "consist.cargo.next", ">", new float2(right - arrow, y), new float2(arrow, height), ButtonKind.Secondary, on))
+            step = 1;
+        if (step != 0 && on)
+            SetCargo(_selected, cargoes[(at + step + cargoes.Count) % cargoes.Count].Id);
     }
 
     private void DrawRows(ImDrawListPtr draw, float2 mouse, bool pressed)
