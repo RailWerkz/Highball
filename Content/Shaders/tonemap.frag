@@ -53,14 +53,16 @@ void main()
         exposure *= clamp(pow(MeasuredBrightness / exp2(reading.r), 0.55), 0.35, 5.0);
     color *= exposure;
 
-    // White balance, contrast about mid grey, saturation.
-    color *= post.grade.rgb;
+    // Contrast about mid grey, saturation, then white balance (after, so a toned black and white keeps its tone).
     color = pow(max(color, vec3(0.0)) / 0.18, vec3(post.look.x)) * 0.18;
     color = max(mix(vec3(luma(color)), color, post.grade.w), vec3(0.0));
+    color *= post.grade.rgb;
+    // The look's shadows raised towards its colour: fully in the blacks, none from a little over mid grey (faded or tinted blacks).
+    color += post.tone.rgb * 0.18 * (1.0 - smoothstep(0.0, 0.3, luma(color)));
 
-    // A little darker towards the corners, as through any lens.
+    // Darker towards the corners, as through any lens (the look's own strength).
     vec2 corner = vUv * 2.0 - 1.0;
-    color *= 1.0 - 0.1 * dot(corner, corner) * 0.5;
+    color *= 1.0 - post.tone.w * dot(corner, corner) * 0.5;
 
     // Dithered, so the sky's slow gradients don't show as bands in eight bits.
     vec3 fitted = toSrgb(aces(color));
