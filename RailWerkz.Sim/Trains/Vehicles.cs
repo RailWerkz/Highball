@@ -43,7 +43,7 @@ public static class VehicleKinds
         VehicleKind.Gondola => "Gondolas",
         VehicleKind.Flatcar => "Flatcars",
         VehicleKind.TankCar => "Tank cars",
-        VehicleKind.Intermodal => "Intermodal",
+        VehicleKind.Intermodal => "Well cars",
         VehicleKind.Reefer => "Reefers",
         VehicleKind.Caboose => "Cabooses",
         _ => kind.ToString(),
