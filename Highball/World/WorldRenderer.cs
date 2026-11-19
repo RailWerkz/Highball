@@ -404,8 +404,8 @@ public sealed unsafe class WorldRenderer : IDisposable
             using (Profiler.Sample("Ties and plates", cmd))
             {
                 cmd.BindPipeline(VkPipelineBindPoint.Graphics, Wireframe ? _partWire : _part);
-                // (Camera.w: a pixel's angle, radians, for part.vert to leave out ties too close together on screen to draw.)
-                push.Camera = new float4(camPos.X, camPos.Y, camPos.Z, 2f * MathF.Tan(camera.FieldOfView * 0.5f) / Math.Max(_target.Size.Y, 1));
+                // (Camera.w: how far a tie model's drawn, part.vert's cut-off.)
+                push.Camera = new float4(camPos.X, camPos.Y, camPos.Z, NetworkMeshes.TieReach);
                 network.DrawParts(cmd, _layout, camera.X, camera.Y, camera.Z, view, Push);
                 push.Camera = new float4(camPos.X, camPos.Y, camPos.Z, network.NearRadius);
             }

@@ -21,8 +21,7 @@ public sealed class TrackTextures : IDisposable
     /// every binding fits the one layout.
     public static readonly int PaintCount = TrackMaterials.Paints.Length;
     /// (A crossing's own paints' maps come last, after the surfaces' lookup, so the bindings before them stay where they were.)
-    /// (And last, the ties' colour map: the ballast paints ties where the models aren't drawn, in its average colour.)
-    public static readonly int SetSize = 15 + PaintCount * 3 + 1 + SurfaceTextures.Slots * 3 + 1 + 1;
+    public static readonly int SetSize = 15 + PaintCount * 3 + 1 + SurfaceTextures.Slots * 3 + 1;
 
     /// What's to be loaded has changed: a texture in the Track Materials window, or another surface texture come into use.
     private static int WantedVersion => TrackMaterials.TextureVersion * 65536 + SurfaceTextures.Version;
@@ -244,7 +243,6 @@ public sealed class TrackTextures : IDisposable
         lines.Add(surfaceLookup);
         for (var i = TrackMaterials.SharedPaints; i < PaintCount; i++)
             lines.AddRange(Maps(materials.PaintOf(i).Texture, label));
-        lines.Add(Of(TrackMaterials.Slot.Ties)[0]);
 
         Texture2D[] Alone(Texture2D[] three) => [.. Enumerable.Range(0, SetSize - 1).Select(i => three[i % 3]), _neutral];
 
