@@ -51,6 +51,10 @@ public sealed unsafe class Vegetation : IDisposable
 
     /// EarthTrees' TreeType1 to 12: three forest giants of 30 m, six of 10 to 18 m and three of about 4 m.
     private const int FirstTree = FirstShrub + ShrubCount;
+
+    /// Which of EarthTrees' TreeTypes a type's slot is drawn with: the two smallest sizes (the 4 m trees, 10 to 12, and the bushes, 13
+    /// to 15) aren't used, each taking the next size up (the 10 to 12 m trees, 7 to 9) in turn.
+    private static int UsedModel(int type) => type <= 9 ? type : 7 + (type - 10) % 3;
     private const int TreeCount = 12;
     private const int SlotCount = FirstTree + TreeCount;
 
@@ -60,7 +64,6 @@ public sealed unsafe class Vegetation : IDisposable
     /// Where a plant's detail changes, in metres from the camera (each instance's own up to a tenth either way): from its full model
     /// to its reduced one, then to its cards (the grass, its fewest-bladed clump).
     private static readonly (float Reduced, float Far) TreeLevels = (55f, 300f);
-    private static readonly (float Reduced, float Far) ShrubLevels = (30f, 120f);
     private static readonly (float Reduced, float Far) GrassLevels = (10f, 35f);
 
     /// One draw of a slot's instances: a range of a mesh with its textures, drawn from Near to Far metres from the camera.
@@ -693,13 +696,13 @@ public sealed unsafe class Vegetation : IDisposable
         }
         else
         {
-            // Spaced as scrub is: every few metres in shrubland, thinner on bare ground, none on the track's shoulders; thickest
-            // along the railway, as the trees are.
+            // (The bushes' slots now hold 10 to 12 m trees (UsedModel): placed as the small trees are, as many as they were, not as
+            // thick as scrub.)
             for (var b = 0; b < ShrubCount; b++)
             {
-                Place(FirstShrub + b, 3u + (uint)b * 101u, 50,
-                    (cover, ground, patches, clear, _) => (ground.X * (0.3f + cover.W * 1.2f) + ground.Y * 0.3f) * MathEx.SmoothStep(0.15f, 0.6f, patches) * MathEx.SmoothStep(0.5f, 3f, clear),
-                    (pick, _, _, _) => (0.7f + 0.7f * pick, Leafy(pick)), 1f, 0f, 0.72f, trackside: true);
+                Place(FirstShrub + b, 3u + (uint)b * 101u, 5,
+                    (cover, _, patches, clear, _) => MathEx.SmoothStep(0.2f, 0.6f, cover.W) * 0.8f * (0.3f + patches) * MathEx.SmoothStep(TreeClearance, TreeClearanceSoft, clear),
+                    (pick, _, _, _) => (0.75f + 0.45f * pick, Leafy(pick)), TreeClearance, 0f, 0.7f, trackside: true);
             }
 
             Place(Boulder, 4u, 15,
@@ -800,34 +803,35 @@ public sealed unsafe class Vegetation : IDisposable
         var canopies = new List<(Kind Kind, float3 Min, float3 Max)>();
         for (var type = 1; type <= TreeCount + ShrubCount; type++)
         {
-            var shrub = type > TreeCount;
-            var slot = shrub ? FirstShrub + type - TreeCount - 1 : FirstTree + type - 1;
-            var (reduced, far) = shrub ? ShrubLevels : TreeLevels;
-            var cards = Bind(Map($"Tree{type - 1}Cards_Diffuse.ktx2", true), Map($"Tree{type - 1}Cards_Opacity.ktx2", false));
-            var full = Add(treeParts, $"TreeType{type}_Lod0_Leaves");
+            var slot = type > TreeCount ? FirstShrub + type - TreeCount - 1 : FirstTree + type - 1;
+            // The two smallest sizes aren't used: the 4 m trees (TreeType10 to 12) and the bushes (13 to 15) each take one of the 10
+            // to 12 m trees (7 to 9) instead, and are drawn and placed as trees (UsedModel).
+            var model = UsedModel(type);
+            var (reduced, far) = TreeLevels;
+            var cards = Bind(Map($"Tree{model - 1}Cards_Diffuse.ktx2", true), Map($"Tree{model - 1}Cards_Opacity.ktx2", false));
+            var full = Add(treeParts, $"TreeType{model}_Lod0_Leaves");
             var height = MathF.Max(full.Max.Y, 1f);
             _heights[slot] = height;
 
             // A hundredth of its height at the top in the strongest gust, every level of it alike.
             var wind = 0.01f / height;
-            var fade = shrub ? FarReach * 0.6f : FarReach * 0.95f;
+            var fade = FarReach * 0.95f;
 
             foreach (var (level, near, to) in new[] { (0, 0f, reduced), (2, reduced, far) })
             {
-                var trunk = Add(treeParts, $"TreeType{type}_Lod{level}_Trunk");
-                var crown = level == 0 ? full : Add(treeParts, $"TreeType{type}_Lod{level}_Leaves");
+                var trunk = Add(treeParts, $"TreeType{model}_Lod{level}_Trunk");
+                var crown = level == 0 ? full : Add(treeParts, $"TreeType{model}_Lod{level}_Leaves");
                 var bole = new Kind
                 {
-                    Mesh = null!, Textures = bark, Slot = slot, Near = near, Far = to, Wind = wind, Fade = fade, LastCascade = 3, NoFarCaster = !shrub,
+                    Mesh = null!, Textures = bark, Slot = slot, Near = near, Far = to, Wind = wind, Fade = fade, LastCascade = 3, NoFarCaster = true,
                 };
                 var canopy = new Kind { Mesh = null!, Textures = leaves, Slot = slot, Near = near, Far = to, Wind = wind, SoftNormal = 0.35f, Fade = fade, LastCascade = 3 };
                 pending.Add((bole, trunk.First, trunk.Count));
                 pending.Add((canopy, crown.First, crown.Count));
-                if (!shrub)
-                    canopies.Add((canopy, crown.Min, crown.Max));
+                canopies.Add((canopy, crown.Min, crown.Max));
             }
 
-            var card = Add(treeParts, $"TreeType{type}_Lod3_Cards");
+            var card = Add(treeParts, $"TreeType{model}_Lod3_Cards");
             pending.Add((new Kind { Mesh = null!, Textures = cards, Slot = slot, Near = far, Wind = wind, SoftNormal = 0.5f, Fade = fade, LastCascade = 3 }, card.First, card.Count));
         }
 
@@ -842,7 +846,7 @@ public sealed unsafe class Vegetation : IDisposable
         foreach (var (kind, min, max) in canopies)
             kind.FarCaster = Own(CanopyMesh(new float3(min.X, MathF.Max(min.Y, max.Y * 0.25f), min.Z), max));
 
-        RailWerkz.Core.Logging.Log.Info($"Vegetation: grass and {TreeCount} trees and {ShrubCount} bushes, {_kinds.Count} draws, {indices.Count / 3} triangles, loaded in {watch.ElapsedMilliseconds} ms");
+        RailWerkz.Core.Logging.Log.Info($"Vegetation: grass and {TreeCount + ShrubCount} trees (the two smallest sizes drawn as the next up), {_kinds.Count} draws, {indices.Count / 3} triangles, loaded in {watch.ElapsedMilliseconds} ms");
     }
 
     // --- Drawing. ---
