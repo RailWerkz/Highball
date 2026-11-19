@@ -23,7 +23,16 @@ public static unsafe class MeshOptimize
     /// Models with fewer triangles get no lower-detail versions: too few to be worth it.
     public const int LodFloor = 4000;
 
-    private const int CacheVersion = 1;
+    private const int CacheVersion = 2;
+
+    /// How much a seam's normals (x, y, z) and uvs (u, v) count against collapsing across it, against its shape's error.
+    private static readonly float[] AttributeWeights = [0.5f, 0.5f, 0.5f, 6f, 6f];
+
+    /// meshopt_SimplifyPrune and meshopt_SimplifyPermissive (meshoptimizer.h; the binding has no names for them).
+    private const int Prune = 1 << 3;
+    private const int Permissive = 1 << 5;
+
+    private static readonly bool Diagnose = Environment.GetEnvironmentVariable("HB_MESHDIAG") == "1";
 
     /// One lower-detail version: its submeshes (into the shared index buffer), and how far off it is, as a share of the model's size.
     public sealed record Level(List<Model.SubMesh> SubMeshes, float Error);
@@ -33,7 +42,7 @@ public static unsafe class MeshOptimize
     public static List<Level> Process(string file, string key, List<Vertex> vertices, List<uint> indices, List<Model.SubMesh> subMeshes, bool lods)
     {
         var path = CachePath(file, key, vertices.Count, indices.Count, lods);
-        if (path is not null && TryRead(path, vertices, indices, subMeshes, out var cached))
+        if (path is not null && !Diagnose && TryRead(path, vertices, indices, subMeshes, out var cached))
             return cached;
 
         var clock = System.Diagnostics.Stopwatch.StartNew();
@@ -43,8 +52,11 @@ public static unsafe class MeshOptimize
         var indexArray = indices.ToArray();
         fixed (Vertex* v = vertexArray)
         fixed (uint* all = indexArray)
+        fixed (float* weights = AttributeWeights)
         {
             var positions = (float*)v;
+            var attributes = positions + 3; // the normal, then the uv
+
             var stride = new ByteSize64((ulong)sizeof(Vertex));
 
             // Each material's run: for the vertex cache, then against overdraw (within 5% of the cache's best).
@@ -72,7 +84,22 @@ public static unsafe class MeshOptimize
                         var result = 0f;
                         fixed (uint* o = output)
                         {
-                            count = sub.IndexCount < 3 ? 0 : (long)MeshOptimizer.Simplify((int*)o, (int*)(all + sub.FirstIndex), sub.IndexCount, positions, vertexCount, stride, target, error, 0, &result);
+                            var source = (int*)(all + sub.FirstIndex);
+                            if (Diagnose && sub.IndexCount >= 3)
+                            {
+                                var strict = (long)MeshOptimizer.Simplify((int*)o, source, sub.IndexCount, positions, vertexCount, stride, target, error, 0, &result);
+                                Log.Info($"Mesh diag {Path.GetFileName(file)}#{key} sub {sub.Material} share {share}: from {sub.IndexCount / 3} target {target / 3}; seams kept {strict / 3} (err {result:0.0000})");
+                            }
+
+                            // Across seams too (Permissive): a model split at every hard edge and uv seam (most made in a modelling
+                            // program are) is otherwise all seams, which can't be collapsed, and barely simplifies at all. Its normals
+                            // and uvs are weighed in, so a seam goes where crossing it changes them least; tiny loose bits whose
+                            // whole size is under the error are dropped (Prune).
+                            count = sub.IndexCount < 3 ? 0 : (long)MeshOptimizer.SimplifyWithAttributes((int*)o, source, sub.IndexCount, positions, vertexCount, stride,
+                                attributes, stride, weights, AttributeWeights.Length, null, target, error, Permissive | Prune, &result);
+                            if (Diagnose && sub.IndexCount >= 3)
+                                Log.Info($"Mesh diag {Path.GetFileName(file)}#{key} sub {sub.Material} share {share}: across seams {count / 3} (err {result:0.0000})");
+
                             if (count >= 3)
                                 MeshOptimizer.OptimizeVertexCache((int*)o, (int*)o, count, vertexCount);
                         }

@@ -39,9 +39,15 @@ public sealed class RenderModel : IDisposable
         _lods.Sort((a, b) => a.From.CompareTo(b.From));
     }
 
+    /// For checking the lower-detail versions up close: HB_FORCELOD=n draws every model's nth (0 the full one; past its last, its
+    /// last) at any distance.
+    private static readonly int ForcedLevel = int.TryParse(Environment.GetEnvironmentVariable("HB_FORCELOD"), out var level) ? level : -1;
+
     /// The version to draw this far from the camera: itself near, its lower-detail ones further out.
     public RenderModel ForDistance(float distance)
     {
+        if (ForcedLevel >= 0)
+            return ForcedLevel == 0 || _lods.Count == 0 ? this : _lods[Math.Min(ForcedLevel, _lods.Count) - 1].Model;
         var chosen = this;
         foreach (var (model, from) in _lods)
             if (distance >= from)
