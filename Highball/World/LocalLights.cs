@@ -58,6 +58,10 @@ public sealed unsafe class LocalLights : IDisposable
     /// Starts a frame's list of lights.
     public void Begin() => _wanted.Clear();
 
+    /// How much of every lamp's light shows against the day, 0 to 1 (WorldRenderer.AgainstDay): a lamp's as bright at noon as at
+    /// night, but what it lights is lit by the sun a thousand times over, so its pool all but vanishes by day and comes up at dusk.
+    public float AgainstDay { get; set; } = 1f;
+
     public void Add(in LocalLight light) => _wanted.Add(light);
 
     /// Picks the nearest lights, sorts them into the grid and writes both for the frame. Outside any render pass, before the world.
@@ -92,7 +96,7 @@ public sealed unsafe class LocalLights : IDisposable
             _gpu[n] = new GpuLight
             {
                 PlaceRange = new float4(place, light.Range),
-                ColorOuter = new float4(light.Color, light.Outer),
+                ColorOuter = new float4(light.Color * AgainstDay, light.Outer),
                 FacingInner = new float4(light.Facing, light.Inner),
             };
 

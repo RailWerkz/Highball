@@ -83,6 +83,17 @@ public sealed unsafe class WorldRenderer : IDisposable
     private readonly GroundTextures _ground = new();
     private readonly LocalLights _lights = new();
     private readonly Weather _weather = new();
+
+    /// How much of the lamps' light shows against the day now (LocalLights.AgainstDay).
+    private float _againstDay = 1f;
+
+    /// A lamp's light against what the sun and sky put on the ground, by the sun's height (the sine of its elevation): its own
+    /// strength over the two together, so about 2% at noon, a third at sunset, and all of it once it's dark.
+    public static float AgainstDay(float sunHeight)
+    {
+        var ground = 3f * MathF.Max(sunHeight, 0f) + 0.3f * RailWerkz.Core.Utils.MathEx.SmoothStep(-0.12f, 0.08f, sunHeight);
+        return 0.05f / (ground + 0.05f);
+    }
     private readonly SunShadows _shadows;
     private VkPipeline _glow;
     private readonly Precipitation _precipitation = new();
@@ -291,6 +302,8 @@ public sealed unsafe class WorldRenderer : IDisposable
 
         // Lamps come on towards dusk, a little before the sun's gone.
         var lampsOn = 1f - RailWerkz.Core.Utils.MathEx.SmoothStep(-0.02f, 0.1f, Sky.RealSunHeight);
+        _againstDay = AgainstDay(Sky.RealSunHeight);
+        _lights.AgainstDay = _againstDay;
         _lights.Begin();
         if (network is not null)
         {
@@ -613,6 +626,8 @@ public sealed unsafe class WorldRenderer : IDisposable
             ScreenY = new float4(camera.Up, 0f),
         };
         cmd.BindPipeline(VkPipelineBindPoint.Graphics, _glow);
+        // (The lamp itself still shows by day, as a headlight does, if not as hard as at night.)
+        var glowShows = MathF.Max(MathF.Sqrt(_againstDay), 0.35f);
         foreach (var light in lights)
         {
             if (light.Glow <= 0f)
@@ -621,7 +636,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             // About three pixels at any distance, on a screen a thousand high.
             var pixel = MathF.Tan(camera.FieldOfView * 0.5f) * 2f / 1000f * 3f;
             push.PlaceSize = new float4((float)(light.X - camera.X), (float)(light.Y - camera.Y), (float)(light.Z - camera.Z), light.Glow);
-            push.Color = new float4(light.GlowColor, pixel);
+            push.Color = new float4(light.GlowColor * glowShows, pixel);
             cmd.PushConstants(_layout, Stages, ByteSize.Zero, push);
             cmd.Draw(6, 1, 0, 0);
         }

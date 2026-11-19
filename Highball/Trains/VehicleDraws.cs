@@ -81,9 +81,12 @@ public static class LocoLamps
         var f = Builder.VehicleOverlay.Rotate(rotation, aim);
         var (x, y, z) = (at.X + p.X, at.Y + p.Y, at.Z + p.Z);
         return lamp.Ditch
-            ? new LocalLight(x, y, z, 120f, new float3(350f, 320f, 265f) * level, f, 0.97f, 0.9f, 0.2f, new float3(4f, 3.6f, 2.8f) * level)
-            : new LocalLight(x, y, z, 350f, new float3(2000f, 1800f, 1500f) * (level / Math.Max(1, heads)), f, 0.985f, 0.95f, 0.3f, new float3(5f, 4.4f, 3.4f) * level);
+            ? new LocalLight(x, y, z, 120f, Warm * 350f * level, f, 0.97f, 0.9f, 0.2f, Warm * 4f * level)
+            : new LocalLight(x, y, z, 350f, Warm * 2000f * (level / Math.Max(1, heads)), f, 0.985f, 0.95f, 0.3f, Warm * 5f * level);
     }
+
+    /// A sealed-beam incandescent lamp's warm white (about 2850 K), linear: what most locomotives' headlights and ditch lights are.
+    private static readonly float3 Warm = new(1f, 0.74f, 0.47f);
 
     /// How many headlight lamps share the beam at that end of a vehicle.
     public static int Heads(VehicleDef def, bool front) => def.Lamps.Count(l => !l.Ditch && l.Front == front);
