@@ -136,6 +136,8 @@ layout(set = 4, binding = 97) uniform sampler2D paint10Packed;
 layout(set = 4, binding = 98) uniform sampler2D paint11Color;
 layout(set = 4, binding = 99) uniform sampler2D paint11Normal;
 layout(set = 4, binding = 100) uniform sampler2D paint11Packed;
+// The ties' colour map (TrackTextures): its smallest level is its average, the colour the ties are painted in.
+layout(set = 4, binding = 101) uniform sampler2D tieColor;
 
 // A surface texture's three maps, by slot. (With the derivatives worked out beforehand, outside the branches.)
 void surfaceMaps(int slot, vec2 uv, vec2 gx, vec2 gy, out vec3 color, out vec3 normal, out vec4 packed)
@@ -204,6 +206,8 @@ const float FlashRate = 0.9;
 const float TieReach = 1000.0;
 const float TieSpacing = 0.495;
 const float TieHalfWidth = 0.114;
+// The fewest pixels apart on screen tie models are drawn at (part.vert): closer, the ballast paints them.
+const float TieModelPixels = 4.0;
 
 const vec3 Steel = vec3(0.40, 0.40, 0.40);
 const vec3 BareSteel = vec3(0.56, 0.57, 0.58);
@@ -383,8 +387,13 @@ void main()
         // The tie models stop sooner (NetworkMeshes.TieReach): from there the ties are painted, one by one where they're still
         // far enough apart on screen to tell (they lie every TieSpacing along the line, at the same places as the models), and
         // as their average where they aren't.
-        float tieFar = smoothstep(TieReach - 40.0, TieReach, dist);
         float vPixel = max(fwidth(v), 1e-4);
+        // Painted as the models look: their colour map's average, darkened as part.frag darkens creosoted timber (TieWood if it
+        // has none).
+        vec3 tieWood = textureSize(tieColor, 0).x > 1 ? textureLod(tieColor, vec2(0.5), 16.0).rgb * 0.55 : TieWood;
+        // And wherever they lie fewer than TieModelPixels apart on screen, where part.vert leaves the models out: painted a little
+        // further in than that too, under the last of the models, so there's no gap where one measure and the other differ.
+        float tieFar = max(smoothstep(TieReach - 40.0, TieReach, dist), 1.0 - smoothstep(TieModelPixels, TieModelPixels + 2.0, TieSpacing / vPixel));
         float apart = abs(fract(v / TieSpacing + 0.5) - 0.5) * TieSpacing;
         float oneByOne = clamp((TieHalfWidth - apart) / vPixel + 0.5, 0.0, 1.0);
         float ties = mix(oneByOne, TieHalfWidth * 2.0 / TieSpacing, smoothstep(0.25, 0.5, vPixel / TieSpacing));
@@ -400,7 +409,7 @@ void main()
                 {
                     // Past the real rails and ties the track is painted on: the ties as a band (they cover 46% of
                     // it) and the rails as lines.
-                    albedo = paint(albedo, TieWood, stripe(u, o, 1.295, uPixel) * ties * tieFar);
+                    albedo = paint(albedo, tieWood, stripe(u, o, 1.295, uPixel) * ties * tieFar);
                     float rails = stripe(u, o - railOffset, 0.037, uPixel) + stripe(u, o + railOffset, 0.037, uPixel);
                     albedo = paint(albedo, Steel * 0.8, rails * far);
                 }
