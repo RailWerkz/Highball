@@ -292,6 +292,11 @@ public sealed partial class NetworkLines
     /// How far past a track's formation its cells reach, metres: out over its slopes.
     private const float CorridorReach = 12f;
 
+    /// Whether the ground along every track is shaped finer (CorridorSub) as well as round bridge ends. Off: the track's ground is the
+    /// tiles' own 2 m grid, shaped to its bed as it was before the corridors (UnderBed keeps it clear of the ballast at that spacing),
+    /// without the band of small triangles either side of every line.
+    private const bool TrackCorridors = false;
+
     private Dictionary<(int, int), int>? _detailCells;
 
     /// How much finer a detail cell's shaped (0 where it isn't one).
@@ -404,7 +409,7 @@ public sealed partial class NetworkLines
 
             foreach (var b in boxes)
                 Mark(b.X0, b.Z0, b.X1, b.Z1, StructureSub);
-            foreach (var line in _lines.Where(l => l.Rail && !l.Mark && l.Count >= 2))
+            foreach (var line in _lines.Where(l => TrackCorridors && l.Rail && !l.Mark && l.Count >= 2))
             {
                 var reach = line.Formation + CorridorReach;
                 for (var p = 0; p + 1 < line.Count; p++)
