@@ -46,6 +46,12 @@ void main()
             sum += weight * clamp(luma(textureLod(colorNow, at, 0.0).rgb) * light * 1.5, 0.0, 1.0);
     }
 
-    float shafts = sum / total * exp(-away * 2.6) * post.sun.w;
-    imageStore(result, pixel, vec4(shafts, shafts, shafts, 1.0));
+    // The shafts are light scattered by the air between the eye and what's seen: in front of the sky, all the way; in front of a tree
+    // a few metres off, hardly any air at all, so hardly any glow over it (added over it whatever its distance, a tree against the
+    // sun came out brighter than the sky round it, where it should stand dark). By the distance to what's at this pixel.
+    float depth = textureLod(sceneDepth, uv, 0.0).r;
+    float air = depth <= 0.0 ? 1.0 : smoothstep(0.0, 600.0, post.forward.w / max(depth, 1e-8));
+    float shafts = sum / total * exp(-away * 2.6) * post.sun.w * air;
+    // (g: the same air, for the glare's wide halo in the tonemap.)
+    imageStore(result, pixel, vec4(shafts, air, 0.0, 1.0));
 }
