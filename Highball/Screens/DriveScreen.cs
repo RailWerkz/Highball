@@ -163,27 +163,34 @@ public sealed class DriveScreen : Screen, IWorldScreen
             Canvas.Text(draw, Medium, S(13f), new float2(edge, _footerTop + (height - S(13f)) * 0.5f), noticing ? Style.Text : TextDim, right, Align.Right);
     }
 
-    /// Shown with F: frames a second, triangles and draw calls last frame, and the CPU's and GPU's milliseconds a frame on average.
+    /// Shown with F: frames a second, triangles and draw calls last frame, the CPU's and GPU's milliseconds a frame on average, and VRAM
+    /// and RAM in use.
     private bool _stats = System.Environment.GetEnvironmentVariable("HB_FOOTERSTATS") is not null;
 
     /// The frame's numbers, right-aligned to right; returns where they start.
     private static float Stats(ImDrawListPtr draw, float right, float y)
     {
         var frame = Profiler.FrameTimes.Average();
-        var items = new (string Label, string Value)[]
+        // (VRAM: what the game's allocator has taken from the driver; RAM: the process's working set. Read twice a second.)
+        var memory = MemoryUse.Now;
+        static string Gigabytes(long bytes) => $"{bytes / (1024.0 * 1024.0 * 1024.0):0.00} GB";
+        // Each value in a slot as wide as the widest it gets (Widest), right-aligned in it: so nothing moves as the numbers change.
+        var items = new (string Label, string Value, string Widest)[]
         {
-            ("FPS", $"{1000f / MathF.Max(frame, 0.01f):0}"),
-            ("TRIS", Profiler.Triangles >= 1_000_000 ? $"{Profiler.Triangles / 1_000_000f:0.00}M" : $"{Profiler.Triangles / 1000f:0}K"),
-            ("DRAWS", $"{Profiler.DrawCalls:#,0}"),
-            ("CPU", $"{Profiler.CpuAverage:0.0} MS"),
-            ("GPU", $"{Profiler.GpuFrameTimes.Average():0.0} MS"),
+            ("FPS", $"{1000f / MathF.Max(frame, 0.01f):0}", "0000"),
+            ("TRIS", Profiler.Triangles >= 1_000_000 ? $"{Profiler.Triangles / 1_000_000f:0.00}M" : $"{Profiler.Triangles / 1000f:0}K", "00.00M"),
+            ("DRAWS", $"{Profiler.DrawCalls:#,0}", "00,000"),
+            ("CPU", $"{Profiler.CpuAverage:0.0} MS", "000.0 MS"),
+            ("GPU", $"{Profiler.GpuFrameTimes.Average():0.0} MS", "000.0 MS"),
+            ("VRAM", Gigabytes(memory.Vram), "00.00 GB"),
+            ("RAM", Gigabytes(memory.Ram), "00.00 GB"),
         };
         var x = right;
         for (var i = items.Length - 1; i >= 0; i--)
         {
-            var (label, value) = items[i];
-            x -= Canvas.TextSize(Mono, S(14f), value).X;
-            Canvas.Text(draw, Mono, S(14f), new float2(x, y), Style.Text, value);
+            var (label, value, widest) = items[i];
+            Canvas.Text(draw, Mono, S(14f), new float2(x - Canvas.TextSize(Mono, S(14f), value).X, y), Style.Text, value);
+            x -= Canvas.TextSize(Mono, S(14f), widest).X;
             x -= S(8f) + Canvas.SpacedWidth(Medium, S(10f), label, 0.18f);
             Canvas.Spaced(draw, Medium, S(10f), new float2(x, y + S(2f)), TextFaint, label, 0.18f);
             x -= S(22f);
