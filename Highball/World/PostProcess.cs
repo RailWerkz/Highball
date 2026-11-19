@@ -48,11 +48,6 @@ public sealed unsafe class PostProcess : IDisposable
     private readonly VkPipeline _measure;
     private readonly VkPipeline _rays;
     private readonly VkPipeline _tonemap;
-
-    /// The tonemap drawn into CMAA2's picture instead of the screen, and CMAA2 itself (Settings.Cmaa2), and whether it ran this frame.
-    private readonly VkPipeline _tonemapToPicture;
-    private readonly Cmaa2 _cmaa = new();
-    private bool _cmaaRan;
     private readonly BufferEx _uniforms;
     private readonly StorageImage _measured;
 
@@ -129,11 +124,6 @@ public sealed unsafe class PostProcess : IDisposable
         {
             Vertex = fullscreen, Fragment = tonemap, Layout = _tonemapLayout, Cull = VkCullModeFlags.None, DepthTest = false, DepthWrite = false,
             RenderPass = Gpu.PresentPass, ColorFormat = Gpu.SwapchainFormat,
-        });
-        _tonemapToPicture = Pipelines.Create(new PipelineDesc
-        {
-            Vertex = fullscreen, Fragment = tonemap, Layout = _tonemapLayout, Cull = VkCullModeFlags.None, DepthTest = false, DepthWrite = false,
-            ColorFormat = Cmaa2.PictureFormat, SingleSample = true, DepthFormat = VkFormat.Undefined,
         });
 
         _uniforms = Buffers.Create(sizeof(Uniforms), VkBufferUsageFlags.UniformBufferBit | VkBufferUsageFlags.TransferDstBit, MemoryPreference.PreferGpu, "post.uniforms");
@@ -420,37 +410,10 @@ public sealed unsafe class PostProcess : IDisposable
             Between(cmd, VkPipelineStageFlags.FragmentShaderBit);
         }
 
-        // CMAA2: the tonemap into its picture, smoothed there, laid on the screen by Composite.
-        _cmaaRan = Settings.Current.Cmaa2;
-        if (_cmaaRan)
-            using (Profiler.Sample("CMAA2", cmd))
-                Smooth(cmd);
-
         _previousViewProjection = viewProjection;
         _previousCamera = (camera.X, camera.Y, camera.Z);
         _historyValid = true;
         _frame++;
-    }
-
-    private void Smooth(CommandBuffer cmd)
-    {
-        _cmaa.Resize(_size);
-        var picture = _cmaa.Picture!;
-        _cmaa.BeforeDrawing(cmd);
-        var color = new VkRenderingAttachmentInfo
-        {
-            ImageView = picture.View, ImageLayout = VkImageLayout.General, LoadOp = VkAttachmentLoadOp.DontCare, StoreOp = VkAttachmentStoreOp.Store,
-        };
-        var info = new VkRenderingInfo { RenderArea = new VkRect2D(picture.Width, picture.Height), LayerCount = 1, ColorAttachmentCount = 1, ColorAttachments = &color };
-        cmd.BeginRendering(in info);
-        // Unflipped, as the screen's is (Composite): Pipelines.SetViewport turns y over for the world.
-        cmd.SetViewport(0, [new VkViewport { X = 0f, Y = 0f, Width = picture.Width, Height = picture.Height, MinDepth = 0f, MaxDepth = 1f }]);
-        cmd.SetScissor(0, [new VkRect2D(picture.Width, picture.Height)]);
-        cmd.BindPipeline(VkPipelineBindPoint.Graphics, _tonemapToPicture);
-        cmd.BindDescriptorSets(VkPipelineBindPoint.Graphics, _tonemapLayout, 0, [_tonemapSets[_current]], []);
-        cmd.Draw(3, 1, 0, 0);
-        cmd.EndRendering();
-        _cmaa.Run(cmd);
     }
 
     /// Draws the finished picture over the screen. Inside the present pass, before the interface.
@@ -458,11 +421,6 @@ public sealed unsafe class PostProcess : IDisposable
     {
         if (_history[0] is null)
             return;
-        if (_cmaaRan)
-        {
-            _cmaa.Present(cmd);
-            return;
-        }
 
         var size = Gpu.Extent;
         cmd.SetViewport(0, [new VkViewport { X = 0f, Y = 0f, Width = size.X, Height = size.Y, MinDepth = 0f, MaxDepth = 1f }]);
@@ -484,8 +442,6 @@ public sealed unsafe class PostProcess : IDisposable
         Pipelines.Destroy(_measure, default);
         Pipelines.Destroy(_rays, default);
         Pipelines.Destroy(_tonemap, default);
-        Pipelines.Destroy(_tonemapToPicture, default);
-        _cmaa.Dispose();
         Gpu.Defer(() =>
         {
             uniforms.Dispose();
