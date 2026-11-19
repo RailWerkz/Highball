@@ -68,7 +68,7 @@ public sealed class CrossingBells : IDisposable
                     _ringing.Remove(site.Id);
                 }
             }
-            else if (on && objects.FirstOrDefault(o => o.Id == site.Id) is { } crossing)
+            else if (on && objects.FirstOrDefault(o => o.Id == site.Id) is { } crossing && (CrossingWarning)crossing.Warning != CrossingWarning.None)
             {
                 var kind = (CrossingBell)crossing.Bell;
                 if (Pick(kind) is not { } name)

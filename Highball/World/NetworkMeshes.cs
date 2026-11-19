@@ -536,7 +536,7 @@ public sealed partial class NetworkMeshes : IDisposable
             list.Add(placedAt);
             if (deck is not null && !GroundReady(x, z))
                 _groundless.Add(o.Id);
-            if (deck is { Masts.Length: > 0 })
+            if (deck is { Masts.Length: > 0 } && HasArms(o))
                 _gates[o.Id] = new Gate { Placed = placedAt, Key = key };
             if (deck?.Gap is { } gap)
             {
@@ -611,7 +611,7 @@ public sealed partial class NetworkMeshes : IDisposable
                 list[i] = placed;
                 if (_gates.Remove(old.Object.Id, out var gate))
                     gate.Arms?.Dispose();
-                if (placed.Deck is { Masts.Length: > 0 })
+                if (placed.Deck is { Masts.Length: > 0 } && HasArms(old.Object))
                     _gates[old.Object.Id] = new Gate { Placed = placed, Key = key };
                 _stale.Add((key, false));
                 _stale.Add((key, true));
@@ -2330,6 +2330,9 @@ public sealed partial class NetworkMeshes : IDisposable
             }
         }
     }
+
+    /// Whether a crossing's masts carry gate arms (CrossingWarning.Gates); with Lights they're only its flashers.
+    private static bool HasArms(PlacedObject o) => (CrossingWarning)o.Warning == CrossingWarning.Gates;
 
     /// A grade crossing's surface: one mesh (NetworkMeshes.CrossingMesh), placed.
     private static void CrossingSurface(Builder builder, PlacedAt placed)

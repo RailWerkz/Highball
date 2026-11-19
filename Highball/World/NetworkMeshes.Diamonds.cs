@@ -659,7 +659,8 @@ public sealed partial class NetworkMeshes
         var masts = new List<(double X, double Z, float Y, float3 Face)>();
         var hand = o.Opposite ? -1.0 : 1.0;
         var kerb = half + 1.5f;
-        foreach (var sign in (float[])[1f, -1f])
+        // (None at an unprotected crossing: no masts, so no flashers, arms or bell either.)
+        foreach (var sign in (CrossingWarning)o.Warning == CrossingWarning.None ? [] : (float[])[1f, -1f])
         {
             var toward = new float3((float)dx * sign, 0f, (float)dz * sign);
             // The road's across (nx, nz) is to its left as it runs; the mast stands to the right of traffic running toward.

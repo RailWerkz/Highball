@@ -421,7 +421,7 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
                 PlacedChange(o, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, signal.Node, id: o.Id) with { Toward = signal.Toward });
                 break;
             case PlacedKind.GradeCrossing when PlaceTool.CrossingAt(lines, x, z) is { } crossing:
-                PlacedChange(o, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, o.Opposite, id: o.Id) with { Turn = o.Turn, Style = o.Style, Approach = o.Approach, Bell = o.Bell, Surface = o.Surface });
+                PlacedChange(o, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, o.Opposite, id: o.Id) with { Turn = o.Turn, Style = o.Style, Approach = o.Approach, Bell = o.Bell, Surface = o.Surface, Warning = o.Warning });
                 break;
             case PlacedKind.HandThrow when PlaceTool.SwitchAt(lines, x, z) is { } turnout && _terrain!.Source.Objects.All(p => p.Node != turnout.Node):
                 PlacedChange(o, Placed(PlacedKind.HandThrow, turnout.X, turnout.Z, 0.0, turnout.Node, opposite: o.Opposite, id: o.Id));
@@ -581,6 +581,12 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
             var by = nudges[hit].Item2;
             PlacedChange(picked, picked with { Turn = by == 0f ? 0f : ((picked.Turn + by + 540f) % 360f) - 180f });
         }
+
+        // What it warns with: masts with arms, masts with flashers only, or nothing (an unprotected crossing: no masts, no bell).
+        Kit.Caption("Warning");
+        var warning = ToolPanel.Mode("warning", ["Gates", "Lights", "None"], Math.Clamp(picked.Warning, 0, 2), 3);
+        if (warning != picked.Warning)
+            PlacedChange(picked, picked with { Warning = warning });
 
         // Its bell: a recording of that kind's picked at random each time it starts.
         Kit.Caption("Bell");
