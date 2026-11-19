@@ -440,13 +440,34 @@ void main()
         int kind = int(found.y);
         bool upright = abs(n.y) < 0.5;
         float wear = fbm(world.xz * 0.12, pixel * 0.12);
-        // Asphalt over 3 m, concrete over 2 m and dirt over 2.5 m, laid by where it is; wood over 1.5 m, its grain along the panels
+        // Asphalt and dirt over 3 m, concrete over 2 m, laid by where it is; wood over 1.5 m, its grain along the panels
         // (along the track on top, along the face on a side).
-        vec2 suv = kind == 2 ? (upright ? vec2(u, v) : vec2(v, u)) / 1.5 : (upright ? boxUv(local, n) : tex) / (kind == 0 ? 3.0 : kind == 3 ? 2.5 : 2.0);
+        vec2 suv = kind == 2 ? (upright ? vec2(u, v) : vec2(v, u)) / 1.5 : (upright ? boxUv(local, n) : tex) / (kind == 0 || kind == 3 ? 3.0 : 2.0);
         vec2 gx = dFdx(suv), gy = dFdy(suv);
         vec3 surfaceColor, surfaceNormal;
         vec4 surfacePacked;
-        surfaceMaps(slot, suv, gx, gy, surfaceColor, surfaceNormal, surfacePacked);
+        bool roadTop = (surface == 0 || surface == 63) && !upright;
+        if (!roadTop)
+            surfaceMaps(slot, suv, gx, gy, surfaceColor, surfaceNormal, surfacePacked);
+
+        // A road's top (its asphalt or dirt, over long stretches) doesn't show the map repeating every 3 m: it's read twice, shifted by
+        // a different amount each time, and the two blended by a noise that changes over a few metres, so no two repeats line up into
+        // a pattern (Quilez's texture repetition). The whole is varied a little over tens of metres too.
+        if (roadTop)
+        {
+            float l = noise(world.xz * 0.2) * 8.0;
+            float ia = floor(l);
+            vec2 offA = sin(vec2(3.0, 7.0) * ia), offB = sin(vec2(3.0, 7.0) * (ia + 1.0));
+            vec3 colorB, normalB;
+            vec4 packedB;
+            surfaceMaps(slot, suv + offA, gx, gy, surfaceColor, surfaceNormal, surfacePacked);
+            surfaceMaps(slot, suv + offB, gx, gy, colorB, normalB, packedB);
+            float t = smoothstep(0.2, 0.8, (l - ia) - 0.1 * dot(surfaceColor - colorB, vec3(1.0)));
+            surfaceColor = mix(surfaceColor, colorB, t);
+            surfaceNormal = mix(surfaceNormal, normalB, t);
+            surfacePacked = mix(surfacePacked, packedB, t);
+            surfaceColor *= 0.88 + 0.24 * fbm(world.xz * 0.035, pixel * 0.035);
+        }
 
         albedo = surfaceColor * (0.9 + 0.2 * wear);
         occlusion = surfacePacked.x;
@@ -622,7 +643,9 @@ void main()
     s.specular = specular;
     weatherSurface(s, puddle, hold);
 
-    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative - vec3(0.0, fadeShadowDrop, 0.0), material == Gravel ? shadowNormal : n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative) + emit;
+    // (The shadow's looked up by the surface's own normal, not its map's, where the map's bumpy (gravel, dirt and the paved surfaces):
+    // tilted by a strong normal map, the lookup flickers in and out of the surface's own shadow in bands.)
+    vec3 color = shadeLight(s, sun, SunColor * sunShadow(vRelative - vec3(0.0, fadeShadowDrop, 0.0), material == Gravel || material == Asphalt ? shadowNormal : n, sun)) + shadeSky(s, sun) + shadeLocalLights(s, vRelative) + emit;
     color = applyFog(color, view, dist, pc.camera.y, sun);
     outColor = vec4(color, coverage);
 }
