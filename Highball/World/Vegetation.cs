@@ -56,10 +56,15 @@ public sealed unsafe class Vegetation : IDisposable
     /// up (the 10 to 12 m trees, 7 to 9). Its knee-high bushes (13 to 15) aren't used either: the shrub slots are ferns (FernFile).
     private static int UsedModel(int type) => type <= 9 ? type : 7 + (type - 10) % 3;
 
-    /// The undergrowth: two ferns of a low-poly pack (about 120 and 160 triangles, 1.6 to 2.2 m), far cheaper than any of EarthTrees'
-    /// models, one for each shrub slot in turn. Their colour map has the cut-out in its alpha.
-    private const string FernFile = "Vegetation/low_poly_vegetation_for_games_1k.glb";
-    private static readonly string[] Ferns = ["3_paporotnik_0", "4_paporotnik2_0"];
+    /// The shrub slots: three trees of a low-poly pack (7 to 10 m, a bark mesh and a leaf mesh each, 1100 to 2600 triangles), scattered
+    /// out over open ground and along the woods' edges, among EarthTrees' own. Each part's colour map has its cut-out in its alpha.
+    private const string LowPolyFile = "Vegetation/low_poly_vegetation_for_games_1k.glb";
+    private static readonly (string Bark, string Leaves)[] LowPolyTrees =
+    [
+        ("1_bark-1_0", "1_pngaaa.com-3905963_0"),
+        ("2_bark-1.001_0", "2_pngaaa.com-3905963.001_0"),
+        ("5_bark-2_0", "5_pngaaa.com-2004453_0"),
+    ];
     private const int TreeCount = 12;
     private const int SlotCount = FirstTree + TreeCount;
 
@@ -678,10 +683,6 @@ public sealed unsafe class Vegetation : IDisposable
         static float3 Dry(float4 cover, float pick) =>
             new float3(cover.X * 2.4f + 0.13f, cover.Y * 2.2f + 0.12f, cover.Z * 2.0f + 0.07f) * (0.75f + 0.5f * pick);
 
-        // The ferns' map is a bright lime: taken most of the way to the ground they grow from, as the grass is, and a little darker.
-        static float3 Undergrowth(float4 cover, float pick) =>
-            new float3(cover.X * 1.6f + 0.18f, cover.Y * 1.5f + 0.2f, cover.Z * 1.4f + 0.1f) * (0.6f + 0.3f * pick);
-
         // The trees' and bushes' maps have their own colours: only a little variety from one to the next.
         static float3 Leafy(float pick) => new float3(0.85f + 0.3f * pick, 0.85f + 0.25f * pick, 0.8f + 0.2f * pick);
 
@@ -705,13 +706,13 @@ public sealed unsafe class Vegetation : IDisposable
         }
         else
         {
-            // Ferns, as scrub is: every few metres in shrubland and at the woods' edges, thinner on bare ground, none on the track's
-            // shoulders; thickest along the railway, as the trees are. (Fewer tried for than the bushes were: each is bigger.)
+            // The low-poly trees: scattered trees standing out in the open and thickening at the woods' edges (where EarthTrees' own
+            // take over), kept off the track as the trees are; thickest along the railway too.
             for (var b = 0; b < ShrubCount; b++)
             {
-                Place(FirstShrub + b, 3u + (uint)b * 101u, 40,
-                    (cover, ground, patches, clear, _) => (ground.X * (0.3f + cover.W * 1.2f) + ground.Y * 0.3f) * MathEx.SmoothStep(0.15f, 0.6f, patches) * MathEx.SmoothStep(0.5f, 3f, clear),
-                    (pick, cover, _, _) => (0.8f + 0.7f * pick, Undergrowth(cover, pick)), 1f, 0f, 0.72f, trackside: true);
+                Place(FirstShrub + b, 3u + (uint)b * 101u, 6,
+                    (cover, ground, patches, clear, _) => (0.25f * ground.X + MathEx.SmoothStep(0.1f, 0.5f, cover.W)) * (0.3f + patches) * MathEx.SmoothStep(TreeClearance, TreeClearanceSoft, clear),
+                    (pick, _, _, _) => (0.7f + 0.5f * pick, Leafy(pick)), TreeClearance, 0f, 0.7f, trackside: true);
             }
 
             Place(Boulder, 4u, 15,
@@ -843,28 +844,28 @@ public sealed unsafe class Vegetation : IDisposable
             pending.Add((new Kind { Mesh = null!, Textures = cards, Slot = slot, Near = far, Wind = wind, SoftNormal = 0.5f, Fade = fade, LastCascade = 3 }, card.First, card.Count));
         }
 
-        // The ferns in the shrub slots: one level each (there's little to take away from 120 triangles), out to a third of the trees'
-        // reach, casting into the two nearest cascades only.
-        var fernParts = Model.LoadParts(FernFile);
-        var fernMaps = new TextureBinding[Ferns.Length];
-        for (var f = 0; f < Ferns.Length; f++)
+        // The low-poly trees in the shrub slots: one level each (there's little to take away), as far as EarthTrees' and casting as
+        // they do; their own maps, each part's (bark, leaves) from the file.
+        var lowParts = Model.LoadParts(LowPolyFile);
+        TextureBinding MapOf(string node)
         {
-            var model = Own(Model.Load(FernFile, nodeName: Ferns[f]));
+            var model = Own(Model.Load(LowPolyFile, nodeName: node));
             var map = model.Surfaces[model.SubMeshes[0].Material].Texture ?? solid;
-            fernMaps[f] = Own(new TextureBinding(map, map, map, map));
+            return Own(new TextureBinding(map, map, map, map));
         }
 
         for (var b = 0; b < ShrubCount; b++)
         {
-            var fern = b % Ferns.Length;
-            var piece = Add(fernParts, Ferns[fern]);
+            var (barkNode, leafNode) = LowPolyTrees[b % LowPolyTrees.Length];
             var slot = FirstShrub + b;
-            _heights[slot] = MathF.Max(piece.Max.Y, 0.5f);
-            pending.Add((new Kind
-            {
-                Mesh = null!, Textures = fernMaps[fern], Slot = slot, Wind = 0.03f / _heights[slot], SoftNormal = 0.6f, Fade = FarReach * 0.33f,
-                Cutout = 0f, LastCascade = 1,
-            }, piece.First, piece.Count));
+            var trunk = Add(lowParts, barkNode);
+            var crown = Add(lowParts, leafNode);
+            _heights[slot] = MathF.Max(MathF.Max(trunk.Max.Y, crown.Max.Y), 1f);
+            var wind = 0.01f / _heights[slot];
+            const float fade = FarReach * 0.95f;
+            pending.Add((new Kind { Mesh = null!, Textures = MapOf(barkNode), Slot = slot, Wind = wind, Fade = fade, Cutout = 0f, LastCascade = 3 }, trunk.First, trunk.Count));
+            pending.Add((new Kind { Mesh = null!, Textures = MapOf(leafNode), Slot = slot, Wind = wind, SoftNormal = 0.35f, Fade = fade, Cutout = 0f, LastCascade = 3 },
+                crown.First, crown.Count));
         }
 
         var mesh = Own(Mesh.Create(CollectionsMarshal.AsSpan(vertices), CollectionsMarshal.AsSpan(indices)));
@@ -878,7 +879,7 @@ public sealed unsafe class Vegetation : IDisposable
         foreach (var (kind, min, max) in canopies)
             kind.FarCaster = Own(CanopyMesh(new float3(min.X, MathF.Max(min.Y, max.Y * 0.25f), min.Z), max));
 
-        RailWerkz.Core.Logging.Log.Info($"Vegetation: grass, {TreeCount} trees (the 4 m ones drawn as the next size up) and {ShrubCount} ferns, {_kinds.Count} draws, {indices.Count / 3} triangles, loaded in {watch.ElapsedMilliseconds} ms");
+        RailWerkz.Core.Logging.Log.Info($"Vegetation: grass, {TreeCount} trees (the 4 m ones drawn as the next size up) and {ShrubCount} low-poly trees, {_kinds.Count} draws, {indices.Count / 3} triangles, loaded in {watch.ElapsedMilliseconds} ms");
     }
 
     // --- Drawing. ---
