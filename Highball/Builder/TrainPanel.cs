@@ -613,6 +613,8 @@ public sealed partial class TrainPanel : IDisposable
             $"Train smoothness: {Math.Abs(train.Speed):0.00} m/s, {_drawnSpeeds.Count} frames ({Spread(_frameTimes, 1000.0, "ms")}); moved a frame: drawn {Spread(_drawnSpeeds, 100.0, "cm")}; steps alone {Spread(_steppedSpeeds, 100.0, "cm")}"));
         Log.Info(string.Create(CultureInfo.InvariantCulture,
             $"Train traction: {Math.Abs(train.Traction) / 1000.0:0} kN, slip {string.Join(" ", train.Body.WheelSlip.Where((_, k) => train.Body.Systems[k] is not null).Select(w => w.ToString("0.00", CultureInfo.InvariantCulture)))}, sand {train.Sand}, fuel {string.Join(" ", train.Body.Systems.Where(s => s is not null).Select(s => s!.FuelRate.ToString("0", CultureInfo.InvariantCulture)))} L/h, mass {train.Mass / 1000.0:0} t"));
+        Log.Info(string.Create(CultureInfo.InvariantCulture,
+            $"Train couplers: worst angle {train.WorstCouplerAngle:0.0} deg{(train.CouplerAtLimit ? " (at a striker)" : "")}, worst L/V {train.WorstLv:0.00} (car {Array.IndexOf(train.WheelLv, train.WorstLv) + 1}), force {train.Body.CouplerForce.DefaultIfEmpty().Min() / 4448.2:0} to {train.Body.CouplerForce.DefaultIfEmpty().Max() / 4448.2:0} klbf, derailed {train.Derailed.Count(d => d)}"));
         _drawnSpeeds.Clear();
         _steppedSpeeds.Clear();
         _frameTimes.Clear();

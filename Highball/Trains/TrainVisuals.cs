@@ -49,14 +49,6 @@ public sealed class TrainVisuals : IDisposable
     /// This frame's bodies as drawn, by car (with last frame's), for the couplers to meet across.
     private readonly List<(VehicleModel? Model, float4 Rotation, double3 At, float4 Was, double3 WasAt)> _bodies = [];
 
-    /// The most a coupler swings either way on its striker, degrees: a locomotive's alignment-control coupler (held near centre by
-    /// its draft gear's wings past this), a long car's extended draft gear (an 89 ft autorack or flat), any other freight car's.
-    public const double LocomotiveSwing = 17.0;
-    public const double LongCarSwing = 20.0;
-    public const double FreightSwing = 15.0;
-
-    /// Past this a car's counted long (its extended draft gear's wider swing), metres over its couplers.
-    private const double LongCar = 25.0;
 
     /// The most any coupler swung this frame, degrees, and whether one was held at its striker's limit.
     public double WorstCoupler { get; private set; }
@@ -236,9 +228,8 @@ public sealed class TrainVisuals : IDisposable
         var local = VehicleOverlay.Rotate(inverse, new float3((float)(toward.X - pivot.X), (float)(toward.Y - pivot.Y), (float)(toward.Z - pivot.Z)));
         var outward = part.Pivot.Z >= 0f ? 1.0 : -1.0;
         var yaw = Math.Atan2(local.X * outward, local.Z * outward) * 180.0 / Math.PI;
-        var limit = def is null ? FreightSwing
-            : def.Kind == VehicleKind.Locomotive ? LocomotiveSwing
-            : def.Length >= LongCar ? LongCarSwing : FreightSwing;
+        // (Each car's striker limit, as the sim has it.)
+        var limit = CouplerAngles.Limit(def);
         WorstCoupler = Math.Max(WorstCoupler, Math.Abs(yaw));
         if (Math.Abs(yaw) > limit)
         {

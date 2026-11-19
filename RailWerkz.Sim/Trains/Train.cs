@@ -165,6 +165,63 @@ public sealed class Train
     /// The couplings' extensions before the last step, to put back if the step couldn't be placed.
     private readonly double[] _extensionBefore;
 
+    /// Each link's couplers' angles to their own cars, degrees (the front car's rear coupler, the rear car's front), and each car's
+    /// worst wheel L/V from its couplers' forces, as the last step left them (CouplerAngles).
+    public double[] CouplerRearAngle { get; }
+    public double[] CouplerFrontAngle { get; }
+    public double[] WheelLv { get; }
+
+    /// Each car off the rails (a flange climbed: CouplerAngles), and how long each has been past WheelClimb. A derailed car holds
+    /// the train in emergency until it's put back on (Rerail).
+    public bool[] Derailed { get; }
+    private readonly double[] _climbing;
+
+    /// The worst coupler angle (to its own car, degrees) and wheel L/V in the train now, and whether a coupler's past its striker.
+    public double WorstCouplerAngle { get; private set; }
+    public double WorstLv { get; private set; }
+    public bool CouplerAtLimit { get; private set; }
+
+    /// Every car back on the rails.
+    public void Rerail()
+    {
+        Array.Clear(Derailed);
+        Array.Clear(_climbing);
+    }
+
+    /// After a step's placed the cars: the couplers' angles and their wheels' L/V measured, and a car whose flange has climbed off.
+    private void CheckWheels(double h)
+    {
+        CouplerAngles.Measure(this, CouplerRearAngle, CouplerFrontAngle, WheelLv);
+        var (worstAngle, atLimit) = (0.0, false);
+        for (var i = 0; i < CouplerRearAngle.Length; i++)
+        {
+            worstAngle = Math.Max(worstAngle, Math.Max(Math.Abs(CouplerRearAngle[i]), Math.Abs(CouplerFrontAngle[i])));
+            atLimit |= Math.Abs(CouplerRearAngle[i]) > CouplerAngles.Limit(Cars[i].Def) || Math.Abs(CouplerFrontAngle[i]) > CouplerAngles.Limit(Cars[i + 1].Def);
+        }
+
+        (WorstCouplerAngle, CouplerAtLimit, WorstLv) = (worstAngle, atLimit, WheelLv.Length > 0 ? WheelLv.Max() : 0.0);
+        var off = false;
+        for (var i = 0; i < Cars.Count; i++)
+        {
+            var rolling = Math.Abs(Body.Velocity[i]) > CouplerAngles.ClimbSpeed;
+            _climbing[i] = WheelLv[i] > CouplerAngles.WheelClimb && rolling ? _climbing[i] + h : 0.0;
+            if (!Derailed[i] && _climbing[i] >= CouplerAngles.ClimbTime)
+            {
+                Derailed[i] = true;
+                var link = i < Body.CouplerForce.Length && Math.Abs(Body.CouplerForce[i]) > Math.Abs(i > 0 ? Body.CouplerForce[i - 1] : 0.0) ? i : i - 1;
+                var force = link >= 0 ? Body.CouplerForce[link] : 0.0;
+                Happened?.Invoke(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                    $"Car {i + 1} ({Cars[i].Label}) derailed: wheel climb at L/V {WheelLv[i]:0.00}, {Math.Abs(force) / 4448.2:0} klbf {(force < 0.0 ? "buff" : "draft")} with the coupler at {Math.Max(Math.Abs(link >= 0 ? CouplerRearAngle[link] : 0.0), Math.Abs(link >= 0 ? CouplerFrontAngle[link] : 0.0)):0} degrees"));
+            }
+
+            off |= Derailed[i];
+        }
+
+        // (The air's dumped: a derailed car's hoses part, or the crew goes to emergency.)
+        if (off)
+            Emergency = true;
+    }
+
     /// Loads car i to this share of its rated load, 0 to 1, and its weight with it, from the next step on.
     public void SetFill(int i, double fill)
     {
@@ -183,6 +240,11 @@ public sealed class Train
         Power = cars.Sum(c => c.Def.Power);
         Body = new TrainBody(cars);
         _extensionBefore = new double[Body.Extension.Length];
+        CouplerRearAngle = new double[Body.Extension.Length];
+        CouplerFrontAngle = new double[Body.Extension.Length];
+        WheelLv = new double[cars.Count];
+        Derailed = new bool[cars.Count];
+        _climbing = new double[cars.Count];
         Dp = new DistributedPower(this);
         Body.Happened = what => Happened?.Invoke(what);
         Dp.Happened = what => Happened?.Invoke(what);
@@ -604,6 +666,7 @@ public sealed class Train
 
         if (stop == TrackStop.None && along != 0.0)
             Stopped = null;
+        CheckWheels(h);
         _lastPlan = moved;
         Distance += Math.Abs(moved);
         Acceleration = (Body.Velocity.Average() - before) / h;
