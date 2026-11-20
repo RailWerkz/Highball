@@ -1,0 +1,42 @@
+#version 450
+// FSR 2's motion vectors (Highball/World/Fsr2.cs): at each of the world's pixels, how far across the picture what's there has moved
+// since last frame, as a move in uv (to where it was, the way FSR 2 takes it), without the jitter. The still world moves only as
+// the camera does: the point here, from the depth, as it stood last frame relative to the camera now (the camera's move added),
+// put through last frame's view and projection. What moves on its own (trains) says how in the motion image (MotionVectors).
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rg16f) uniform writeonly image2D result;
+layout(set = 0, binding = 1) uniform sampler2D sceneDepth;
+// xyz: from this pixel's point to where that point was last frame, in metres; w: 1 where something moving is seen.
+layout(set = 0, binding = 2) uniform sampler2D motion;
+
+layout(push_constant) uniform Push
+{
+    mat4 previousViewProjection; // last frame's, unjittered, camera at the origin
+    vec4 right;   // across the view, scaled to its edge
+    vec4 up;      // up the view, scaled to its edge
+    vec4 forward; // w: the near distance
+    vec4 moved;   // the camera's move since last frame
+} pc;
+
+void main()
+{
+    ivec2 size = imageSize(result);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    // Reverse-Z, infinitely far: 0 is the sky, which moves only as the camera turns (taken as very far away).
+    float depth = max(texelFetch(sceneDepth, pixel, 0).r, 1e-7);
+    vec3 here = (pc.forward.xyz + ndc.x * pc.right.xyz + ndc.y * pc.up.xyz) * (pc.forward.w / depth);
+    vec4 moving = texelFetch(motion, pixel, 0);
+    vec3 own = moving.w > 0.5 ? moving.xyz : vec3(0.0);
+    vec4 clip = pc.previousViewProjection * vec4(here + pc.moved.xyz + own, 1.0);
+    vec2 back = vec2(0.0);
+    if (clip.w > 1e-6)
+        back = vec2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5) - uv;
+    imageStore(result, pixel, vec4(back, 0.0, 0.0));
+}

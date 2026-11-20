@@ -48,6 +48,9 @@ public sealed unsafe class PostProcess : IDisposable
     private readonly VkPipeline _measure;
     private readonly VkPipeline _rays;
     private readonly VkPipeline _tonemap;
+
+    /// Temporal anti-aliasing, AMD's FSR 2 (Settings.TemporalAA); TemporalAA.comp only resamples the world to the picture without it.
+    private readonly Fsr2 _fsr = new();
     private readonly BufferEx _uniforms;
     private readonly StorageImage _measured;
 
@@ -271,17 +274,8 @@ public sealed unsafe class PostProcess : IDisposable
             return;
         }
 
-        static float Halton(int index, int radix)
-        {
-            var (result, fraction) = (0f, 1f / radix);
-            for (; index > 0; index /= radix, fraction /= radix)
-                result += index % radix * fraction;
-            return result;
-        }
-
-        // More positions when the world's drawn smaller than the picture, so each of the picture's pixels is landed on now and then.
-        var n = _frame % 16 + 1;
-        camera.Jitter = new float2((Halton(n, 2) - 0.5f) * 2f / size.X, (Halton(n, 3) - 0.5f) * 2f / size.Y);
+        // FSR 2's own sequence, as many positions as its upscaling needs.
+        _fsr.Jitter(camera, size);
     }
 
     private static void Between(CommandBuffer cmd, VkPipelineStageFlags next = VkPipelineStageFlags.ComputeShaderBit)
@@ -338,7 +332,8 @@ public sealed unsafe class PostProcess : IDisposable
             Look = new float4(grade.Contrast, s.Bloom ? 0.05f : 0f, Exposure, MeasureExposure ? 1f : 0f),
             Jitter = new float4(camera.Jitter.X, camera.Jitter.Y, target.Size.X / (float)output.X, target.Size.Y / (float)output.Y),
             Tone = new float4(grade.LiftR, grade.LiftG, grade.LiftB, grade.Vignette),
-            Sharpen = new float4(s.TemporalAA ? Math.Clamp(s.Sharpening, 0f, 1f) : 0f, 0f, 0f, 0f),
+            // (FSR 2 sharpens its own picture, RCAS.)
+            Sharpen = default,
         };
         cmd.UpdateBuffer(_uniforms.VkBuffer, ByteSize.Zero, MemoryMarshal.AsBytes(new ReadOnlySpan<Uniforms>(in uniforms)));
         var updated = new VkMemoryBarrier { SrcAccessMask = VkAccessFlags.TransferWriteBit, DstAccessMask = VkAccessFlags.UniformReadBit };
@@ -347,7 +342,18 @@ public sealed unsafe class PostProcess : IDisposable
         _current = 1 - _current;
         var (w, h) = (_size.X, _size.Y);
         using (Profiler.Sample("Temporal AA", cmd))
-            Run(cmd, _temporal, _temporalSets[_current], w, h);
+        {
+            if (s.TemporalAA)
+            {
+                var moved = new float3((float)(camera.X - _previousCamera.X), (float)(camera.Y - _previousCamera.Y), (float)(camera.Z - _previousCamera.Z));
+                if (!_historyValid)
+                    _fsr.Reset();
+                _fsr.Dispatch(cmd, target, _size, motion, _history[0]!, _history[1]!, _current == 1, camera, aspect, _historyValid ? _previousViewProjection : viewProjection,
+                    _historyValid ? moved : default, s.Sharpening, Time.RealDelta);
+            }
+            else
+                Run(cmd, _temporal, _temporalSets[_current], w, h);
+        }
 
         // What temporal anti-aliasing would only smear goes on after it. It's in next frame's history too, but that doesn't match
         // what's round it there, so it's clamped away.
@@ -442,6 +448,7 @@ public sealed unsafe class PostProcess : IDisposable
         Pipelines.Destroy(_measure, default);
         Pipelines.Destroy(_rays, default);
         Pipelines.Destroy(_tonemap, default);
+        _fsr.Dispose();
         Gpu.Defer(() =>
         {
             uniforms.Dispose();

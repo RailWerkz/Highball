@@ -1,0 +1,4 @@
+#version 450
+// FSR 2: the depth_clip pass (fsr2_options.glsl).
+#include "fsr2_options.glsl"
+#include "ffx_fsr2_depth_clip_pass.glsl"

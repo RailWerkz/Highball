@@ -55,6 +55,7 @@ public sealed class Settings
     public int TrackTextureQuality { get; set; } = 1;
     /// The ground's materials: 0 as they come, 1 half the size, 2 a quarter.
     public int TerrainTextureDetail { get; set; }
+    /// Temporal anti-aliasing by AMD FSR 2 (Highball/World/Fsr2.cs), which upscales too when RenderScale is under 1.
     public bool TemporalAA { get; set; } = true;
 
     /// How much the picture's sharpened after temporal anti-aliasing, 0 to 1, giving back the fine detail (leaves, ballast, far rails)
