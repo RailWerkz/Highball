@@ -60,6 +60,9 @@ vec3 mapped(vec3 n, vec3 position, vec2 uv)
     return normalize(t * bump.x - b * bump.y + n * bump.z * sqrt(scale));
 }
 
+// NetworkMeshes.TieSpacing: how far apart along the track the ties lie, metres.
+const float TieSpacing = 0.495;
+
 void main()
 {
     float dist = length(vRelative);
@@ -69,6 +72,15 @@ void main()
     if (dot(n, view) > 0.0)
         n = -n; // mirrored instances turn their faces inside out; light the side we see
     vec3 sun = pc.sun.xyz;
+
+    // Ties far enough off that they lie only a few pixels apart on screen (how far along the track one pixel spans, from the model's
+    // own along-the-track coordinate, against the ties' spacing) are shaded as though every face of them looked up, as their tops
+    // and the ballast round them do. Their sides are thin and dark, and at that size a dark side and a light top beat against the
+    // pixels into crawling stripes and dark blotches (moire), whatever the anti-aliasing. Every tie is still there, standing where
+    // it stands; only its shading is evened out, as a texture's smaller levels even out fine detail.
+    float apart = TieSpacing / max(fwidth(vModel.z), 1e-5);
+    float flatten = 1.0 - smoothstep(2.0, 6.0, apart);
+    n = normalize(mix(n, vec3(0.0, 1.0, 0.0), flatten));
 
     // Each one a little lighter or darker than the next.
     vec3 albedo = texture(albedoMap, vUv).rgb * (0.75 + 0.5 * vTint);
@@ -84,7 +96,7 @@ void main()
         metallic = packed.y;
         // Creosoted and weathered, darker than clean timber; steel as it is.
         albedo = texture(materialColor, uv).rgb * (0.75 + 0.5 * vTint) * mix(0.55, 1.0, metallic);
-        surface = mapped(n, vRelative, uv);
+        surface = normalize(mix(mapped(n, vRelative, uv), n, flatten));
     }
 
     Surface s;

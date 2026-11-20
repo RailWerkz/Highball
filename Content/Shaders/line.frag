@@ -206,6 +206,8 @@ const float FlashRate = 0.9;
 const float TieReach = 1000.0;
 const float TieSpacing = 0.495;
 const float TieHalfWidth = 0.114;
+// The head of a rail across, metres (136 lb rail).
+const float RailHeadWidth = 0.074;
 
 const vec3 Steel = vec3(0.40, 0.40, 0.40);
 const vec3 BareSteel = vec3(0.56, 0.57, 0.58);
@@ -393,11 +395,6 @@ void main()
         // The ties' own colour, as the models look at a distance: their map's average, darkened as part.frag darkens creosoted
         // timber (TieWood if there's no map).
         vec3 tieWood = textureSize(tieColor, 0).x > 1 ? textureLod(tieColor, vec2(0.5), 16.0).rgb * 0.55 : TieWood;
-        // Where the tie models are drawn but lie only a few pixels apart on screen, the ballast between them is taken to their
-        // colour, as a texture's smaller levels take fine detail to its average: a light tie beside a dark gap at about the
-        // pixels' own spacing beats into stripes and rings (moire) whatever the anti-aliasing. The models still stand there
-        // (they cover their own places, so this shows only in the gaps), the gaps just stop contrasting with them.
-        float tieGaps = (1.0 - tieFar) * (1.0 - smoothstep(2.0, 5.0, TieSpacing / vPixel));
         if (shape.y > 0.95)
         {
             for (int k = 0; k < tracks; k++)
@@ -411,7 +408,6 @@ void main()
                     // Past the real rails and ties the track is painted on: the ties as a band (they cover 46% of
                     // it) and the rails as lines.
                     albedo = paint(albedo, tieWood, stripe(u, o, 1.295, uPixel) * ties * tieFar);
-                    albedo = paint(albedo, tieWood, stripe(u, o, 1.295, uPixel) * tieGaps);
                     float rails = stripe(u, o - railOffset, 0.037, uPixel) + stripe(u, o + railOffset, 0.037, uPixel);
                     albedo = paint(albedo, Steel * 0.8, rails * far);
                 }
@@ -437,7 +433,18 @@ void main()
         albedo = mix(texture(railSideColor, along).rgb, mix(texture(railTopColor, along).rgb, BareSteel, 0.65), worn);
         metallic = mix(sidePacked.y * 0.5, 1.0, worn);
         hold = 1.0 - worn;
-        roughness = max(mix(sidePacked.x, topPacked.x * 0.45, worn), min(pixel * 2.0, 0.6));
+        roughness = mix(sidePacked.x, topPacked.x * 0.45, worn);
+        // Specular anti-aliasing. A polished railhead reflecting the sun is thousands of times brighter than the ballast, along a line
+        // thinner than a pixel: it sparkles and crawls as it lands on different pixels, and no anti-aliasing can hold it. So the
+        // highlight is widened (energy kept: the light is spread, not taken away) as the pixel can no longer show it sharp:
+        // - by how much the normal turns within the pixel (Tokuyoshi and Kaplanyan's geometric specular AA, on GGX alpha squared),
+        //   the rounded head and the switch blades' edges seen from afar;
+        // - by how few pixels across the head is (RailHeadWidth): under four, the highlight goes to a broad sheen by one.
+        vec3 dnx = dFdx(n), dny = dFdy(n);
+        float variance = 0.25 * (dot(dnx, dnx) + dot(dny, dny));
+        float alpha2 = roughness * roughness * roughness * roughness + min(2.0 * variance, 0.18);
+        roughness = sqrt(sqrt(min(alpha2, 1.0)));
+        roughness = max(roughness, 0.6 * (1.0 - smoothstep(1.0, 4.0, RailHeadWidth / pixel)));
         specular = 1.0;
     }
     else if (material == Asphalt)
