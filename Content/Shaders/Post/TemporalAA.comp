@@ -112,7 +112,9 @@ void main()
     now = unsqueeze(now / max(weights, 1e-5));
     if (post.moved.w < 0.5)
     {
-        imageStore(result, pixel, vec4(now, 1.0));
+        // No temporal anti-aliasing (FSR 2 does it when it's on): nothing's jittered, so at the picture's own size the world's
+        // pixel is passed through exactly as it was drawn, not filtered with its neighbours.
+        imageStore(result, pixel, vec4(inSize == size ? texelFetch(current, pixel, 0).rgb : now, 1.0));
         return;
     }
 
