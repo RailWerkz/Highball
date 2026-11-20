@@ -9,19 +9,9 @@ public sealed unsafe class RenderTarget : IDisposable
 {
     public const VkFormat DepthFormat = VkFormat.D32SFloat;
 
-    /// With temporal anti-aliasing on, MSAA past this buys nothing that shows: TAA already resolves edges over frames, and
-    /// every extra sample is paid for on every triangle and every thin rail and tie (8x cost about 4 ms at 3440x1440).
-    public const int MaxSamplesWithTemporal = 2;
-
-    /// The samples the setting asks for, as drawn: capped at MaxSamplesWithTemporal while temporal anti-aliasing is on.
-    public static int Wanted
-    {
-        get
-        {
-            var s = RailWerkz.Core.Settings.Settings.Current;
-            return s.TemporalAA ? Math.Min(s.Msaa, MaxSamplesWithTemporal) : s.Msaa;
-        }
-    }
+    /// The samples the setting asks for, as drawn, TAA on or off: thin repeating geometry (far ties, rails) needs the samples
+    /// within each frame that TAA can't make up across frames.
+    public static int Wanted => RailWerkz.Core.Settings.Settings.Current.Msaa;
 
     /// Samples per pixel: the setting's (Wanted), or the most under it the GPU can do for both colour and depth.
     public static VkSampleCountFlags Samples

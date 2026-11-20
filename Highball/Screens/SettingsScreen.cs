@@ -47,7 +47,7 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
             .Add(new MenuItem { Label = "Quality", Value = () => Qualities[Math.Clamp(s.Quality, 0, 3)], OnChange = d => s.Quality = Math.Clamp(s.Quality + d, 0, 3) })
             .Add(new MenuItem { Label = "Track textures", Value = () => TrackTextures.Describe(s.TrackTextureQuality), OnChange = d => s.TrackTextureQuality = (Math.Clamp(s.TrackTextureQuality, 0, 3) + d + 4) % 4 })
             .Add(new MenuItem { Label = "Terrain textures", Value = () => TerrainDetails[Math.Clamp(s.TerrainTextureDetail, 0, 2)], OnChange = d => s.TerrainTextureDetail = (Math.Clamp(s.TerrainTextureDetail, 0, 2) + d + 3) % 3 })
-            .Add(new MenuItem { Label = "Anti-aliasing (MSAA)", Value = () => s.Msaa <= 1 ? "OFF" : RailWerkz.Vulkan.RenderTarget.Wanted < s.Msaa ? $"{s.Msaa}x ({RailWerkz.Vulkan.RenderTarget.Wanted}x WITH TAA)" : $"{s.Msaa}x", OnChange = d => s.Msaa = StepMsaa(s.Msaa, d) })
+            .Add(new MenuItem { Label = "Anti-aliasing (MSAA)", Value = () => s.Msaa <= 1 ? "OFF" : $"{s.Msaa}x", OnChange = d => s.Msaa = StepMsaa(s.Msaa, d) })
             .Add(new MenuItem { Label = "View distance", Value = () => Distance(s.ViewDistance), Meter = () => (s.ViewDistance - MetersPerMile) / (20000f - MetersPerMile), OnChange = d => s.ViewDistance = StepDistance(s.ViewDistance, d) })
             .Add(new MenuItem { Label = "Field of view", Value = () => $"{s.FieldOfView:0}°", Meter = () => (s.FieldOfView - 40f) / 50f, OnChange = d => s.FieldOfView = Math.Clamp(s.FieldOfView + d * 5f, 40f, 90f), SeparatorAfter = true })
             .Add(new MenuItem { Label = "Temporal anti-aliasing", Value = () => OnOff(s.TemporalAA), OnChange = _ => s.TemporalAA = !s.TemporalAA })
