@@ -1,5 +1,5 @@
 // Highball's build of AMD FidelityFX FSR 2.2.1 (MIT, LICENSE.txt beside this; the ffx_* files are AMD's, unchanged but for the
-// #version line taken off each pass, and rw_upscaled_output given its format). Each fsr2_*.comp sets the version, takes these
+// #version line taken off each pass, rw_upscaled_output given its format, and rw_prepared_input_color and rw_dilatedDepth declared in their real formats, rgba16f and r32f). Each fsr2_*.comp sets the version, takes these
 // options and includes one pass. Used by Highball/World/Fsr2.cs.
 //
 // 32-bit maths throughout (no fp16); the colour's HDR; motion vectors at the render size, without the jitter; depth reversed

@@ -136,6 +136,8 @@ layout(set = 4, binding = 97) uniform sampler2D paint10Packed;
 layout(set = 4, binding = 98) uniform sampler2D paint11Color;
 layout(set = 4, binding = 99) uniform sampler2D paint11Normal;
 layout(set = 4, binding = 100) uniform sampler2D paint11Packed;
+// The ties' colour map (TrackTextures): its smallest level is its average.
+layout(set = 4, binding = 101) uniform sampler2D tieColor;
 
 // A surface texture's three maps, by slot. (With the derivatives worked out beforehand, outside the branches.)
 void surfaceMaps(int slot, vec2 uv, vec2 gx, vec2 gy, out vec3 color, out vec3 normal, out vec4 packed)
@@ -388,6 +390,14 @@ void main()
         float apart = abs(fract(v / TieSpacing + 0.5) - 0.5) * TieSpacing;
         float oneByOne = clamp((TieHalfWidth - apart) / vPixel + 0.5, 0.0, 1.0);
         float ties = mix(oneByOne, TieHalfWidth * 2.0 / TieSpacing, smoothstep(0.25, 0.5, vPixel / TieSpacing));
+        // The ties' own colour, as the models look at a distance: their map's average, darkened as part.frag darkens creosoted
+        // timber (TieWood if there's no map).
+        vec3 tieWood = textureSize(tieColor, 0).x > 1 ? textureLod(tieColor, vec2(0.5), 16.0).rgb * 0.55 : TieWood;
+        // Where the tie models are drawn but lie only a few pixels apart on screen, the ballast between them is taken to their
+        // colour, as a texture's smaller levels take fine detail to its average: a light tie beside a dark gap at about the
+        // pixels' own spacing beats into stripes and rings (moire) whatever the anti-aliasing. The models still stand there
+        // (they cover their own places, so this shows only in the gaps), the gaps just stop contrasting with them.
+        float tieGaps = (1.0 - tieFar) * (1.0 - smoothstep(2.0, 5.0, TieSpacing / vPixel));
         if (shape.y > 0.95)
         {
             for (int k = 0; k < tracks; k++)
@@ -400,7 +410,8 @@ void main()
                 {
                     // Past the real rails and ties the track is painted on: the ties as a band (they cover 46% of
                     // it) and the rails as lines.
-                    albedo = paint(albedo, TieWood, stripe(u, o, 1.295, uPixel) * ties * tieFar);
+                    albedo = paint(albedo, tieWood, stripe(u, o, 1.295, uPixel) * ties * tieFar);
+                    albedo = paint(albedo, tieWood, stripe(u, o, 1.295, uPixel) * tieGaps);
                     float rails = stripe(u, o - railOffset, 0.037, uPixel) + stripe(u, o + railOffset, 0.037, uPixel);
                     albedo = paint(albedo, Steel * 0.8, rails * far);
                 }

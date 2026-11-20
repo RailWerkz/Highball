@@ -188,10 +188,10 @@ public sealed unsafe class Fsr2 : IDisposable
 
         _motionVectors = Image(rw, rh, VkFormat.R16G16SFloat, "fsr2.motion");
         _reconstructedDepth = Image(rw, rh, VkFormat.R32UInt, "fsr2.prevdepth");
-        _dilatedDepth = Image(rw, rh, VkFormat.R16SFloat, "fsr2.dilateddepth");
+        _dilatedDepth = Image(rw, rh, VkFormat.R32SFloat, "fsr2.dilateddepth");
         _lockInputLuma = Image(rw, rh, VkFormat.R16SFloat, "fsr2.lockluma");
         _dilatedReactive = Image(rw, rh, VkFormat.R8G8UNorm, "fsr2.reactive");
-        _preparedInput = Image(rw, rh, VkFormat.R16G16B16A16UNorm, "fsr2.prepared");
+        _preparedInput = Image(rw, rh, VkFormat.R16G16B16A16SFloat, "fsr2.prepared");
         _lumaMips = Image(Math.Max(rw / 2, 1), Math.Max(rh / 2, 1), VkFormat.R16SFloat, "fsr2.lumamips", mips: true);
         _lumaShadingChange = _lumaMips.MipView(Math.Min(ShadingChangeMip, _lumaMips.MipLevels - 1));
         _lumaMip5 = _lumaMips.MipView(Math.Min(5, _lumaMips.MipLevels - 1));
