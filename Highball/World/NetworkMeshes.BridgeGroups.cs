@@ -793,12 +793,14 @@ public sealed partial class NetworkMeshes
         // Each column across: from the seat down to its toe.
         var columns = Math.Max(2, (int)MathF.Ceiling(half));
         var toes = new float[columns + 1];
+        // (No farther than the slope reaches: on a shallow skew Off falls hardly at all along the deck.)
+        var reach = MathF.Max(NetworkLines.SlopeReach(line, end), from);
         for (var j = 0; j <= columns; j++)
         {
             var bottom = middle + r * (-half + half * 2f * j / columns);
             var (o0, o1) = (Off(bottom + forward * from), Off(bottom + forward * (from + 1f)));
             // (Off falls as it goes into the gap: to nothing at the toe.)
-            toes[j] = o0 - o1 > 1e-3f ? from + o0 / (o0 - o1) : from;
+            toes[j] = Math.Clamp(o0 - o1 > 1e-3f ? from + o0 / (o0 - o1) : from, from, reach);
         }
 
         if (toes.Max() - from < 1f)

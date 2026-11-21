@@ -175,7 +175,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
         _world = new WorldDisplay(place.Lat, place.Lon, route.Projection?.GridNorth(place) ?? 0.0);
         _routeWorld = new RouteWorld(route);
         _view = new CameraView(_camera);
-        _session = new Trains.TrainSession(_routeWorld, _camera);
+        _session = new Trains.TrainSession(_routeWorld, _camera) { RestoreAs = Trains.PlacedAs.ShutDown };
         _tools = new ToolContext(this);
         _shapeTool = new ShapeTrackTool(_tools);
         _roadTool = new RoadsTool(_tools);
@@ -326,7 +326,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
             if (DevTools.Tool is { } first)
             {
                 DevTools.Tool = null;
-                _tool = (Tool)Math.Clamp(first - 1, 0, (int)Tool.Place);
+                _tool = (Tool)Math.Clamp(first - 1, 0, (int)Tool.Siding);
             }
             PlaceCamera(_routeWorld.Read);
             if (_topDown)
@@ -448,7 +448,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
         var now = RailWerkz.Core.Time.Time.Now;
         if (now - _flyLogAt < 1.0)
             return;
-        var slow = string.Join(", ", Profiler.Tree().Where(s => s.Section.Worst > 2.5f).Select(s => string.Create(CultureInfo.InvariantCulture, $"{s.Section.Name} {s.Section.Worst:0}")));
+        var slow = string.Join(", ", Profiler.Tree().Where(s => s.Section.Average > 0.4f || s.Section.GpuAverage > 0.4f).Select(s => string.Create(CultureInfo.InvariantCulture, $"{s.Section.Name} {s.Section.Average:0.0}/{s.Section.GpuAverage:0.0}")));
         Log.Info(string.Create(CultureInfo.InvariantCulture,
             $"Fly: worst frame {_flyWorst:0.0} ms, {_flyWaitingWorst} patches waiting, {_terrain.Building} building, {_terrain.DrawnPatches} drawn, {_renderer.Vegetation.Instances} plants; slow: {slow}"));
         _flyLogAt = now;
@@ -464,8 +464,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
         var source = _terrain!.Source;
         var ctrl = Input.Key(GlfwKey.LeftControl) || Input.Key(GlfwKey.RightControl);
 
-        if (IsBrush(_tool))
-            _brush = _tool;
+        var toolBefore = _tool;
 
         // (Not while typing in a field: digits there aren't tools.)
         if (!Keyboard.KeysBlocked)
@@ -494,6 +493,11 @@ public sealed partial class EditorView : IDisposable, IToolHost
                 else
                     _tool = Tool.Parallel;
             }
+
+            if (_tool != toolBefore)
+                _trains.Open = false;
+            var (railTool, railMode) = Current;
+            _lastMode[railTool] = railMode;
 
             if (ctrl && Input.KeyDown(GlfwKey.Z))
                 UndoLast();
@@ -1230,6 +1234,14 @@ public sealed partial class EditorView : IDisposable, IToolHost
 
         if (ImGui.MenuItem("Solve Track Again...", "", false, source is not null && _rebuild is null))
             _confirmSolve = true;
+        if (ImGui.MenuItem("Auto Classify Track...", "", false, source is not null && _tracks is not null))
+        {
+            _classify = TrackClassify.Find(source!.Network, _route.Projection!);
+            _confirmClassify = true;
+        }
+
+        ImGui.Separator();
+        MenuSignals();
     }
 
     public void MenuView()
@@ -1240,8 +1252,20 @@ public sealed partial class EditorView : IDisposable, IToolHost
             _overlay = _overlay == TrackOverlay.Class ? TrackOverlay.Off : TrackOverlay.Class;
         if (ImGui.MenuItem("Track Classes + Map"u8, "G"u8, _overlay == TrackOverlay.ClassMap))
             _overlay = _overlay == TrackOverlay.ClassMap ? TrackOverlay.Off : TrackOverlay.ClassMap;
-        if (ImGui.MenuItem("Wireframe", "Shift+F",_renderer.Wireframe, true))
+        if (ImGui.MenuItem("Wireframe", "Shift+F", _renderer.Wireframe, true))
             _renderer.Wireframe = !_renderer.Wireframe;
+        if (_topDown && ImGui.BeginMenu("Background"))
+        {
+            if (ImGui.MenuItem("None", "", !_showBackground, true))
+                _showBackground = false;
+            if (ImGui.MenuItem("Map", "", _showBackground && MapTiles.Background == MapBackground.Map, true))
+                (_showBackground, MapTiles.Background) = (true, MapBackground.Map);
+            if (ImGui.MenuItem("Aerial", "", _showBackground && MapTiles.Background == MapBackground.Satellite, true))
+                (_showBackground, MapTiles.Background) = (true, MapBackground.Satellite);
+            if (_showBackground)
+                ImGui.SliderFloat("Opacity", ref _backgroundOpacity, 0.1f, 1f, "%.1f");
+            ImGui.EndMenu();
+        }
         ImGui.Separator();
         if (ImGui.MenuItem("Audio Editor", "", _audioEditor.Open, true))
             _audioEditor.Open = !_audioEditor.Open;
@@ -1269,6 +1293,49 @@ public sealed partial class EditorView : IDisposable, IToolHost
         if (answer >= 0 || ImGui.IsKeyPressed(ImGuiKey.Escape))
             ImGui.CloseCurrentPopup();
         ImGui.EndPopup();
+    }
+
+    private bool _confirmClassify;
+    private (List<(long Way, RailClass Class)> Changes, int Looked, int Matched)? _classify;
+
+    /// Auto Classify Track: what it found, and Apply to give the laid track those classes (one edit, so undoable).
+    private void ConfirmClassify()
+    {
+        if (_confirmClassify)
+        {
+            ImGui.OpenPopup("Auto Classify Track?"u8);
+            _confirmClassify = false;
+        }
+
+        ImGui.SetNextWindowSize(new float2(460f, 0f), ImGuiCond.Always);
+        if (!ImGui.BeginPopupModal("Auto Classify Track?"u8, ImGuiWindowFlags.AlwaysAutoResize))
+            return;
+        if (_classify is { } found)
+        {
+            ToolPanel.Line("Gives laid track the class of the mapped (OpenStreetMap) track it runs along: Main, Branch, Industrial or Yard.");
+            ToolPanel.Line($"{found.Matched} of {found.Looked} laid tracks run along mapped track; {found.Changes.Count} would change.");
+            foreach (var group in found.Changes.GroupBy(c => c.Class).OrderBy(g => g.Key))
+                ToolPanel.Line($"  {group.Count()} to {RailColours.Name((int)group.Key)}");
+            ToolPanel.Line("Beds and bed heights stay as they are. Ctrl+Z undoes it.");
+        }
+
+        ImGui.Dummy(new float2(1f, S(6f)));
+        var answer = Kit.Buttons("classify", ["Apply", "Cancel"]);
+        if (answer == 0)
+            ApplyClassify();
+        if (answer >= 0 || ImGui.IsKeyPressed(ImGuiKey.Escape))
+        {
+            _classify = null;
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.EndPopup();
+    }
+
+    private void ApplyClassify()
+    {
+        if (_classify is { Changes.Count: > 0 } found && _tracks is not null)
+            Committed(_tracks.SetClasses(found.Changes));
     }
 
     /// The route audit's window: open, what it found last, and whether it's still looking.
@@ -1346,9 +1413,6 @@ public sealed partial class EditorView : IDisposable, IToolHost
         _camera.Y = _terrain!.Source.HeightAt(x, z) + 35.0;
     }
 
-    /// Whether the side panel has anything to show.
-    public bool HasPanel => _terrain is null || _tool != Tool.Look || _topDown;
-
     /// The track overlay's key and its title, for the footer while it's shown (the Circuits tool draws its own colours
     /// instead). The class key lists only the classes the route has.
     public (string Title, (Rgba Color, string Name)[] Entries)? OverlayKey
@@ -1374,15 +1438,22 @@ public sealed partial class EditorView : IDisposable, IToolHost
         }
     }
 
-    /// The camera and the tool in hand, for the side panel.
+    /// Whether the properties panel has anything to show: the train, or a tool with settings (Free Look has none).
+    public bool HasProperties => _terrain is not null && (_trains.Open || _tool != Tool.Look);
+
+    /// The properties panel: the train when it's open, else the tool in hand's settings.
     public void Panel()
     {
         if (_terrain is null)
             return;
+        if (_trains.Open)
+        {
+            _trains.Inspector();
+            return;
+        }
 
         var imperial = Settings.Current.Units == UnitSystem.Imperial;
-        var (title, key) = PanelTitle;
-        ToolPanel.Header(title, key);
+
         if (IsBrush(_tool))
             BrushPanel(imperial);
         if (_tool == Tool.Parallel)
@@ -1410,68 +1481,31 @@ public sealed partial class EditorView : IDisposable, IToolHost
             ClassPanel();
             BedPanel();
         }
+
         if (_tool == Tool.Place)
             _objects.Panel(imperial);
         if (_tool == Tool.Road)
             _roadTool.Panel(imperial);
-
-        if (_topDown)
-        {
-            Kit.BeginCard("Background");
-            var shown = !_showBackground ? 0 : MapTiles.Background == MapBackground.Map ? 1 : 2;
-            var pick = ToolPanel.Mode("background", ["Off", "Map", "Aerial"], shown, 3);
-            if (pick != shown)
-                (_showBackground, MapTiles.Background) = pick switch { 0 => (false, MapTiles.Background), 1 => (true, MapBackground.Map), _ => (true, MapBackground.Satellite) };
-            if (_showBackground)
-            {
-                ToolPanel.Value("opacity", "Opacity", ref _backgroundOpacity, 0.1f, 1f, "0.0");
-                ToolPanel.Hint(MapTiles.Attribution);
-            }
-
-            Kit.EndCard();
-        }
-
     }
-
-    /// The side panel's header: the tool in hand (the Place tool by its button) and its key.
-    private (string Title, string? Key) PanelTitle => _tool switch
-    {
-        Tool.Track => ("Edit", "7"),
-        Tool.Pen => ("Pen", "8"),
-        Tool.Join => ("Join", null),
-        Tool.Draw => ("Track", null),
-        Tool.Siding => ("Siding", null),
-        Tool.Shape => ("Shape", "-"),
-        Tool.Follow => ("Lay", "="),
-        Tool.Parallel => ("Parallel", "P"),
-        Tool.Switches => ("Switches", "0"),
-        Tool.Circuits => ("Circuits", "9"),
-        Tool.Road => ("Roads", ";"),
-        Tool.Place => (GroupOf(_place.Mode) switch
-        {
-            PlaceGroup.Assemblies => "Assembly",
-            PlaceGroup.Structures => "Structures",
-            PlaceGroup.Signals => "Signals",
-            _ => "Lineside",
-        }, null),
-        _ when IsBrush(_tool) => ("Terrain", "2-6"),
-        _ => ("Free Look", "1"),
-    };
 
     /// Saves a switch's size (SwitchesTool.PickSize).
     private void PickSize(long node, int? size) => _switchTool.PickSize(node, size);
 
+    /// The editor's floating windows: the air graphs, the audit, the audio editor, and the Solve Again question.
     public void Windows()
     {
-        using (Profiler.Sample("Tool strip"))
-            ToolStrip();
-        using (Profiler.Sample("Train window"))
-            _trains.Window(_headerBottom);
+        _trains.Windows();
         AuditWindow();
         _audioEditor.Window(_trains);
         _audioEditor.Gizmos(_trains, Project, _camera, _screen.Y, Blocked);
         ConfirmSolve();
+        ConfirmClassify();
     }
+
+    /// The drive strip along the bottom, while a train's driven.
+    public bool HasDock => _trains.HasDock;
+
+    public void Dock() => _trains.DriveStrip();
 
     /// The editor's lines in Frame Statistics.
     public void DebugStats()

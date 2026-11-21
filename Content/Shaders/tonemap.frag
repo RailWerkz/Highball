@@ -1,5 +1,6 @@
 #version 450
-// The last step: adds the bloom, god rays and the sun's glare to the picture, exposes it, grades it and fits it to the screen.
+// The last step: adds the bloom, god rays and the sun's glare to the picture, exposes it, grades it and fits it to the screen with
+// the chosen tonemapper (Post/Tonemapping.glsl, Settings.Tonemapper).
 
 layout(location = 1) in vec2 vUv;
 layout(location = 0) out vec4 outColor;
@@ -9,14 +10,32 @@ layout(set = 0, binding = 1) uniform sampler2D bloom;
 layout(set = 0, binding = 2) uniform sampler2D rays;
 layout(set = 0, binding = 3) uniform sampler2D measured;
 #include "Post/PostData.glsl"
+#include "Post/Tonemapping.glsl"
 
 // The picture's measured brightness at which the set exposure is left as it is.
 const float MeasuredBrightness = 0.42;
 
-// Narkowicz's fit of the ACES filmic curve.
-vec3 aces(vec3 x)
+// The tonemapper that already gives the display's gamma (Hejl and Burgess-Dawson's filmic): no sRGB encoding after it.
+const uint GammaBuiltIn = 4u;
+
+float hableNumber(int i)
 {
-    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+    return post.hable[i / 4][i % 4];
+}
+
+HableTonemapUniforms hableCurve()
+{
+    HableTonemapUniforms curve;
+    for (int k = 0; k < 3; k++)
+    {
+        int at = k * 6;
+        curve.segments[k] = HableSegment(hableNumber(at), hableNumber(at + 1), hableNumber(at + 2), hableNumber(at + 3), hableNumber(at + 4), hableNumber(at + 5));
+    }
+    curve.invW = hableNumber(18);
+    curve.x0 = hableNumber(19);
+    curve.x1 = hableNumber(20);
+    curve.padding0 = 0.0;
+    return curve;
 }
 
 vec3 toSrgb(vec3 c)
@@ -42,39 +61,9 @@ vec3 glare(vec2 uv, float visible, float air)
     return post.sunColor.rgb * glow * visible * min(post.sunColor.w * 4.0, 1.0);
 }
 
-// Bright things squeezed (as the temporal pass does), so sharpening doesn't ring round a lamp or the sun.
-vec3 squeeze(vec3 c)
-{
-    return c / (1.0 + luma(c));
-}
-
-vec3 unsqueeze(vec3 c)
-{
-    return c / max(1.0 - luma(c), 1e-3);
-}
-
-// After temporal anti-aliasing, which softens fine detail as it blends frames: each pixel pushed away from the average of its four
-// neighbours, as far as amount says, but never past the darkest or brightest of them, so edges get crisper without halos.
-vec3 sharpened(vec2 uv, float amount)
-{
-    vec3 c = texture(hdr, uv).rgb;
-    if (amount <= 0.0)
-        return c;
-    vec2 texel = 1.0 / vec2(textureSize(hdr, 0));
-    vec3 n = squeeze(texture(hdr, uv + vec2(0.0, -texel.y)).rgb);
-    vec3 s = squeeze(texture(hdr, uv + vec2(0.0, texel.y)).rgb);
-    vec3 e = squeeze(texture(hdr, uv + vec2(texel.x, 0.0)).rgb);
-    vec3 w = squeeze(texture(hdr, uv + vec2(-texel.x, 0.0)).rgb);
-    vec3 mid = squeeze(c);
-    vec3 low = min(mid, min(min(n, s), min(e, w)));
-    vec3 high = max(mid, max(max(n, s), max(e, w)));
-    vec3 pushed = mid + (mid - (n + s + e + w) * 0.25) * amount * 2.0;
-    return unsqueeze(clamp(pushed, low, high));
-}
-
 void main()
 {
-    vec3 color = mix(sharpened(vUv, post.sharpen.x), texture(bloom, vUv).rgb, post.look.y);
+    vec3 color = mix(texture(hdr, vUv).rgb, texture(bloom, vUv).rgb, post.look.y);
     vec2 reading = texelFetch(measured, ivec2(0), 0).rg;
 
     vec2 rayed = texture(rays, vUv).rg;
@@ -99,6 +88,9 @@ void main()
     color *= 1.0 - post.tone.w * dot(corner, corner) * 0.5;
 
     // Dithered, so the sky's slow gradients don't show as bands in eight bits.
-    vec3 fitted = toSrgb(aces(color));
+    // Exposed and graded already, so each curve gets an exposure of 1, and a gamma of 1 so it stays linear for the sRGB encoding.
+    uint mapper = uint(post.mapping.x + 0.5);
+    vec3 mapped = tonemapSwitch(mapper, color, 1.0, 1.0, hableCurve());
+    vec3 fitted = mapper == GammaBuiltIn ? mapped : toSrgb(clamp(mapped, 0.0, 1.0));
     outColor = vec4(fitted + (noiseAt(gl_FragCoord.xy) - 0.5) / 255.0, 1.0);
 }

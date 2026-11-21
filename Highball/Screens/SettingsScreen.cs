@@ -47,15 +47,10 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
             .Add(new MenuItem { Label = "Quality", Value = () => Qualities[Math.Clamp(s.Quality, 0, 3)], OnChange = d => s.Quality = Math.Clamp(s.Quality + d, 0, 3) })
             .Add(new MenuItem { Label = "Track textures", Value = () => TrackTextures.Describe(s.TrackTextureQuality), OnChange = d => s.TrackTextureQuality = (Math.Clamp(s.TrackTextureQuality, 0, 3) + d + 4) % 4 })
             .Add(new MenuItem { Label = "Terrain textures", Value = () => TerrainDetails[Math.Clamp(s.TerrainTextureDetail, 0, 2)], OnChange = d => s.TerrainTextureDetail = (Math.Clamp(s.TerrainTextureDetail, 0, 2) + d + 3) % 3 })
-            .Add(new MenuItem { Label = "Anti-aliasing (MSAA)", Value = () => s.Msaa <= 1 ? "OFF" : $"{s.Msaa}x", OnChange = d => s.Msaa = StepMsaa(s.Msaa, d) })
+            .Add(new MenuItem { Label = "Anti-aliasing (MSAA)", Value = () => RailWerkz.Vulkan.RenderTarget.Wanted <= 1 ? "OFF" : $"{RailWerkz.Vulkan.RenderTarget.Wanted}x", OnChange = d => s.Msaa = StepMsaa(s.Msaa, d) })
             .Add(new MenuItem { Label = "View distance", Value = () => Distance(s.ViewDistance), Meter = () => (s.ViewDistance - MetersPerMile) / (20000f - MetersPerMile), OnChange = d => s.ViewDistance = StepDistance(s.ViewDistance, d) })
             .Add(new MenuItem { Label = "Field of view", Value = () => $"{s.FieldOfView:0}°", Meter = () => (s.FieldOfView - 40f) / 50f, OnChange = d => s.FieldOfView = Math.Clamp(s.FieldOfView + d * 5f, 40f, 90f), SeparatorAfter = true })
-            .Add(new MenuItem { Label = "Temporal AA (FSR 2)", Value = () => OnOff(s.TemporalAA), OnChange = _ => s.TemporalAA = !s.TemporalAA })
-            .Add(new MenuItem
-            {
-                Label = "Sharpening", Value = () => s.TemporalAA ? $"{MathF.Round(s.Sharpening * 100f):0}%" : "OFF (NEEDS TAA)", Meter = () => s.Sharpening,
-                OnChange = d => s.Sharpening = Math.Clamp(MathF.Round(s.Sharpening * 10f + d) / 10f, 0f, 1f), Enabled = () => s.TemporalAA,
-            })
+            .Add(new MenuItem { Label = "Temporal anti-aliasing", Value = () => OnOff(s.TemporalAA), OnChange = _ => s.TemporalAA = !s.TemporalAA })
             .Add(new MenuItem
             {
                 Label = "Render resolution",
@@ -74,7 +69,8 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
             .Add(new MenuItem { Label = "Plants and rocks", Value = () => OnOff(s.Vegetation), OnChange = _ => s.Vegetation = !s.Vegetation })
             .Add(new MenuItem { Label = "Bloom", Value = () => OnOff(s.Bloom), OnChange = _ => s.Bloom = !s.Bloom })
             .Add(new MenuItem { Label = "God rays and glare", Value = () => OnOff(s.GodRays), OnChange = _ => s.GodRays = !s.GodRays })
-            .Add(new MenuItem { Label = "Look", Value = () => ColorGrade.Find(s.ColorGrade).Label.ToUpperInvariant(), OnChange = d => s.ColorGrade = Next(ColorGrade.All, ColorGrade.Find(s.ColorGrade), d).Id });
+            .Add(new MenuItem { Label = "Tonemapper", Value = () => Tonemapper.Find(s.Tonemapper).Label.ToUpperInvariant(), OnChange = d => s.Tonemapper = Next(Tonemapper.All, Tonemapper.Find(s.Tonemapper), d).Id })
+            .Add(new MenuItem { Label = "Color grade", Value = () => ColorGrade.Find(s.ColorGrade).Label.ToUpperInvariant(), OnChange = d => s.ColorGrade = Next(ColorGrade.All, ColorGrade.Find(s.ColorGrade), d).Id });
 
         // A skybox brings its own sun, so the clock and the clouds are the procedural sky's alone.
         Func<bool> procedural = () => s.Skybox == Sky.Procedural;
@@ -119,6 +115,7 @@ public sealed class SettingsScreen : MenuScreen, IWorldScreen
     private Menu NewTab(string name) => new(name) { Look = MenuLook.Rows, RowWidth = RowWidth, OnBack = Back, ShowHeader = false };
 
     /// The next sample count the GPU can do.
+    /// The next MSAA setting: off, 2x, 4x or 8x, as many of them as the GPU can draw.
     private static int StepMsaa(int value, int direction)
     {
         var steps = ((int[])[1, 2, 4, 8]).Where(RailWerkz.Vulkan.RenderTarget.Supported).ToArray();

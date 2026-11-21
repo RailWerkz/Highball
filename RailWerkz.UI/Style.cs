@@ -20,6 +20,43 @@ public static class Style
     public static Rgba TextDim = Rgba.Hex(0x8C96A8);
     public static Rgba TextFaint = Rgba.Hex(0x566072);
 
+    /// The deck's neutrals, kept to switch back to from the editor's.
+    private static readonly (Rgba Background, Rgba Surface, Rgba Raised, Rgba RaisedHover, Rgba Stroke, Rgba StrokeStrong, Rgba Text, Rgba TextDim, Rgba TextFaint) Deck =
+        (Background, Surface, Raised, RaisedHover, Stroke, StrokeStrong, Text, TextDim, TextFaint);
+
+    /// The working screens' neutrals (the Route Builder, the Consist Editor, driving): flat greys, like any editor.
+    private static readonly (Rgba Background, Rgba Surface, Rgba Raised, Rgba RaisedHover, Rgba Stroke, Rgba StrokeStrong, Rgba Text, Rgba TextDim, Rgba TextFaint) Work =
+        (Rgba.Hex(0x161616), Rgba.Hex(0x1E1E1F), Rgba.Hex(0x2B2B2D), Rgba.Hex(0x3A3A3D), new(1f, 1f, 1f, 0.06f), new(1f, 1f, 1f, 0.11f),
+         Rgba.Hex(0xDEDEDE), Rgba.Hex(0x9C9C9F), Rgba.Hex(0x68686C));
+
+    /// Whether the working screens' look is on: their greys and a plain sans face, sentence case, no spaced capitals.
+    public static bool Editor { get; private set; }
+
+    /// A deck label (all capitals) as the editor writes it, in sentence case. Names stay as they are: anything with a
+    /// lower-case letter or a digit in it, and short codes (CSX, BNSF, DPU).
+    public static string Case(string text)
+    {
+        if (text.Length < 2 || text.Any(char.IsLower) || text.Any(char.IsDigit) || (text.Length <= 4 && !text.Contains(' ')))
+            return text;
+        return char.ToUpperInvariant(text[0]) + text[1..].ToLowerInvariant();
+    }
+
+    /// Switches between the deck's look (the splash and menus) and the editor's; called once a frame for the top screen.
+    public static void UseEditor(bool on)
+    {
+        if (on == Editor)
+            return;
+        Editor = on;
+        (Background, Surface, Raised, RaisedHover, Stroke, StrokeStrong, Text, TextDim, TextFaint) = on ? Work : Deck;
+        (Regular, Medium, Bold, Heavy) = on ? _editorFonts : _deckFonts;
+        if (!Regular.IsNull())
+            ImGui.GetIO().FontDefault = Regular;
+        ApplyImGui();
+    }
+
+    private static (ImFontPtr, ImFontPtr, ImFontPtr, ImFontPtr) _deckFonts;
+    private static (ImFontPtr, ImFontPtr, ImFontPtr, ImFontPtr) _editorFonts;
+
     // Status colours, named for the signals they borrow from.
     public static readonly Rgba Clear = Rgba.Hex(0x3DDC97);
     public static readonly Rgba Caution = Rgba.Hex(0xFFC145);
@@ -61,13 +98,14 @@ public static class Style
     public static void ApplyImGui()
     {
         var style = ImGui.GetStyle();
+        var editor = Editor;
         style.WindowPadding = new float2(12f, 10f);
         style.WindowRounding = 0f;
         style.WindowBorderSize = 1f;
         style.PopupRounding = 4f;
         style.PopupBorderSize = 1f;
-        style.FramePadding = new float2(8f, 5f);
-        style.FrameRounding = 4f;
+        style.FramePadding = editor ? new float2(8f, 6f) : new float2(8f, 5f);
+        style.FrameRounding = editor ? 3f : 4f;
         style.ItemSpacing = new float2(6f, 6f);
         style.ItemInnerSpacing = new float2(6f, 4f);
         style.ScrollbarSize = 10f;
@@ -92,7 +130,7 @@ public static class Style
         Set(ImGuiCol.TitleBg, Surface);
         Set(ImGuiCol.TitleBgActive, Raised);
         Set(ImGuiCol.TitleBgCollapsed, Surface);
-        Set(ImGuiCol.MenuBarBg, Surface);
+        Set(ImGuiCol.MenuBarBg, editor ? Background : Surface);
         Set(ImGuiCol.ScrollbarBg, clear);
         Set(ImGuiCol.ScrollbarGrab, StrokeStrong);
         Set(ImGuiCol.ScrollbarGrabHovered, TextFaint);
@@ -176,6 +214,21 @@ public static class Style
             Log.Warn("No fonts found in Content/Fonts; using ImGui's default");
         else
             io.FontDefault = Regular;
+        _deckFonts = (Regular, Medium, Bold, Heavy);
+
+        // The editor's face: the system's sans (Segoe UI on Windows), else the deck's.
+        ImFontPtr System(string file, ImFontPtr fallback)
+        {
+            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), file);
+            if (!File.Exists(path))
+                return fallback;
+            var font = io.Fonts.AddFontFromFileTTF(path, 18f);
+            return font.IsNull() ? fallback : font;
+        }
+
+        var sans = System("segoeui.ttf", Regular);
+        var semibold = System("seguisb.ttf", sans);
+        _editorFonts = (sans, sans, semibold, System("segoeuib.ttf", semibold));
     }
 
     /// The interface scale: 1 at 1080 lines, so the menus read the same on any screen.

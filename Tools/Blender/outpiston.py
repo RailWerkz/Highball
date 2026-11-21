@@ -2,14 +2,14 @@
 
     blender -b --factory-startup --python Tools/Blender/outpiston.py -- <Content folder> [--loco KEY ...] [--preview DIR] [--list]
 
-Each source is a Sketchfab download by OUTPISTON, kept unchanged in Models/Locomotives/<folder>/Source (see SPECS for which,
+Each source is a Sketchfab download by OUTPISTON, kept unchanged in Meshes/Locomotives/<folder>/Source (see SPECS for which,
 and each folder's CREDITS.txt for its licence). For each one this writes, under its folder, CREDITS.txt, assembly.json (where
 each part goes), one folder per level of detail, of which only LOD0 is built (the sources are already light), and
     LOD0/body_<livery>.glb   origin on the railhead, midway between the trucks
     LOD0/truck.glb           origin on the railhead at the truck's pivot, turning about Z
     LOD0/wheelset.glb        origin at the axle's centre, rolling about X
     Assembled/<key>_<livery>.glb and .blend, the whole engine for looking at; the game loads the separate parts.
-The source's own couplers are taken off and the shared one from Models/Couplers (written by Tools/Blender/sd40.py) goes on
+The source's own couplers are taken off and the shared one from Meshes/Couplers (written by Tools/Blender/sd40.py) goes on
 in their place, its pulling face where the source's was, at the standard height.
 
 The sources aren't laid out alike (some have a node per part, some are merged into a few meshes), so the parts are found by
@@ -412,7 +412,7 @@ def extras(spec):
 
 
 def build(key, spec, content, preview):
-    out = os.path.join(content, "Models", "Locomotives", spec["folder"])
+    out = os.path.join(content, "Meshes", "Locomotives", spec["folder"])
     source = os.path.join(out, "Source", spec["file"])
     coupler = shared_coupler.load(content)
     pieces, coupler_faces = load(spec, source)
@@ -482,7 +482,7 @@ def build(key, spec, content, preview):
         "lengthOverCouplers": round(rear_face - front_face, 3),
         "lods": list(LODS),
         "trianglesWholeEngine": whole,
-        "models": "Each model below is <lod>/<model>.glb, except the couplers: Models/Couplers/coupler.glb, the same on every engine and car",
+        "models": "Each model below is <lod>/<model>.glb, except the couplers: Meshes/Couplers/coupler.glb, the same on every engine and car",
         "bodies": [f"body_{livery}"],
         "truckByBody": {},
         "trucks": [{"model": "truck", "position": [0, -round(truck_y, 4), 0], "yaw": 0},
@@ -506,7 +506,7 @@ Licensed under {licence[0]}: {licence[1]}
 The source file is in Source/, unchanged. Livery: {livery_note}.
 The other models in these folders are made from it by Tools/Blender/outpiston.py. Changes: split into body, truck and wheelset;
 turned to run along Y and moved so the rail is at zero; one material per texture; its own couplers taken off{extras(spec)}. Its couplers
-are the shared one in Models/Couplers, from the SD40 (see the CREDITS.txt there).
+are the shared one in Meshes/Couplers, from the SD40 (see the CREDITS.txt there).
 """)
     combined(key, spec, out, livery, assembly, coupler, preview)
 

@@ -43,7 +43,7 @@ public static class ContentPath
     public static string Get(string relative) => Path.Combine(Root, relative);
     public static string Audio(string name) => Path.Combine(Root, "Audio", name);
     public static string Font(string name) => Path.Combine(Root, "Fonts", name);
-    public static string Model(string name) => Path.Combine(Root, "Models", name);
+    public static string Model(string name) => Path.Combine(Root, "Meshes", name);
     public static string Shader(string name) => Path.Combine(Root, "Shaders", name);
     public static string Texture(string name) => Path.Combine(Root, "Textures", name);
     public static string Route(string name) => Path.Combine(Root, "Routes", name);

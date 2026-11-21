@@ -1,0 +1,9 @@
+GE AC4400CW (BNSF)
+Author: TODO
+Source: TODO (bought by the project; the files are in Source/fbx.zip)
+Licence: TODO
+
+The original files are in Source (BNSF.fbx and its textures in Source/Textures), unchanged.
+The other models in these folders are made from it by Tools/Blender/ac4400cw.py --livery bnsf, as the CSX one is (see
+../CSX/CREDITS.txt for what's done): its parts named after the CSX model's where they're the same, so the one script reads
+both. Its couplers are the shared one in Meshes/Couplers, from the SD40 (see the CREDITS.txt there).

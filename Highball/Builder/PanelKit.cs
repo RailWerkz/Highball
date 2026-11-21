@@ -5,178 +5,153 @@ using static RailWerkz.UI.Style;
 
 namespace Highball.Builder;
 
-/// One reading in a Kit.Stats grid: a small spaced caption over its value.
+/// One reading in a Kit.Stats grid: a label and its value.
 public readonly record struct Stat(string Label, string Value, Rgba? Color = null);
 
-/// The deck's look (the consist editor's: enamel plates with cut corners, spaced capitals, square lamps, hairline frames,
-/// Mono readings) for a floating ImGui window, so it can still be dragged, scrolled and typed into. Everything's laid out
-/// in ImGui's flow: each piece reserves its space and draws itself there, its clicks through an invisible button.
-///
-/// Text is drawn on the draw list, never through ImGui.Text (which takes its string as a format).
+/// The editor's controls, laid out in ImGui's flow inside a panel or window: compact rows in sentence case, flat greys,
+/// the accent only on what's on or picked. Each piece reserves its space and draws itself there, its clicks through an
+/// invisible button. Text is drawn on the draw list, never through ImGui.Text (which takes its string as a format).
 public static class Kit
 {
     private static ImDrawListPtr Draw => ImGui.GetWindowDrawList();
 
-    private static readonly Stack<(float2 Start, float Width)> Cards = new();
+    /// Section starts, for the width inside one.
+    private static readonly Stack<float> Sections = new();
 
-    private static float CardPad => S(12f);
+    public static float RowHeight => S(24f);
+    public static float FontSize => S(14f);
+    private static float Rounding => S(3f);
 
-    /// Captions over controls and readings: dimmer than what they label, but readable.
-    private static Rgba Label => Rgba.Mix(TextFaint, TextDim, 0.7f);
+    /// The width there is to lay out in.
+    public static float Width => ImGui.GetContentRegionAvail().X;
 
-    /// The width there is to lay out in: a card's inside, or the window's.
-    public static float Width => Cards.Count > 0 ? Cards.Peek().Width - CardPad * 2f : ImGui.GetContentRegionAvail().X;
+    // --- A floating window. ---
 
-    // --- The window. ---
-
-    /// A plate of a fixed width, its height following what's in it (scrolling past the room there is), kept on the
-    /// screen. Its header: a lamp and the title, a status on the right, the subtitle under, and a close box.
+    /// A floating window of a fixed width, its height following what's in it, kept on the screen; flat, with a hairline.
     public static bool Begin(string name, ref bool open, float width)
     {
         var (min, max) = WindowBounds.Area;
-        ImGui.SetNextWindowSizeConstraints(new float2(width, S(80f)), new float2(width, MathF.Max(S(80f), max.Y - min.Y)));
-        ImGui.PushStyleColor(ImGuiCol.WindowBg, new float4(0f, 0f, 0f, 0f));
-        ImGui.PushStyleColor(ImGuiCol.Border, new float4(0f, 0f, 0f, 0f));
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new float2(S(16f), S(14f)));
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 0f);
+        ImGui.SetNextWindowSizeConstraints(new float2(width, S(60f)), new float2(width, MathF.Max(S(60f), max.Y - min.Y)));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new float2(S(10f), S(8f)));
         ImGui.PushStyleVar(ImGuiStyleVar.ScrollbarSize, S(6f));
         var shown = ImGui.Begin(name, ref open, ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoCollapse);
         WindowBounds.Keep();
-        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new float2(S(8f), S(6f)));
-        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 0f);
-        ImGui.PushStyleVar(ImGuiStyleVar.GrabRounding, 0f);
-
-        // The plate, behind everything, over the whole window whatever it's scrolled to.
-        var pos = ImGui.GetWindowPos();
-        var size = ImGui.GetWindowSize();
-        var draw = Draw;
-        draw.PushClipRect(pos, pos + size, false);
-        Canvas.Plate(draw, pos, pos + size);
-        draw.PopClipRect();
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new float2(S(6f), S(4f)));
         return shown;
     }
 
     public static void End()
     {
-        ImGui.PopStyleVar(3);
+        ImGui.PopStyleVar();
         ImGui.End();
-        ImGui.PopStyleVar(3);
-        ImGui.PopStyleColor(2);
+        ImGui.PopStyleVar(2);
     }
 
-    /// The title band; returns true when its close box is clicked.
+    /// A floating window's title row: its title, a status at the right, a close box. Returns true when the box is clicked.
     public static bool Header(string title, string subtitle, string status, Rgba statusColor)
     {
         var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
         var width = Width;
-        Canvas.Lamp(draw, at + new float2(S(4f), S(8f)), S(4f), Accent);
-        Canvas.Spaced(draw, Bold, S(12f), at + new float2(S(18f), S(1f)), Text, title, 0.24f);
-        Canvas.Text(draw, Bold, S(17f), at + new float2(0f, S(22f)), Text, Ellipsize(subtitle, Bold, S(17f), width - S(40f)));
+        var name = subtitle.Length > 0 ? subtitle : Sentence(title);
+        Canvas.Text(draw, Bold, FontSize, at + new float2(0f, S(2f)), Text, Ellipsize(name, Bold, FontSize, width - S(140f)));
 
-        // The close box, top right; the status to its left.
-        var close = new float2(at.X + width - S(18f), at.Y - S(2f));
+        var close = new float2(at.X + width - S(18f), at.Y);
         ImGui.SetCursorScreenPos(close);
         var clicked = ImGui.InvisibleButton("##close", new float2(S(18f), S(18f)));
         var hover = ImGui.IsItemHovered();
-        var c = close + new float2(S(9f), S(9f));
-        var arm = S(5f);
-        var ink = hover ? Text : TextDim;
-        draw.AddLine(c - new float2(arm, arm), c + new float2(arm, arm), ink, S(1.5f));
-        draw.AddLine(c + new float2(-arm, arm), c + new float2(arm, -arm), ink, S(1.5f));
-        if (hover)
-            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+        var c = close + new float2(S(9f), S(10f));
+        var arm = S(4f);
+        draw.AddLine(c - new float2(arm, arm), c + new float2(arm, arm), hover ? Text : TextDim, S(1.3f));
+        draw.AddLine(c + new float2(-arm, arm), c + new float2(arm, -arm), hover ? Text : TextDim, S(1.3f));
+        Canvas.Text(draw, Regular, S(13f), new float2(close.X - S(8f), at.Y + S(2.5f)), statusColor == TextFaint ? TextDim : statusColor, Sentence(status), Align.Right);
 
-        var statusWidth = Canvas.SpacedWidth(Bold, S(10f), status, 0.16f);
-        var statusX = close.X - S(12f) - statusWidth;
-        Canvas.Lamp(draw, new float2(statusX - S(10f), at.Y + S(8f)), S(3f), statusColor);
-        Canvas.Spaced(draw, Bold, S(10f), new float2(statusX, at.Y + S(2f)), Rgba.Mix(Text, statusColor, 0.5f), status, 0.16f);
-
-        // The double rule under it.
-        var rule = at.Y + S(50f);
-        var pos = ImGui.GetWindowPos();
-        var right = pos.X + ImGui.GetWindowSize().X;
-        draw.AddLine(new float2(pos.X, rule), new float2(right, rule), StrokeStrong, 1f);
-        draw.AddLine(new float2(pos.X, rule + S(3f)), new float2(right, rule + S(3f)), Stroke, 1f);
         ImGui.SetCursorScreenPos(at);
-        ImGui.Dummy(new float2(width, S(62f)));
+        ImGui.Dummy(new float2(width, S(22f)));
+        Separator();
         return clicked;
     }
 
-    // --- Tabs and cards. ---
+    // --- Sections. ---
 
-    /// A bar of tabs, the picked one filled with the accent. Returns the one picked (clicked, or as it was).
+    /// Tabs: text across the width, the picked one underlined. Returns the one picked.
     public static int Tabs(string id, ReadOnlySpan<string> labels, int current)
     {
+        var draw = Draw;
         var picked = current;
-        var gap = S(4f);
-        var width = (Width - gap * (labels.Length - 1)) / labels.Length;
-        var height = S(30f);
+        var width = Width / labels.Length;
+        var height = S(26f);
         var at = ImGui.GetCursorScreenPos();
         for (var i = 0; i < labels.Length; i++)
         {
-            var min = at + new float2(i * (width + gap), 0f);
-            if (Cell($"{id}.{i}", labels[i], min, new float2(width, height), i == current, true, null, out _))
+            var min = at + new float2(i * width, 0f);
+            ImGui.SetCursorScreenPos(min);
+            if (ImGui.InvisibleButton($"{id}.{i}", new float2(width, height)) && i != current)
+            {
                 picked = i;
+                Sfx.Tick();
+            }
+
+            var hover = ImGui.IsItemHovered();
+            var on = i == current;
+            Canvas.Text(draw, on ? Bold : Medium, FontSize, min + new float2(width * 0.5f, (height - FontSize) * 0.5f - S(1f)), on || hover ? Text : TextDim, labels[i], Align.Center);
+            if (on)
+                draw.AddRectFilled(new float2(min.X, at.Y + height - S(2f)), new float2(min.X + width, at.Y + height), Accent);
         }
 
+        draw.AddLine(new float2(at.X, at.Y + height), new float2(at.X + Width, at.Y + height), Stroke, 1f);
         ImGui.SetCursorScreenPos(at);
-        ImGui.Dummy(new float2(Width, height));
-        ImGui.Dummy(new float2(1f, S(2f)));
+        ImGui.Dummy(new float2(Width, height + S(4f)));
         return picked;
     }
 
-    /// Starts a card: a framed panel with a spaced title (a lamp before it if given, a note on the right). Cards don't nest.
+    /// Starts a section: a header row with its title (a status dot if given, a note at the right), then its rows. Sections
+    /// don't nest.
     public static void BeginCard(string title, string? note = null, Rgba? lamp = null)
     {
         var draw = Draw;
-        draw.ChannelsSplit(2);
-        draw.ChannelsSetCurrent(1);
-        var start = ImGui.GetCursorScreenPos();
-        var width = ImGui.GetContentRegionAvail().X;
-        Cards.Push((start, width));
-        ImGui.SetCursorScreenPos(start + new float2(CardPad, CardPad));
-        ImGui.BeginGroup();
-        ImGui.PushItemWidth(Width);
-
         var at = ImGui.GetCursorScreenPos();
-        var x = at.X;
+        var width = Width;
+        var height = S(24f);
+        draw.AddRectFilled(at, at + new float2(width, height), Raised.WithAlpha(0.55f), Rounding);
+        var x = at.X + S(8f);
         if (lamp is { } color)
         {
-            Canvas.Lamp(draw, new float2(x + S(3f), at.Y + S(7f)), S(3f), color);
-            x += S(14f);
+            draw.AddCircleFilled(new float2(x + S(3f), at.Y + height * 0.5f), S(3f), color);
+            x += S(12f);
         }
 
-        Canvas.Spaced(draw, Bold, S(12.5f), new float2(x, at.Y), Text, title.ToUpperInvariant(), 0.2f);
+        Canvas.Text(draw, Bold, S(13.5f), new float2(x, at.Y + (height - S(13.5f)) * 0.5f - S(1f)), Text, Sentence(title));
         if (note is not null)
-            Canvas.Text(draw, Mono, S(13.5f), new float2(at.X + Width, at.Y - S(1f)), TextDim, note, Align.Right);
-        ImGui.Dummy(new float2(Width, S(21f)));
+            Canvas.Text(draw, Regular, S(13f), new float2(at.X + width - S(8f), at.Y + (height - S(13f)) * 0.5f - S(1f)), TextDim, note, Align.Right);
+        ImGui.Dummy(new float2(width, height + S(2f)));
+        Sections.Push(at.Y);
+        ImGui.Indent(S(4f));
+        ImGui.PushItemWidth(Width - S(4f));
     }
 
     public static void EndCard()
     {
         ImGui.PopItemWidth();
-        ImGui.EndGroup();
-        var (start, width) = Cards.Pop();
-        var bottom = ImGui.GetItemRectMax().Y + CardPad;
-        var draw = Draw;
-        draw.ChannelsSetCurrent(0);
-        var max = new float2(start.X + width, bottom);
-        draw.AddRectFilled(start, max, Raised.WithAlpha(0.42f));
-        draw.AddRect(start, max, Stroke, 0f, ImDrawFlags.None, 1f);
-        draw.AddRectFilled(start, new float2(start.X + S(2f), start.Y + S(24f)), Accent.WithAlpha(0.8f));
-        draw.ChannelsMerge();
-        ImGui.SetCursorScreenPos(new float2(start.X, bottom));
-        ImGui.Dummy(new float2(width, S(8f)));
+        ImGui.Unindent(S(4f));
+        Sections.Pop();
+        ImGui.Dummy(new float2(1f, S(8f)));
+    }
+
+    public static void Separator()
+    {
+        var at = ImGui.GetCursorScreenPos();
+        Draw.AddLine(new float2(at.X, at.Y + S(2f)), new float2(at.X + Width, at.Y + S(2f)), Stroke, 1f);
+        ImGui.Dummy(new float2(Width, S(5f)));
     }
 
     // --- Text. ---
 
-    /// A small spaced caption, over a control.
+    /// A label over a control.
     public static void Caption(string text)
     {
         var at = ImGui.GetCursorScreenPos();
-        Canvas.Spaced(Draw, Medium, S(12f), at, Label, text.ToUpperInvariant(), 0.18f);
+        Canvas.Text(Draw, Regular, S(13f), at, TextDim, Sentence(text));
         ImGui.Dummy(new float2(Width, S(16f)));
     }
 
@@ -184,55 +159,54 @@ public static class Kit
     public static void Note(string text, Rgba? color = null)
     {
         var draw = Draw;
-        var size = S(14.5f);
+        var size = S(13f);
         foreach (var line in Canvas.Wrap(text, Regular, size, Width))
         {
             var at = ImGui.GetCursorScreenPos();
             Canvas.Text(draw, Regular, size, at, color ?? TextDim, line);
-            ImGui.Dummy(new float2(Width, S(19f)));
+            ImGui.Dummy(new float2(Width, S(17f)));
         }
     }
 
-    /// A lamp and a line beside it, in its colour.
+    /// A dot and a line beside it, in its colour.
     public static void Status(Rgba color, string text)
     {
         var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
-        Canvas.Lamp(draw, at + new float2(S(4f), S(9f)), S(3f), color);
-        var size = S(15f);
-        var lines = Canvas.Wrap(text, Medium, size, Width - S(16f));
+        draw.AddCircleFilled(at + new float2(S(4f), S(9f)), S(3f), color);
+        var size = S(13.5f);
+        var lines = Canvas.Wrap(text, Medium, size, Width - S(14f));
         for (var i = 0; i < lines.Count; i++)
-            Canvas.Text(draw, Medium, size, at + new float2(S(16f), i * S(19f)), Rgba.Mix(Text, color, 0.35f), lines[i]);
-        ImGui.Dummy(new float2(Width, MathF.Max(1, lines.Count) * S(19f)));
+            Canvas.Text(draw, Medium, size, at + new float2(S(14f), i * S(18f)), Rgba.Mix(Text, color, 0.4f), lines[i]);
+        ImGui.Dummy(new float2(Width, MathF.Max(1, lines.Count) * S(18f)));
     }
 
-    /// Readings in a grid: captions over Mono values, columns across.
+    /// Readings as property rows: the label at the left, the value at the right; two to a row where there's room.
     public static void Stats(ReadOnlySpan<Stat> stats, int columns = 3, bool big = false)
     {
         var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
-        var width = Width / columns;
-        var rowHeight = big ? S(44f) : S(37f);
-        var rows = (stats.Length + columns - 1) / columns;
+        var across = Math.Clamp(columns, 1, 2);
+        var gap = S(14f);
+        var width = (Width - gap * (across - 1)) / across;
+        var row = S(20f);
+        var rows = (stats.Length + across - 1) / across;
         for (var i = 0; i < stats.Length; i++)
         {
-            var cell = at + new float2(i % columns * width, i / columns * rowHeight);
+            var cell = at + new float2(i % across * (width + gap), i / across * row);
             var stat = stats[i];
-            var label = stat.Label.ToUpperInvariant();
-            while (label.Length > 1 && Canvas.SpacedWidth(Medium, S(11.5f), label, 0.18f) > width - S(8f))
-                label = label[..^2] + "…";
-            Canvas.Spaced(draw, Medium, S(11.5f), cell, Label, label, 0.18f);
-            var font = big ? Bold : Mono;
-            var size = big ? S(20f) : S(15f);
-            Canvas.Text(draw, font, size, cell + new float2(0f, S(15f)), stat.Color ?? Text, Ellipsize(stat.Value, font, size, width - S(8f)));
+            var value = Ellipsize(stat.Value, Mono, S(13f), width * 0.6f);
+            Canvas.Text(draw, Mono, S(13f), cell + new float2(width, S(2f)), stat.Color ?? Text, value, Align.Right);
+            var room = width - Canvas.TextSize(Mono, S(13f), value).X - S(8f);
+            Canvas.Text(draw, Regular, S(13f), cell + new float2(0f, S(1f)), TextDim, Ellipsize(stat.Label, Regular, S(13f), room));
         }
 
-        ImGui.Dummy(new float2(Width, rows * rowHeight));
+        ImGui.Dummy(new float2(Width, rows * row));
     }
 
     // --- Controls. ---
 
-    /// A plate button across the width (or as wide as asked). Primary is filled with the accent; a tint fills it with that.
+    /// A button across the width (or as wide as asked). Primary is filled with the accent; a tint fills it with that.
     public static bool Button(string id, string label, float width = 0f, ButtonKind kind = ButtonKind.Secondary, bool enabled = true, Rgba? tint = null)
         => Button(id, label, out _, width, kind, enabled, tint);
 
@@ -240,17 +214,17 @@ public static class Kit
     public static bool Button(string id, string label, out bool held, float width = 0f, ButtonKind kind = ButtonKind.Secondary, bool enabled = true, Rgba? tint = null)
     {
         var at = ImGui.GetCursorScreenPos();
-        var size = new float2(width > 0f ? width : Width, S(31f));
+        var size = new float2(width > 0f ? width : Width, RowHeight);
         var clicked = Cell(id, label, at, size, kind == ButtonKind.Primary, enabled, tint, out held);
         ImGui.SetCursorScreenPos(at);
         ImGui.Dummy(size);
         return clicked;
     }
 
-    /// A row of buttons sharing the width (evenly, or by weights, one each). Returns the one clicked, or -1.
+    /// A row of buttons sharing the width (evenly, or by weights). Returns the one clicked, or -1.
     public static int Buttons(string id, ReadOnlySpan<string> labels, ReadOnlySpan<bool> enabled = default, ReadOnlySpan<float> weights = default)
     {
-        var gap = S(6f);
+        var gap = S(4f);
         var share = Width - gap * (labels.Length - 1);
         var sum = 0f;
         for (var i = 0; i < labels.Length; i++)
@@ -261,57 +235,75 @@ public static class Kit
         for (var i = 0; i < labels.Length; i++)
         {
             var width = share * (weights.IsEmpty ? 1f : weights[i]) / sum;
-            if (Cell($"{id}.{i}", labels[i], at + new float2(x, 0f), new float2(width, S(31f)), false, enabled.IsEmpty || enabled[i], null, out _))
+            if (Cell($"{id}.{i}", labels[i], at + new float2(x, 0f), new float2(width, RowHeight), false, enabled.IsEmpty || enabled[i], null, out _))
                 hit = i;
             x += width + gap;
         }
 
         ImGui.SetCursorScreenPos(at);
-        ImGui.Dummy(new float2(Width, S(31f)));
+        ImGui.Dummy(new float2(Width, RowHeight));
         return hit;
     }
 
-    /// One of several, the picked one lit. Returns the one picked. Across the width, or as wide as asked.
+    /// One of several in a joined strip, the picked one lit. Returns the one picked. Across the width, or as wide as asked.
     public static int Segmented(string id, ReadOnlySpan<string> labels, int current, bool enabled = true, float across = 0f)
     {
-        var gap = S(3f);
-        var width = ((across > 0f ? across : Width) - gap * (labels.Length - 1)) / labels.Length;
+        var draw = Draw;
+        var total = across > 0f ? across : Width;
+        var width = total / labels.Length;
         var at = ImGui.GetCursorScreenPos();
+        var height = RowHeight;
+        draw.AddRectFilled(at, at + new float2(total, height), Raised, Rounding);
         var picked = current;
         for (var i = 0; i < labels.Length; i++)
-            if (Cell($"{id}.{i}", labels[i], at + new float2(i * (width + gap), 0f), new float2(width, S(29f)), i == current, enabled, null, out _))
+        {
+            var min = at + new float2(i * width, 0f);
+            ImGui.SetCursorScreenPos(min);
+            var clicked = ImGui.InvisibleButton($"{id}.{i}", new float2(width, height)) && enabled;
+            var hover = ImGui.IsItemHovered() && enabled;
+            var on = i == current;
+            if (on)
+                draw.AddRectFilled(min + new float2(S(2f), S(2f)), min + new float2(width - S(2f), height - S(2f)), Accent.WithAlpha(enabled ? 0.9f : 0.4f), Rounding);
+            else if (hover)
+                draw.AddRectFilled(min + new float2(S(2f), S(2f)), min + new float2(width - S(2f), height - S(2f)), RaisedHover, Rounding);
+            else if (i > 0 && i - 1 != current)
+                draw.AddLine(new float2(min.X, min.Y + S(6f)), new float2(min.X, min.Y + height - S(6f)), Stroke, 1f);
+            var ink = !enabled ? TextFaint : on ? OnAccent : hover ? Text : TextDim;
+            var text = Ellipsize(labels[i], Medium, S(13f), width - S(8f));
+            Canvas.Text(draw, Medium, S(13f), min + new float2(width * 0.5f, (height - S(13f)) * 0.5f - S(1f)), ink, text, Align.Center);
+            if (clicked && i != current)
+            {
                 picked = i;
+                Sfx.Tick();
+            }
+        }
+
         ImGui.SetCursorScreenPos(at);
-        ImGui.Dummy(new float2(Width, S(29f)));
+        ImGui.Dummy(new float2(total, height));
         return picked;
     }
 
-    /// A switch: a square lamp, lit when it's on, and its name. Returns true when it's flipped. Sits on the current line,
-    /// so several can go across with SameLine.
+    /// A checkbox and its name. Returns true when it's flipped. Sits on the current line, so several go across with SameLine.
     public static bool Toggle(string id, string label, ref bool on, bool enabled = true)
     {
         var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
-        var size = S(15f);
-        var text = Canvas.TextSize(Medium, size, label);
-        var box = S(15f);
-        var whole = new float2(box + S(8f) + text.X, MathF.Max(box, text.Y));
+        var text = Canvas.TextSize(Regular, S(13.5f), label);
+        var box = S(14f);
+        var whole = new float2(box + S(7f) + text.X, MathF.Max(box, S(18f)));
         var clicked = ImGui.InvisibleButton(id, whole) && enabled;
         var hover = ImGui.IsItemHovered() && enabled;
-        var lit = Tween.Float(id, "on", on ? 1f : 0f, 0.12f);
         var alpha = enabled ? 1f : 0.4f;
         var boxMin = at + new float2(0f, (whole.Y - box) * 0.5f);
-        draw.AddRectFilled(boxMin, boxMin + new float2(box, box), Surface.Fade(alpha));
-        draw.AddRect(boxMin, boxMin + new float2(box, box), Rgba.Mix(StrokeStrong, Accent, MathF.Max(lit, hover ? 0.5f : 0f)).Fade(alpha), 0f, ImDrawFlags.None, 1f);
-        if (lit > 0.01f)
+        draw.AddRectFilled(boxMin, boxMin + new float2(box, box), (on ? Accent : hover ? RaisedHover : Raised).Fade(alpha), Rounding);
+        if (on)
         {
-            var inset = S(3f);
-            draw.AddRectFilled(boxMin + new float2(inset, inset), boxMin + new float2(box - inset, box - inset), Accent.Fade(lit * alpha));
+            var c = boxMin + new float2(box, box) * 0.5f;
+            draw.AddLine(c + new float2(-S(3.5f), 0f), c + new float2(-S(1f), S(2.5f)), OnAccent.Fade(alpha), S(1.6f));
+            draw.AddLine(c + new float2(-S(1f), S(2.5f)), c + new float2(S(3.5f), -S(3f)), OnAccent.Fade(alpha), S(1.6f));
         }
 
-        Canvas.Text(draw, Medium, size, at + new float2(box + S(8f), (whole.Y - text.Y) * 0.5f), (on ? Text : TextDim).Fade(alpha), label);
-        if (hover)
-            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+        Canvas.Text(draw, Regular, S(13.5f), at + new float2(box + S(7f), (whole.Y - S(13.5f)) * 0.5f - S(1f)), (on || hover ? Text : TextDim).Fade(alpha), label);
         if (clicked)
         {
             on = !on;
@@ -321,79 +313,77 @@ public static class Kit
         return clicked;
     }
 
-    /// A slider over 0 to 1 across the width, dragged with the pointer (a click jumps to it). Returns true when the value
-    /// changed; released is true on the frame it's let go, for saving once a drag rather than every frame of it.
+    /// A slider over 0 to 1 across the width: a filled bar, dragged (a click jumps to it). Returns true when the value
+    /// changed; released is true on the frame it's let go.
     public static bool Slider(string id, ref float value, out bool released, bool enabled = true)
     {
-        var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
-        var size = new float2(Width, S(22f));
+        var changed = Bar(id, ref value, at, new float2(Width, RowHeight), null, null, enabled, out released);
+        ImGui.SetCursorScreenPos(at);
+        ImGui.Dummy(new float2(Width, RowHeight));
+        return changed;
+    }
+
+    /// A value bar: filled to the value in a dim accent, a label inside at the left and the reading at the right.
+    public static bool Bar(string id, ref float value, float2 at, float2 size, string? label, string? reading, bool enabled, out bool released)
+    {
+        var draw = Draw;
+        ImGui.SetCursorScreenPos(at);
         ImGui.InvisibleButton(id, size);
         var active = ImGui.IsItemActive() && enabled;
         released = ImGui.IsItemDeactivated() && enabled;
         var hover = ImGui.IsItemHovered() && enabled;
-
-        var pad = S(7f);
-        var left = at.X + pad;
-        var span = MathF.Max(size.X - pad * 2f, 1f);
         var was = value;
         if (active)
-            value = Math.Clamp((ImGui.GetIO().MousePos.X - left) / span, 0f, 1f);
+            value = Math.Clamp((ImGui.GetIO().MousePos.X - at.X) / MathF.Max(size.X, 1f), 0f, 1f);
         value = Math.Clamp(value, 0f, 1f);
-
-        var lit = Tween.Float(id, "lit", active || hover ? 1f : 0f, 0.12f);
-        var alpha = enabled ? 1f : 0.4f;
-        var midY = at.Y + size.Y * 0.5f;
-        var knobX = left + span * value;
-        var track = S(2f);
-        draw.AddRectFilled(new float2(left, midY - track), new float2(left + span, midY + track), StrokeStrong.Fade(alpha));
-        if (enabled)
-            draw.AddRectFilled(new float2(left, midY - track), new float2(knobX, midY + track), Accent.WithAlpha(0.85f).Fade(alpha));
-        var knob = new float2(S(4.5f) + lit * S(1f), S(8f));
-        draw.AddRectFilled(new float2(knobX - knob.X, midY - knob.Y), new float2(knobX + knob.X, midY + knob.Y),
-            (enabled ? Rgba.Mix(Text, Accent, 0.35f + 0.65f * lit) : TextFaint).Fade(alpha));
-
+        var alpha = enabled ? 1f : 0.45f;
+        draw.AddRectFilled(at, at + size, (hover || active ? RaisedHover : Raised).Fade(alpha), Rounding);
+        if (value > 0f)
+            draw.AddRectFilled(at, at + new float2(size.X * value, size.Y), Accent.WithAlpha(active ? 0.55f : 0.4f).Fade(alpha), Rounding);
+        var y = at.Y + (size.Y - S(13f)) * 0.5f - S(1f);
+        if (label is not null)
+            Canvas.Text(draw, Regular, S(13f), new float2(at.X + S(8f), y), (enabled ? TextDim : TextFaint), label);
+        if (reading is not null)
+            Canvas.Text(draw, Mono, S(13f), new float2(at.X + size.X - S(8f), y + S(0.5f)), enabled ? Text : TextFaint, reading, Align.Right);
         if (hover)
-            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-        if (released)
-            Sfx.Tick();
+            ImGui.SetMouseCursor(ImGuiMouseCursor.ResizeEW);
         return active && value != was;
     }
 
-    /// A segmented gauge; its readings go beside or below it, never over it.
+    /// A progress bar.
     public static void Gauge(float value, Rgba color)
     {
+        var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
-        var max = at + new float2(Width, S(18f));
-        Canvas.SegmentBar(Draw, at, max, value, color.WithAlpha(0.75f), 30);
-        ImGui.Dummy(new float2(Width, S(18f)));
+        var size = new float2(Width, S(6f));
+        draw.AddRectFilled(at, at + size, Raised, S(3f));
+        draw.AddRectFilled(at, at + new float2(size.X * Math.Clamp(value, 0f, 1f), size.Y), color, S(3f));
+        ImGui.Dummy(new float2(Width, S(10f)));
     }
 
-    /// A list row: its number, its name, a word on the right; an accent bar on the picked one. Returns true when clicked.
+    /// A list row: its number, its name, a word on the right; lit when picked. Returns true when clicked.
     public static bool Row(string id, string number, string title, string right, bool picked, float width)
     {
         var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
-        var size = new float2(width, S(31f));
+        var size = new float2(width, RowHeight);
         var clicked = ImGui.InvisibleButton(id, size);
         var hover = ImGui.IsItemHovered();
-        var lit = Tween.Float(id, "lit", picked ? 1f : hover ? 0.5f : 0f, 0.15f);
-        if (lit > 0.01f)
-            draw.AddRectFilled(at, at + size, Accent.WithAlpha(0.14f * lit));
         if (picked)
-            draw.AddRectFilled(at, new float2(at.X + S(3f), at.Y + size.Y), Accent);
-        Canvas.Text(draw, Mono, S(14f), at + new float2(S(12f), S(7.5f)), TextFaint, number);
-        Canvas.Text(draw, picked ? Bold : Medium, S(15.5f), at + new float2(S(44f), S(6f)), picked ? Text : TextDim, Ellipsize(title, Medium, S(15.5f), width - S(130f)));
-        var tagWidth = Canvas.SpacedWidth(Medium, S(11.5f), right, 0.16f);
-        Canvas.Spaced(draw, Medium, S(11.5f), new float2(at.X + width - S(10f) - tagWidth, at.Y + S(9.5f)), TextFaint, right, 0.16f);
-        if (hover)
-            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+            draw.AddRectFilled(at, at + size, Accent.WithAlpha(0.3f), Rounding);
+        else if (hover)
+            draw.AddRectFilled(at, at + size, RaisedHover.WithAlpha(0.6f), Rounding);
+        var y = at.Y + (size.Y - S(13.5f)) * 0.5f - S(1f);
+        Canvas.Text(draw, Mono, S(12.5f), new float2(at.X + S(8f), y + S(1f)), TextFaint, number);
+        Canvas.Text(draw, Medium, S(13.5f), new float2(at.X + S(36f), y), picked || hover ? Text : TextDim, Ellipsize(title, Medium, S(13.5f), width - S(120f)));
+        Canvas.Text(draw, Regular, S(12.5f), new float2(at.X + width - S(8f), y + S(1f)), TextFaint, right, Align.Right);
         if (clicked)
             Sfx.Tick();
         return clicked;
     }
 
-    /// A button or tab cell: framed, lit when picked, the accent on hover.
+    /// A button: flat, lit when picked, brighter on hover.
     private static bool Cell(string id, string label, float2 min, float2 size, bool lit, bool enabled, Rgba? tint, out bool held)
     {
         var draw = Draw;
@@ -401,47 +391,25 @@ public static class Kit
         var clicked = ImGui.InvisibleButton(id, size) && enabled;
         var hovered = ImGui.IsItemHovered() && enabled;
         held = ImGui.IsItemActive() && enabled;
-        var hover = Tween.Float(id, "hover", hovered ? 1f : 0f, 0.12f);
         var max = min + size;
-        var alpha = enabled ? 1f : 0.35f;
-        Rgba ink;
-        if (tint is { } fill)
-        {
-            draw.AddRectFilled(min, max, Rgba.Mix(fill, Rgba.White, (held ? 0.25f : 0.1f) * hover).Fade(alpha));
-            ink = Rgba.White.Fade(alpha);
-        }
+        var alpha = enabled ? 1f : 0.4f;
+        Rgba fill, ink;
+        if (tint is { } t)
+            (fill, ink) = (Rgba.Mix(t, Rgba.White, held ? 0.2f : hovered ? 0.1f : 0f), Rgba.White);
         else if (lit)
-        {
-            draw.AddRectFilled(min, max, Rgba.Mix(Accent.WithAlpha(0.85f), Rgba.White, (held ? 0.25f : 0.1f) * hover).Fade(alpha));
-            draw.AddRect(min, max, Accent.Fade(alpha), 0f, ImDrawFlags.None, 1f);
-            ink = OnAccent.Fade(alpha);
-        }
+            (fill, ink) = (Rgba.Mix(Accent, Rgba.White, held ? 0.2f : hovered ? 0.1f : 0f), OnAccent);
         else
-        {
-            draw.AddRectFilled(min, max, Rgba.Lerp(Surface, Accent.WithAlpha(0.15f), held ? 1f : hover * 0.6f).Fade(alpha));
-            draw.AddRect(min, max, Rgba.Mix(StrokeStrong, Accent, hover).Fade(alpha), 0f, ImDrawFlags.None, 1f);
-            ink = Text.Fade(alpha);
-        }
-
-        var text = label.ToUpperInvariant();
-        // A label too long for its cell keeps some room either side: it's drawn closer set, then a size smaller, and only
-        // then cut short.
-        var room = size.X - S(16f);
-        var (fontSize, tracking) = (S(12.5f), 0.12f);
-        var width = Canvas.SpacedWidth(Bold, fontSize, text, tracking);
-        if (width > room)
-            (tracking, width) = (0.04f, Canvas.SpacedWidth(Bold, fontSize, text, 0.04f));
-        if (width > room)
-            (fontSize, width) = (S(11f), Canvas.SpacedWidth(Bold, S(11f), text, tracking));
-        if (width > room)
-            (text, width) = (Ellipsize(text, Bold, fontSize, room), Canvas.SpacedWidth(Bold, fontSize, Ellipsize(text, Bold, fontSize, room), tracking));
-        Canvas.Spaced(draw, Bold, fontSize, new float2((min.X + max.X - width) * 0.5f, (min.Y + max.Y) * 0.5f - fontSize * 0.6f), ink, text, tracking);
-        if (hovered)
-            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+            (fill, ink) = (held ? Rgba.Mix(RaisedHover, Rgba.White, 0.06f) : hovered ? RaisedHover : Raised, Text);
+        draw.AddRectFilled(min, max, fill.Fade(alpha), Rounding);
+        var text = Ellipsize(Sentence(label), Medium, S(13.5f), size.X - S(12f));
+        Canvas.Text(draw, Medium, S(13.5f), new float2((min.X + max.X) * 0.5f, (min.Y + max.Y) * 0.5f - S(8f)), ink.Fade(alpha), text, Align.Center);
         if (clicked)
-            Sfx.Select();
+            Sfx.Tick();
         return clicked;
     }
+
+    /// A label as the editor writes it: an all-capitals one (from the deck's days) in sentence case.
+    public static string Sentence(string text) => Style.Case(text);
 
     /// Cut short with an ellipsis to fit a width.
     public static string Ellipsize(string text, ImFontPtr font, float size, float width)

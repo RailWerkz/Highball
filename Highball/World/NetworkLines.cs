@@ -484,6 +484,7 @@ public sealed partial class NetworkLines
             return best;
         }
 
+        var laid = new List<Laid>();
         foreach (var chain in chains)
         {
             if (lines.Keep(chain, local))
@@ -507,6 +508,11 @@ public sealed partial class NetworkLines
                     Beyond(chain, chain.Nodes[0], (xs[0], zs[0]), inStart), Beyond(chain, chain.Nodes[^1], (xs[^1], zs[^1]), inEnd));
             }
 
+            laid.Add(new Laid(chain, xs, zs, structures, nodes));
+        }
+
+        foreach (var (chain, xs, zs, structures, nodes, _) in JoinThrough(laid, seen))
+        {
             // Cut into runs over built tiles.
             var start = -1;
             for (var i = 0; i <= xs.Count; i++)
@@ -832,12 +838,151 @@ public sealed partial class NetworkLines
         return p.North * q.North + p.East * q.East > 0.0;
     }
 
-    private static string ShapeKey(NetworkWay way)
+    private static string ShapeKey(NetworkWay way) => ShapeKey(way.Rail, way.Class, way.Tags);
+
+    private static string ShapeKey(bool rail, int railOrRoadClass, Dictionary<string, string> tags)
     {
-        string Tag(string name) => way.Tags.GetValueOrDefault(name, "");
-        return way.Rail
-            ? $"R{way.Class}|{Tag("railway")}|{Tag("tracks")}|{Tag("gauge")}|{Tag(RouteNetwork.ExactTag)}|{Tag(RouteNetwork.BedTag)}|{Tag(RouteNetwork.BedHeightTag)}"
-            : $"H{way.Class}|{Tag("lanes")}|{Tag("oneway")}|{Tag("surface")}|{Tag("highway").Replace("_link", "")}";
+        string Tag(string name) => tags.GetValueOrDefault(name, "");
+        return rail
+            ? $"R{railOrRoadClass}|{Tag("railway")}|{Tag("tracks")}|{Tag("gauge")}|{Tag(RouteNetwork.ExactTag)}|{Tag(RouteNetwork.BedTag)}|{Tag(RouteNetwork.BedHeightTag)}"
+            : $"H{railOrRoadClass}|{Tag("lanes")}|{Tag("oneway")}|{Tag("surface")}|{Tag("highway").Replace("_link", "")}";
+    }
+
+    /// A chain as laid out, before it's cut to the built tiles.
+    /// Aligned: has track laid by straights and curves in it (a joined line loses the tag, so it's carried here).
+    private readonly record struct Laid(Chain Chain, List<double> X, List<double> Z, List<Structure> Structures, List<(long Node, int Point)> Nodes, bool Aligned = false)
+    {
+        public bool HasAlignment => Aligned || Chain.Tags.ContainsKey(AlignmentTrack.Tag);
+    }
+
+    /// The most two pieces of track may turn where they meet and still be laid as one line.
+    private const double JoinThroughDegrees = 0.5;
+    /// How far short of a piece's end a switch is looked for, whose frog might lie on past it.
+    private const double SwitchRunsOnReach = 60.0;
+
+    /// Track laid by straights and curves is each way its own chain (its corners and curves are built exactly), but where a
+    /// piece of it simply carries straight on into the next piece of track (the two end on the same node, nothing else
+    /// meets there), it's one track: the two are laid as one line. Otherwise a switch put in a few metres short of where
+    /// such a piece starts would find its leg ending there, before the routes have parted, and couldn't be laid out.
+    /// Joined as laid, so each piece keeps the exact shape it was built to.
+    private static List<Laid> JoinThrough(List<Laid> laid, Dictionary<long, int> seen)
+    {
+        var result = new List<Laid>(laid);
+        while (true)
+        {
+            var ends = new Dictionary<long, List<(int Index, bool AtStart)>>();
+            for (var i = 0; i < result.Count; i++)
+            {
+                var l = result[i];
+                if (!l.Chain.Rail || l.X.Count < 2 || l.Nodes.Count < 2 || l.Nodes[0].Point != 0 || l.Nodes[^1].Point != l.X.Count - 1)
+                    continue;
+                foreach (var (node, atStart) in (ReadOnlySpan<(long, bool)>)[(l.Nodes[0].Node, true), (l.Nodes[^1].Node, false)])
+                {
+                    if (!ends.TryGetValue(node, out var list))
+                        ends[node] = list = [];
+                    list.Add((i, atStart));
+                }
+            }
+
+            // Whether a switch on this piece, a little way short of its end, still has its two routes within a rail spacing of
+            // each other at the end: its frog lies on past it, so the track it runs on into has to be the same line.
+            bool SwitchRunsOn(int index, bool atStart)
+            {
+                var l = result[index];
+                var (ex, ez) = atStart ? (l.X[0], l.Z[0]) : (l.X[^1], l.Z[^1]);
+                foreach (var (node, point) in l.Nodes)
+                {
+                    if (seen.GetValueOrDefault(node) < 2 || point == (atStart ? 0 : l.X.Count - 1))
+                        continue;
+                    var along = 0.0;
+                    for (var p = Math.Min(point, atStart ? 0 : l.X.Count - 1); p < Math.Max(point, atStart ? 0 : l.X.Count - 1); p++)
+                        along += Math.Sqrt((l.X[p + 1] - l.X[p]) * (l.X[p + 1] - l.X[p]) + (l.Z[p + 1] - l.Z[p]) * (l.Z[p + 1] - l.Z[p]));
+                    if (along > SwitchRunsOnReach)
+                        continue;
+                    for (var k = 0; k < result.Count; k++)
+                    {
+                        var other = result[k];
+                        if (k == index || !other.Chain.Rail || !other.Nodes.Any(n => n.Node == node))
+                            continue;
+                        for (var p = 0; p + 1 < other.X.Count; p++)
+                        {
+                            var (ax, az, dx, dz) = (other.X[p], other.Z[p], other.X[p + 1] - other.X[p], other.Z[p + 1] - other.Z[p]);
+                            var length2 = dx * dx + dz * dz;
+                            var t = length2 > 0 ? Math.Clamp(((ex - ax) * dx + (ez - az) * dz) / length2, 0, 1) : 0;
+                            var (px, pz) = (ax + dx * t - ex, az + dz * t - ez);
+                            if (px * px + pz * pz < 4.0 * Turnout.RailOffset * Turnout.RailOffset)
+                                return true;
+                        }
+                    }
+                }
+
+                return false;
+            }
+
+            (int A, int B, long Node)? pick = null;
+            foreach (var (node, list) in ends)
+            {
+                if (list.Count != 2 || list[0].Index == list[1].Index || seen.GetValueOrDefault(node) != 2)
+                    continue;
+                var (a, b) = (result[list[0].Index], result[list[1].Index]);
+                if (!a.HasAlignment && !b.HasAlignment)
+                    continue; // (any other two would have been one chain already, if they're one track)
+                if (ShapeKey(true, a.Chain.Class, a.Chain.Tags) != ShapeKey(true, b.Chain.Class, b.Chain.Tags))
+                    continue;
+
+                // Each one's way out of the node, along its end segment: one track carries straight on if they're opposite.
+                (double X, double Z) Away(Laid l, bool atStart)
+                {
+                    var (p, q) = atStart ? (0, 1) : (l.X.Count - 1, l.X.Count - 2);
+                    var (dx, dz) = (l.X[q] - l.X[p], l.Z[q] - l.Z[p]);
+                    var length = Math.Max(Math.Sqrt(dx * dx + dz * dz), 1e-9);
+                    return (dx / length, dz / length);
+                }
+
+                var (u, v) = (Away(a, list[0].AtStart), Away(b, list[1].AtStart));
+                if (-(u.X * v.X + u.Z * v.Z) < Math.Cos(JoinThroughDegrees * Math.PI / 180.0))
+                    continue;
+                if (!SwitchRunsOn(list[0].Index, list[0].AtStart) && !SwitchRunsOn(list[1].Index, list[1].AtStart))
+                    continue;
+                pick = (list[0].Index, list[1].Index, node);
+                break;
+            }
+
+            if (pick is not { } join)
+                return result;
+
+            // a runs into the node, b out of it.
+            var first = result[join.A];
+            var second = result[join.B];
+            if (first.Nodes[0].Node == join.Node)
+                first = Reversed(first);
+            if (second.Nodes[^1].Node == join.Node)
+                second = Reversed(second);
+
+            var offset = first.X.Count - 1;
+            var tags = new Dictionary<string, string>(second.Chain.Tags.ContainsKey(AlignmentTrack.Tag) ? first.Chain.Tags : second.Chain.Tags);
+            tags.Remove(AlignmentTrack.Tag);
+            var chain = new Chain { Rail = true, Class = first.Chain.Class, Tags = tags };
+            var id = new StableHash();
+            id.Add(first.Chain.Id);
+            id.Add(second.Chain.Id);
+            chain.Id = (long)id.Value;
+            chain.ResampledLayers = [.. first.Chain.ResampledLayers, .. second.Chain.ResampledLayers];
+            var joined = new Laid(chain, [.. first.X, .. second.X.Skip(1)], [.. first.Z, .. second.Z.Skip(1)], [.. first.Structures, .. second.Structures],
+                [.. first.Nodes, .. second.Nodes.Skip(1).Select(n => (n.Node, n.Point + offset))], true);
+
+            result[Math.Min(join.A, join.B)] = joined;
+            result.RemoveAt(Math.Max(join.A, join.B));
+        }
+
+        static Laid Reversed(Laid l)
+        {
+            var last = l.X.Count - 1;
+            var chain = new Chain { Rail = l.Chain.Rail, Class = l.Chain.Class, Tags = l.Chain.Tags, Id = l.Chain.Id };
+            chain.ResampledLayers = Enumerable.Reverse(l.Chain.ResampledLayers).ToList();
+            return new Laid(chain, Enumerable.Reverse(l.X).ToList(), Enumerable.Reverse(l.Z).ToList(), Enumerable.Reverse(l.Structures).ToList(),
+                Enumerable.Reverse(l.Nodes).Select(n => (n.Node, last - n.Point)).ToList(), l.Aligned);
+        }
     }
 
     private static bool IsOneway(NetworkWay way) => !way.Rail && way.Tags.GetValueOrDefault("oneway") is "yes" or "1" or "true" or "-1";

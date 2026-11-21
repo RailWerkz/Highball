@@ -17,6 +17,8 @@ namespace Highball.Screens;
 /// Vehicles go in with ADD, Enter, or by dragging them into the list; rows move with the buttons, Ctrl+arrows or a drag.
 public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
 {
+    public override bool EditorTheme => true;
+
     private const int MaxUndo = 200;
 
     private readonly WorldDisplay _world = new();

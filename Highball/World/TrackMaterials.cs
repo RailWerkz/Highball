@@ -82,12 +82,15 @@ public sealed class TrackMaterials
         Changed(texture: true);
     }
 
-    /// A signal's lamps, in line.frag's order (LensRed, LensYellow, LensGreen), with the game's own values as their defaults.
+    /// A signal's lamps, in line.frag's order (LensRed, LensYellow, LensGreen, then a searchlight's lunar white), with the game's own
+    /// values as their defaults. Each is named as its SignalLamps flag.
     public static readonly (string Name, Lamp Default)[] Lamps =
     [
         ("Red", new Lamp([1f, 0.039f, 0.013f], 9f, 3f, 14f, 81f, 0f, 1f)),
         ("Yellow", new Lamp([1f, 0.467f, 0.033f], 9f, 3f, 14f, 81f, 0f, 1f)),
         ("Green", new Lamp([0.057f, 1f, 0.457f], 7f, 2.3f, 14f, 81f, 0f, 1f)),
+        // Lunar white: a blue-white, as the glass is.
+        ("White", new Lamp([0.72f, 0.84f, 1f], 6f, 2.2f, 14f, 81f, 0f, 1f)),
     ];
 
     /// One signal lamp: its linear colour (brightest channel 1), how bright its lens glows, how strongly it lights what's in front of

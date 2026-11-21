@@ -1,0 +1,87 @@
+{
+  "source": "Four-bay open hopper, WITX 5861, author and licence to be filled in: see CREDITS.txt",
+  "scale": 0.0403,
+  "lengthOverCouplers": 19.02,
+  "truckCentres": 13.716,
+  "wheelDiameter": 0.9243,
+  "lods": [
+    "LOD0"
+  ],
+  "trianglesWholeCar": {
+    "LOD0": 162295
+  },
+  "models": "The game loads LOD0/open_hopper_witx.glb (no hand-made LOD1 or LOD2: the game's mesh optimizer makes its own). The parts below are Source/Parts/<model>.glb, put together into it, except the couplers: Meshes/Couplers/coupler.glb, the same on every engine and car",
+  "bodies": [
+    "body_witx"
+  ],
+  "trucks": [
+    {
+      "model": "truck_front",
+      "position": [
+        0,
+        -6.858,
+        0
+      ],
+      "yaw": 0,
+      "wheelsets": [
+        [
+          0,
+          1.0902,
+          0.4621
+        ],
+        [
+          0,
+          -1.0901,
+          0.4621
+        ]
+      ]
+    },
+    {
+      "model": "truck_rear",
+      "position": [
+        0,
+        6.858,
+        0
+      ],
+      "yaw": 0,
+      "wheelsets": [
+        [
+          0,
+          1.0902,
+          0.4621
+        ],
+        [
+          0,
+          -1.0902,
+          0.4621
+        ]
+      ]
+    }
+  ],
+  "wheelsets": {
+    "model": "wheelset",
+    "onTruck": "each truck's own, in its entry above",
+    "radius": 0.4621
+  },
+  "couplers": [
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        -9.0168,
+        0.8134
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        8.9661,
+        0.8134
+      ],
+      "yaw": 180
+    }
+  ],
+  "axes": "Blender Z-up metres, front (the A end) towards -Y; in the files, glTF Y-up: (x, y, z) here is (x, z, -y) there"
+}

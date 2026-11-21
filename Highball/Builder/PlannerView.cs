@@ -443,8 +443,8 @@ public sealed class PlannerView : IDisposable
 
     public (string Key, string Action)[] Hints =>
         _regionMode
-            ? [("LMB", $"Paint {_paintRegion}"), ("SHIFT+LMB", "Paint area"), ("CTRL+LMB", "Clear region"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("TAB", "2D Editor"), ("ESC", "Exit")]
-            : [_trackMode ? ("LMB", "Pick track in area") : ("LMB", "Add tiles"), ("SHIFT+LMB", "Add area"), ("CTRL+LMB", "Remove tiles"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("TAB", "2D Editor"), ("ESC", "Exit")];
+            ? [("LMB", $"Paint {_paintRegion}"), ("SHIFT+LMB", "Paint area"), ("CTRL+LMB", "Clear region"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("TAB", "View"), ("ESC", "Exit")]
+            : [_trackMode ? ("LMB", "Pick track in area") : ("LMB", "Add tiles"), ("SHIFT+LMB", "Add area"), ("CTRL+LMB", "Remove tiles"), ("RMB", "Pan"), ("WHEEL", "Zoom"), ("TAB", "View"), ("ESC", "Exit")];
 
     public string Attribution => MapTiles.Attribution;
 
@@ -460,58 +460,36 @@ public sealed class PlannerView : IDisposable
 
     public void Panel()
     {
-        Kit.BeginCard("Go to");
         ImGui.SetNextItemWidth(Kit.Width);
-        if (ImGui.InputTextWithHint("##goto"u8, "Place, or lat, lon"u8, _search, ImGuiInputTextFlags.EnterReturnsTrue) && _search.ToString().Trim() is { Length: > 0 } text)
+        if (ImGui.InputTextWithHint("##goto"u8, "Go to a place, or lat, lon"u8, _search, ImGuiInputTextFlags.EnterReturnsTrue) && _search.ToString().Trim() is { Length: > 0 } text)
             RunSearch(text);
-        Kit.EndCard();
+        ImGui.Dummy(new float2(1f, S(2f)));
 
-        Kit.BeginCard("Detail");
-        Kit.Caption("Roads");
-        _roadLevel = Math.Max(0, ToolPanel.Mode("roadlevel", Detail.RoadLevels.Select(l => l.Name).ToArray(), _roadLevel, 2));
-        Kit.Caption("Rails");
-        _railLevel = Math.Max(0, ToolPanel.Mode("raillevel", Detail.RailLevels.Select(l => l.Name).ToArray(), _railLevel, 2));
-        Kit.EndCard();
-
-        Kit.BeginCard("Select");
+        // What's picked and built: the one card that's always open.
+        Kit.BeginCard("Build", $"{_selected.Count} selected");
         _trackMode = ToolPanel.Mode("selectmode", ["Tiles", "Along track"], _trackMode ? 1 : 0, 2) == 1;
         if (_trackMode)
         {
             var padding = _trackPadding;
             if (ToolPanel.Count("trackpadding", "Padding (tiles)", ref padding, 0, 10))
                 _trackPadding = padding;
-            Kit.Caption("Track tiles");
-            _trackLidar = ToolPanel.Mode("tracklidar", ["Lidar", "Standard"], _trackLidar ? 0 : 1, 2) == 0;
-            Kit.Caption("Padding tiles");
-            _paddingLidar = ToolPanel.Mode("paddinglidar", ["Lidar", "Standard"], _paddingLidar ? 0 : 1, 2) == 0;
+            Kit.Caption("Track tiles  ·  padding tiles");
+            var half = (Kit.Width - S(8f)) * 0.5f;
+            _trackLidar = Kit.Segmented("tracklidar", ["Lidar", "Std"], _trackLidar ? 0 : 1, true, half) == 0;
+            ImGui.SameLine(0f, S(8f));
+            _paddingLidar = Kit.Segmented("paddinglidar", ["Lidar", "Std"], _paddingLidar ? 0 : 1, true, half) == 0;
         }
 
-        Kit.EndCard();
-
-        Kit.BeginCard("Heights");
         HeightRow("Lidar", LidarColor, true, _lidar.Count, _builtLidar.Count);
         HeightRow("Standard", StandardColor, false, _selected.Count - _lidar.Count, _built.Count - _builtLidar.Count);
-        if (Kit.Button("lidaralong", "Lidar Along Track", 0f, ButtonKind.Secondary, _selected.Count > 0 && !_generator.Running))
-            FindTrack();
-        Kit.EndCard();
-
-        Kit.BeginCard("Regions", $"{_built.Count(t => _regions.Of(t) is null)} unset");
-        _regionMode = ToolPanel.Mode("regionmode", ["Off", "Paint"], _regionMode ? 1 : 0, 2) == 1;
-        foreach (var region in Enum.GetValues<Region>())
-            if (ToolPanel.Item($"region{region}", null, region.ToString(), $"{_built.Count(t => _regions.Of(t) == region)} TILES", _regionMode && _paintRegion == region, swatch: RegionColors[region]))
-            {
-                _paintRegion = region;
-                _regionMode = true;
-            }
-
-        Kit.EndCard();
-
-        Kit.BeginCard("Build", $"{_selected.Count} selected");
-        if (Kit.Button("build", "Build", 0f, ButtonKind.Primary, _selected.Count > 0 && !_generator.Running))
+        if (Kit.Button("build", _generator.Running ? "Building..." : "Build", 0f, ButtonKind.Primary, _selected.Count > 0 && !_generator.Running))
             Build();
-        switch (Kit.Buttons("buildmore", ["Cancel", "Clear"], [_generator.Running, _selected.Count > 0]))
+        switch (Kit.Buttons("buildmore", ["Lidar along track", _generator.Running ? "Cancel" : "Clear"], [_selected.Count > 0 && !_generator.Running, _generator.Running || _selected.Count > 0]))
         {
             case 0:
+                FindTrack();
+                break;
+            case 1 when _generator.Running:
                 _generator.Cancel();
                 break;
             case 1:
@@ -520,20 +498,45 @@ public sealed class PlannerView : IDisposable
                 break;
         }
 
-        if (Kit.Button("restoreroads", "Restore Roads (Selected)", 0f, ButtonKind.Secondary, _selected.Count > 0 && !_generator.Running))
-            RestoreRoads();
-        if (Kit.Button("restoreallroads", $"Restore All Roads ({_built.Count})", 0f, ButtonKind.Secondary, _built.Count > 0 && !_generator.Running))
-            RestoreRoads(all: true);
-        if (Kit.Button("regenerate", $"Regenerate Built ({_built.Count})", 0f, ButtonKind.Secondary, _built.Count > 0 && !_generator.Running))
-            Regenerate();
         if (_generator.Running)
             Kit.Gauge(_generator.Progress, Accent);
         if (_generator.Status.Length > 0)
             ToolPanel.Line(_generator.Status);
         Kit.EndCard();
 
-        Key();
-        FactoryResetCard();
+        if (ToolPanel.Section("planner.detail", "Map detail"))
+        {
+            Kit.Caption("Roads");
+            _roadLevel = Math.Max(0, ToolPanel.Mode("roadlevel", Detail.RoadLevels.Select(l => l.Name).ToArray(), _roadLevel, 3));
+            Kit.Caption("Rails");
+            _railLevel = Math.Max(0, ToolPanel.Mode("raillevel", Detail.RailLevels.Select(l => l.Name).ToArray(), _railLevel, 3));
+            Key();
+        }
+
+        if (ToolPanel.Section("planner.regions", "Regions", $"{_built.Count(t => _regions.Of(t) is null)} unset"))
+        {
+            _regionMode = ToolPanel.Mode("regionmode", ["Off", "Paint"], _regionMode ? 1 : 0, 2) == 1;
+            foreach (var region in Enum.GetValues<Region>())
+                if (ToolPanel.Item($"region{region}", null, region.ToString(), $"{_built.Count(t => _regions.Of(t) == region)} TILES", _regionMode && _paintRegion == region, swatch: RegionColors[region]))
+                {
+                    _paintRegion = region;
+                    _regionMode = true;
+                }
+        }
+
+        if (ToolPanel.Section("planner.upkeep", "Rebuild", $"{_built.Count} built"))
+        {
+            if (Kit.Button("restoreroads", "Restore roads (selected)", 0f, ButtonKind.Secondary, _selected.Count > 0 && !_generator.Running))
+                RestoreRoads();
+            if (Kit.Button("restoreallroads", "Restore all roads", 0f, ButtonKind.Secondary, _built.Count > 0 && !_generator.Running))
+                RestoreRoads(all: true);
+            if (Kit.Button("regenerate", "Regenerate built tiles", 0f, ButtonKind.Secondary, _built.Count > 0 && !_generator.Running))
+                Regenerate();
+            ImGui.Dummy(new float2(1f, S(4f)));
+            FactoryResetCard();
+        }
+
+        Issues();
     }
 
     /// Asked for by the Factory Reset card once confirmed; the Route Builder does it (it holds the editors to close first).
@@ -578,9 +581,6 @@ public sealed class PlannerView : IDisposable
         if (ToolPanel.Item($"heights{name}", null, name, selected > 0 ? $"{selected} SEL" : $"{built} BUILT", _paintLidar == lidar, swatch: color))
             _paintLidar = lidar;
     }
-
-
-
 
 
     /// What's on the map, by class, with how much of it there is.
@@ -629,7 +629,6 @@ public sealed class PlannerView : IDisposable
         }
 
         Kit.EndCard();
-        Issues();
     }
 
     /// Every junction that needs fixing by hand, with why; clicking one goes to it.

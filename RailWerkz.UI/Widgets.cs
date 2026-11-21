@@ -34,6 +34,17 @@ public static class Widgets
         var alpha = enabled ? 1f : 0.4f;
         Rgba textColor;
 
+        if (Style.Editor)
+        {
+            var fill = kind == ButtonKind.Primary ? Rgba.Mix(Accent, Rgba.White, held ? 0.2f : hovered ? 0.1f : 0f) : held ? Rgba.Mix(RaisedHover, Rgba.White, 0.06f) : hovered ? RaisedHover : Raised;
+            draw.AddRectFilled(min, max, fill.Fade(alpha), S(3f));
+            var name = Style.Case(label);
+            Canvas.Text(draw, Medium, S(13.5f), new float2((min.X + max.X) * 0.5f, (min.Y + max.Y) * 0.5f - S(8f)), (kind == ButtonKind.Primary ? OnAccent : Style.Text).Fade(alpha), name, Align.Center);
+            if (clicked)
+                Sfx.Tick();
+            return clicked;
+        }
+
         if (kind == ButtonKind.Primary)
         {
             draw.AddRectFilled(min, max, Rgba.Mix(Accent, Rgba.White, (held ? 0.25f : 0.1f) * hover).Fade(alpha));
@@ -82,6 +93,17 @@ public static class Widgets
         var hover = Tween.Float(id, "hover", hovered || active ? 1f : 0f, 0.12f);
         var alpha = enabled ? 1f : 0.4f;
 
+        if (Style.Editor)
+        {
+            // A filled bar, as the editor's value bars are.
+            var barMin = new float2(min.X, min.Y + size.Y * 0.5f - S(9f));
+            var barMax = new float2(min.X + size.X, min.Y + size.Y * 0.5f + S(9f));
+            draw.AddRectFilled(barMin, barMax, (hovered || active ? RaisedHover : Raised).Fade(alpha), S(3f));
+            if (enabled && value > 0f)
+                draw.AddRectFilled(barMin, new float2(barMin.X + size.X * value, barMax.Y), Accent.WithAlpha(0.45f), S(3f));
+            return active;
+        }
+
         var midY = min.Y + size.Y * 0.5f;
         var knobX = left + span * value;
         var track = S(2f);
@@ -107,8 +129,8 @@ public static class Widgets
         var focus = Tween.Float(id, "focus", focused ? 1f : 0f, 0.15f);
         var submitted = focused && Keyboard.Edit(ref text, maxLength, allow);
 
-        draw.AddRectFilled(min, max, Surface);
-        draw.AddRect(min, max, Rgba.Mix(StrokeStrong, Accent, focus), 0f, ImDrawFlags.None, 1f);
+        draw.AddRectFilled(min, max, Style.Editor ? Raised : Surface, Style.Editor ? S(3f) : 0f);
+        draw.AddRect(min, max, Rgba.Mix(Style.Editor ? Stroke : StrokeStrong, Accent, focus), Style.Editor ? S(3f) : 0f, ImDrawFlags.None, 1f);
         Canvas.Spaced(draw, Medium, S(11f), min + new float2(S(12f), S(7f)), Rgba.Mix(TextDim, Accent, focus), label.ToUpperInvariant(), 0.12f);
         Canvas.Text(draw, Mono, S(16f), min + new float2(S(12f), S(22f)), Style.Text, text);
 

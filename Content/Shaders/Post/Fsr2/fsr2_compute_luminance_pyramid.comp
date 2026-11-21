@@ -1,4 +1,0 @@
-#version 450
-// FSR 2: the compute_luminance_pyramid pass (fsr2_options.glsl).
-#include "fsr2_options.glsl"
-#include "ffx_fsr2_compute_luminance_pyramid_pass.glsl"

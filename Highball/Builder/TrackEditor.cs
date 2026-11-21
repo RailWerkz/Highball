@@ -1480,11 +1480,44 @@ public sealed class TrackEditor
         {
             var way = _network.Ways[id];
             if (way.Rail && (RailClass)way.Class != cls)
-                changes.Add((id, way, WithClass(way, cls)));
+            {
+                // The class doesn't change what the track's laid on: a bed that came from the old class is written down,
+                // so it stays as it was.
+                var after = WithClass(way, cls);
+                if (!way.Tags.ContainsKey(RouteNetwork.BedTag) && BedOfClass((RailClass)way.Class) is var was && was != BedOfClass(cls))
+                    after.Tags[RouteNetwork.BedTag] = was.ToString();
+                changes.Add((id, way, after));
+            }
         }
 
         return Commit(changes, takesNewBed: false);
     }
+
+    /// Each of these rail ways given its own class, as one edit (Auto Classify Track). As SetClass, a bed that came from
+    /// the old class is written down, so what the track's laid on and how high stay as they were.
+    public NetworkEdit? SetClasses(IEnumerable<(long Way, RailClass Class)> classes)
+    {
+        var changes = new List<(long, NetworkWay?, NetworkWay?)>();
+        foreach (var (id, cls) in classes)
+        {
+            if (!_network.Ways.TryGetValue(id, out var way) || !way.Rail || (RailClass)way.Class == cls)
+                continue;
+            var after = WithClass(way, cls);
+            if (!way.Tags.ContainsKey(RouteNetwork.BedTag) && BedOfClass((RailClass)way.Class) is var was && was != BedOfClass(cls))
+                after.Tags[RouteNetwork.BedTag] = was.ToString();
+            changes.Add((id, way, after));
+        }
+
+        return Commit(changes, takesNewBed: false);
+    }
+
+    /// The bed track of a class is laid on when none's been chosen for it (as NetworkLines reads it).
+    private static TrackBed BedOfClass(RailClass cls) => cls switch
+    {
+        RailClass.Yard => TrackBed.Low,
+        RailClass.Industrial => TrackBed.Sunken,
+        _ => TrackBed.Mainline,
+    };
 
     /// A rail way as another class: its tags made to say so, as the map would (RouteNetwork.Rail reads them back the same).
     private static NetworkWay WithClass(NetworkWay way, RailClass cls)

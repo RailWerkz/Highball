@@ -1,17 +1,17 @@
 """What every car shares, and the build: parts out to .glb, assembly.json, the assembled car, and previews.
 
 A car type subclasses Car and gives its body, any moving parts painted with it (a door, a hatch), and where they go. The
-running gear is built from its TruckSpec. Under Models/RollingStock/<folder> the build writes
+running gear is built from its TruckSpec. Under Meshes/RollingStock/<folder> the build writes
     body_<livery>.glb        origin on the railhead, midway between the trucks; the A end faces -Y, the B end (hand brake) +Y
     <part>_<livery>.glb      each moving part, at its place on the body when its origin is on the body's (see assembly.json)
     truck.glb, wheelset.glb
     assembly.json            where each part goes, as the SD40's does, plus "parts" for the moving ones and "loads"
-The coupler is the shared one in Models/Couplers (see coupler.py): the build reads its height and reach before making the
+The coupler is the shared one in Meshes/Couplers (see coupler.py): the build reads its height and reach before making the
 body, so that every car's draft gear and striker are made round it, and the assembly names it from there.
     Assembled/<key>_<livery>.glb and .blend, the whole car for looking at; the game loads the separate parts.
 Each assembled car is checked for faces of different paints overlapping in one plane, which flicker (check.py): the build
 prints a warning naming them.
-A car that carries containers (or other cargo models) gives them in cargo(), built once into Models/RollingStock/Containers,
+A car that carries containers (or other cargo models) gives them in cargo(), built once into Meshes/RollingStock/Containers,
 and its loads in loads(): each load's models and where they sit. Then Assembled has <key>_<livery>_<load> for each load.
 """
 import json
@@ -42,7 +42,7 @@ class Car:
     lods = (0,)
     lod = 0
     liveries: dict = {}
-    coupler: shared_coupler.Coupler = None  # set by build() from Models/Couplers
+    coupler: shared_coupler.Coupler = None  # set by build() from Meshes/Couplers
 
     @property
     def coupler_z(self):
@@ -73,17 +73,17 @@ class Car:
         return {}
 
 
-CARGO = "Containers"  # under Models/RollingStock
+CARGO = "Containers"  # under Meshes/RollingStock
 
 
 def cargo_path(content, name):
-    return os.path.join(content, "Models", "RollingStock", CARGO, name + ".glb")
+    return os.path.join(content, "Meshes", "RollingStock", CARGO, name + ".glb")
 
 
 def out_folder(content, car):
     """Its folder; a lower level of detail's under it in LODs/LOD<n>, which the game doesn't read (until they're moved into
     Assembled/LOD<n> beside the full model, where VehicleModel looks for them)."""
-    base = os.path.join(content, "Models", "RollingStock", car.folder)
+    base = os.path.join(content, "Meshes", "RollingStock", car.folder)
     return os.path.join(base, "LODs", f"LOD{car.lod}") if car.lod else base
 
 
@@ -131,8 +131,8 @@ def build(car: Car, content, preview=None, assembled=True, lod=0):
         "bodies": [f"body_{key}.glb" for key in car.liveries],
         **({"loads": {load: [{**item, "model": f"RollingStock/{CARGO}/{item['model']}.glb"} for item in items] for load, items in car.loads().items()}}
            if car.loads() else {}),
-        "models": "Each model is in this folder, except the couplers (Models/Couplers/coupler.glb, the same on every engine and car) and "
-                  "the loads' models, which are under Models and shared",
+        "models": "Each model is in this folder, except the couplers (Meshes/Couplers/coupler.glb, the same on every engine and car) and "
+                  "the loads' models, which are under Meshes and shared",
         "axes": AXES,
     }
     if not lod:  # (the game reads a lower level's whole car, not its parts)

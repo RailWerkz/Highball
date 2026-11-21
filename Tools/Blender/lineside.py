@@ -2,7 +2,7 @@
 
     blender -b --factory-startup --python Tools/Blender/lineside.py -- <Content folder> [preview folder]
 
-Writes Models/Track/signal.glb, hand_throw.glb and crossing_mast.glb under the Content folder. Blender is Z-up; the glTF
+Writes Meshes/Track/signal.glb, hand_throw.glb and crossing_mast.glb under the Content folder. Blender is Z-up; the glTF
 exporter turns that into the game's Y-up. Each model stands on the ground at the origin and faces -Y, which the game turns
 to the way it's placed. Every object is one paint, named Fixed_<paint> or, on the hand throw, Moving_<paint> for what the
 game turns with the switch (about the origin): the paints are the ones line.frag knows (World/NetworkMeshes.cs, Paints).
@@ -309,8 +309,10 @@ def crossing_mast():
     return m, 6.8
 
 
-for name, builder in (("signal", signal), ("hand_throw", hand_throw), ("crossing_mast", crossing_mast)):
-    model, height = builder()
-    model.export(os.path.join(CONTENT, "Models", "Track", f"{name}.glb"))
-    if PREVIEW:
-        render(os.path.join(PREVIEW, f"{name}.png"), height)
+# (Run as a script; signals.py imports the Model from here without building these.)
+if __name__ == "__main__":
+    for name, builder in (("signal", signal), ("hand_throw", hand_throw), ("crossing_mast", crossing_mast)):
+        model, height = builder()
+        model.export(os.path.join(CONTENT, "Meshes", "Track", f"{name}.glb"))
+        if PREVIEW:
+            render(os.path.join(PREVIEW, f"{name}.png"), height)

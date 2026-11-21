@@ -11,7 +11,7 @@ namespace Highball.App;
 ///   --menu SCREEN                                   open a menu after the splash: single, multi, builder, consists, settings,
 ///                                                   credits, lighting (the lighting test scene)
 ///   --lighting PRESET [MODEL]                       with --menu lighting, start at noon, golden or night, with the model
-///                                                   black (the game's SD40-2) or source (the old SD40's source file, with PBR maps)
+///                                                   ac4400cw, ac4400cw_bnsf or autorack_csx
 ///   --orbit YAW PITCH DISTANCE                      with --menu lighting, where the camera starts (degrees, metres)
 ///   --skytime YYYY-MM-DD HOUR                       the procedural sky's date and time, in hours on the route's clock
 ///   --clouds COVERAGE                               how much of the procedural sky is cloud, 0 to 1
@@ -67,7 +67,8 @@ namespace Highball.App;
 ///   --zoom N                                        with --camera, the lens zoomed in N times (as Alt+wheel does)
 ///   --taa                                           temporal anti-aliasing on, whatever the settings say (not saved)
 ///   --skipsplash                                    skip the BRUTAL logo and the splash animation
-///   --validation                                    Vulkan validation layers (needs the Vulkan SDK; on in Debug builds)
+///   --mouse X Y                                     the pointer held at X Y in the window, for timing hovering
+///   --validation                                    Vulkan validation layers (needs the Vulkan SDK; costs several ms of CPU a frame)
 public static class DevTools
 {
     private static readonly List<(double At, string Path)> Shots = [];
@@ -152,7 +153,8 @@ public static class DevTools
     public static bool Panels { get; set; }
     public static string? AudioEditor { get; set; }
 
-    /// The lamps every signal has lit unless set by hand (--lamps red,yellow,green, all or none).
+    /// The lamps every signal head has lit unless set by hand (--lamps red,yellow,green,white, all or none). A searchlight shows the
+    /// first of them it can (SignalHeads.Shown).
     public static World.SignalLamps? Lamps { get; set; }
 
     /// Open the Track Materials window (--materials).
@@ -218,14 +220,13 @@ public static class DevTools
     /// --fly: metres a second straight ahead, for testing streaming.
     public static float? FlySpeed { get; private set; }
 
+    /// --mouse X Y: the pointer held there (window pixels), for timing what hovering costs.
+    public static (double X, double Y)? Mouse { get; private set; }
+
     public static bool NoVSync { get; private set; }
     public static bool NoShadows { get; private set; }
     public static bool SkipSplash { get; private set; }
-#if DEBUG
-    public static bool Validation { get; private set; } = true;
-#else
     public static bool Validation { get; private set; }
-#endif
 
     /// A settings file to read and write instead of the player's, for testing what's saved.
     public static string? SettingsFile { get; private set; }
@@ -355,7 +356,7 @@ public static class DevTools
                     break;
                 case "--lamps" when i + 1 < args.Length:
                     var named = args[++i].ToLowerInvariant();
-                    Lamps = named == "all" ? World.SignalLamps.Red | World.SignalLamps.Yellow | World.SignalLamps.Green
+                    Lamps = named == "all" ? World.SignalLamps.Red | World.SignalLamps.Yellow | World.SignalLamps.Green | World.SignalLamps.White
                         : named.Split(',').Aggregate(World.SignalLamps.None, (lit, n) => lit | (Enum.TryParse<World.SignalLamps>(n, true, out var l) ? l : World.SignalLamps.None));
                     break;
                 case "--materials":
@@ -438,6 +439,10 @@ public static class DevTools
                     var c = System.Globalization.CultureInfo.InvariantCulture;
                     Camera = (double.Parse(args[i + 1], c), double.Parse(args[i + 2], c), float.Parse(args[i + 3], c), float.Parse(args[i + 4], c), float.Parse(args[i + 5], c));
                     i += 5;
+                    break;
+                case "--mouse" when i + 2 < args.Length:
+                    Mouse = (double.Parse(args[i + 1], System.Globalization.CultureInfo.InvariantCulture), double.Parse(args[i + 2], System.Globalization.CultureInfo.InvariantCulture));
+                    i += 2;
                     break;
                 case "--fly" when i + 1 < args.Length:
                     FlySpeed = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
@@ -560,7 +565,7 @@ public static class DevTools
             var builder = new Builder.BuilderScreen(route);
             app.Push(builder);
             if (_view || _view2D)
-                builder.Show(_view2D ? Builder.BuilderScreen.Mode.Editor2D : Builder.BuilderScreen.Mode.Editor3D);
+                builder.Show(_view2D ? Builder.BuilderScreen.ViewMode.TopDown : Builder.BuilderScreen.ViewMode.Free);
         }
     }
 

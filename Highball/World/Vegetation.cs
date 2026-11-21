@@ -124,7 +124,9 @@ public sealed unsafe class Vegetation : IDisposable
         public float4 Globals;
         public ulong Cells;
         public uint Base;
-        private uint _pad;
+
+        /// Seconds between last frame's wind phases and these, so plant.vert can say how far each plant swayed since (its motion).
+        public float Delta;
     }
 
     /// A cell drawn in this pass: its row in the cell table (where it is, relative to the camera, and its wrapped place),
@@ -469,14 +471,14 @@ public sealed unsafe class Vegetation : IDisposable
     /// grow out to TracksideDense metres from the track's edge, easing down to Background by TracksideFalloff and staying there.
     /// Peak and Background are balanced so about as many grow in view (out to the trees' 1.4 km) as when they were spread evenly:
     /// tighter to the line than they were (110 m, to 320 m, 4.2 and 0.15), half again as many within 150 m of it, half as many far off.
-    public const float TracksideDense = 70f;
+    public const float TracksideDense = 70;
     public const float TracksideFalloff = 200f;
     public const float TracksidePeak = 7.05f;
     public const float Background = 0.06f;
 
     /// The belt of trees along the railway that grows whatever the land cover (Place): its chance near the line, from TracksideBeltNear
     /// metres from the track's edge easing out by TracksideBeltReach.
-    public const float TracksideBelt = 0.45f;
+    public const float TracksideBelt = 0.9f;
     public const float TracksideBeltNear = 25f;
     public const float TracksideBeltReach = 120f;
 
@@ -918,7 +920,7 @@ public sealed unsafe class Vegetation : IDisposable
 
         if (culled >= 0)
         {
-            var gpuPush = new Push { Matrix = camera.JitteredViewProjection(aspect), Globals = Globals(camera) };
+            var gpuPush = new Push { Matrix = camera.JitteredViewProjection(aspect), Globals = Globals(camera), Delta = _phasesDelta };
             if (pass != PlantPass.Color)
             {
                 cmd.BindPipeline(VkPipelineBindPoint.Graphics, depthPipeline);
@@ -935,7 +937,7 @@ public sealed unsafe class Vegetation : IDisposable
         }
 
         var view = camera.View(aspect);
-        var push = new Push { Matrix = camera.JitteredViewProjection(aspect), Globals = Globals(camera) };
+        var push = new Push { Matrix = camera.JitteredViewProjection(aspect), Globals = Globals(camera), Delta = _phasesDelta };
         while (_gathered.Count < _kinds.Count)
             _gathered.Add([]);
 
@@ -1022,12 +1024,19 @@ public sealed unsafe class Vegetation : IDisposable
     private static float4 Globals(Camera camera)
     {
         if (_phasesFrame != Gpu.FrameNumber)
-            (_phasesFrame, _phases) = (Gpu.FrameNumber, WindPhases());
+        {
+            var now = Time.Now;
+            // (The first frame, or after a long stall: no sway to follow.)
+            _phasesDelta = _phasesFrame < 0 ? 0f : (float)Math.Clamp(now - _phasesTime, 0.0, 0.25);
+            (_phasesFrame, _phases, _phasesTime) = (Gpu.FrameNumber, WindPhases(), now);
+        }
         return new float4(-(float)camera.Y, _phases.Z, _phases.X, _phases.Y);
     }
 
     private static long _phasesFrame = -1;
     private static float3 _phases;
+    private static double _phasesTime;
+    private static float _phasesDelta;
 
     /// The cells with any of a kind to draw in this pass (those within its distances, and that keep takes by their sphere relative
     /// to the camera), and how many of it each shows at its distance, into _visible. False if there are none.

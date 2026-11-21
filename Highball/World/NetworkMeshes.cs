@@ -33,9 +33,10 @@ public struct TieInstance(float4 positionRandom, float4 forward)
     public static readonly VertexAttribute[] Layout = [new(3, 4, 0), new(4, 4, 16)];
 }
 
-/// A signal's lamps, as flags: any of them may be lit at once.
+/// A signal head's lamps, as flags: any of a colour-light head's may be lit at once; a searchlight shows one (SignalHeads.Shown).
+/// White: a searchlight's lunar white.
 [Flags]
-public enum SignalLamps { None = 0, Red = 1, Yellow = 2, Green = 4 }
+public enum SignalLamps { None = 0, Red = 1, Yellow = 2, Green = 4, White = 8 }
 
 /// The materials line.frag knows.
 public enum LineMaterial { Ballast, Rail, Asphalt, Gravel, Concrete, Painted, Steel }
@@ -203,12 +204,13 @@ public sealed partial class NetworkMeshes : IDisposable
     private const float CrossoverTieGap = 0.45f;
     private readonly Dictionary<int, List<(float From, float To)>> _crossoverSkips = [];
 
-    private sealed record PlacedAt(PlacedObject Object, double X, double Z, float Y, CrossingDeck? Deck);
+    private sealed record PlacedAt(PlacedObject Object, double X, double Z, float Y, CrossingDeck? Deck, SignalSpan? Span = null);
 
     /// The paints line.frag knows, by the name a placed model's parts use.
-    /// (After the lenses: their lit codes and the flashers' (LitLens, FlashLens), then a crossing mast's own paints, CrossingPaint.)
+    /// (After the lenses: their lit codes and the flashers' (LitLens, FlashLens), then a crossing mast's own paints, CrossingPaint, then
+    /// a searchlight's lunar white lens, whose lit code is LitLens on from it: line.frag, WhiteLensPaint.)
     private static readonly string[] Paints = ["Black", "White", "Galv", "Yellow", "Red", "Green", "Concrete", "Wood", "Ballast", "LensRed", "LensYellow", "LensGreen",
-        "", "", "", "", "", "CrossingWhite", "CrossingBlack", "CrossingPole", "GateRed", "GateWhite"];
+        "", "", "", "", "", "CrossingWhite", "CrossingBlack", "CrossingPole", "GateRed", "GateWhite", "LensWhite"];
 
     /// A crossing mast's part's paint: its own paints (TrackMaterials, the Crossings ones) in place of the shared ones its parts
     /// are named for, so a crossing can be painted apart from the signals and poles.
@@ -266,16 +268,19 @@ public sealed partial class NetworkMeshes : IDisposable
     /// How far on from a lens's paint the same lens lit is (line.frag, LitLensPaint).
     private const int LitLens = 3;
 
-    /// Which of a signal's lamps are lit, by signal: set by hand in the Route Builder for now, as there are no signalling rules to
-    /// set them yet, and not saved. A signal not in here stands at stop (red alone). Read by the chunk builders on worker threads.
-    private readonly ConcurrentDictionary<long, SignalLamps> _lamps = new();
+    /// Which of each signal head's lamps are lit, by signal (or signal bridge) and head (SignalHeads.All's order): set by hand in the
+    /// Route Builder for now, as there are no signalling rules to set them yet, and not saved. A head not in here stands at stop
+    /// (red alone). Read by the chunk builders on worker threads.
+    private readonly ConcurrentDictionary<(long Signal, int Head), SignalLamps> _lamps = new();
 
-    /// A signal's lamps, top to bottom on the head: green, yellow, red.
-    public static readonly (SignalLamps Lamp, string Part, string Paint, float Height, float3 Light)[] Lamps =
+    /// A signal's lamps, top to bottom on a colour-light head: green, yellow, red; then lunar white, which only a searchlight shows
+    /// (its one lens, Fixed_LensSearch, lit in whichever lamp's colour it's showing). Each with its lens's part and paint.
+    public static readonly (SignalLamps Lamp, string Part, string Paint)[] Lamps =
     [
-        (SignalLamps.Green, "Fixed_LensGreen", "LensGreen", 5.15f, new float3(0.13f, 2.3f, 1.05f)),
-        (SignalLamps.Yellow, "Fixed_LensYellow", "LensYellow", 4.75f, new float3(3f, 1.4f, 0.1f)),
-        (SignalLamps.Red, "Fixed_LensRed", "LensRed", 4.35f, new float3(3f, 0.12f, 0.05f)),
+        (SignalLamps.Green, "Fixed_LensGreen", "LensGreen"),
+        (SignalLamps.Yellow, "Fixed_LensYellow", "LensYellow"),
+        (SignalLamps.Red, "Fixed_LensRed", "LensRed"),
+        (SignalLamps.White, "Fixed_LensWhite", "LensWhite"),
     ];
 
     /// A grade crossing's flashers while it's working (line.frag, FlashLensPaint): the left lens's code and the right's after it,
@@ -397,14 +402,14 @@ public sealed partial class NetworkMeshes : IDisposable
         return found;
     }
 
-    public SignalLamps LampsOf(long signal) => _lamps.GetValueOrDefault(signal, App.DevTools.Lamps ?? SignalLamps.Red);
+    public SignalLamps LampsOf(long signal, int head = 0) => _lamps.GetValueOrDefault((signal, head), App.DevTools.Lamps ?? SignalLamps.Red);
 
-    /// Lights a signal's lamps (any of them, all, or none), and builds its chunk again to show it.
-    public void SetLamps(PlacedObject signal, SignalLamps lamps)
+    /// Lights one of a signal's (or signal bridge's) heads' lamps (any of them, all, or none), and builds its chunk again to show it.
+    public void SetLamps(PlacedObject signal, int head, SignalLamps lamps)
     {
-        if (LampsOf(signal.Id) == lamps || _objectProjection is null)
+        if (LampsOf(signal.Id, head) == lamps || _objectProjection is null)
             return;
-        _lamps[signal.Id] = lamps;
+        _lamps[(signal.Id, head)] = lamps;
         var p = _objectProjection.Forward(new GeoPoint(signal.Lat, signal.Lon));
         var key = KeyAt(p.East, -p.North);
         _stale.Add((key, false));
@@ -439,7 +444,6 @@ public sealed partial class NetworkMeshes : IDisposable
         {
             _kits[1] = Model.LoadParts("Track/switch_kit_r.glb");
             _kits[-1] = Model.LoadParts("Track/switch_kit_l.glb");
-            _objectModels[PlacedKind.Signal] = Model.LoadParts("Track/signal.glb");
             _objectModels[PlacedKind.HandThrow] = Model.LoadParts("Track/hand_throw.glb");
             _objectModels[PlacedKind.GradeCrossing] = Model.LoadParts("Track/crossing_mast.glb");
             if (File.Exists(RailWerkz.Core.IO.ContentPath.Model("Track/bridge_kit.glb")))
@@ -449,6 +453,8 @@ public sealed partial class NetworkMeshes : IDisposable
         {
             RailWerkz.Core.Logging.Log.Warn($"Switch kit: {e.Message}; switches are built without castings or machines");
         }
+
+        LoadSignalModels();
 
         try
         {
@@ -587,7 +593,7 @@ public sealed partial class NetworkMeshes : IDisposable
             if (!_objectsByChunk.TryGetValue(key, out var list))
                 _objectsByChunk[key] = list = [];
             var deck = o.Kind == PlacedKind.GradeCrossing ? Deck(o, x, z) : null;
-            var placedAt = new PlacedAt(o, x, z, _source.HeightAt(x, z), deck);
+            var placedAt = new PlacedAt(o, x, z, _source.HeightAt(x, z), deck, o.Kind == PlacedKind.SignalBridge ? Span(o, x, z) : null);
             list.Add(placedAt);
             if (deck is not null && !GroundReady(x, z))
                 _groundless.Add(o.Id);
@@ -2349,17 +2355,18 @@ public sealed partial class NetworkMeshes : IDisposable
         var angle = o.Heading * Math.PI / 180.0;
         var face = new float3((float)Math.Cos(angle), 0f, (float)Math.Sin(angle));
         var at = new float3((float)(placed.X - builder.Origin.X), placed.Y, (float)(placed.Z - builder.Origin.Z));
+        if (o.Kind is PlacedKind.Signal or PlacedKind.SignalBridge)
+        {
+            SignalModel(builder, placed);
+            return;
+        }
+
         if (!_objectModels.TryGetValue(o.Kind, out var parts))
             return;
         if (o.Kind != PlacedKind.GradeCrossing)
         {
             foreach (var (name, part) in parts)
-            {
-                var paint = PaintOf(name);
-                if (o.Kind == PlacedKind.Signal && Array.FindIndex(Lamps, l => l.Part == name) is var lamp and >= 0 && LampsOf(o.Id).HasFlag(Lamps[lamp].Lamp))
-                    paint = Code(LineMaterial.Painted, Array.IndexOf(Paints, Lamps[lamp].Paint) + LitLens);
-                Upright(builder, part, at, face, paint, 0f);
-            }
+                Upright(builder, part, at, face, PaintOf(name), 0f);
             return;
         }
 
@@ -2899,7 +2906,6 @@ public sealed partial class NetworkMeshes : IDisposable
         }
     }
 
-    /// Where the signals placed on the route stand, the way each faces (degrees from +X towards +Z), and which lamps it has lit.
     /// Where each kind of light pole's lamp is in its model: the middle of its lens part's underside (Fixed_White).
     private readonly Dictionary<PlacedKind, float3> _lampOffsets = [];
 
@@ -2937,17 +2943,6 @@ public sealed partial class NetworkMeshes : IDisposable
             }
     }
 
-    public IEnumerable<(double X, float Y, double Z, double Heading, SignalLamps Lamps)> Signals()
-    {
-        foreach (var list in _objectsByChunk.Values)
-        {
-            foreach (var placed in list)
-            {
-                if (placed.Object.Kind == PlacedKind.Signal)
-                    yield return (placed.X, placed.Y, placed.Z, placed.Object.Heading, LampsOf(placed.Object.Id));
-            }
-        }
-    }
 
     /// Binds the ballast's texture for the line pipeline.
     public void BindBallast(CommandBuffer cmd, VkPipelineLayout layout)

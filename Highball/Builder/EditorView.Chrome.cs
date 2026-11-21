@@ -12,68 +12,112 @@ using RailWerkz.Core.Utils;
 using RailWerkz.UI;
 using RailWerkz.Vulkan;
 using static RailWerkz.UI.Style;
-using static RailWerkz.UI.Style;
 
 namespace Highball.Builder;
 
-/// The editor's tool strip down the left, the Place palette, and what the top bar and status line say about it.
+/// The editor's tools on the workspace rail, each a group of modes picked at the top of its inspector, and what the menu
+/// bar and status line say about it.
 public sealed partial class EditorView
 {
-    public const float StripWidth = 92f;
-    private const float DockPanelWidth = 320f;
-    private const float StripButton = 62f;
+    /// One mode of a rail tool: the tool it puts in hand (the Place tool on one of its groups).
+    private readonly record struct ToolMode(Tool Tool, PlaceGroup Group, string Name);
 
-    /// The strip, by what each part is for: each section's title, then its buttons.
-    private static readonly (string Section, (Tool Tool, PlaceGroup Group, ToolIcon Icon, string Name, string Tip)[] Items)[] Strip =
+    /// A tool on the rail: its icon, its name and key for the tooltip and inspector, and its modes.
+    private sealed record RailTool(string Name, string? Key, ToolIcon Icon, ToolMode[] Modes, bool GapAfter = false);
+
+    private static readonly RailTool[] Rail =
     [
-        ("", [(Tool.Look, default, ToolIcon.Look, "Free Look", "Free Look (1)")]),
-        ("TRACK",
+        new("Look", "1", ToolIcon.Look, [new(Tool.Look, default, "Look")], GapAfter: true),
+        new("Draw", "8", ToolIcon.Draw, [new(Tool.Draw, default, "Track"), new(Tool.Pen, default, "Pen")]),
+        new("Edit", "7", ToolIcon.Edit, [new(Tool.Track, default, "Points"), new(Tool.Shape, default, "Shape"), new(Tool.Join, default, "Join")]),
+        new("Yard", "=", ToolIcon.Lay, [new(Tool.Follow, default, "Lay"), new(Tool.Parallel, default, "Parallel"), new(Tool.Siding, default, "Siding")]),
+        new("Switches", "0", ToolIcon.Switches, [new(Tool.Switches, default, "Switches")], GapAfter: true),
+        new("Place", "\\", ToolIcon.Pieces, [new(Tool.Place, PlaceGroup.Assemblies, "Pieces"), new(Tool.Place, PlaceGroup.Structures, "Bridges"), new(Tool.Place, PlaceGroup.Lineside, "Lineside")]),
+        new("Signals", "9", ToolIcon.Signal, [new(Tool.Place, PlaceGroup.Signals, "Signals"), new(Tool.Circuits, default, "Circuits")]),
+        new("Roads", ";", ToolIcon.Road, [new(Tool.Road, default, "Roads")]),
+        new("Terrain", "2-6", ToolIcon.Terrain,
         [
-            (Tool.Draw, default, ToolIcon.Draw, "Track", "Lay straights and curves, each running on from the last"),
-            (Tool.Follow, default, ToolIcon.Lay, "Lay", "Lay track along guides (=)"),
-            (Tool.Pen, default, ToolIcon.Pen, "Pen", "Draw track (8)"),
-            (Tool.Join, default, ToolIcon.Join, "Join", "Join two track ends with a smooth curve"),
-            (Tool.Track, default, ToolIcon.Edit, "Edit", "Edit control points (7)"),
-            (Tool.Shape, default, ToolIcon.Shape, "Shape", "Shape a line's curves (-)"),
-            (Tool.Parallel, default, ToolIcon.Parallel, "Parallel", "Lay tracks beside a track (P)"),
-            (Tool.Siding, default, ToolIcon.Siding, "Siding", "Lay a siding off a track, through a switch, running beside it"),
-            (Tool.Switches, default, ToolIcon.Switches, "Switches", "Switches (0)"),
-        ]),
-        ("BUILD",
-        [
-            (Tool.Place, PlaceGroup.Assemblies, ToolIcon.Pieces, "Assembly", "Track pieces and crossings"),
-            (Tool.Place, PlaceGroup.Structures, ToolIcon.Bridge, "Structures", "Bridges"),
-        ]),
-        ("SIGNAL",
-        [
-            (Tool.Place, PlaceGroup.Signals, ToolIcon.Signal, "Signals", "Signals"),
-            (Tool.Circuits, default, ToolIcon.Circuits, "Circuits", "Track circuits (9)"),
-        ]),
-        ("WORLD",
-        [
-            (Tool.Road, default, ToolIcon.Road, "Roads", "Roads (;)"),
-            (Tool.Place, PlaceGroup.Lineside, ToolIcon.UtilityPole, "Lineside", "Poles, lights and loose ties"),
-            (Tool.Raise, default, ToolIcon.Terrain, "Terrain", "Terrain (2-6)"),
-        ]),
+            new(Tool.Raise, default, "Raise"), new(Tool.Lower, default, "Lower"), new(Tool.Smooth, default, "Smooth"),
+            new(Tool.Flatten, default, "Flatten"), new(Tool.Paint, default, "Paint"), new(Tool.ClearBallast, default, "Ballast"),
+        ], GapAfter: true),
     ];
 
-    /// The Place tool, on one of its buttons: what's in hand is let go if it belongs to another.
-    private void OpenPlace(PlaceGroup group)
+    /// The mode last used in each rail tool, which its button goes back to.
+    private readonly int[] _lastMode = new int[Rail.Length];
+
+    /// Whether a mode is the one in hand.
+    private bool InHand(ToolMode mode) => mode.Tool == _tool && (mode.Tool != Tool.Place || GroupOf(_place.Mode) == mode.Group);
+
+    /// The rail tool in hand, and its mode's index in it.
+    private (int Tool, int Mode) Current
     {
-        _tool = Tool.Place;
-        _objects.Open(group);
+        get
+        {
+            for (var t = 0; t < Rail.Length; t++)
+                for (var m = 0; m < Rail[t].Modes.Length; m++)
+                    if (InHand(Rail[t].Modes[m]))
+                        return (t, m);
+            return (0, 0);
+        }
     }
 
-    private static readonly (Tool Tool, string Name)[] Brushes =
-        [(Tool.Raise, "Raise"), (Tool.Lower, "Lower"), (Tool.Smooth, "Smooth"), (Tool.Flatten, "Flatten"), (Tool.Paint, "Paint"), (Tool.ClearBallast, "Ballast")];
+    private void Use(ToolMode mode)
+    {
+        if (mode.Tool == Tool.Place)
+            _objects.Open(mode.Group);
+        _tool = mode.Tool;
+        _trains.Open = false;
+    }
 
+    /// The rail tool's modes in the top bar.
+    public void ToolModes()
+    {
+        if (_terrain is null || _trains.Open)
+            return;
+        var (index, mode) = Current;
+        var rail = Rail[index];
+        var pick = Workspace.Modes($"mode.{rail.Name}", rail.Modes.Select(m => m.Name).ToArray(), mode);
+        if (pick != mode && pick >= 0)
+        {
+            Use(rail.Modes[pick]);
+            _lastMode[index] = pick;
+        }
+    }
 
-    /// The terrain brush last used, which the strip's Terrain button goes back to.
-    private Tool _brush = Tool.Raise;
+    /// Whether the Train inspector is showing in place of the tool's.
+    public bool TrainInspector => _trains.Open;
 
-    private static bool IsBrush(Tool tool) => tool is Tool.Raise or Tool.Lower or Tool.Smooth or Tool.Flatten or Tool.Paint or Tool.ClearBallast;
+    /// The editor's tools on the rail (inside Workspace.BeginRail), then the train, then undo and redo at its foot.
+    public void RailItems()
+    {
+        var (current, _) = Current;
+        for (var t = 0; t < Rail.Length; t++)
+        {
+            var tool = Rail[t];
+            var tip = tool.Key is null ? tool.Name : $"{tool.Name} ({tool.Key})";
+            if (Workspace.RailItem($"rail.{tool.Name}", tool.Icon, tip, t == current && !_trains.Open, _terrain is not null))
+                Use(tool.Modes[Math.Clamp(_lastMode[t], 0, tool.Modes.Length - 1)]);
+            if (tool.GapAfter)
+                Workspace.RailGap();
+        }
+
+        if (Workspace.RailItem("rail.train", ToolIcon.Consist, "Train (C)", _trains.Open, _terrain is not null))
+        {
+            _trains.Open = !_trains.Open;
+            if (_trains.Open)
+                _tool = Tool.Look;
+        }
+
+        var (undo, redo) = Workspace.RailHistory(CanUndo, CanRedo);
+        if (undo)
+            UndoLast();
+        if (redo)
+            RedoLast();
+    }
 
     private YardTool ActiveYard => _tool == Tool.Parallel ? _parallel : _yard;
+
+    private static bool IsBrush(Tool tool) => tool is Tool.Raise or Tool.Lower or Tool.Smooth or Tool.Flatten or Tool.Paint or Tool.ClearBallast;
 
     public bool CanUndo => _undo.Count > 0 && _terrain is not null;
     public bool CanRedo => _redo.Count > 0 && _terrain is not null;
@@ -96,7 +140,10 @@ public sealed partial class EditorView
         }
     }
 
-    /// What's unsaved, for the top bar.
+    /// Whether anything's unsaved, for the top bar's dot.
+    public bool Unsaved => _terrain?.Source is { } source && (source.Unsaved || source.Network.Unsaved || _circuitEditor?.Unsaved == true);
+
+    /// What's unsaved, for the dot's tooltip.
     public string SaveState
     {
         get
@@ -132,112 +179,6 @@ public sealed partial class EditorView
             var geo = _route.Projection!.Inverse(new RoutePoint(at.X, -at.Z));
             return string.Create(CultureInfo.InvariantCulture, $"{geo.Lat:0.00000}, {geo.Lon:0.00000}   MSL {Height(at.Y)}   {camera}");
         }
-    }
-
-    private void ToolStrip()
-    {
-        if (_terrain is null)
-            return;
-
-        ImGui.SetNextWindowPos(new float2(0f, _headerBottom), ImGuiCond.Always);
-        ImGui.SetNextWindowSize(new float2(StripWidth, Math.Max(100f, _footerTop - _headerBottom)), ImGuiCond.Always);
-        const ImGuiWindowFlags flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoResize |
-                                       ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoScrollbar;
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new float2(0f, 6f));
-        if (ImGui.Begin("Tools"u8, flags))
-        {
-            var draw = ImGui.GetWindowDrawList();
-            foreach (var (section, items) in Strip)
-            {
-                StripSection(draw, section);
-                foreach (var (tool, group, icon, name, tip) in items)
-                {
-                    var on = tool switch
-                    {
-                        Tool.Raise => IsBrush(_tool),
-                        Tool.Place => _tool == Tool.Place && GroupOf(_place.Mode) == group,
-                        _ => _tool == tool,
-                    };
-                    if (StripItem(draw, icon, name, tip, on))
-                    {
-                        if (tool == Tool.Place)
-                            OpenPlace(group);
-                        else
-                            _tool = tool == Tool.Raise ? _brush : tool;
-                    }
-                }
-            }
-
-            // Not a tool: the train panel, open beside whatever tool is in hand.
-            StripSection(draw, "");
-            if (StripItem(draw, ToolIcon.Consist, "Consist", "Consist", _trains.Open))
-                _trains.Open = !_trains.Open;
-
-            // Undo and redo at the foot of the strip.
-            var half = (StripWidth - 10f) * 0.5f;
-            var foot = new float2(4f, MathF.Max(ImGui.GetCursorScreenPos().Y + 4f, _footerTop - half - 6f));
-            if (HistoryButton(draw, "Undo", ToolIcon.Undo, foot, half, CanUndo))
-                UndoLast();
-            if (HistoryButton(draw, "Redo", ToolIcon.Redo, foot + new float2(half + 2f, 0f), half, CanRedo))
-                RedoLast();
-        }
-
-        ImGui.End();
-        ImGui.PopStyleVar();
-    }
-
-    /// A button on the strip: its icon over its name, lit when it's on.
-    private static bool StripItem(ImDrawListPtr draw, ToolIcon icon, string name, string tooltip, bool on)
-    {
-        var at = ImGui.GetCursorScreenPos() + new float2(4f, 0f);
-        var size = new float2(StripWidth - 8f, StripButton);
-        ImGui.SetCursorScreenPos(at);
-        var clicked = ImGui.InvisibleButton(name, size);
-        var hovered = ImGui.IsItemHovered();
-        if (on)
-            draw.AddRectFilled(at, at + size, Accent, 5f);
-        else if (hovered)
-            draw.AddRectFilled(at, at + size, StrokeStrong, 5f);
-
-        var color = on ? OnAccent : hovered ? Style.Text : TextDim;
-        ToolIcons.Draw(draw, icon, at + new float2(size.X * 0.5f, 21f), 11f, color, 1.6f);
-        Canvas.Text(draw, Medium, 14f, at + new float2(size.X * 0.5f, 39f), color, name, Align.Center);
-        if (hovered)
-            ImGui.SetTooltip(tooltip);
-        return clicked;
-    }
-
-    /// A section's start on the strip: a rule (but at the very top), and its title under it in small spaced capitals.
-    private static void StripSection(ImDrawListPtr draw, string title)
-    {
-        if (ImGui.GetCursorScreenPos().Y > ImGui.GetWindowPos().Y + 10f)
-            StripGap(draw);
-        if (title.Length == 0)
-            return;
-        var at = ImGui.GetCursorScreenPos();
-        Canvas.Text(draw, Medium, 11.5f, new float2(at.X + StripWidth * 0.5f, at.Y + 1f), TextDim, title, Align.Center);
-        ImGui.Dummy(new float2(1f, 15f));
-    }
-
-    private static void StripGap(ImDrawListPtr draw)
-    {
-        var x = ImGui.GetCursorScreenPos().X + 4f;
-        var y = ImGui.GetCursorScreenPos().Y + 2f;
-        draw.AddLine(new float2(x + 8f, y), new float2(x + StripWidth - 16f, y), StrokeStrong, 1f);
-        ImGui.Dummy(new float2(1f, 5f));
-    }
-
-    private static bool HistoryButton(ImDrawListPtr draw, string name, ToolIcon icon, float2 at, float size, bool enabled)
-    {
-        ImGui.SetCursorScreenPos(at);
-        var clicked = ImGui.InvisibleButton(name, new float2(size, size)) && enabled;
-        var hovered = ImGui.IsItemHovered();
-        if (hovered && enabled)
-            draw.AddRectFilled(at, at + new float2(size, size), StrokeStrong, 5f);
-        ToolIcons.Draw(draw, icon, at + new float2(size, size) * 0.5f, 9f, enabled ? hovered ? Style.Text : TextDim : TextFaint, 1.6f);
-        if (hovered)
-            ImGui.SetTooltip($"{name} (Ctrl+{(icon == ToolIcon.Undo ? "Z" : "Y")})");
-        return clicked;
     }
 
     private static readonly (string? Id, string Name)[] Beds =
@@ -298,15 +239,7 @@ public sealed partial class EditorView
     }
 
 
-    /// The terrain brushes, their size, and what to paint.
-    private void BrushPanel(bool imperial)
-    {
-        var current = Array.FindIndex(Brushes, b => b.Tool == _tool);
-        var pick = ToolPanel.Mode("brush", Brushes.Select(b => b.Name).ToArray(), current, 3);
-        if (pick != current && pick >= 0)
-            _tool = Brushes[pick].Tool;
-
-        SyncBrush().Panel(imperial);
-    }
+    /// The terrain brush's size and what it paints (the inspector's mode row picks the brush).
+    private void BrushPanel(bool imperial) => SyncBrush().Panel(imperial);
 
 }

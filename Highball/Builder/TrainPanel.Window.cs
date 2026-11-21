@@ -6,12 +6,14 @@ using static RailWerkz.UI.Style;
 
 namespace Highball.Builder;
 
-/// The Train window: a plate in the deck's look, its tabs each a stack of cards.
-///   Drive     the controls, the air brakes, horn and bell, and how it's running
+//// The Train inspector: what's picked and placed, in tabs of cards, beside the workspace's rail. The controls themselves
+/// are the drive strip along the bottom (DriveStrip), so nothing used while driving needs scrolling to.
+///   Drive     control taken or released, handbrakes, horn and bell sounds, how it's running
 ///   Power     the engines all together, and the distributed power
-///   Vehicle   the train's vehicles, and the one picked: its name, what it is, its air, and a locomotive's own switches
-///   Coupling  the coupling picked: its knuckles, its hose and angle cocks
-///   Train     which consist, how it's put on the track, and what's shown
+///   Cars      the train's vehicles, and the one picked: its name, what it is, its air, and a locomotive's own switches
+///   Coupler   the coupling picked: its knuckles, its hose and angle cocks
+///   Build     a consist put together here
+///   Place     which consist, how it's put on the track, and what's shown
 public sealed partial class TrainPanel
 {
     private enum Tab
@@ -24,18 +26,16 @@ public sealed partial class TrainPanel
         Train,
     }
 
-    private static readonly string[] TabNames = ["Drive", "Power", "Vehicles", "Coupling", "Build", "Place"];
+    private static readonly string[] TabNames = ["Drive", "Power", "Cars", "Coupler", "Build", "Place"];
 
     /// With nothing on the track, only these two mean anything.
     private static readonly string[] EmptyTabNames = ["Build", "Place"];
 
-    private Tab _tab = Tab.Drive;
-
-    private static float PanelWidth => S(420f);
+    private Tab _tab = Tab.Train;
 
     private static string Inv(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
 
-    /// Opens the window on a tab, by its name.
+    /// Opens the inspector on a tab, by its name.
     public void ShowTab(string name)
     {
         if (Enum.TryParse<Tab>(name, true, out var tab))
@@ -43,38 +43,23 @@ public sealed partial class TrainPanel
         Open = true;
     }
 
-    public void Window(float top)
-    {
-        if (!Open)
-        {
-            Graphs.Window(Train);
-            return;
-        }
+    /// The windows the panel keeps floating: the air graphs.
+    public void Windows() => Graphs.Window(Train);
 
-        var display = ImGui.GetIO().DisplaySize;
-        ImGui.SetNextWindowPos(new float2(display.X - PanelWidth - S(12f), top + S(12f)), ImGuiCond.FirstUseEver);
+    /// Whether the drive strip has a train to drive.
+    public bool HasDock => Controlled is not null;
+
+    /// The Train inspector's contents (inside Workspace.BeginInspector).
+    public void Inspector()
+    {
         if (_showVehicleTab)
             _tab = Tab.Vehicle;
         if (_showCouplingTab)
             _tab = Tab.Coupling;
         _showVehicleTab = _showCouplingTab = false;
 
-        if (Kit.Begin("Consist##panel", ref Open, PanelWidth))
-            Contents();
-        Kit.End();
-        Graphs.Window(Train);
-    }
-
-    private void Contents()
-    {
         var train = Train;
-        var (status, statusColor) = train is null ? ("NO TRAIN", TextFaint)
-            : train.Stopped is not null ? ("STOPPED", Caution)
-            : Math.Abs(train.Speed) < 0.05 ? ("STANDING", TextDim)
-            : (UnitText.Speed(Math.Abs(train.Speed)).ToUpperInvariant(), Style.Clear);
-        var subtitle = train is null ? "No consist placed" : $"{train.Name}  ·  {train.Cars.Count} vehicles";
-        if (Kit.Header("CONSIST", subtitle, status, statusColor))
-            Open = false;
+        ToolPanel.Header("", null, train is null ? null : $"{train.Name}  ·  {train.Cars.Count} vehicles");
 
         if (_notice is not null)
         {
@@ -94,22 +79,12 @@ public sealed partial class TrainPanel
             return;
         }
 
-        // The readings that matter at a glance, whatever the tab.
-        var air = train.Body.Brakes;
-        var head = Math.Max(air.Control, 0);
-        Kit.Stats([
-            new Stat("Speed", UnitText.Speed(Math.Abs(train.Speed))),
-            new Stat("Throttle", train.Dynamic > 0.0 ? Inv($"DB {train.Dynamic * 100.0:0}%") : train.Notch == 0 ? "Idle" : Inv($"N{train.Notch}")),
-            new Stat("Brake pipe", UnitText.Pressure(air.Pipe[head]), air.Valve[head] == ValveState.Emergency ? Stop : null),
-            new Stat("Main res", UnitText.Pressure(air.Main)),
-        ], 4, big: true);
-
-        _tab = (Tab)Kit.Tabs("train.tabs", TabNames, (int)_tab);
+        _tab = (Tab)ToolPanel.Mode("train.tabs", TabNames, (int)_tab, 3);
         switch (_tab)
         {
             case Tab.Drive:
                 if (ReferenceEquals(train, Controlled))
-                    Drive(train);
+                    DriveTab(train);
                 else
                     NotDriven(train);
                 break;
@@ -290,79 +265,10 @@ public sealed partial class TrainPanel
         Kit.EndCard();
     }
 
-    // --- Drive. ---
-
-    private static readonly string[] ReverserNames = ["Reverse", "Neutral", "Forward"];
-
-    private void Drive(Train train)
+    /// What's set while driving but not touched every moment: control, handbrakes, the horn and bell, and how it runs.
+    private void DriveTab(Train train)
     {
-        Kit.BeginCard("Controls");
-        Kit.Caption("Reverser");
-        // As the lead unit's cab has it: forward is the way the cab faces.
-        train.CabReverser = Kit.Segmented("drive.reverser", ReverserNames, train.CabReverser + 1) - 1;
-        Kit.Caption("Throttle");
-        var notch = train.Notch;
-        if (ImGui.SliderInt("##throttle", ref notch, 0, Trains.Train.Notches, notch == 0 ? "Idle"u8 : "Notch %d"u8, ImGuiSliderFlags.AlwaysClamp))
-        {
-            // Power and dynamic braking are either-or.
-            train.Notch = notch;
-            if (notch > 0)
-                train.Dynamic = 0.0;
-        }
-
-        Kit.Caption("Dynamic brake");
-        var dynamic = (float)train.Dynamic;
-        if (ImGui.SliderFloat("##dynamic", ref dynamic, 0f, 1f, dynamic <= 0.001f ? "Off" : Inv($"{dynamic * 100f:0}%%"), ImGuiSliderFlags.AlwaysClamp | ImGuiSliderFlags.NoRoundToFormat))
-        {
-            train.Dynamic = dynamic;
-            if (dynamic > 0f)
-                train.Notch = 0;
-        }
-
-        ImGui.Dummy(new float2(1f, S(2f)));
-        var sand = train.Sand;
-        if (Kit.Toggle("drive.sand", "Sand · X", ref sand))
-            train.Sand = sand;
-        var (running, onLine, engines) = train.Body.EngineCount;
-        if (engines > 0 && onLine == 0)
-            Kit.Status(Caution, running == 0 ? "No engine running" : "No engine on line");
-        if (train.WheelSlip > 0.05)
-            Kit.Status(Stop, "Wheel slip");
-        else if (train.Sand && !train.Body.Systems.Any(s => s?.Sanding == true))
-            Kit.Status(Caution, "Out of sand");
-        Kit.EndCard();
-
-        var air = train.Body.Brakes;
-        var head = Math.Max(air.Control, 0);
-        Kit.BeginCard("Air brakes", Inv($"{air.Flow:0} cfm"));
-        Kit.Caption("Automatic");
-        // Release, then the service zone from the first notch (-6 psi) to full service (-26 psi).
-        var brake = (float)train.Brake;
-        var reduction = AirBrakes.Feed - air.Target;
-        var handle = train.Emergency ? "Emergency" : brake <= 0.001f ? "Release" : brake >= 0.999f ? $"Full service -{UnitText.Pressure(reduction)}" : $"Service -{UnitText.Pressure(reduction)}";
-        ImGui.BeginDisabled(train.Emergency);
-        if (ImGui.SliderFloat("##automatic", ref brake, 0f, 1f, handle, ImGuiSliderFlags.AlwaysClamp | ImGuiSliderFlags.NoRoundToFormat))
-            train.Brake = brake;
-        ImGui.EndDisabled();
-        Kit.Caption("Independent");
-        var independent = (float)train.Independent;
-        if (ImGui.SliderFloat("##independent", ref independent, 0f, 1f, independent <= 0.001f ? "Release" : UnitText.Pressure(AirBrakes.IndependentFull * independent),
-                ImGuiSliderFlags.AlwaysClamp | ImGuiSliderFlags.NoRoundToFormat))
-            train.Independent = independent;
-        ImGui.Dummy(new float2(1f, S(2f)));
-        if (Kit.Button("drive.emergency", train.Emergency ? "Release emergency" : "Emergency", tint: train.Emergency ? Stop : null))
-            train.Emergency = !train.Emergency;
-        ImGui.Dummy(new float2(1f, S(2f)));
-        Kit.Stats([
-            new Stat("Equalizing", UnitText.Pressure(air.Equalizing)),
-            new Stat("Rear pipe", UnitText.Pressure(air.Pipe[^1])),
-            new Stat("Cylinder", UnitText.Pressure(air.CylinderOf(head))),
-        ]);
-        if (air.Valve[head] == ValveState.Emergency || air.Valve[^1] == ValveState.Emergency)
-            Kit.Status(Stop, "In emergency");
-        Kit.EndCard();
-
-        Kit.BeginCard("Handbrakes");
+        Kit.BeginCard("Control", null, Style.Clear);
         Handbrakes(train);
         if (Kit.Button("train.release", "Release control"))
             Release();
@@ -380,36 +286,196 @@ public sealed partial class TrainPanel
                 Sounds.SetBell(true);
         });
         ImGui.PopItemWidth();
-        Kit.Button("drive.horn", Sounds.HornBlowing ? "Horn · blowing" : "Horn · Space", out _hornButton, half);
-        ImGui.SameLine(0f, S(8f));
-        if (Kit.Button("drive.bell", Sounds.BellRinging ? "Bell on · B" : "Bell off · B", half, Sounds.BellRinging ? ButtonKind.Primary : ButtonKind.Secondary))
-            Sounds.SetBell(!Sounds.BellRinging);
         Kit.EndCard();
 
-        Kit.BeginCard("Running", Inv($"{TimeSpan.FromSeconds(train.Time):m\\:ss}"));
+        var air = train.Body.Brakes;
         var forces = train.Body.CouplerForce;
         var lead = train.Cars[0];
-        var direction = train.CabSpeed > 0.01 ? "forward" : train.CabSpeed < -0.01 ? "backward" : "standing";
+        var hptLabel = RailWerkz.Core.Settings.Settings.Current.Units == RailWerkz.Core.Settings.UnitSystem.Imperial ? "HPT" : "kW / t";
+        Kit.BeginCard("Running", Inv($"{TimeSpan.FromSeconds(train.Time):m\\:ss}"));
         Kit.Stats([
-            new Stat("Going", direction),
-            new Stat("Acceleration", Inv($"{train.Acceleration:0.000} m/s²")),
             new Stat("Grade", Inv($"{lead.Grade * 100.0:0.00}%")),
+            new Stat("Curve", lead.Curvature > 1e-6 ? UnitText.Length(1.0 / lead.Curvature) : "straight"),
+            new Stat("Accel", Inv($"{train.Acceleration:0.000} m/s²")),
             new Stat("Traction", UnitText.Force(Math.Abs(train.Traction))),
             new Stat("Brakes", UnitText.Force(train.Braking)),
+            new Stat("Dynamic", UnitText.Force(train.DynamicBraking)),
             new Stat("Resistance", UnitText.Force(train.Resistance)),
             new Stat("Gravity", UnitText.Force(train.GravityForce)),
-            new Stat("Dynamic", UnitText.Force(train.DynamicBraking)),
             new Stat("Draft / buff", forces.Length == 0 ? "-" : $"{UnitText.ForceK(Math.Max(forces.Max(), 0.0))} / {UnitText.ForceK(Math.Max(-forces.Min(), 0.0))}"),
-            new Stat("Curve", lead.Curvature > 1e-6 ? UnitText.Length(1.0 / lead.Curvature) : "straight"),
+            new Stat("Equalizing", UnitText.Pressure(air.Equalizing)),
+            new Stat("Rear pipe", UnitText.Pressure(air.Pipe[^1])),
+            new Stat("Air flow", Inv($"{air.Flow:0} cfm")),
             new Stat("Length", UnitText.Length(train.Length)),
             new Stat("Mass", UnitText.Mass(train.Mass)),
+            new Stat(hptLabel, UnitText.PowerToWeight(train.Power, train.Mass)),
         ]);
-        // Horsepower per ton (kW a tonne in metric): what the train can climb and how fast, on the mass as loaded now.
-        var hptLabel = RailWerkz.Core.Settings.Settings.Current.Units == RailWerkz.Core.Settings.UnitSystem.Imperial ? "HPT" : "kW / t";
-        Kit.Stats([new Stat("Run", UnitText.Length(train.Distance)), new Stat(hptLabel, UnitText.PowerToWeight(train.Power, train.Mass))], 3);
         if (train.Stopped is { } stopped)
             Kit.Status(Caution, stopped);
         Kit.EndCard();
+    }
+
+    // --- The drive strip: every control used while driving, in one row along the bottom. ---
+
+    private static readonly string[] ReverserShort = ["R", "N", "F"];
+
+    /// Inside Workspace.BeginDock, one row: reverser, throttle, dynamic, automatic and independent brakes (bars with their
+    /// label inside), emergency, sand, horn and bell, then the speed and the air at the right, and anything wrong between.
+    public void DriveStrip()
+    {
+        if (Controlled is not { } train)
+            return;
+        var draw = ImGui.GetWindowDrawList();
+        var pos = ImGui.GetWindowPos();
+        var size = ImGui.GetWindowSize();
+        var height = S(28f);
+        var y = pos.Y + (size.Y - height) * 0.5f;
+        var gap = S(8f);
+        var x = pos.X + S(12f);
+
+        bool Lever(string id, string label, string reading, ref float value, float width, bool enabled = true)
+        {
+            var held = Kit.Bar(id, ref value, new float2(x, y), new float2(width, height), label, reading, enabled, out _);
+            x += width + gap;
+            return held;
+        }
+
+        bool Cell(string id, string label, bool on, Rgba lit, float width, out bool held)
+        {
+            var min = new float2(x, y);
+            ImGui.SetCursorScreenPos(min);
+            var clicked = ImGui.InvisibleButton(id, new float2(width, height));
+            held = ImGui.IsItemActive();
+            var hover = ImGui.IsItemHovered();
+            draw.AddRectFilled(min, min + new float2(width, height), on ? lit : hover ? RaisedHover : Raised, S(3f));
+            Canvas.Text(draw, Medium, S(13.5f), min + new float2(width * 0.5f, (height - S(13.5f)) * 0.5f - S(1f)), on ? OnAccent : hover ? Style.Text : TextDim, label, Align.Center);
+            if (clicked)
+                Sfx.Tick();
+            x += width + S(2f);
+            return clicked;
+        }
+
+        // Reverser, as the lead unit's cab has it.
+        var reverser = train.CabReverser + 1;
+        for (var i = 0; i < 3; i++)
+            if (Cell($"drive.rev{i}", ReverserShort[i], i == reverser, Accent, S(28f), out _) && i != reverser)
+                train.CabReverser = i - 1;
+        x += gap;
+
+        // A notched handle: its label, a block for each notch (lit up to the one it's in), and the reading. Click or drag
+        // onto a block for that notch, onto the label for idle/off; the wheel over it moves it a notch at a time.
+        int Notched(string id, string label, string reading, int notch, float width, bool enabled)
+        {
+            const int notches = Trains.Train.Notches;
+            var min = new float2(x, y);
+            var size = new float2(width, height);
+            ImGui.SetCursorScreenPos(min);
+            ImGui.InvisibleButton(id, size);
+            var active = ImGui.IsItemActive() && enabled;
+            var hover = ImGui.IsItemHovered() && enabled;
+            var first = x + S(8f) + Canvas.TextSize(Regular, S(13f), label).X + S(8f);
+            var last = x + width - S(8f) - Canvas.TextSize(Mono, S(13f), "Idle").X - S(8f);
+            var pitch = (last - first) / notches;
+            var was = notch;
+            if (active)
+            {
+                var mouse = ImGui.GetIO().MousePos.X;
+                notch = mouse < first ? 0 : Math.Clamp((int)((mouse - first) / pitch) + 1, 1, notches);
+            }
+            var wheel = ImGui.GetIO().MouseWheel;
+            if (hover && wheel != 0f)
+                notch += MathF.Sign(wheel);
+            notch = Math.Clamp(notch, 0, notches);
+            if (notch != was)
+                Sfx.Tick();
+
+            var alpha = enabled ? 1f : 0.45f;
+            draw.AddRectFilled(min, min + size, (hover || active ? RaisedHover : Raised).Fade(alpha), S(3f));
+            var textY = y + (height - S(13f)) * 0.5f - S(1f);
+            Canvas.Text(draw, Regular, S(13f), new float2(x + S(8f), textY), enabled ? TextDim : TextFaint, label);
+            for (var n = 1; n <= notches; n++)
+            {
+                var a = new float2(first + (n - 1) * pitch + S(1f), y + S(6f));
+                var b = new float2(first + n * pitch - S(1f), y + height - S(6f));
+                draw.AddRectFilled(a, b, (n <= notch ? Accent : Style.Text.WithAlpha(0.1f)).Fade(alpha), S(1.5f));
+            }
+            Canvas.Text(draw, Mono, S(13f), new float2(x + width - S(8f), textY + S(0.5f)), enabled ? Style.Text : TextFaint, reading, Align.Right);
+            x += width + gap;
+            return notch;
+        }
+
+        // Throttle, idle and notches 1 to 8, and the dynamic brake, off and notches 1 to 8. They're interlocked as on the
+        // stand: the throttle has to be in idle to take the dynamic brake, and the dynamic brake off to take power.
+        var notch = train.Notch;
+        train.Notch = Notched("drive.throttle", "Throttle", notch == 0 ? "Idle" : Inv($"N{notch}"), notch, S(230f), train.DynamicNotch == 0);
+        var dynamic = train.DynamicNotch;
+        train.DynamicNotch = Notched("drive.dynamic", "Dynamic", dynamic == 0 ? "Off" : Inv($"{dynamic}"), dynamic, S(220f), train.Notch == 0);
+
+        // Automatic: release, then the service zone to full service. Independent: the engines' own brakes.
+        var air = train.Body.Brakes;
+        var head = Math.Max(air.Control, 0);
+        var brake = (float)train.Brake;
+        var reduction = AirBrakes.Feed - air.Target;
+        if (Lever("drive.automatic", "Automatic", train.Emergency ? "Emerg" : brake <= 0.001f ? "Rel" : $"-{UnitText.Pressure(reduction)}", ref brake, S(190f), !train.Emergency))
+            train.Brake = brake;
+        var independent = (float)train.Independent;
+        if (Lever("drive.independent", "Independent", independent <= 0.001f ? "Rel" : UnitText.Pressure(AirBrakes.IndependentFull * independent), ref independent, S(170f)))
+            train.Independent = independent;
+
+        if (Cell("drive.emergency", "Emergency", train.Emergency, Stop, S(84f), out _))
+            train.Emergency = !train.Emergency;
+        if (Cell("drive.sand", "Sand", train.Sand, Accent, S(52f), out _))
+            train.Sand = !train.Sand;
+        Cell("drive.horn", "Horn", Sounds.HornBlowing, Accent, S(52f), out _hornButton);
+        if (Cell("drive.bell", "Bell", Sounds.BellRinging, Accent, S(52f), out _))
+            Sounds.SetBell(!Sounds.BellRinging);
+        x += gap * 2f;
+
+        // The readings from the right: the air, then the speed.
+        var right = pos.X + size.X - S(12f);
+        var textY = y + (height - S(13f)) * 0.5f - S(1f);
+        ReadOnlySpan<(string Label, string Value, Rgba Color)> readings =
+        [
+            ("Cyl", UnitText.Pressure(air.CylinderOf(head)), Style.Text),
+            ("MR", UnitText.Pressure(air.Main), Style.Text),
+            ("BP", UnitText.Pressure(air.Pipe[head]), air.Valve[head] == ValveState.Emergency ? Stop : Style.Text),
+        ];
+        foreach (var (label, value, color) in readings)
+        {
+            var valueWidth = Canvas.TextSize(Mono, S(13f), value).X;
+            var labelWidth = Canvas.TextSize(Regular, S(13f), label).X;
+            if (right - valueWidth - labelWidth - S(6f) < x)
+                break;
+            Canvas.Text(draw, Mono, S(13f), new float2(right, textY + S(0.5f)), color, value, Align.Right);
+            Canvas.Text(draw, Regular, S(13f), new float2(right - valueWidth - S(6f), textY), TextDim, label, Align.Right);
+            right -= valueWidth + labelWidth + S(22f);
+        }
+
+        var speed = UnitText.Speed(Math.Abs(train.Speed));
+        var speedWidth = Canvas.TextSize(Bold, S(20f), speed).X;
+        if (right - speedWidth > x)
+        {
+            Canvas.Text(draw, Bold, S(20f), new float2(right, y + (height - S(20f)) * 0.5f - S(2f)), Style.Text, speed, Align.Right);
+            right -= speedWidth + S(22f);
+        }
+
+        // Anything wrong, in what's left between.
+        var (running, onLine, engines) = train.Body.EngineCount;
+        (string Text, Rgba Color)? warning =
+            air.Valve[head] == ValveState.Emergency || air.Valve[^1] == ValveState.Emergency ? ("In emergency", Stop)
+            : train.WheelSlip > 0.05 ? ("Wheel slip", Stop)
+            : engines > 0 && onLine == 0 ? (running == 0 ? "No engine running" : "No engine on line", Caution)
+            : train.Sand && !train.Body.Systems.Any(s => s?.Sanding == true) ? ("Out of sand", Caution)
+            : null;
+        if (warning is { } w)
+        {
+            var width = Canvas.TextSize(Medium, S(13f), w.Text).X;
+            if (right - width - S(14f) > x)
+            {
+                draw.AddCircleFilled(new float2(right - width - S(9f), y + height * 0.5f), S(3.5f), w.Color);
+                Canvas.Text(draw, Medium, S(13f), new float2(right - width, textY), w.Color, w.Text);
+            }
+        }
     }
 
     /// A combo of sound names; picking one keeps it in the settings.
@@ -501,15 +567,15 @@ public sealed partial class TrainPanel
             {
                 dp.RemoteNotch = notch;
                 if (notch > 0)
-                    dp.RemoteDynamic = 0.0;
+                    dp.RemoteDynamicNotch = 0;
             }
 
             Kit.Caption("Remote dynamic brake");
-            var dynamic = (float)dp.RemoteDynamic;
-            if (ImGui.SliderFloat("##remotedynamic", ref dynamic, 0f, 1f, dynamic <= 0.001f ? "Off" : Inv($"{dynamic * 100f:0}%%"), ImGuiSliderFlags.AlwaysClamp | ImGuiSliderFlags.NoRoundToFormat))
+            var dynamic = dp.RemoteDynamicNotch;
+            if (ImGui.SliderInt("##remotedynamic", ref dynamic, 0, Trains.Train.Notches, dynamic == 0 ? "Off"u8 : "Notch %d"u8, ImGuiSliderFlags.AlwaysClamp))
             {
-                dp.RemoteDynamic = dynamic;
-                if (dynamic > 0f)
+                dp.RemoteDynamicNotch = dynamic;
+                if (dynamic > 0)
                     dp.RemoteNotch = 0;
             }
         }
@@ -549,7 +615,7 @@ public sealed partial class TrainPanel
         };
         ImGui.Indent(S(10f));
         Kit.Status(color, $"Car {head + 1}  {train.Cars[head].Label}{(units > 1 ? $" +{units - 1}" : "")}  ·  {state}");
-        var power = remote.Applied.Dynamic > 0.0 ? Inv($"DB {remote.Applied.Dynamic * 100.0:0}%") : remote.Applied.Notch == 0 ? "Idle" : Inv($"N{remote.Applied.Notch}");
+        var power = remote.Applied.Dynamic > 0.0 ? Inv($"DB {Math.Round(remote.Applied.Dynamic * Trains.Train.Notches):0}") : remote.Applied.Notch == 0 ? "Idle" : Inv($"N{remote.Applied.Notch}");
         Kit.Stats([
             new Stat("Distance", UnitText.Length(remote.Distance)),
             new Stat("Signal", Inv($"{remote.Signal * 100.0:0}%"), remote.Signal < 0.5 ? Caution : null),

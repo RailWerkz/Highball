@@ -76,24 +76,12 @@ public sealed unsafe class StorageImage : IDisposable
         cmd.PipelineBarrier(VkPipelineStageFlags.TransferBit, VkPipelineStageFlags.ComputeShaderBit | VkPipelineStageFlags.FragmentShaderBit, VkDependencyFlags.None, [done], [], []);
     }
 
-    /// A view of one mip level alone, for a shader to write that level as its own image. Let go of with the image.
-    public VkImageView MipView(int level)
-    {
-        var view = _image.CreateImageView(Depth > 1 ? VkImageViewType._3D : VkImageViewType._2D, Subresources.Mips(VkImageAspectFlags.ColorBit, level, 1, 0), Gpu.Device.VkAllocator);
-        _mipViews.Add(view);
-        return view.VkImageView;
-    }
-
-    private readonly List<ImageViewEx> _mipViews = [];
-
     public void Dispose()
     {
-        var (image, view, sampler, mipViews) = (_image, _view, Sampler, _mipViews.ToArray());
+        var (image, view, sampler) = (_image, _view, Sampler);
         Gpu.Defer(() =>
         {
             Gpu.Device.DestroySampler(sampler, Gpu.Device.VkAllocator);
-            foreach (var mip in mipViews)
-                mip.Dispose();
             view.Dispose();
             image.Dispose();
         });

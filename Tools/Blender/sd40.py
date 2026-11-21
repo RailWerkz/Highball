@@ -4,14 +4,14 @@
 
 The source is "EMD-SD40 Diesel Electric Locomotive" by Heataker, CC BY 4.0:
 https://sketchfab.com/3d-models/emd-sd40-diesel-electric-locomotive-7271826d3a584a22849c949a7755f79d
-Its files stay in Models/Locomotives/SD40/Source. Under SD40 this writes CREDITS.txt, assembly.json (where each part goes), one
+Its files stay in Meshes/Locomotives/SD40/Source. Under SD40 this writes CREDITS.txt, assembly.json (where each part goes), one
 folder per level of detail, of which only LOD0 is built for now (see LATER_LODS), and
     LOD0/body_<livery>.glb   origin on the railhead, midway between the trucks
     LOD0/truck.glb           origin on the railhead at the truck's pivot, turning about Z; the front truck at yaw 0
     LOD0/wheelset.glb        origin at the axle's centre, rolling about X
     Assembled/sd40_<livery>.glb and .blend, the whole engine for looking at; the game loads the separate parts.
 
-Its coupler is the one every engine and car in the game uses, so it goes to Models/Couplers instead, with coupler.json
+Its coupler is the one every engine and car in the game uses, so it goes to Meshes/Couplers instead, with coupler.json
 (its height above the railhead and its reach to the pulling face) and CREDITS.txt:
     Couplers/coupler.glb     origin at the draft pivot, swinging about Z, pulling face towards -Y
 
@@ -38,8 +38,8 @@ from mathutils import Matrix
 
 args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 CONTENT = os.path.abspath(args[0] if args else "Content")
-OUT = os.path.join(CONTENT, "Models", "Locomotives", "SD40")
-COUPLERS = os.path.join(CONTENT, "Models", "Couplers")
+OUT = os.path.join(CONTENT, "Meshes", "Locomotives", "SD40")
+COUPLERS = os.path.join(CONTENT, "Meshes", "Couplers")
 SOURCE = os.path.join(OUT, "Source", "emd-sd40_diesel_electric_locomotive_4k.glb")
 
 # Measured off the source's meshes.
@@ -874,7 +874,7 @@ assembly = {
     "lengthOverCouplers": round(2 * (10.2187), 3),
     "lods": [level["folder"] for level in LODS],
     "trianglesWholeEngine": over,
-    "models": "Each model below is <lod>/<model>.glb, except the couplers: Models/Couplers/coupler.glb, the same on every engine and car",
+    "models": "Each model below is <lod>/<model>.glb, except the couplers: Meshes/Couplers/coupler.glb, the same on every engine and car",
     "bodies": [f"body_{key}" for key in BUILT],
     "truckByBody": {f"body_{key}": f"truck_{key}" for key, livery in BUILT.items() if "gear" in livery},
     "trucks": [{"model": "truck", "position": [0, -TRUCK_Y, 0], "yaw": 0}, {"model": "truck", "position": [0, TRUCK_Y, 0], "yaw": 180}],
@@ -892,7 +892,7 @@ https://sketchfab.com/3d-models/emd-sd40-diesel-electric-locomotive-7271826d3a58
 Licensed under Creative Commons Attribution 4.0: http://creativecommons.org/licenses/by/4.0/
 
 The source files are in Source/, unchanged.
-The other models in these folders are made from it by Tools/Blender/sd40.py. Changes: split into body, truck, wheelset and coupler (the coupler now in Models/Couplers);
+The other models in these folders are made from it by Tools/Blender/sd40.py. Changes: split into body, truck, wheelset and coupler (the coupler now in Meshes/Couplers);
 moved so the rail is at zero; wheelsets narrowed to standard gauge; textures re-laid so the two sides have their own space;
 the original paint scheme replaced by a new livery; metalness set by part; a normal map raised from the base colour's seams.
 

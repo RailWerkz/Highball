@@ -143,8 +143,10 @@ public sealed partial class NetworkLines
         return new CrossingPad(id, x, z, dx, dz, half, low, high, level);
     }
 
-    /// The shallowest a road can cross a track for a pad to be laid (the sine of its angle to it: about 7 degrees).
-    private const double MinPadSine = 0.12;
+    /// The shallowest a road can cross a track for a crossing to be laid (the sine of its angle to it: about 7 degrees). The
+    /// placer (PlaceTool.CrossingAt), the pad and the deck (NetworkMeshes.TracksAcross) all go by this one: a pad laid where the
+    /// deck finds no track cuts the road back to bare ground with nothing between.
+    internal const double MinPadSine = 0.12;
 
     /// The road through a crossing at (x, z) from the two roads cut back to its pad: free ends facing each other across it, the
     /// crossing between them. (A road crossing a track at a shallow angle is cut back a long way either side, beyond where

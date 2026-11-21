@@ -272,7 +272,7 @@ Content/                 Everything the game loads
   Audio/                 Music, engines, horns, bells, trucks, couplers (not in git)
   Fonts/                 JetBrains Mono, and Inter for the interface if it's there
   Materials/             Track.json: the track and lineside materials
-  Models/                Locomotives, rolling stock, couplers, track parts, lineside, vegetation (glTF, vehicle.json)
+  Meshes/                Locomotives, rolling stock, couplers, track parts, lineside, vegetation (glTF, vehicle.json)
   Routes/                Each route's tiles, network, objects, signalling and stock (not in git)
   Shaders/               GLSL, compiled to SPIR-V at build time; Post/, Clouds/ and Occlusion/ are compute passes
   Textures/              Ground, ballast, metal and concrete sets, sky and planets
@@ -314,4 +314,4 @@ Highball --skipsplash --menu options --shot 3 options.png --quit 3.5
 
 BRUTAL: see `Vendor/BRUTAL_LICENSE.txt` and `Vendor/BRUTAL_NOTICE.txt`. FastNoiseLite and NLayer: MIT. JetBrains
 Mono: OFL. Volumetric clouds adapted from Kitten Space Agency's cloud shaders. Locomotive and coupler models: see the
-`CREDITS.txt` beside each one under `Content/Models` (the EMD SD40 by Heataker, CC BY 4.0, modified).
+`CREDITS.txt` beside each one under `Content/Meshes` (the EMD SD40 by Heataker, CC BY 4.0, modified).

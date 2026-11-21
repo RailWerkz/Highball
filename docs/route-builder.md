@@ -219,7 +219,7 @@ Every switch is built to fit its routes, whatever curve and frog angle they came
 routes in code: stock rails, blades, closure and wing rails, the frog's point rails planed to a V, and guard rails. The
 blades run to where the routes are 14 cm apart, and long timbers carry both routes until a tie of each would clear the
 other. What has a look of its own comes from a kit made in Blender (`Tools/Blender/turnouts.py` makes
-`Models/Track/switch_kit_r.glb` and `_l.glb`), each part fitted in place: the point machine stands by the points, the frog
+`Meshes/Track/switch_kit_r.glb` and `_l.glb`), each part fitted in place: the point machine stands by the points, the frog
 casting stretches across the V at whatever angle it is, and the stretchers and throw rod stretch between the blades as they
 move. `turnout_N.png` is a picture of each standard size, for the Switches tool.
 
@@ -462,7 +462,7 @@ of the longest span; Auto puts them back where they'd be placed), gives the deck
 and sets each end's retaining walls: their length (0 for as the bank needs) and how far they flare back from square. What's set is
 saved in Bridges.json with the route, keyed by the bridge's end nodes, and each change is one undo.
 
-Pier columns, walls, caps and bearings come from a kit (`Tools/Blender/bridges.py`, writing `Models/Track/bridge_kit.glb`), each
+Pier columns, walls, caps and bearings come from a kit (`Tools/Blender/bridges.py`, writing `Meshes/Track/bridge_kit.glb`), each
 stretched to fit; without it they're plain blocks. A guide's mapped bridge keeps its own simpler deck until track's laid across it.
 
 ## Shaping track by hand

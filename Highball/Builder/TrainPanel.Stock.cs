@@ -10,9 +10,9 @@ public sealed partial class TrainPanel
     public List<PlacedCut> Snapshot(Func<double, double, (double Lat, double Lon)> toGeo) => Railway.Snapshot(toGeo);
 
     /// Puts saved cuts back on the track as they were left (see Railway.Restore). Returns how many went back.
-    public int Restore(IReadOnlyList<PlacedCut> saved, Func<double, double, (double X, double Z)> toPlan)
+    public int Restore(IReadOnlyList<PlacedCut> saved, Func<double, double, (double X, double Z)> toPlan, PlacedAs state = PlacedAs.Running)
     {
-        var put = Railway.Restore(saved, toPlan);
+        var put = Railway.Restore(saved, toPlan, state);
         if (_focus is null && (_controlled ?? _cuts.LastOrDefault()) is { } focus)
             Focus(focus);
         return put;

@@ -12,7 +12,16 @@ layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec2 vUv;
 layout(location = 3) in vec3 vTint;
 layout(location = 4) in float vHeight;
+// The motion image write would otherwise hold the depth test back until after the shader, shading every blade behind the one
+// seen; this pass writes no depth (it tests for equal), so testing first changes nothing it draws.
+layout(early_fragment_tests) in;
+
+layout(location = 5) in vec3 vBack;
 layout(location = 0) out vec4 outColor;
+
+// MotionVectors' image: the wind's sway, for the temporal pass. w is minus this depth, so it's used only where the plant is
+// still what's seen once everything after it is drawn.
+layout(set = 4, binding = 0, rgba16f) uniform writeonly image2D motionOut;
 
 layout(set = 0, binding = 0) uniform sampler2D albedoMap;
 layout(set = 0, binding = 1) uniform sampler2D opacityMap;
@@ -31,6 +40,9 @@ void main()
     float alpha = pc.shape.w > 1.5 ? 1.0 : pc.shape.w > 0.5 ? texture(opacityMap, vUv).r : map.a;
     if (alpha < 0.3)
         discard;
+
+    if (pc.shape.x > 0.0)
+        imageStore(motionOut, ivec2(gl_FragCoord.xy), vec4(vBack, -gl_FragCoord.z));
 
     float dist = length(vRelative);
     vec3 away = vRelative / max(dist, 1e-3);

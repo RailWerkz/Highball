@@ -1,0 +1,27 @@
+{
+  // One vehicle for the consist editor and the simulation. SI units, named in each key. Sizes are this model's (from
+  // assembly.json, written by Tools/Blender/csx_autorack.py); masses are typical of an 89 ft enclosed bi-level.
+  "id": "autorack_csx",
+  // Consists saved with the old 89 ft autorack get this one.
+  "replaces": [ "autorack_89" ],
+  "name": "89 ft autorack (CSX)",
+  "kind": "Autorack",
+  "type": "Enclosed bi-level autorack, 70-ton trucks",
+  // Knuckle nose to knuckle nose, the shared coupler set where the source's were: 90 ft over the end sills, plus the
+  // cushioned draft gear's reach.
+  "lengthM": 28.504,
+  // 64 ft, the real car's: the model's scaled to it.
+  "truckCentresM": 19.508,
+  // Front (A end) knuckle nose to front truck centre; 4.462 m at the B end.
+  "frontOverhangM": 4.534,
+  "axles": 4,
+  // The model's tread: 33 in.
+  "wheelDiameterM": 0.8472,
+  // About 110,000 lb empty; loaded with a dozen or so automobiles, about 165,000 lb.
+  "massEmptyKg": 49900,
+  "massLoadedKg": 74800,
+  "maxSpeedKmh": 113,
+  "liveries": [
+    { "id": "csx", "name": "CSX", "model": "RollingStock/Autorack/CSX/LOD0/autorack_csx.glb" }
+  ]
+}

@@ -213,7 +213,7 @@ public sealed partial class EditorView
             {
                 // Through the tool: the mode, and a click on the ground here.
                 _tool = Tool.Place;
-                _place.Mode = parts[1] switch { "signal" => PlaceMode.Signal, "handthrow" => PlaceMode.HandThrow, "crossing" => PlaceMode.GradeCrossing, _ => PlaceMode.Diamond };
+                _place.Mode = parts[1] switch { "signal" => PlaceMode.Signal, "signalbridge" => PlaceMode.SignalBridge, "handthrow" => PlaceMode.HandThrow, "crossing" => PlaceMode.GradeCrossing, _ => PlaceMode.Diamond };
                 var (px, pz) = At(2);
                 _place.Selected = null;
                 _place.Update(lines, _tracks!, (px, pz), PanelLength);
@@ -339,6 +339,41 @@ public sealed partial class EditorView
                 }
 
                 Log.Info($"Place {parts[0]}: {source.Objects.Count} objects");
+                break;
+            }
+
+            case "layoutsignals":
+                LayOutSignals();
+                break;
+            case "removesignals":
+                RemoveLaidSignals();
+                break;
+            case "heads":
+            {
+                // heads,<stack>: the last placed signal's heads, top to bottom, as triple/hooded/searchlight joined by '/'; a signal
+                // bridge's stacks, left to right, joined by '|' (an empty one for a track without heads).
+                if (source.Objects.LastOrDefault(o => o.Kind is PlacedKind.Signal or PlacedKind.SignalBridge) is not { } signal)
+                    break;
+                IReadOnlyList<SignalHeadType> Stack(string text) =>
+                    [.. text.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(n => Enum.Parse<SignalHeadType>(n, true))];
+                var stacks = parts[1].Split('|').Select(Stack).ToList();
+                // heads,<front>,<back>: the back's as well, the same way; heads,<front>,<back>,cantilever|bridge[,left]: a bridge's style too.
+                var backs = parts.Length > 2 ? parts[2].Split('|').Select(Stack).ToList() : null;
+                var style = parts.Length > 3 && parts[3] == "cantilever" ? SignalBridgeStyle.Cantilever : parts.Length > 3 ? SignalBridgeStyle.Bridge : (SignalBridgeStyle)signal.Style;
+                PlacedChange(signal, signal.Kind == PlacedKind.Signal
+                    ? signal with { Heads = stacks[0], BackHeads = backs?[0] is { Count: > 0 } b ? b : signal.BackHeads }
+                    : signal with { Stacks = stacks, BackStacks = backs ?? signal.BackStacks, Style = (int)style, Opposite = parts.Length > 4 ? parts[4] == "left" : signal.Opposite });
+                Log.Info($"Heads: {string.Join(" | ", stacks.Select(s => string.Join("/", s)))}, over {_network!.SpanTracks(signal.Id)} tracks");
+                break;
+            }
+
+            case "lamps":
+            {
+                // lamps,<head>,<red+yellow+green+white or none>: lights one of the last placed signal's heads (SignalHeads.All's order).
+                if (source.Objects.LastOrDefault(o => o.Kind is PlacedKind.Signal or PlacedKind.SignalBridge) is not { } signal)
+                    break;
+                var lit = parts[2].Split('+').Aggregate(SignalLamps.None, (all, n) => all | (Enum.TryParse<SignalLamps>(n, true, out var l) ? l : SignalLamps.None));
+                _network!.SetLamps(signal, int.Parse(parts[1], CultureInfo.InvariantCulture), lit);
                 break;
             }
 
@@ -659,6 +694,17 @@ public sealed partial class EditorView
                 Log.Info($"Unbridge: {found?.Way}");
                 if (found is { } bridged)
                     Committed(Roads.RemoveBridge(bridged.Way));
+                break;
+            }
+
+            case "autoclassify":
+            {
+                // autoclassify: Route, Auto Classify Track, applied.
+                _classify = TrackClassify.Find(source.Network, _route.Projection!);
+                Log.Info($"Auto classify: {_classify.Value.Matched} of {_classify.Value.Looked} laid ways along mapped track; {_classify.Value.Changes.Count} to change: " +
+                         string.Join(", ", _classify.Value.Changes.GroupBy(c => c.Class).Select(g => $"{g.Count()} to {g.Key}")));
+                ApplyClassify();
+                _classify = null;
                 break;
             }
 

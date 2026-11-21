@@ -250,6 +250,14 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
             case PlaceMode.Signal when PlaceTool.SignalAt(lines, x, z) is { } signal:
                 PlacedChange(null, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, signal.Node) with { Toward = signal.Toward });
                 break;
+            case PlaceMode.SignalBridge when PlaceTool.SignalBridgeAt(lines, x, z) is { } spot:
+            {
+                // A three-light head over each track it spans to begin with.
+                var made = Placed(PlacedKind.SignalBridge, spot.X, spot.Z, spot.Heading, spot.Node) with { Toward = spot.Toward };
+                var tracks = Math.Max(1, _network!.SpanTracksOf(made));
+                PlacedChange(null, made with { Stacks = [.. Enumerable.Range(0, tracks).Select(_ => SignalHeads.Default)], Style = (int)SignalHeads.StyleFor(tracks) });
+                break;
+            }
             case PlaceMode.HandThrow when PlaceTool.SwitchAt(lines, x, z) is { } turnout:
                 if (source.Objects.FirstOrDefault(o => o.Node == turnout.Node) is { } already)
                     _place.Selected = already.Id;
@@ -418,7 +426,13 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
                     PlacedChange(o, Placed(o.Kind, pole.X, pole.Z, pole.Heading, id: o.Id) with { Run = o.Run });
                 break;
             case PlacedKind.Signal when PlaceTool.SignalAt(lines, x, z) is { } signal:
-                PlacedChange(o, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, signal.Node, id: o.Id) with { Toward = signal.Toward });
+                PlacedChange(o, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, signal.Node, id: o.Id) with { Toward = signal.Toward, Heads = o.Heads, BackHeads = o.BackHeads });
+                break;
+            case PlacedKind.SignalBridge when PlaceTool.SignalBridgeAt(lines, x, z) is { } bridge:
+                PlacedChange(o, Placed(PlacedKind.SignalBridge, bridge.X, bridge.Z, bridge.Heading, bridge.Node, id: o.Id) with
+                {
+                    Toward = bridge.Toward, Stacks = o.Stacks, BackStacks = o.BackStacks, Style = o.Style, Opposite = o.Opposite,
+                });
                 break;
             case PlacedKind.GradeCrossing when PlaceTool.CrossingAt(lines, x, z) is { } crossing:
                 PlacedChange(o, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, o.Opposite, id: o.Id) with { Turn = o.Turn, Style = o.Style, Approach = o.Approach, Bell = o.Bell, Surface = o.Surface, Warning = o.Warning, Fill = o.Fill });
@@ -541,7 +555,14 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
     }
 
     /// A signal or crossing turned right round; a hand throw to the switch's other side.
-    public void PlaceFlip(PlacedObject o) => PlacedChange(o, o.Kind is PlacedKind.HandThrow or PlacedKind.GradeCrossing ? o with { Opposite = !o.Opposite } : o with { Heading = o.Heading + 180.0 });
+    public void PlaceFlip(PlacedObject o) => PlacedChange(o, o.Kind switch
+    {
+        PlacedKind.HandThrow or PlacedKind.GradeCrossing => o with { Opposite = !o.Opposite },
+        // Turned round, a bridge's tracks run the other way across it: its stacks are turned with it, so each stays over its track,
+        // and a cantilever's leg stays where it stands.
+        PlacedKind.SignalBridge => TurnedRound(o),
+        _ => o with { Heading = o.Heading + 180.0 },
+    });
 
     /// The gate turn being dragged on the slider, until it's let go (then it's one edit, for undo).
     private float? _crossingTurn;
@@ -665,32 +686,8 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
             CrossingPanel(picked);
         }
 
-        if (picked.Kind == PlacedKind.Signal && _network is { } network)
-        {
-            // By hand for now, until there are signalling rules to set them; not saved with the route.
-            var lit = network.LampsOf(picked.Id);
-            Kit.Caption("Lamps (test only)");
-            var first = true;
-            foreach (var (lamp, _, _, _, _) in NetworkMeshes.Lamps)
-            {
-                if (!first)
-                    ImGui.SameLine(0f, S(16f));
-                first = false;
-                var on = lit.HasFlag(lamp);
-                if (Kit.Toggle($"lamp{lamp}", lamp.ToString(), ref on))
-                    network.SetLamps(picked, on ? lit | lamp : lit & ~lamp);
-            }
-
-            switch (Kit.Buttons("lamps", ["All", "None"]))
-            {
-                case 0:
-                    network.SetLamps(picked, SignalLamps.Red | SignalLamps.Yellow | SignalLamps.Green);
-                    break;
-                case 1:
-                    network.SetLamps(picked, SignalLamps.None);
-                    break;
-            }
-        }
+        if (picked.Kind is PlacedKind.Signal or PlacedKind.SignalBridge && _network is not null)
+            SignalPanel(picked);
 
         // Its actions, one row: turning (what can turn), the other side or round, and taking it away.
         var sided = picked.Kind is PlacedKind.HandThrow or PlacedKind.GradeCrossing;

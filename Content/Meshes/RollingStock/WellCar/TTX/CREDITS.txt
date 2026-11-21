@@ -1,0 +1,17 @@
+53 ft double-stack well car, TTX (DDTX 785369), with a Yang Ming 40 ft container and an Evergreen 40 ft high cube
+Author: TODO
+Source: TODO
+Licence: TODO
+(author and licence to be filled in)
+
+The original files are in Source/Green-obj (Green.obj, Green.mtl, Car.jpg, Green.jpg, Yang.jpg, Reflection.hdr), unchanged,
+unpacked from Meshes/RollingStock/wellcar_doublestack/Green-obj.rar. The other models in these folders are made from them by
+Tools/Blender/wellcar_doublestack.py. Changes: scaled (about 0.072 m a unit) so the well's inside is the 53 ft 1-3/4 in
+lettered on the car; everything but the running gear and the containers baked into one body, the trucks, wheelsets and
+the two containers kept apart; moved so the rail is at zero; the running gear squeezed across to standard gauge and centred
+under the body; its couplers taken off; the ground plane dropped; the faces of the objects built inside out turned outward
+and the normals worked out afresh; the lettering on the side girders and the containers' sides and doors, mapped a quarter
+turned in the source, mapped flat; the containers stretched a little to their ISO sizes (40 ft by 8 ft, 8 ft 6 in and
+9 ft 6 in high); coplanar faces merged and dense parts reduced (1,280,000 triangles to about 172,000 with both boxes);
+every material made non-metallic but the wheel treads, the car's texture cut to 4096 and the containers' to 2048, written as
+JPEG. Its couplers are the shared one in Meshes/Couplers, from the SD40 (see the CREDITS.txt there).

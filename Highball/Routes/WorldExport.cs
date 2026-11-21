@@ -140,7 +140,18 @@ public static class WorldExport
         // Server data: the whole world, and each region's own share.
         progress?.Invoke("Writing server track");
         var servers = new List<object>();
-        var signals = objects.Where(o => o.Kind == PlacedKind.Signal).Select(o => new RailGraphFile.Signal(o.Id, o.Node, o.Toward, o.Lat, o.Lon, o.Heading)).ToList();
+        // (Each signal bridge's track that has heads on a side is a signal of its own, and so is a mast's back: an id of its own from
+        // the object's, past any a placed object's given (side and track in bits 56 to 61), at the object, facing the side's way. Which
+        // track nodes a bridge's or a back's stands between is for the signalling to work out from the tracks.)
+        static long Derived(PlacedObject o, int side, int track) => (1L << 62) | ((long)(side * 32 + track) << 56) | (o.Id & ((1L << 56) - 1));
+        var signals = objects.Where(o => o.Kind == PlacedKind.Signal).Select(o => new RailGraphFile.Signal(o.Id, o.Node, o.Toward, o.Lat, o.Lon, o.Heading))
+            .Concat(objects.Where(o => o.Kind == PlacedKind.Signal && o.MastBackHeads.Count > 0)
+                .Select(o => new RailGraphFile.Signal(Derived(o, 1, 31), o.Toward, o.Node, o.Lat, o.Lon, o.Heading + 180.0)))
+            .Concat(objects.Where(o => o.Kind == PlacedKind.SignalBridge).SelectMany(o =>
+                new[] { (Stacks: o.Stacks, Side: 0), (Stacks: o.BackStacks, Side: 1) }.SelectMany(side => (side.Stacks ?? []).Select((heads, track) => (heads, track))
+                    .Where(s => s.heads.Count > 0)
+                    .Select(s => new RailGraphFile.Signal(Derived(o, side.Side, s.track), null, null, o.Lat, o.Lon, o.Heading + side.Side * 180.0)))))
+            .ToList();
         void Server(string name, Func<RailEdge, bool>? keep)
         {
             var path = Path.Combine(folder, name + ".hbserver");

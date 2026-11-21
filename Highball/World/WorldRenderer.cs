@@ -145,8 +145,8 @@ public sealed unsafe class WorldRenderer : IDisposable
         // One layout for every world pipeline: push constants, and a texture at set 0 for those that sample one.
         _layout = Pipelines.Layout(128, TextureBinding.SetLayout, Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout, TrackTextures.SetLayout);
         _terrainLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(GroundTextures.Count), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
-        // (Colour, metal-roughness, normal and occlusion: RenderModel.Bind.)
-        _modelLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(4), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
+        // (Colour, metal-roughness, normal and occlusion: RenderModel.Bind.) Set 4: the motion image plants write their sway into.
+        _modelLayout = Pipelines.Layout(128, TextureBinding.SetLayoutFor(4), Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout, _motion.WriteSetLayout);
         // Models: every texture in one array (MaterialTable), the rest as the plants have it.
         _bindlessLayout = Pipelines.Layout(128, MaterialTable.SetLayout, Sky.SetLayout, SunShadows.SetLayout, Clouds.SetLayout);
         CreateWorldPipelines();
@@ -326,6 +326,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             _clouds.Prepare(cmd, _target, camera, aspect, Sky);
 
         var plants = terrain is not null && _vegetation.Enabled ? _vegetation.CullCamera(cmd, camera, aspect) : -1;
+        _motion.BeginFrame(cmd, _target);
         _target.Begin(cmd, new float4(0f, 0f, 0f, 1f));
 
         var view = camera.View(aspect);
@@ -418,6 +419,7 @@ public sealed unsafe class WorldRenderer : IDisposable
             Sky.Bind(cmd, _modelLayout);
             _shadows.Bind(cmd, _modelLayout);
             _clouds.Bind(cmd, _modelLayout);
+            cmd.BindDescriptorSets(VkPipelineBindPoint.Graphics, _modelLayout, 4, [_motion.WriteSet], []);
             _vegetation.Draw(cmd, _modelLayout, camera, aspect, _plantDepth, _plant, plants, Vegetation.PlantPass.Color);
         }
 
@@ -536,30 +538,20 @@ public sealed unsafe class WorldRenderer : IDisposable
         Sky.SetGroundColor(sum / samples);
     }
 
-    /// What every signal's showing. There are no signalling rules to set them yet, so they all stand at stop. The lit lens shines by
-    /// itself (line.frag, the lit lens paints); what it throws is a light at the mouth of its hood (signal.glb's red lens), opened
-    /// wide but only forwards, so none of it falls back on the head and the dark lenses above.
+    /// What every signal head's showing. There are no signalling rules to set them yet, so they all stand at stop unless lit by hand.
+    /// The lit lens shines by itself (line.frag, the lit lens paints); what it throws is a light just in front of the lens, inside its
+    /// hood (NetworkMeshes.SignalLights), opened wide but only forwards, so none of it falls back on the head and the dark lenses.
     private void AddSignals(NetworkMeshes network)
     {
-        foreach (var (x, y, z, heading, lit) in network.Signals())
+        foreach (var (x, y, z, face, lamp) in network.SignalLights())
         {
-            var angle = heading * Math.PI / 180.0;
-            var (fx, fz) = (Math.Cos(angle), Math.Sin(angle));
-            for (var i = 0; i < NetworkMeshes.Lamps.Length; i++)
-            {
-                var (lamp, _, paint, height, _) = NetworkMeshes.Lamps[i];
-                if (!lit.HasFlag(lamp))
-                    continue;
-                // As set in the Track Materials window (TrackMaterials.Lamps), found by the lens's paint.
-                var index = Array.FindIndex(TrackMaterials.Lamps, l => "Lens" + l.Name == paint);
-                var s = TrackMaterials.Current.LampOf(Math.Max(index, 0));
-                var color = new float3(s.Color[0], s.Color[1], s.Color[2]);
-                var outer = MathF.Cos(Math.Clamp(s.Beam, 1f, 179f) * MathF.PI / 180f);
-                var inner = MathF.Cos(Math.Clamp(s.Beam, 1f, 179f) * 0.65f * MathF.PI / 180f);
-                // Just in front of the lens's dome (Tools/Blender/lineside.py), inside its hood.
-                _lights.Add(new LocalLight(x + fx * 0.15, y + height, z + fz * 0.15, s.Range, color * s.Intensity, new float3((float)fx, 0f, (float)fz), inner, outer,
-                    s.GlowSize, color * s.GlowBrightness));
-            }
+            // As set in the Track Materials window (TrackMaterials.Lamps), found by the lamp's name.
+            var index = Array.FindIndex(TrackMaterials.Lamps, l => l.Name == lamp.ToString());
+            var s = TrackMaterials.Current.LampOf(Math.Max(index, 0));
+            var color = new float3(s.Color[0], s.Color[1], s.Color[2]);
+            var outer = MathF.Cos(Math.Clamp(s.Beam, 1f, 179f) * MathF.PI / 180f);
+            var inner = MathF.Cos(Math.Clamp(s.Beam, 1f, 179f) * 0.65f * MathF.PI / 180f);
+            _lights.Add(new LocalLight(x, y, z, s.Range, color * s.Intensity, face, inner, outer, s.GlowSize, color * s.GlowBrightness));
         }
     }
 

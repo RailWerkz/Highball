@@ -74,7 +74,7 @@ public sealed class TrainGraphs
             return;
 
         var display = ImGui.GetIO().DisplaySize;
-        ImGui.SetNextWindowPos(new float2(S(24f) + EditorView.StripWidth, display.Y - S(700f)), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowPos(new float2(S(24f) + Highball.App.Workspace.RailWidth, display.Y - S(700f)), ImGuiCond.FirstUseEver);
         if (Kit.Begin("Air graphs##panel", ref Open, PanelWidth))
             Contents(train);
         Kit.End();

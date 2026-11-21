@@ -377,7 +377,8 @@ public sealed partial class NetworkMeshes
                 if (u < 0.0 || u >= 1.0 || Math.Abs(t) > CrossingSearch)
                     continue;
                 var length = Math.Sqrt(sx * sx + sz * sz);
-                if (Math.Abs(denominator) / length < 0.25)
+                // (As shallow as its pad is laid: NetworkLines.MinPadSine.)
+                if (Math.Abs(denominator) / length < NetworkLines.MinPadSine)
                     continue;
                 hits.Add((line, line.S[i] + (line.S[i + 1] - line.S[i]) * (float)u, (float)t));
             }

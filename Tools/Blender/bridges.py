@@ -2,7 +2,7 @@
 
     blender -b --factory-startup --python Tools/Blender/bridges.py -- <Content folder>
 
-Writes Models/Track/bridge_kit.glb under the Content folder. Every part is made to a unit size and stretched by the game
+Writes Meshes/Track/bridge_kit.glb under the Content folder. Every part is made to a unit size and stretched by the game
 (NetworkMeshes.BridgeGroups.cs, Kit) to fit where it goes: across along model X, up along Z (the game's Y), its depth along Y.
 Each stands on its origin, at the bottom middle. A part whose ends mustn't stretch with its length (the pier wall's rounded
 noses) keeps its ends beyond x = +-0.5, and the game scales those by its depth instead. Every object is one paint, named
@@ -95,7 +95,7 @@ def build():
     # A bearing pad under a girder: a unit block.
     kit.prism("Bearing_Black", [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)], 0.0, 1.0)
 
-    kit.export(os.path.join(CONTENT, "Models", "Track", "bridge_kit.glb"))
+    kit.export(os.path.join(CONTENT, "Meshes", "Track", "bridge_kit.glb"))
 
 
 build()

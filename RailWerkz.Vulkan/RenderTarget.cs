@@ -9,8 +9,7 @@ public sealed unsafe class RenderTarget : IDisposable
 {
     public const VkFormat DepthFormat = VkFormat.D32SFloat;
 
-    /// The samples the setting asks for, as drawn, TAA on or off: thin repeating geometry (far ties, rails) needs the samples
-    /// within each frame that TAA can't make up across frames.
+    /// The samples the setting asks for (1, 2, 4 or 8), drawn as asked whether temporal anti-aliasing is on or off.
     public static int Wanted => RailWerkz.Core.Settings.Settings.Current.Msaa;
 
     /// Samples per pixel: the setting's (Wanted), or the most under it the GPU can do for both colour and depth.
@@ -160,7 +159,8 @@ public sealed unsafe class RenderTarget : IDisposable
             {
                 ImageView = _samplesDepthView.VkImageView,
                 ImageLayout = VkImageLayout.DepthAttachmentOptimal,
-                ResolveMode = VkResolveModeFlags.SampleZeroBit,
+                // The nearest sample (reverse-Z), so temporal AA, motion vectors and the rest read the surface in front at an edge.
+                ResolveMode = Gpu.DepthResolveNearest ? VkResolveModeFlags.MaxBit : VkResolveModeFlags.SampleZeroBit,
                 ResolveImageView = _depthView.VkImageView,
                 ResolveImageLayout = VkImageLayout.DepthAttachmentOptimal,
                 LoadOp = VkAttachmentLoadOp.Clear,

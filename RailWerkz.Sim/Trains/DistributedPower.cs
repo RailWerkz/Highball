@@ -133,9 +133,19 @@ public sealed class DistributedPower
 
     public DpMode Mode { get; set; }
 
-    /// The remotes' own throttle notch and dynamic brake, in Independent.
-    public int RemoteNotch { get; set; }
-    public double RemoteDynamic { get; set; }
+    /// The remotes' own throttle notch and dynamic brake notch (0 to Train.Notches each), in Independent.
+    public int RemoteNotch
+    {
+        get => _remoteNotch;
+        set => _remoteNotch = Math.Clamp(value, 0, Train.Notches);
+    }
+    public int RemoteDynamicNotch
+    {
+        get => _remoteDynamicNotch;
+        set => _remoteDynamicNotch = Math.Clamp(value, 0, Train.Notches);
+    }
+    private int _remoteNotch, _remoteDynamicNotch;
+    public double RemoteDynamic => RemoteDynamicNotch / (double)Train.Notches;
 
     /// The ground's height at a place on the plan (x, z), for the radio's line of sight; null takes it all as open.
     public Func<double, double, double>? Ground { get; set; }

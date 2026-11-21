@@ -56,10 +56,10 @@ public sealed class Livery
     public required string Id { get; init; }
     public required string Name { get; init; }
 
-    /// Under Content/Models: as it looks empty, or carrying nothing in particular.
+    /// Under Content/Meshes: as it looks empty, or carrying nothing in particular.
     public required string Model { get; init; }
 
-    /// Its model carrying each of the vehicle's cargoes, by cargo id (Content/Models paths); none for a vehicle whose
+    /// Its model carrying each of the vehicle's cargoes, by cargo id (Content/Meshes paths); none for a vehicle whose
     /// look doesn't change with what it carries.
     public IReadOnlyDictionary<string, string> Loads { get; init; } = new Dictionary<string, string>();
 
@@ -327,7 +327,7 @@ public sealed class VehicleDef
     };
 }
 
-/// Every vehicle the game knows: each vehicle.json under Content/Models, read once. Adding a vehicle needs no code.
+/// Every vehicle the game knows: each vehicle.json under Content/Meshes, read once. Adding a vehicle needs no code.
 public static class VehicleCatalog
 {
     private static List<VehicleDef>? _all;
@@ -368,7 +368,7 @@ public static class VehicleCatalog
 
     private static List<VehicleDef> Load()
     {
-        var root = ContentPath.Get("Models");
+        var root = ContentPath.Get("Meshes");
         var found = new List<VehicleDef>();
         if (!Directory.Exists(root))
             return found;

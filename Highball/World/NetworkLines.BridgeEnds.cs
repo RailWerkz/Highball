@@ -64,6 +64,25 @@ public sealed partial class NetworkLines
     /// How thick a slope's paving slab is: the bank's cut this far under its top.
     public const float SlabDepth = 0.35f;
 
+    /// The farthest into the gap a slope end's slope reaches from the deck's end, metres.
+    public const float SlopeMost = 80f;
+
+    /// How far into the gap a slope end's slope may reach from the deck's end: no farther than halfway along the bridged stretch (past
+    /// that is the other end's), nor than SlopeMost. On a shallow skew, with the deck running almost alongside what's underneath, the
+    /// slope's plane only comes down to it far along the deck, and its paving and the bank cut for it ran on for kilometres.
+    public static float SlopeReach(NetworkLine deck, BridgeEnd end)
+    {
+        var (first, last) = (end.Point, end.Point);
+        if (end.Start)
+            while (last < deck.Structures.Length && last + 1 < deck.Count && deck.Structures[last] == Structure.Bridge)
+                last++;
+        else
+            while (first > 0 && deck.Structures[first - 1] == Structure.Bridge)
+                first--;
+        var gap = deck.S[last] - deck.S[first];
+        return Math.Clamp(gap * 0.5f, 1f, SlopeMost);
+    }
+
     /// The top of a slope end's paving at a place under it: a plane along what's underneath, rising from a shoulder's width off its edge
     /// at SpillRun to one, up to the seat just under the deck's beams.
     public float SlopeAt(NetworkLine line, BridgeEnd end, double x, double z)

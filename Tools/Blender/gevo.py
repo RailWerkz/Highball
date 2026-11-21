@@ -3,7 +3,7 @@
     blender -b --factory-startup --python Tools/Blender/gevo.py -- <Content folder>
 
 Run Tools/Blender/gevo_textures.py first: it turns the source's Gevo.blend into Source/gevo_es44ac.blend (and .glb) with its
-textures on; this reads the .blend, as a glTF's vertices come split at every seam and its loose pieces with them. Under Models/Locomotives/ES44AC/CSX this writes assembly.json (where each part goes), one folder per level of
+textures on; this reads the .blend, as a glTF's vertices come split at every seam and its loose pieces with them. Under Meshes/Locomotives/ES44AC/CSX this writes assembly.json (where each part goes), one folder per level of
 detail, of which only LOD0 is built (the source is about 36,000 triangles), and
     LOD0/body_<livery>.glb   origin on the railhead, midway between the trucks; the headlights, ditch lights and horn are
                              nodes of their own in it, and the bell an empty node (the source has no bell), all listed with
@@ -11,7 +11,7 @@ detail, of which only LOD0 is built (the source is about 36,000 triangles), and
     LOD0/truck.glb           origin on the railhead at the truck's pivot (its middle axle), turning about Z; both trucks at yaw 0
     LOD0/wheelset.glb        origin at the axle's centre, rolling about X
     Assembled/gevo_<livery>.glb and .blend, the whole engine for looking at; the game loads the separate parts.
-The source has no couplers: the engine takes the shared one from Models/Couplers (written by Tools/Blender/sd40.py), set on
+The source has no couplers: the engine takes the shared one from Meshes/Couplers (written by Tools/Blender/sd40.py), set on
 the pilots at its standard height.
 
 Blender is Z-up, metres; the glTF exporter turns that into the game's Y-up. The cab faces -Y. The source runs along X with the
@@ -29,8 +29,8 @@ from mathutils import Matrix, Vector
 
 args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 CONTENT = os.path.abspath(args[0] if args else "Content")
-OUT = os.path.join(CONTENT, "Models", "Locomotives", "ES44AC", "CSX")  # ES44AC/Black is the same engine, another model: es44ac.py
-COUPLERS = os.path.join(CONTENT, "Models", "Couplers")
+OUT = os.path.join(CONTENT, "Meshes", "Locomotives", "ES44AC", "CSX")  # ES44AC/Black is the same engine, another model: es44ac.py
+COUPLERS = os.path.join(CONTENT, "Meshes", "Couplers")
 SOURCE = os.path.join(OUT, "Source", "gevo_es44ac.blend")
 LIVERIES = {"csx": "CSX, as the source has it"}
 SOURCE_NAME = "GE GEVO ES44AC (CSX), author and licence to be filled in: see CREDITS.txt"
@@ -403,7 +403,7 @@ assembly = {
     "lengthOverCouplers": round(OVER_COUPLERS, 3),
     "lods": list(LODS),
     "trianglesWholeEngine": over,
-    "models": "Each model below is <lod>/<model>.glb, except the couplers: Models/Couplers/coupler.glb, the same on every engine and car",
+    "models": "Each model below is <lod>/<model>.glb, except the couplers: Meshes/Couplers/coupler.glb, the same on every engine and car",
     "bodies": [f"body_{key}" for key in LIVERIES],
     "truckByBody": {},
     "trucks": [{"model": "truck", "position": [0, -round(TRUCK_Y, 4), 0], "yaw": 0}, {"model": "truck", "position": [0, round(TRUCK_Y, 4), 0], "yaw": 0}],

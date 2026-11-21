@@ -1,18 +1,28 @@
-"""Turns the GE AC4400CW (CSX) source model into Highball's parts, laid out as the ES44AC CSX's are.
+"""Turns a GE AC4400CW source model into Highball's parts, laid out as the ES44AC CSX's are: one per livery.
 
-    blender -b --factory-startup --python Tools/Blender/ac4400cw.py -- <Content folder>
+    blender -b --factory-startup --python Tools/Blender/ac4400cw.py -- <Content folder> [--livery csx|bnsf]
 
-The source is Models/Locomotives/AC4400CW/CSX/Source/Locomotive_FBX.fbx with its textures in Source/CSX-max: some 3,500
+Each livery is its own source model, with its own textures, under Meshes/Locomotives/AC4400CW/<Livery>/Source (LIVERIES):
+CSX's Locomotive_FBX.fbx (textures in CSX-max), BNSF's BNSF.fbx (textures in Textures). They're the same engine from the
+same maker, each some 3,500 loose objects and 4.7 million triangles, but not the same file: BNSF's parts are named
+otherwise (its trucks' parts plain Cylinder and Box, not HiAd-*), so before anything else each of its objects takes the
+name of the CSX object that's the same (as many vertices, the same middle), and all that follows goes by those names. Its
+textures are its own, as it has them: to change a livery's paint, change its textures and run this again. The game sees
+one engine, its vehicle.json (under CSX) listing each livery's model.
+
+The source is one of those models: some 3,500
 loose objects and 4.7 million triangles. For now everything but the running gear is baked into one body; the trucks and
-wheelsets are kept apart so they can swivel. Under AC4400CW/CSX this writes assembly.json (where each part goes), and
-    LOD0/body_csx.glb        origin on the railhead, midway between the trucks; the headlights, ditch lights, horn, exhaust
+wheelsets are kept apart so they can swivel. Under AC4400CW/CSX this writes assembly.json (where each part goes), the
+parts it's put together from, in Source/Parts (working files, not loaded by the game):
+    body_csx.glb             origin on the railhead, midway between the trucks; the headlights, ditch lights, horn, exhaust
                              and bell are empty nodes in it (the geometry stays baked), listed in assembly.json; the
                              windows are a mesh of their own in it, Glass, which the game draws see-through
-    LOD0/truck_front.glb     origin on the railhead at the truck's pivot (its middle axle), turning about Z; each truck is
-    LOD0/truck_rear.glb      its own model, as the source has them (they're mirror images, not one turned round)
-    LOD0/wheelset.glb        origin at the axle's centre, rolling about X
-    Assembled/ac4400cw_csx.glb and .blend, the whole engine, which the game loads (Truck_Front and Truck_Rear apart).
-The source has no couplers: the engine takes the shared one from Models/Couplers, set on the pilots at its standard height.
+    truck_front.glb          origin on the railhead at the truck's pivot (its middle axle), turning about Z; each truck is
+    truck_rear.glb           its own model, as the source has them (they're mirror images, not one turned round)
+    wheelset.glb             origin at the axle's centre, rolling about X
+and LOD0/ac4400cw_csx.glb, the whole engine, which the game loads (Truck_Front and Truck_Rear apart), with its .blend in
+Source. Tools/Blender/lods.py then makes LOD1 and LOD2 from it, beside LOD0.
+The source has no couplers: the engine takes the shared one from Meshes/Couplers, set on the pilots at its standard height.
 
 What's done to the source:
   - The running gear is told apart by name: the source calls the Hi-Ad truck's parts HiAd-*. A wheelset is the two wheels
@@ -43,13 +53,22 @@ import numpy as np
 from mathutils import Matrix, Vector
 
 args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+LIVERY = args[args.index("--livery") + 1].lower() if "--livery" in args else "csx"
+args = [a for i, a in enumerate(args) if a != "--livery" and (i == 0 or args[i - 1] != "--livery")]
 CONTENT = os.path.abspath(args[0] if args else "Content")
-OUT = os.path.join(CONTENT, "Models", "Locomotives", "AC4400CW", "CSX")
-COUPLERS = os.path.join(CONTENT, "Models", "Couplers")
-SOURCE = os.path.join(OUT, "Source", "Locomotive_FBX.fbx")
-TEXTURES = os.path.join(OUT, "Source", "CSX-max")
-LIVERY = "csx"
-SOURCE_NAME = "GE AC4400CW (CSX), author and licence to be filled in: see CREDITS.txt"
+ENGINE = os.path.join(CONTENT, "Meshes", "Locomotives", "AC4400CW")
+# Each livery: its folder, its source model and its textures (under the folder's Source).
+LIVERIES = {"csx": ("CSX", "Locomotive_FBX.fbx", "CSX-max"), "bnsf": ("BNSF", "BNSF.fbx", "Textures")}
+if LIVERY not in LIVERIES:
+    raise SystemExit(f"no livery {LIVERY}: there's {', '.join(LIVERIES)}")
+FOLDER, SOURCE_FILE, TEXTURE_FOLDER = LIVERIES[LIVERY]
+OUT = os.path.join(ENGINE, FOLDER)
+COUPLERS = os.path.join(CONTENT, "Meshes", "Couplers")
+PARTS = os.path.join(OUT, "Source", "Parts")
+SOURCE = os.path.join(OUT, "Source", SOURCE_FILE)
+TEXTURES = os.path.join(OUT, "Source", TEXTURE_FOLDER)
+NAMES_FROM = os.path.join(ENGINE, *LIVERIES["csx"][:1], "Source", LIVERIES["csx"][1])  # whose names everything goes by
+SOURCE_NAME = f"GE AC4400CW ({FOLDER}), author and licence to be filled in: see CREDITS.txt"
 
 # Measured off the source, in its own axes (X along the engine, cab at +X; Z up; centred near Y = 0).
 AXLE_Z = -1.9245
@@ -162,8 +181,9 @@ def scaled(image):
     """The image's pixels, scaled down to at most MAX_SIZE on its longer side."""
     copy = image.copy()
     w, h = copy.size
-    if max(w, h) > MAX_SIZE:
-        k = MAX_SIZE / max(w, h)
+    limit = MAX_SIZE
+    if max(w, h) > limit:
+        k = limit / max(w, h)
         copy.scale(max(1, int(w * k)), max(1, int(h * k)))
     px = pixels(copy)
     bpy.data.images.remove(copy)
@@ -218,7 +238,7 @@ def game_materials():
         if os.path.exists(found):
             image.filepath = found
             image.reload()
-    for mat in bpy.data.materials:
+    for mat in list(bpy.data.materials):  # (a copy: renaming re-sorts the list)
         if not mat.use_nodes:
             continue
         nodes, links = mat.node_tree.nodes, mat.node_tree.links
@@ -273,6 +293,16 @@ def lighten(objects):
     before = sum(tris(o) for o in objects)
     graph = bpy.context.evaluated_depsgraph_get()
     for obj in objects:
+        lo, hi = bounds(obj)
+        budget = BUDGET((hi - lo).length)
+        if tris(obj) > 4 * budget:
+            # Far over: collapsed as it is. Dissolved first, the big dense ones (BNSF's truck frames, HiAd-47x) come out
+            # as a mesh collapsing never finishes on.
+            d = obj.modifiers.new("collapse", "DECIMATE")
+            d.decimate_type = "COLLAPSE"
+            d.ratio = budget / tris(obj)
+            d.use_collapse_triangulate = True
+            continue
         d = obj.modifiers.new("flat", "DECIMATE")
         d.decimate_type = "DISSOLVE"
         d.angle_limit = math.radians(FLAT)
@@ -371,14 +401,81 @@ def trumpets(horn):
 
 # ---- build ------------------------------------------------------------------------------------------------------------
 
+def fingerprint(obj):
+    """What makes an object the same in both sources: its vertices' count and its middle, to the millimetre."""
+    w = world_verts(obj)
+    lo, hi = w.min(0), w.max(0)
+    return (len(w),) + tuple(int(round(v * 1000)) for v in (lo + hi) / 2)
+
+
+NAMES_FILE = os.path.join(os.path.dirname(NAMES_FROM), "names.json")  # the CSX source's names, by fingerprint
+
+
+def write_csx_names():
+    """Writes NAMES_FILE: every object of the CSX source by its fingerprint (ones whose fingerprints clash left out). Run in
+    a Blender of its own (--names-only): its FBX importer crashes importing a second file in one session."""
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.import_scene.fbx(filepath=NAMES_FROM)
+    names, clashes = {}, set()
+    for o in bpy.data.objects:
+        if o.type == "MESH":
+            f = ",".join(map(str, fingerprint(o)))
+            if f in names:
+                clashes.add(f)
+            names[f] = o.name
+    with open(NAMES_FILE, "w") as f:
+        json.dump({k: v for k, v in names.items() if k not in clashes}, f)
+    print("wrote", NAMES_FILE, len(names) - len(clashes), "names")
+
+
+def csx_names():
+    """The CSX source's names by fingerprint, from NAMES_FILE: written first, by another Blender, if it's missing or older
+    than the source."""
+    if not os.path.exists(NAMES_FILE) or os.path.getmtime(NAMES_FILE) < os.path.getmtime(NAMES_FROM):
+        import subprocess
+        subprocess.run([bpy.app.binary_path, "-b", "--factory-startup", "--python", os.path.abspath(__file__), "--", CONTENT,
+                        "--names-only"], check=True)
+    with open(NAMES_FILE) as f:
+        return {tuple(int(v) for v in k.split(",")): n for k, n in json.load(f).items()}
+
+
+if "--names-only" in sys.argv:
+    write_csx_names()
+    sys.exit(0)
+
+names = csx_names() if SOURCE != NAMES_FROM else None
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.fbx(filepath=SOURCE)
+for o in [o for o in bpy.data.objects if o.type == "MESH"]:
+    # Not the engine: anything longer or wider than it could be (BNSF's has a 35 x 17 m ground sheet, Plane076, under it).
+    lo, hi = bounds(o)
+    if max(hi - lo) > 30.0:
+        print("dropped", o.name, "not part of the engine:", tuple(round(c, 1) for c in hi - lo), "m")
+        bpy.data.objects.remove(o)
 meshes = [o for o in bpy.data.objects if o.type == "MESH"]
+for mat in list(bpy.data.materials):  # BNSF's are "Converted_<CSX's name>" (a copy: renaming re-sorts the list)
+    if mat.name.startswith("Converted_"):
+        mat.name = mat.name[len("Converted_"):]
+if names is not None:
+    # Each object the name of its CSX double, where it has one (the rest keep theirs: out of the way first, so no name
+    # it takes is held by another).
+    found = {o: names.get(fingerprint(o)) for o in meshes}
+    for o in meshes:
+        o.name = "__" + o.name
+    for o, name in found.items():
+        if name is not None:
+            o.name = name
+    for o in meshes:
+        if o.name.startswith("__"):
+            o.name = o.name[2:]
+    print("named after CSX's:", sum(1 for n in found.values() if n), "of", len(meshes), "objects")
 for o in [o for o in bpy.data.objects if o.type != "MESH"]:
     bpy.data.objects.remove(o)
 for o in meshes:  # each its own mesh, so baking one's transform doesn't move another
     if o.data.users > 1:
         o.data = o.data.copy()
+
+
 
 wheels = [o for o in meshes if o.active_material and o.active_material.name == "Wheel"]
 axles_x = sorted({round(middle(o).x, 3) for o in wheels})
@@ -508,10 +605,10 @@ OVER_COUPLERS = rear_face - front_face
 TRUCK_Y = (FRONT_PIVOT - REAR_PIVOT) / 2
 
 budget = {}
-budget["body"] = write(os.path.join(OUT, "LOD0", f"body_{LIVERY}.glb"), [body, glass] + fixtures)
-budget["truck_front"] = write(os.path.join(OUT, "LOD0", "truck_front.glb"), [trucks[0]])
-budget["truck_rear"] = write(os.path.join(OUT, "LOD0", "truck_rear.glb"), [trucks[1]])
-budget["wheelset"] = write(os.path.join(OUT, "LOD0", "wheelset.glb"), [wheelsets[0][0]])
+budget["body"] = write(os.path.join(PARTS, f"body_{LIVERY}.glb"), [body, glass] + fixtures)
+budget["truck_front"] = write(os.path.join(PARTS, "truck_front.glb"), [trucks[0]])
+budget["truck_rear"] = write(os.path.join(PARTS, "truck_rear.glb"), [trucks[1]])
+budget["wheelset"] = write(os.path.join(PARTS, "wheelset.glb"), [wheelsets[0][0]])
 whole = budget["body"] + budget["truck_front"] + budget["truck_rear"] + sum(tris(w) for s in wheelsets for w in s)
 print("whole engine triangles, less couplers", whole)
 
@@ -524,9 +621,9 @@ COUPLER_MODEL = "Couplers/coupler.glb"
 assembly = {
     "source": SOURCE_NAME,
     "lengthOverCouplers": round(OVER_COUPLERS, 3),
-    "lods": ["LOD0"],
+    "lods": ["LOD0", "LOD1", "LOD2"],
     "trianglesWholeEngine": {"LOD0": whole},
-    "models": "Each model below is <lod>/<model>.glb, except the couplers: Models/Couplers/coupler.glb, the same on every engine and car",
+    "models": "The game loads LOD0/ac4400cw_csx.glb (LOD1 and LOD2 beside it, from Tools/Blender/lods.py). The parts below are Source/Parts/<model>.glb, put together into it, except the couplers: Meshes/Couplers/coupler.glb, the same on every engine and car",
     "bodies": [f"body_{LIVERY}"],
     "truckByBody": {},
     "trucks": [
@@ -562,7 +659,7 @@ def combined():
 
     def load(file, parent, prefix):
         before = set(bpy.data.objects)
-        bpy.ops.import_scene.gltf(filepath=os.path.join(OUT, file))
+        bpy.ops.import_scene.gltf(filepath=os.path.join(PARTS, file))
         for obj in set(bpy.data.objects) - before:
             if obj.parent is None:
                 obj.parent = parent
@@ -570,16 +667,16 @@ def combined():
             obj.name = f"{prefix}_{obj.name}"
 
     root = holder("AC4400CW")
-    load(f"LOD0/body_{LIVERY}.glb", holder("Body", parent=root), "Body")
+    load(f"body_{LIVERY}.glb", holder("Body", parent=root), "Body")
     for label, y, axles, pivot, model in (("Front", -TRUCK_Y, front_axles, FRONT_PIVOT, "truck_front"), ("Rear", TRUCK_Y, rear_axles, REAR_PIVOT, "truck_rear")):
         truck_at = holder(f"Truck_{label}", (0, y, 0), 0.0, root)
-        load(f"LOD0/{model}.glb", truck_at, f"Truck_{label}")
+        load(f"{model}.glb", truck_at, f"Truck_{label}")
         for k, (_, at, z) in enumerate(on_truck(axles, pivot), 1):
-            load("LOD0/wheelset.glb", holder(f"Wheelset_{label}_{k}", (0, at, z), 0.0, truck_at), f"Wheelset_{label}_{k}")
+            load("wheelset.glb", holder(f"Wheelset_{label}_{k}", (0, at, z), 0.0, truck_at), f"Wheelset_{label}_{k}")
     for label, y, yaw in (("Front", COUPLER_FRONT, 0.0), ("Rear", COUPLER_REAR, math.pi)):
         load(os.path.join(COUPLERS, "coupler.glb"), holder(f"Coupler_{label}", (0, y, COUPLER_Z), yaw, root), f"Coupler_{label}")
     bpy.context.view_layer.update()
-    folder = os.path.join(OUT, "Assembled")
+    folder = os.path.join(OUT, "LOD0")
     os.makedirs(folder, exist_ok=True)
     for obj in bpy.data.objects:
         obj.select_set(True)
@@ -588,7 +685,7 @@ def combined():
                               export_animations=False)
     bpy.ops.file.pack_all()
     bpy.context.preferences.filepaths.save_version = 0
-    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, f"ac4400cw_{LIVERY}.blend"), check_existing=False)
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT, "Source", f"ac4400cw_{LIVERY}.blend"), check_existing=False)
     print("wrote", folder, len(bpy.data.objects), "objects")
 
 

@@ -1,4 +1,0 @@
-#version 450
-// FSR 2: the accumulate pass (fsr2_options.glsl).
-#include "fsr2_options.glsl"
-#include "ffx_fsr2_accumulate_pass.glsl"

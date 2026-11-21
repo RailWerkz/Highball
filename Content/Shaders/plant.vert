@@ -16,6 +16,8 @@ layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec2 vUv;
 layout(location = 3) out vec3 vTint;
 layout(location = 4) out float vHeight;
+// From where this point is now to where the wind had it last frame, in metres (MotionVectors, through plant.frag).
+layout(location = 5) out vec3 vBack;
 
 // The depth prepass (plant_depth.frag) and the shaded pass after it must land on exactly the same depth, or the shaded pass's
 // equal test would miss.
@@ -27,6 +29,7 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Ce
     vec4 cell[];
 };
 
+
 layout(push_constant) uniform Push
 {
     mat4 viewProjection;
@@ -35,7 +38,11 @@ layout(push_constant) uniform Push
     vec4 globals; // x: the ground's origin below the camera (minus its height), y: the flutter's phase, zw: the gusts' phases
     Cells cells;
     uint base;    // the first of this call's cells
+    float delta;  // seconds since last frame's phases
 } pc;
+
+// The phases' rates, as Vegetation.WindPhases turns them (radians a second): flutter, then the two gusts, as globals.yzw.
+const vec3 PhaseRates = vec3(0.4, 4.0 / 68.9, 4.5 / 37.5) * 6.2831853;
 
 void main()
 {
@@ -62,10 +69,16 @@ void main()
     vec3 normal = vec3(inNormal.x * c - inNormal.z * s, inNormal.y, inNormal.x * s + inNormal.z * c);
 
     // Bends more the higher up it is.
+    vBack = vec3(0.0);
     if (pc.shape.x > 0.0)
     {
         float up = max(inPosition.y, 0.0);
-        turned.xz += windPush(cell.zw + inPlace.xz, away, vec3(pc.globals.zw, pc.globals.y), up * up * pc.shape.x * size);
+        vec2 where = cell.zw + inPlace.xz;
+        float lean = up * up * pc.shape.x * size;
+        vec2 push = windPush(where, away, vec3(pc.globals.zw, pc.globals.y), lean);
+        vec3 before = vec3(pc.globals.zw, pc.globals.y) - PhaseRates.yzx * pc.delta;
+        vBack.xz = windPush(where, away, before, lean) - push;
+        turned.xz += push;
     }
 
     vec3 relative = standing + turned;

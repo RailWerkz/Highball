@@ -2,7 +2,7 @@
 
     blender -b --factory-startup --python Tools/Blender/track_parts.py -- <Content folder> [preview.png]
 
-Writes Models/Track/tie.glb and Models/Track/plate.glb under the Content folder, and,
+Writes Meshes/Track/tie.glb and Meshes/Track/plate.glb under the Content folder, and,
 given a second path, renders a close-up of a tie, its plates and a stub of rail there to check the parts by eye.
 
 Blender is Z-up; the glTF exporter turns that into the game's Y-up. Each part is modelled with X across the track and
@@ -400,11 +400,11 @@ def preview(tie, plate, path):
 
 reset()
 tie = make_tie()
-export(tie, os.path.join(CONTENT, "Models", "Track", "tie.glb"))
+export(tie, os.path.join(CONTENT, "Meshes", "Track", "tie.glb"))
 tie_far = decimated(tie, "TieFar", 0.12)
-export(tie_far, os.path.join(CONTENT, "Models", "Track", "tie_far.glb"))
+export(tie_far, os.path.join(CONTENT, "Meshes", "Track", "tie_far.glb"))
 tie_far.hide_render = True
 plate = make_plate()
-export(plate, os.path.join(CONTENT, "Models", "Track", "plate.glb"))
+export(plate, os.path.join(CONTENT, "Meshes", "Track", "plate.glb"))
 if PREVIEW:
     preview(tie, plate, PREVIEW)

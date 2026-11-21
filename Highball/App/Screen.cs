@@ -13,6 +13,9 @@ public abstract class Screen
     /// Whether the 3D world is drawn behind this screen, and how.
     public virtual WorldView View => WorldView.None;
 
+    /// Drawn in the editor's look (Style.UseEditor) rather than the deck's.
+    public virtual bool EditorTheme => false;
+
     /// Mouse captured for looking around.
     public virtual bool CapturesMouse => false;
 

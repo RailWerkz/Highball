@@ -136,8 +136,6 @@ layout(set = 4, binding = 97) uniform sampler2D paint10Packed;
 layout(set = 4, binding = 98) uniform sampler2D paint11Color;
 layout(set = 4, binding = 99) uniform sampler2D paint11Normal;
 layout(set = 4, binding = 100) uniform sampler2D paint11Packed;
-// The ties' colour map (TrackTextures): its smallest level is its average.
-layout(set = 4, binding = 101) uniform sampler2D tieColor;
 
 // A surface texture's three maps, by slot. (With the derivatives worked out beforehand, outside the branches.)
 void surfaceMaps(int slot, vec2 uv, vec2 gx, vec2 gy, out vec3 color, out vec3 normal, out vec4 packed)
@@ -200,14 +198,16 @@ const int LitLensPaint = 12;
 const int FlashLensPaint = 15;
 // A grade crossing mast's own paints (NetworkMeshes.CrossingPaint), from here: palette entries 7 on.
 const int CrossingPaint = 17;
+// A searchlight's lunar white lens (NetworkMeshes.Paints, after the crossing's paints), dark; lit, LitLens (3) on from it, in the
+// fourth lamp's colour (TrackMaterials.Lamps: White).
+const int WhiteLensPaint = 22;
+const int WhiteLitPaint = 25;
 const float FlashRate = 0.9;
 
 // NetworkMeshes: how far the tie models reach (TieReach), how far apart they lie (TieSpacing, 19.5 in), and half a tie's width.
 const float TieReach = 1000.0;
 const float TieSpacing = 0.495;
 const float TieHalfWidth = 0.114;
-// The head of a rail across, metres (136 lb rail).
-const float RailHeadWidth = 0.074;
 
 const vec3 Steel = vec3(0.40, 0.40, 0.40);
 const vec3 BareSteel = vec3(0.56, 0.57, 0.58);
@@ -392,9 +392,6 @@ void main()
         float apart = abs(fract(v / TieSpacing + 0.5) - 0.5) * TieSpacing;
         float oneByOne = clamp((TieHalfWidth - apart) / vPixel + 0.5, 0.0, 1.0);
         float ties = mix(oneByOne, TieHalfWidth * 2.0 / TieSpacing, smoothstep(0.25, 0.5, vPixel / TieSpacing));
-        // The ties' own colour, as the models look at a distance: their map's average, darkened as part.frag darkens creosoted
-        // timber (TieWood if there's no map).
-        vec3 tieWood = textureSize(tieColor, 0).x > 1 ? textureLod(tieColor, vec2(0.5), 16.0).rgb * 0.55 : TieWood;
         if (shape.y > 0.95)
         {
             for (int k = 0; k < tracks; k++)
@@ -407,7 +404,7 @@ void main()
                 {
                     // Past the real rails and ties the track is painted on: the ties as a band (they cover 46% of
                     // it) and the rails as lines.
-                    albedo = paint(albedo, tieWood, stripe(u, o, 1.295, uPixel) * ties * tieFar);
+                    albedo = paint(albedo, TieWood, stripe(u, o, 1.295, uPixel) * ties * tieFar);
                     float rails = stripe(u, o - railOffset, 0.037, uPixel) + stripe(u, o + railOffset, 0.037, uPixel);
                     albedo = paint(albedo, Steel * 0.8, rails * far);
                 }
@@ -433,18 +430,7 @@ void main()
         albedo = mix(texture(railSideColor, along).rgb, mix(texture(railTopColor, along).rgb, BareSteel, 0.65), worn);
         metallic = mix(sidePacked.y * 0.5, 1.0, worn);
         hold = 1.0 - worn;
-        roughness = mix(sidePacked.x, topPacked.x * 0.45, worn);
-        // Specular anti-aliasing. A polished railhead reflecting the sun is thousands of times brighter than the ballast, along a line
-        // thinner than a pixel: it sparkles and crawls as it lands on different pixels, and no anti-aliasing can hold it. So the
-        // highlight is widened (energy kept: the light is spread, not taken away) as the pixel can no longer show it sharp:
-        // - by how much the normal turns within the pixel (Tokuyoshi and Kaplanyan's geometric specular AA, on GGX alpha squared),
-        //   the rounded head and the switch blades' edges seen from afar;
-        // - by how few pixels across the head is (RailHeadWidth): under four, the highlight goes to a broad sheen by one.
-        vec3 dnx = dFdx(n), dny = dFdy(n);
-        float variance = 0.25 * (dot(dnx, dnx) + dot(dny, dny));
-        float alpha2 = roughness * roughness * roughness * roughness + min(2.0 * variance, 0.18);
-        roughness = sqrt(sqrt(min(alpha2, 1.0)));
-        roughness = max(roughness, 0.6 * (1.0 - smoothstep(1.0, 4.0, RailHeadWidth / pixel)));
+        roughness = max(mix(sidePacked.x, topPacked.x * 0.45, worn), min(pixel * 2.0, 0.6));
         specular = 1.0;
     }
     else if (material == Asphalt)
@@ -598,13 +584,21 @@ void main()
         specular = 0.5;
         n = bumped(n, texture(paintedNormal, worn).xyz * 2.0 - 1.0, worn);
     }
-    else if (material == Painted && style >= LensPaint && style < CrossingPaint)
+    else if (material == Painted && ((style >= LensPaint && style < CrossingPaint) || style == WhiteLensPaint || style == WhiteLitPaint))
     {
         // Glass: dark and glossy, colourless until it's lit.
         albedo = vec3(0.012);
         roughness = 0.08;
         specular = 1.0;
-        if (style >= FlashLensPaint)
+        if (style == WhiteLitPaint)
+        {
+            vec4 lens = texelFetch(paintPalette, ivec2(3, 2), 0);
+            emit = lens.rgb * lens.rgb * lens.a * 32.0;
+        }
+        else if (style == WhiteLensPaint)
+        {
+        }
+        else if (style >= FlashLensPaint)
         {
             float phase = fract(pc.texOrigin.w * FlashRate + float(style - FlashLensPaint) * 0.5);
             float on = smoothstep(0.0, 0.06, phase) * (1.0 - smoothstep(0.44, 0.52, phase));

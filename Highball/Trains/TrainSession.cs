@@ -154,7 +154,7 @@ public sealed class TrainSession : IDisposable
         var forward = _camera.Forward;
         if (!Panel.Pick(dev.Consist))
             Log.Warn($"--train: no saved consist called {dev.Consist}");
-        Panel.PlaceAt(at.East, -at.North, forward.X, forward.Z);
+        Panel.PlaceAt(at.East, -at.North, -forward.X, -forward.Z);  // facing away, to drive off ahead of the camera
         if (Panel.Train is null)
             Log.Warn($"--train: not placed ({Panel.Notice})");
         if (Panel.Train is { } placed)
@@ -208,6 +208,9 @@ public sealed class TrainSession : IDisposable
         }
     }
 
+    /// How the saved stock's locomotives are put back when the route opens: running to drive, cold in the Route Builder.
+    public PlacedAs RestoreAs { get; init; } = PlacedAs.Running;
+
     private void RestoreStock()
     {
         if (_stockRestored || _route.Projection is not { } projection)
@@ -219,7 +222,7 @@ public sealed class TrainSession : IDisposable
             {
                 var p = projection.Forward(new GeoPoint(lat, lon));
                 return (p.East, -p.North);
-            });
+            }, RestoreAs);
     }
 
     public void Dispose()

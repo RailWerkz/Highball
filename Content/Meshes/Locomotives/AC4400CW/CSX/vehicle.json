@@ -1,0 +1,59 @@
+{
+  // One vehicle for the consist editor and the simulation. SI units, named in each key. Sizes are this model's (from
+  // assembly.json, written by Tools/Blender/ac4400cw.py); masses and efforts are GE's published figures for the AC4400CW.
+  "id": "ac4400cw",
+  "name": "GE AC4400CW",
+  "kind": "Locomotive",
+  "builder": "GE",
+  "built": "1993-2004",
+  "type": "C-C AC diesel-electric, GE 7FDL-16",
+  // Coupler pulling face to pulling face: the real engine's 73 ft 2 in.
+  "lengthM": 22.302,
+  "truckCentresM": 12.869,
+  // Front pulling face to front truck centre; 4.722 m at the rear.
+  "frontOverhangM": 4.711,
+  "axles": 6,
+  // The model's (its tread rings); the real wheel's 42 in, 1.067 m.
+  "wheelDiameterM": 1.025,
+  // Wet, in working order: about 415,000 lb. Dry is that less its supplies, full: 5,000 gal of fuel, 410 gal of lube oil,
+  // 380 gal of cooling water and 40 cu ft of sand.
+  "massEmptyKg": 188240,
+  "massLoadedKg": 188240,
+  "massDryKg": 167535,
+  "supplies": { "fuelL": 18927, "oilL": 1552, "waterL": 1438, "sandM3": 1.133 },
+  "traction": "AC",
+  "adhesion": 0.36,
+  "powerKw": 3281,
+  // 145,000 lbf starting and 108,000 lbf continuous, as GE rates it.
+  "startingTractiveEffortKn": 645,
+  "continuousTractiveEffortKn": 480,
+  "dynamicBrakeEffortKn": 436,
+  "maxSpeedKmh": 121,
+  "liveries": [
+    { "id": "csx", "name": "CSX", "model": "Locomotives/AC4400CW/CSX/LOD0/ac4400cw_csx.glb" },
+    // Its own model and textures (AC4400CW/BNSF/Source), built by Tools/Blender/ac4400cw.py --livery bnsf.
+    { "id": "bnsf", "name": "BNSF", "model": "Locomotives/AC4400CW/BNSF/LOD0/ac4400cw_bnsf.glb" }
+  ],
+  // Under Content/Audio/Engines/7FDL16 (the AC4400CW's prime mover). Its loops are keyed by the rpm each was recorded at
+  // (the number in its name); the governor's speed in each notch (notchRpm: idle, then notches 1 to 8, a GE 7FDL-16's
+  // schedule, about) turns the throttle into rpm, and the two recordings either side are crossfaded, each pitched from its own
+  // rpm: so 577 sounds about notch 3, 717 notch 5, and 992 is pitched up the last few percent to notch 8's 1050. The air
+  // compressor and the dynamic brake blowers are the GEVO's.
+  "engineSound": {
+    "notchRpm": [ 440, 440, 515, 590, 665, 740, 815, 890, 1050 ],
+    "idle": "Engines/7FDL16/FDL16_Idle02.wav",
+    "loops": [
+      { "path": "Engines/7FDL16/7FDL16_577.wav", "rpm": 577 },
+      { "path": "Engines/7FDL16/7FDL16_717.wav", "rpm": 717 },
+      { "path": "Engines/7FDL16/7FDL16_992.wav", "rpm": 992 }
+    ],
+    "turbo": "Engines/7FDL16/TurboWhine01.wav",
+    "chug": "Engines/7FDL16/run8_es44_chug.wav",
+    "startup": "Engines/7FDL16/gevo12_start.wav",
+    "startupSeconds": 15,
+    "compressorStart": "Engines/GEVO/run8_es44_compressorStart.wav",
+    "compressorLoop": "Engines/GEVO/run8_es44_aircomploop.wav",
+    "compressorStop": "Engines/GEVO/run8_es44_compressorValveBlast.wav",
+    "dynamicFan": "Engines/GEVO/GE_DynBrakeFan01.wav"
+  }
+}

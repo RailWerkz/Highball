@@ -225,8 +225,9 @@ public sealed partial class TrainPanel : IDisposable
         _hornButton = false;
     }
 
-    /// Puts the picked consist on the track nearest (x, z), its front there, facing as near (fx, fz) as the track allows.
-    public void PlaceAt(double x, double z, double fx, double fz)
+    /// Puts the picked consist on the track nearest (x, z), its front there, facing back the way (lookX, lookZ) looks, as
+    /// near as the track allows: put down from the camera, its front faces the camera.
+    public void PlaceAt(double x, double z, double lookX, double lookZ)
     {
         Placing = false;
         if (_graph is not { } graph)
@@ -258,7 +259,7 @@ public sealed partial class TrainPanel : IDisposable
         }
 
         var (tx, tz) = graph.FacingOf(near);
-        var head = tx * fx + tz * fz >= 0.0 ? near : near.Reversed;
+        var head = tx * lookX + tz * lookZ <= 0.0 ? near : near.Reversed;
         var train = Trains.Train.Place(graph, consist, head, out var why, _placeAs);
         if (train is null)
         {
@@ -498,6 +499,16 @@ public sealed partial class TrainPanel : IDisposable
                 Sounds.SetBell(!Sounds.BellRinging);
             if (keys && Input.KeyDown(GlfwKey.X))
                 driven.Sand = !driven.Sand;
+            // Throttle (Up/Down) and dynamic brake (Page Down to apply, Page Up to ease off), a notch a press. Interlocked
+            // as on the stand: no power with the dynamic brake on, no dynamic brake with the throttle open.
+            if (keys && Input.KeyDown(GlfwKey.Up) && driven.DynamicNotch == 0)
+                driven.Notch++;
+            if (keys && Input.KeyDown(GlfwKey.Down))
+                driven.Notch--;
+            if (keys && Input.KeyDown(GlfwKey.PageDown) && driven.Notch == 0)
+                driven.DynamicNotch++;
+            if (keys && Input.KeyDown(GlfwKey.PageUp))
+                driven.DynamicNotch--;
             Sounds.SetHorn((keys && Input.Key(GlfwKey.Space)) || _hornButton);
             // The ditch lights flash with the horn.
             foreach (var systems in driven.Body.Systems)

@@ -401,9 +401,14 @@ public sealed class SidingTool(ToolContext context, RouteInfo route) : IEditorTo
             for (var u = 0.0; u <= length; u += 1.0)
                 if (OffsetAt(u) >= 1.0)
                     clear.Add(At(u));
-            if (clear.Count >= 2 && tracks.RunsInto(clear, 0.0, false, false))
+            // (Against the rails as built where they are: a track's control points can be hundreds of metres apart on hand-laid
+            // straights and curves, and the chord between two cuts well inside the curve, right where a siding inside it runs.)
+            bool Hits(List<(double X, double Z)> path, double clearance) => context.Source.Lines is { } built
+                ? RunsIntoBuilt(built, path, clearance)
+                : tracks.RunsInto(path, clearance, false, false);
+            if (clear.Count >= 2 && Hits(clear, 0.0))
                 problem = "Crosses another track";
-            else if (beside.Count >= 2 && tracks.RunsInto(beside, Math.Min(3.0, spacing - 0.6), false, false))
+            else if (beside.Count >= 2 && Hits(beside, Math.Min(3.0, spacing - 0.6)))
                 problem = "Runs into another track";
         }
 
@@ -511,6 +516,40 @@ public sealed class SidingTool(ToolContext context, RouteInfo route) : IEditorTo
     }
 
     // --- The line, measured. ---
+
+    /// Whether a path crosses any rail line as built, or comes within clearance of one.
+    private static bool RunsIntoBuilt(NetworkLines lines, List<(double X, double Z)> path, double clearance)
+    {
+        var (minX, maxX, minZ, maxZ) = (path.Min(p => p.X) - clearance, path.Max(p => p.X) + clearance, path.Min(p => p.Z) - clearance, path.Max(p => p.Z) + clearance);
+        static double Side((double X, double Z) o, (double X, double Z) d, (double X, double Z) t) => (d.X - o.X) * (t.Z - o.Z) - (d.Z - o.Z) * (t.X - o.X);
+        foreach (var line in lines.Lines)
+        {
+            if (!line.Rail || line.Mark || line.MaxX < minX || line.MinX > maxX || line.MaxZ < minZ || line.MinZ > maxZ)
+                continue;
+            for (var i = 0; i + 1 < line.Count; i++)
+            {
+                var (a, b) = ((line.X[i], line.Z[i]), (line.X[i + 1], line.Z[i + 1]));
+                if (Math.Max(a.Item1, b.Item1) < minX || Math.Min(a.Item1, b.Item1) > maxX || Math.Max(a.Item2, b.Item2) < minZ || Math.Min(a.Item2, b.Item2) > maxZ)
+                    continue;
+                for (var k = 0; k + 1 < path.Count; k++)
+                {
+                    var (p, q) = (path[k], path[k + 1]);
+                    if (Side(p, q, a) * Side(p, q, b) < 0.0 && Side(a, b, p) * Side(a, b, q) < 0.0)
+                        return true;
+                    if (clearance > 0.0)
+                    {
+                        var (dx, dz) = (b.Item1 - a.Item1, b.Item2 - a.Item2);
+                        var t = Math.Clamp(((p.X - a.Item1) * dx + (p.Z - a.Item2) * dz) / Math.Max(dx * dx + dz * dz, 1e-9), 0.0, 1.0);
+                        var (ex, ez) = (a.Item1 + dx * t - p.X, a.Item2 + dz * t - p.Z);
+                        if (ex * ex + ez * ez < clearance * clearance)
+                            return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
 
     /// The rail line nearest a place within reach, and how far along it.
     private static (NetworkLine Line, double S)? NearestLine(NetworkLines lines, double x, double z, double within)

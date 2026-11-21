@@ -6,7 +6,7 @@ using RailWerkz.UI;
 
 namespace Highball.Builder;
 
-public enum PlaceMode { Signal, HandThrow, GradeCrossing, Diamond, Track, Bridge, RemoveBridge, Pole, EditBridge }
+public enum PlaceMode { Signal, HandThrow, GradeCrossing, Diamond, Track, Bridge, RemoveBridge, Pole, EditBridge, SignalBridge }
 
 /// Placing what stands on or beside the track. A signal snaps beside the nearest track, on the side clicked, facing trains
 /// running on that side. A hand throw goes on the nearest switch in place of its power machine. A grade crossing snaps onto the
@@ -26,7 +26,7 @@ public sealed class PlaceTool
     /// How far along the track from the pointer a road crossing it is looked for, and the shallowest it can cross (the sine of its
     /// angle to the track: about 7 degrees).
     private const double CrossingSearch = 40.0;
-    private const double MinCrossingSine = 0.12;
+    private const double MinCrossingSine = NetworkLines.MinPadSine;
     private const float GrabRadius = 12f;
 
     public PlaceMode Mode;
@@ -150,6 +150,22 @@ public sealed class PlaceTool
         var (behind, ahead) = NodesAround(on.Line, on.S);
         var (node, toward) = side > 0 ? (behind, ahead) : (ahead, behind);
         return (px + rx * side * SignalOff, pz + rz * side * SignalOff, heading, node, toward);
+    }
+
+    /// A signal bridge at a click: across the nearest track, on its centre, its heads facing trains coming along it on the side
+    /// clicked (as SignalAt: on the track's right, those running with the line). It spans whatever tracks lie beside that one
+    /// (NetworkMeshes.Span).
+    public static (double X, double Z, double Heading, long? Node, long? Toward)? SignalBridgeAt(NetworkLines lines, double x, double z)
+    {
+        if (NearestRail(lines, x, z, SnapReach) is not { } on)
+            return null;
+        var (px, pz, rx, rz) = Place(on.Line, on.S);
+        var side = (x - px) * rx + (z - pz) * rz >= 0.0 ? 1.0 : -1.0;
+        var (fx, fz) = (rz, -rx);
+        var heading = Math.Atan2(-fz * side, -fx * side) * 180.0 / Math.PI;
+        var (behind, ahead) = NodesAround(on.Line, on.S);
+        var (node, toward) = side > 0 ? (behind, ahead) : (ahead, behind);
+        return (px, pz, heading, node, toward);
     }
 
     /// Ids at or past this size are made up while the track's being fitted, again on every fit: not ones to keep.
@@ -324,6 +340,10 @@ public sealed class PlaceTool
         {
             case PlaceMode.Signal when SignalAt(lines, at.X, at.Z) is { } signal:
                 Snapped = (signal.X, signal.Z);
+                break;
+            case PlaceMode.SignalBridge when SignalBridgeAt(lines, at.X, at.Z) is { } bridge:
+                Snapped = (bridge.X, bridge.Z);
+                Note = "Spans the tracks beside this one";
                 break;
             case PlaceMode.HandThrow when SwitchAt(lines, at.X, at.Z) is { } turnout:
                 Snapped = (turnout.X, turnout.Z);

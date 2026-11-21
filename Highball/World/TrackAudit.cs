@@ -519,8 +519,8 @@ public static class TrackAudit
             var (x, z) = (p.East, -p.North);
             if (o.Kind == PlacedKind.HandThrow && o.Node is { } node && !switches.Contains(node))
                 findings.Add(new AuditFinding("Hand throw with no switch", true, x, z, "Its switch has gone"));
-            else if (o.Kind is PlacedKind.Signal or PlacedKind.GradeCrossing && Builder.PlaceTool.NearestRail(lines, x, z, o.Kind == PlacedKind.Signal ? 12.0 : 3.0) is null)
-                findings.Add(new AuditFinding(o.Kind == PlacedKind.Signal ? "Signal with no track" : "Crossing with no track", true, x, z, "Nothing near it"));
+            else if (o.Kind is PlacedKind.Signal or PlacedKind.SignalBridge or PlacedKind.GradeCrossing && Builder.PlaceTool.NearestRail(lines, x, z, o.Kind == PlacedKind.GradeCrossing ? 3.0 : 12.0) is null)
+                findings.Add(new AuditFinding(o.Kind switch { PlacedKind.Signal => "Signal with no track", PlacedKind.SignalBridge => "Signal bridge with no track", _ => "Crossing with no track" }, true, x, z, "Nothing near it"));
         }
     }
 

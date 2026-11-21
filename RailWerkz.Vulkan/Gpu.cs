@@ -214,6 +214,12 @@ public static unsafe class Gpu
         Log.Info($"GPU: {Name} // Vulkan {ApiVersion} // driver {VulkanDeviceInfo.FormatDriverVersion(in chosen)}");
     }
 
+    /// Whether fragment shaders can write storage images (fragmentStoresAndAtomics).
+    public static bool FragmentStores { get; private set; }
+
+    /// Whether a multisampled depth can be resolved to its greatest sample (VK_RESOLVE_MODE_MAX_BIT).
+    public static bool DepthResolveNearest { get; private set; }
+
     /// Vulkan 1.3 core (dynamic rendering, synchronization2) plus the 1.2 pieces bindless rendering is built on.
     private static void CreateDevice()
     {
@@ -260,6 +266,16 @@ public static unsafe class Gpu
         features.Features.SamplerAnisotropy = supported.SamplerAnisotropy;
         features.Features.FillModeNonSolid = supported.FillModeNonSolid; // wireframe views
         features.Features.ShaderClipDistance = supported.ShaderClipDistance; // track cut off at a distance, exactly, without a discard
+        // Plants write their wind sway into the motion image as they're shaded (MotionVectors).
+        features.Features.FragmentStoresAndAtomics = supported.FragmentStoresAndAtomics;
+        FragmentStores = (bool)supported.FragmentStoresAndAtomics;
+
+        // The multisampled depth resolved to its nearest sample (reverse-Z: the greatest), so what reads it after the world sees
+        // the surface in front at an edge, not whichever one sample 0 landed on.
+        var resolve = new VkPhysicalDeviceDepthStencilResolveProperties();
+        var properties = new VkPhysicalDeviceProperties2 { Next = &resolve };
+        PhysicalDevice.GetProperties2(ref properties);
+        DepthResolveNearest = (resolve.SupportedDepthResolveModes & VkResolveModeFlags.MaxBit) != 0;
 
         var priority = 1f;
         var queue = new VkDeviceQueueCreateInfo { QueueFamilyIndex = QueueFamily, QueueCount = 1, QueuePriorities = &priority };

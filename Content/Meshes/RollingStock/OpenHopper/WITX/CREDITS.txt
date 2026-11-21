@@ -1,0 +1,16 @@
+Four-bay open hopper, WITX 5861 (lettered for carbon black; the herald on its sides is "3D Horse Railway")
+Author: TODO
+Source: TODO
+Licence: TODO
+(Author and licence to be filled in: the source came without them.)
+
+The original files are in Source (Hopper-1.obj, Hopper-1.mtl, Hopp.jpg and Reflection.hdr, from
+Meshes/RollingStock/closed_hopper/Hopper-1-obj.rar), unchanged. The other models in these folders are made from it by
+Tools/Blender/open_hopper.py. Changes: scaled down about 25 times so its truck centres are 45 ft; everything but the
+running gear baked into one body, the trucks and wheelsets kept apart; turned to run along Y and moved so the rail is at
+zero; the running gear squeezed across to standard gauge and centred under the body; its couplers taken off; the ground
+plane and a stray box between each truck's wheels dropped; the lettering on its sides and ends mapped afresh (the
+source's UVs there are scrambled: mirrored, turned on end and smeared), and the sides' inner faces made plain; coplanar
+faces merged (but on the lettered body shell) and dense parts reduced (565,000 triangles to about 162,000); every
+material made non-metallic but the wheel treads, the texture cut from 10240 to 4096 and written as JPEG. Its couplers are
+the shared one in Meshes/Couplers, from the SD40 (see the CREDITS.txt there).

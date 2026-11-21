@@ -45,17 +45,24 @@ public sealed class VehicleModel : IDisposable
         RearTruck = rear;
     }
 
-    /// Where its lower-detail versions take over, in metres from the camera, and the folder each is in beside the model
+    /// Where its lower-detail versions take over, in metres from the camera, and the folder each is in: a vehicle's full
+    /// model is <vehicle>/LOD0/<name>.glb, and these are <vehicle>/LOD1/<name>.glb and LOD2 beside it, the same name
     /// (Tools/Blender/lods.py makes them).
     private static readonly (string Folder, float From)[] Lods = [("LOD1", 60f), ("LOD2", 220f)];
 
-    /// Throws if the file can't be read at all. Its lower-detail versions are added where they're there.
+    /// Throws if the file can't be read at all. Its lower-detail versions are added where they're there (only for a model
+    /// in a LOD0 folder).
     public static VehicleModel Load(string relativePath)
     {
         var model = LoadOne(relativePath);
+        var folderOf = Path.GetDirectoryName(relativePath) ?? "";
+        if (!string.Equals(Path.GetFileName(folderOf), "LOD0", StringComparison.OrdinalIgnoreCase))
+            return model;
+
+        var vehicleFolder = Path.GetDirectoryName(folderOf) ?? "";
         foreach (var (folder, from) in Lods)
         {
-            var path = Path.Combine(Path.GetDirectoryName(relativePath) ?? "", folder, Path.GetFileName(relativePath)).Replace('\\', '/');
+            var path = Path.Combine(vehicleFolder, folder, Path.GetFileName(relativePath)).Replace('\\', '/');
             if (!File.Exists(RailWerkz.Core.IO.ContentPath.Model(path)))
                 continue;
             try

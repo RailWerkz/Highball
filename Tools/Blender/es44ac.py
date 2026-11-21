@@ -4,14 +4,14 @@
 
 The source is "General Electric ES44AC Black" by OUTPISTON, CC BY-NC-SA 4.0:
 https://sketchfab.com/3d-models/general-electric-es44ac-black-ab967059a9504a209c4993816ccb2c9b
-Its file stays in Models/Locomotives/ES44AC/Black/Source. Under ES44AC/Black this writes CREDITS.txt, assembly.json (where each part goes), one
+Its file stays in Meshes/Locomotives/ES44AC/Black/Source. Under ES44AC/Black this writes CREDITS.txt, assembly.json (where each part goes), one
 folder per level of detail, of which only LOD0 is built (the source is already light, about 23,000 triangles), and
     LOD0/body_<livery>.glb   origin on the railhead, midway between the trucks; the headlights, ditch lights, horn and bell
                              are nodes of their own in it (see FIXTURES), listed with where they are and face in assembly.json
     LOD0/truck.glb           origin on the railhead at the truck's pivot (its middle axle), turning about Z; both trucks at yaw 0
     LOD0/wheelset.glb        origin at the axle's centre, rolling about X
     Assembled/es44ac_<livery>.glb and .blend, the whole engine for looking at; the game loads the separate parts.
-The source has no couplers: the engine takes the shared one from Models/Couplers (written by Tools/Blender/sd40.py), set on
+The source has no couplers: the engine takes the shared one from Meshes/Couplers (written by Tools/Blender/sd40.py), set on
 the pilots at its standard height.
 
 Blender is Z-up, metres; the glTF exporter turns that into the game's Y-up. The cab faces -Y. The source runs along X with the
@@ -27,8 +27,8 @@ from mathutils import Matrix, Vector
 
 args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 CONTENT = os.path.abspath(args[0] if args else "Content")
-OUT = os.path.join(CONTENT, "Models", "Locomotives", "ES44AC", "Black")  # ES44AC/CSX is the same engine, another model: gevo.py
-COUPLERS = os.path.join(CONTENT, "Models", "Couplers")
+OUT = os.path.join(CONTENT, "Meshes", "Locomotives", "ES44AC", "Black")  # ES44AC/CSX is the same engine, another model: gevo.py
+COUPLERS = os.path.join(CONTENT, "Meshes", "Couplers")
 SOURCE = os.path.join(OUT, "Source", "general_electric_es44ac_black.glb")
 LIVERIES = {"black": "Black, as the source has it"}
 
@@ -345,7 +345,7 @@ assembly = {
     "lengthOverCouplers": round(OVER_COUPLERS, 3),
     "lods": list(LODS),
     "trianglesWholeEngine": over,
-    "models": "Each model below is <lod>/<model>.glb, except the couplers: Models/Couplers/coupler.glb, the same on every engine and car",
+    "models": "Each model below is <lod>/<model>.glb, except the couplers: Meshes/Couplers/coupler.glb, the same on every engine and car",
     "bodies": [f"body_{key}" for key in LIVERIES],
     "truckByBody": {},
     "trucks": [{"model": "truck", "position": [0, -round(TRUCK_Y, 4), 0], "yaw": 0}, {"model": "truck", "position": [0, round(TRUCK_Y, 4), 0], "yaw": 0}],
@@ -369,7 +369,7 @@ The source file is in Source/, unchanged.
 The other models in these folders are made from it by Tools/Blender/es44ac.py. Changes: split into body, truck and wheelset;
 turned to run along Y and moved so the rail is at zero; one material per texture; the headlights, ditch lights,
 horn and bell cut out as parts of their own. Its couplers are the shared one in
-Models/Couplers, from the SD40 (see the CREDITS.txt there).
+Meshes/Couplers, from the SD40 (see the CREDITS.txt there).
 """)
 
 

@@ -55,16 +55,12 @@ public sealed class Settings
     public int TrackTextureQuality { get; set; } = 1;
     /// The ground's materials: 0 as they come, 1 half the size, 2 a quarter.
     public int TerrainTextureDetail { get; set; }
-    /// Temporal anti-aliasing by AMD FSR 2 (Highball/World/Fsr2.cs), which upscales too when RenderScale is under 1.
     public bool TemporalAA { get; set; } = true;
 
-    /// How much the picture's sharpened after temporal anti-aliasing, 0 to 1, giving back the fine detail (leaves, ballast, far rails)
-    /// that blending frames softens. Nothing with TemporalAA off.
-    public float Sharpening { get; set; } = 0.5f;
-
     /// The share of the screen's width and height the world is drawn at, 0.5 to 1, with temporal anti-aliasing building the
-    /// full-size picture from the jittered frames (temporal upscaling). Ignored (1) with TemporalAA off.
-    public float RenderScale { get; set; } = 0.75f;
+    /// full-size picture from the jittered frames (temporal upscaling). Ignored (1) with TemporalAA off. 1 by default: the
+    /// picture drawn at its own size, TAA only anti-aliasing it.
+    public float RenderScale { get; set; } = 1f;
 
     /// What's falling, by an id in Weather.Kinds, and how hard, 0 to 1.
     public string Weather { get; set; } = "Clear";
@@ -74,7 +70,10 @@ public sealed class Settings
     public bool GodRays { get; set; } = true;
 
     /// The finished picture's look, by ColorGrade's id.
-    public string ColorGrade { get; set; } = "Filmic";
+    public string ColorGrade { get; set; } = "Neutral";
+
+    /// The curve that fits the picture to the screen, by Tonemapper's id. ACES (Narkowicz's fit) is the one it always had.
+    public string Tonemapper { get; set; } = "Aces";
     /// Samples per pixel in the 3D view: 1 (off), 2, 4 or 8, with or without TemporalAA.
     public int Msaa { get; set; } = 2;
 

@@ -11,27 +11,23 @@ using static RailWerkz.UI.Style;
 
 namespace Highball.Screens;
 
-/// Driving an installed world (Single Player, or a multiplayer session): the world in 3D with a header and a footer
-/// instead of the Route Builder's tools. The header has the world, the camera views (F1 cab, F2 orbiting the lead unit,
-/// F3 free) and the Consist button; the footer the train's speed, notch and brakes, the controls and any notice. The
-/// train window (build a consist, place it, drive it, couple and uncouple) and its air graphs open over it. Esc pauses.
+/// Driving an installed world (Single Player, or a multiplayer session), in the workspace layout without a rail: the
+/// Train inspector on the left (C), the camera switch in the corner (F1 cab, F2 orbiting the lead unit, F3 free), the
+/// drive strip along the bottom while a train's driven, and the footer's keys and notices. Esc pauses.
 public sealed class DriveScreen : Screen, IWorldScreen
 {
-    private const float FooterHeight = 40f;
     private const double NoticeSeconds = 5.0;
 
     private readonly PackSource _pack;
     private readonly NetPlay? _net;
     private readonly DrivingView _view;
-    private float _headerBottom;
-    private float _footerTop = float.MaxValue;
     private string _notice = "";
     private double _noticeAt = double.MinValue;
 
-    private static readonly (DriveView View, string Name, string Key)[] Views =
-    [
-        (DriveView.Cab, "Cab", "F1"), (DriveView.Orbit, "Orbit", "F2"), (DriveView.Free, "Free", "F3"),
-    ];
+    private static readonly string[] ViewNames = ["Cab", "Orbit", "Free"];
+    private static readonly DriveView[] Views = [DriveView.Cab, DriveView.Orbit, DriveView.Free];
+
+    public override bool EditorTheme => true;
 
     public override WorldView View => _view.Ready ? WorldView.World : WorldView.None;
     public override bool CapturesMouse => _view.CapturesMouse;
@@ -86,7 +82,7 @@ public sealed class DriveScreen : Screen, IWorldScreen
                 HighballApp.Instance.Push(new PauseScreen(this));
         }
 
-        _view.Update(dt, _headerBottom, _footerTop);
+        _view.Update(dt, Workspace.Top, Workspace.Bottom);
         if (DevTools.HideWindows && _view.Train is not null)
         {
             _view.TrainWindow.Open = false;
@@ -110,57 +106,28 @@ public sealed class DriveScreen : Screen, IWorldScreen
 
     public override void Draw(ImDrawListPtr draw, float2 size)
     {
-        _footerTop = size.Y - S(FooterHeight);
         _view.Draw(draw, size);
-        DrawFooter(draw, size);
         if (!_view.Ready)
             Canvas.Text(draw, Medium, S(18f), new float2(size.X * 0.5f, size.Y * 0.5f), TextDim, "Opening the world...", Align.Center);
-    }
 
-    /// The train's readout at the left, the controls in the middle, any notice at the right.
-    private void DrawFooter(ImDrawListPtr draw, float2 size)
-    {
-        var height = S(FooterHeight);
-        draw.AddRectFilled(new float2(0f, _footerTop), size, Surface);
-        draw.AddLine(new float2(0f, _footerTop), new float2(size.X, _footerTop), StrokeStrong, 1f);
-        var y = _footerTop + (height - S(14f)) * 0.5f;
-        var x = S(24f);
-
-        if (_view.Train is { } train)
+        // The train looked at when it isn't the one driven (the drive strip has the rest), and with F the frame's numbers.
+        var train = _view.Train;
+        var status = train is not null && !ReferenceEquals(train, _view.TrainWindow.Controlled)
+            ? $"{train.Name.ToUpperInvariant()}   {UnitText.Speed(Math.Abs(train.CabSpeed)).ToUpperInvariant()}"
+            : null;
+        var noticing = RailWerkz.Core.Time.Time.Now - _noticeAt < NoticeSeconds;
+        var notice = noticing ? _notice : _view.TrainWindow.Notice;
+        if (!_stats)
         {
-            var driving = ReferenceEquals(train, _view.TrainWindow.Controlled);
-            var items = new List<(string Label, string Value)>
-            {
-                (driving ? "DRIVING" : "LOOKING AT", train.Name.ToUpperInvariant()),
-                ("SPEED", UnitText.Speed(Math.Abs(train.CabSpeed)).ToUpperInvariant()),
-            };
-            if (driving)
-            {
-                items.Add(("THROTTLE", train.Notch > 0 ? $"N{train.Notch}" : train.Dynamic > 0.0 ? $"DB {train.Dynamic * 100:0}%" : "IDLE"));
-                items.Add(("REVERSER", train.CabReverser switch { > 0 => "FWD", < 0 => "REV", _ => "N" }));
-                items.Add(("BRAKE PIPE", UnitText.Pressure(train.Body.Brakes.Pipe[Math.Clamp(train.LeadUnit, 0, train.Cars.Count - 1)]).ToUpperInvariant()));
-            }
-
-            foreach (var (label, value) in items)
-            {
-                Canvas.Spaced(draw, Medium, S(10f), new float2(x, y + S(2f)), TextFaint, label, 0.18f);
-                x += Canvas.SpacedWidth(Medium, S(10f), label, 0.18f) + S(8f);
-                Canvas.Text(draw, Mono, S(14f), new float2(x, y), Style.Text, value);
-                x += Canvas.TextSize(Mono, S(14f), value).X + S(22f);
-            }
+            Workspace.Status(draw, status, Hints, notice, noticing);
+            return;
         }
 
-        Canvas.Hints(draw, new float2(x + S(8f), size.Y - (height - S(22f)) * 0.5f), Hints);
-
-        // With F, the frame's numbers at the far right (averaged over the profiler's last two seconds or so), any notice left of them.
-        var edge = size.X - S(24f);
-        if (_stats)
-            edge = Stats(draw, edge, y) - S(28f);
-
-        var noticing = RailWerkz.Core.Time.Time.Now - _noticeAt < NoticeSeconds;
-        var right = noticing ? _notice : _view.TrainWindow.Notice ?? "";
-        if (right.Length > 0)
-            Canvas.Text(draw, Medium, S(13f), new float2(edge, _footerTop + (height - S(13f)) * 0.5f), noticing ? Style.Text : TextDim, right, Align.Right);
+        Workspace.Status(draw, status, Hints);
+        var y = Workspace.StatusTop + (Workspace.StatusHeight - S(14f)) * 0.5f;
+        var edge = Stats(draw, size.X - S(10f), y) - S(24f);
+        if (notice is { Length: > 0 })
+            Canvas.Text(draw, Regular, S(12.5f), new float2(edge, y), noticing ? Style.Text : TextDim, notice, Align.Right);
     }
 
     /// Shown with F: frames a second, triangles and draw calls last frame, the CPU's and GPU's milliseconds a frame on average, and VRAM
@@ -201,20 +168,20 @@ public sealed class DriveScreen : Screen, IWorldScreen
 
     private (string Key, string Action)[] Hints => _view.View switch
     {
-        DriveView.Free => [("RMB", "Look"), ("WASD", "Move"), ("WHEEL", "Speed"), ("T", "Throw switch"), ("C", "Consist"), ("F", "Stats"), ("ESC", "Menu")],
-        DriveView.Cab => [("RMB", "Look round"), ("WHEEL", "Zoom"), ("T", "Throw switch"), ("C", "Consist"), ("F", "Stats"), ("ESC", "Menu")],
-        _ => [("RMB", "Look"), ("WASD", "Move round the train"), ("WHEEL", "Speed"), ("T", "Throw switch"), ("C", "Consist"), ("F", "Stats"), ("ESC", "Menu")],
+        DriveView.Free => [("RMB", "Look"), ("WASD", "Move"), ("WHEEL", "Speed"), ("T", "Throw switch"), ("C", "Train"), ("F", "Stats"), ("ESC", "Menu")],
+        DriveView.Cab => [("RMB", "Look round"), ("WHEEL", "Zoom"), ("T", "Throw switch"), ("C", "Train"), ("F", "Stats"), ("ESC", "Menu")],
+        _ => [("RMB", "Look"), ("WASD", "Move round the train"), ("WHEEL", "Speed"), ("T", "Throw switch"), ("C", "Train"), ("F", "Stats"), ("ESC", "Menu")],
     };
 
     public override void DrawWindows()
     {
-        if (ImGui.BeginMainMenuBar())
+        var trains = _view.TrainWindow;
+        if (Workspace.BeginBar(out var top))
         {
-            _headerBottom = ImGui.GetWindowSize().Y;
             if (ImGui.BeginMenu("Game"))
             {
-                if (ImGui.MenuItem("Consist", "C", _view.TrainWindow.Open, true))
-                    _view.TrainWindow.Open = !_view.TrainWindow.Open;
+                if (ImGui.MenuItem("Train", "C", trains.Open, true))
+                    trains.Open = !trains.Open;
                 if (ImGui.MenuItem("Settings..."))
                     HighballApp.Instance.Push(new SettingsScreen(this, _pack.Route.Origin.Latitude, _pack.Route.Origin.Longitude));
                 ImGui.Separator();
@@ -223,50 +190,31 @@ public sealed class DriveScreen : Screen, IWorldScreen
                 ImGui.EndMenu();
             }
 
-            Header();
-            ImGui.EndMainMenuBar();
+            if (_net is not null)
+                ImGui.TextDisabled(_net.Hosting ? $"Hosting · player {_net.Number}" : $"Player {_net.Number}");
+            var picked = Workspace.Views("##camera", ViewNames, Array.IndexOf(Views, _view.View));
+            Workspace.EndBar();
+            if (picked >= 0 && Views[picked] != _view.View)
+                _view.View = Views[picked];
         }
 
-        WindowBounds.Top = _headerBottom;
-        WindowBounds.Bottom = _footerTop;
-        _view.Windows();
-        WindowBounds.Reset();
-    }
-
-    /// The camera views as tabs in the middle, the world and the session at the right.
-    private void Header()
-    {
-        const float pad = 18f;
-        const float textSize = 15f;
-        var draw = ImGui.GetWindowDrawList();
-        var height = ImGui.GetWindowSize().Y;
-        var total = Views.Sum(v => Canvas.TextSize(Medium, textSize, $"{v.Key}  {v.Name}").X + pad * 2f);
-        var x = (ImGui.GetIO().DisplaySize.X - total) * 0.5f;
-        foreach (var (view, name, key) in Views)
+        Workspace.Begin(top, trains.HasDock);
+        if (trains.Open)
         {
-            var label = $"{key}  {name}";
-            var size = new float2(Canvas.TextSize(Medium, textSize, label).X + pad * 2f, height);
-            var at = new float2(x, 0f);
-            var on = _view.View == view;
-            ImGui.SetCursorScreenPos(at);
-            if (ImGui.InvisibleButton(name, size))
-                _view.View = view;
-            var hovered = ImGui.IsItemHovered();
-            if (on)
-                draw.AddRectFilled(at, at + size, Raised);
-            else if (hovered)
-                draw.AddRectFilled(at, at + size, RaisedHover);
-            if (on)
-                draw.AddRectFilled(at + new float2(0f, height - 2f), at + size, Accent);
-            Canvas.Text(draw, Medium, textSize, at + new float2(size.X * 0.5f, (height - textSize) * 0.5f), on || hovered ? Style.Text : TextDim, label, Align.Center);
-            x += size.X;
+            if (Workspace.BeginProperties("##properties"))
+                _view.Inspector();
+            Workspace.EndProperties();
         }
 
-        var session = _net is null ? "Single Player" : _net.Hosting ? $"Hosting · Player {_net.Number}" : $"Player {_net.Number}";
-        var world = _pack.Header.Region == "World" ? _pack.Route.Name : $"{_pack.Route.Name} · {_pack.Header.Region}";
-        var right = $"{world}   {session}";
-        ImGui.SameLine(ImGui.GetIO().DisplaySize.X - ImGui.CalcTextSize(right).X - 16f, -1f);
-        ImGui.Text(right);
+        if (trains.HasDock)
+        {
+            if (Workspace.BeginDock("##dock", 0f))
+                _view.Dock();
+            Workspace.EndDock();
+        }
+
+        _view.Windows();
+        Workspace.End();
     }
 }
 

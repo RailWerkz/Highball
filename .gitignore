@@ -23,10 +23,10 @@ Content/Routes/
 Content/Audio/
 
 # Downloaded source models and what the Blender scripts build from them
-Content/Models/**/Source/
-Content/Models/**/Assembled/*.blend
+Content/Meshes/**/Source/
+Content/Meshes/**/Assembled/*.blend
 # The vegetation pack's high-res version: the game loads the 1k one
-Content/Models/Vegetation/low_poly_vegetation_for_games_4k.glb
+Content/Meshes/Vegetation/low_poly_vegetation_for_games_4k.glb
 
 # Terrain textures nothing loads
 Content/Textures/Terrain/Modifiers/
@@ -40,9 +40,9 @@ Content/Packs/
 Tools/Audio/**/*.wav
 .claude/worktrees/
 
-# Vehicle LODs: made from the assembled models by Tools/Blender/lods.py
-Content/Models/**/Assembled/LOD1/
-Content/Models/**/Assembled/LOD2/
+# Vehicle LODs: made from each LOD0 model by Tools/Blender/lods.py
+Content/Meshes/**/LOD1/
+Content/Meshes/**/LOD2/
 
 # Downloaded crossing-signal source model (~850 MB, two files over GitHub's 100 MB limit); not loaded by the game.
-Content/Models/CrossingSignals/
+Content/Meshes/CrossingSignals/

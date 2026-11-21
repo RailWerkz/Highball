@@ -14,7 +14,8 @@ layout(set = 0, binding = 4) uniform PostUniforms
     vec4 look;    // x: contrast; y: how much bloom; z: the set exposure; w: 1 to adjust it by what the image measures
     vec4 jitter;  // xy: this frame's jitter, in clip space; zw: the world's size over the picture's (temporal upscaling)
     vec4 tone;    // xyz: the look's shadow lift (towards a colour, as a share of mid grey); w: its vignette (ColorGrade)
-    vec4 sharpen; // x: how much the picture's sharpened after temporal anti-aliasing (tonemap), 0 for none
+    vec4 mapping; // x: the tonemapper (Tonemapper.Index, tonemapSwitch's)
+    vec4 hable[6]; // Hable's curve (Tonemapper.HableCurve): three segments of six numbers, then 1/W, x0, x1
 } post;
 
 const vec3 LumaWeights = vec3(0.2126, 0.7152, 0.0722);

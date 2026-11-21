@@ -1,0 +1,12 @@
+Enclosed bi-level autorack, CSX (ETTX 710524)
+Author: TODO
+Source: TODO
+Licence: TODO
+
+The original files are in Source (Carrier.fbx and its texture in Source/Textures, both from fbx.zip), unchanged.
+The other models in these folders are made from it by Tools/Blender/csx_autorack.py. Changes: scaled up about 1.92 times so
+its truck centres are the real car's 64 ft; everything but the running gear baked into one body, the trucks and wheelsets
+kept apart; turned to run along Y and moved so the rail is at zero; the running gear squeezed across to standard gauge and
+centred under the body; its couplers taken off; the ground plane dropped; coplanar faces merged and dense parts reduced
+(960,000 triangles to about 280,000); every material made non-metallic but the wheel treads, the texture cut to 4096 and
+written as JPEG. Its couplers are the shared one in Meshes/Couplers, from the SD40 (see the CREDITS.txt there).

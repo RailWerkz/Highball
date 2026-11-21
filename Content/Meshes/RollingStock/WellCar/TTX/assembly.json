@@ -1,0 +1,222 @@
+{
+  "source": "53 ft double-stack well car, TTX (DDTX 785369), with Yang Ming and Evergreen 40 ft containers, author and licence to be filled in: see CREDITS.txt",
+  "scale": 0.07195,
+  "lengthOverCouplers": 24.898,
+  "truckCentres": 20.02,
+  "frontOverhang": 2.47,
+  "wheelDiameter": 0.8642,
+  "lods": [
+    "LOD0"
+  ],
+  "trianglesWholeCar": {
+    "LOD0": 127597
+  },
+  "models": "The game loads LOD0/wellcar_ttx.glb empty, and LOD0/wellcar_ttx_<load>.glb for each load below (no hand-made LOD1 or LOD2: the game's mesh optimizer makes its own), made by Tools/Blender/wellcar_loads.py. The parts below are Source/Parts/<model>.glb, put together into them, except the couplers: Meshes/Couplers/coupler.glb, the same on every engine and car",
+  "bodies": [
+    "body_ttx"
+  ],
+  "trucks": [
+    {
+      "model": "truck_front",
+      "position": [
+        0,
+        -10.0098,
+        0
+      ],
+      "yaw": 0,
+      "wheelsets": [
+        [
+          0,
+          -0.8639,
+          0.4321
+        ],
+        [
+          0,
+          0.864,
+          0.4321
+        ]
+      ]
+    },
+    {
+      "model": "truck_rear",
+      "position": [
+        0,
+        10.0098,
+        0
+      ],
+      "yaw": 0,
+      "wheelsets": [
+        [
+          0,
+          -0.8639,
+          0.4321
+        ],
+        [
+          0,
+          0.864,
+          0.4321
+        ]
+      ]
+    }
+  ],
+  "wheelsets": {
+    "model": "wheelset",
+    "onTruck": "each truck's own, in its entry above",
+    "radius": 0.4321
+  },
+  "couplers": [
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        -11.9614,
+        0.8134
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "Couplers/coupler.glb",
+      "position": [
+        0,
+        11.9001,
+        0.8134
+      ],
+      "yaw": 180
+    }
+  ],
+  "containers": [
+    {
+      "model": "container_yangming_40",
+      "node": "Container_Lower",
+      "position": [
+        0.0221,
+        -0.017,
+        0.2653
+      ],
+      "size": [
+        12.192,
+        2.438,
+        2.591
+      ]
+    },
+    {
+      "model": "container_evergreen_40hc",
+      "node": "Container_Upper",
+      "position": [
+        0.0221,
+        -0.017,
+        2.8486
+      ],
+      "size": [
+        12.192,
+        2.438,
+        2.896
+      ]
+    }
+  ],
+  "loads": {
+    "single": {
+      "model": "LOD0/wellcar_ttx_single.glb",
+      "containers": [
+        "container_yangming_40"
+      ],
+      "positions": [
+        [
+          0.0221,
+          -0.017,
+          0.2653
+        ]
+      ]
+    },
+    "single_evergreen": {
+      "model": "LOD0/wellcar_ttx_single_evergreen.glb",
+      "containers": [
+        "container_evergreen_40hc"
+      ],
+      "positions": [
+        [
+          0.0221,
+          -0.017,
+          0.2653
+        ]
+      ]
+    },
+    "double": {
+      "model": "LOD0/wellcar_ttx_double.glb",
+      "containers": [
+        "container_yangming_40",
+        "container_evergreen_40hc"
+      ],
+      "positions": [
+        [
+          0.0221,
+          -0.017,
+          0.2653
+        ],
+        [
+          0.0221,
+          -0.017,
+          2.8486
+        ]
+      ]
+    },
+    "double_evergreen_yangming": {
+      "model": "LOD0/wellcar_ttx_double_evergreen_yangming.glb",
+      "containers": [
+        "container_evergreen_40hc",
+        "container_yangming_40"
+      ],
+      "positions": [
+        [
+          0.0221,
+          -0.017,
+          0.2653
+        ],
+        [
+          0.0221,
+          -0.017,
+          3.1536
+        ]
+      ]
+    },
+    "double_yangming": {
+      "model": "LOD0/wellcar_ttx_double_yangming.glb",
+      "containers": [
+        "container_yangming_40",
+        "container_yangming_40"
+      ],
+      "positions": [
+        [
+          0.0221,
+          -0.017,
+          0.2653
+        ],
+        [
+          0.0221,
+          -0.017,
+          2.8486
+        ]
+      ]
+    },
+    "double_evergreen": {
+      "model": "LOD0/wellcar_ttx_double_evergreen.glb",
+      "containers": [
+        "container_evergreen_40hc",
+        "container_evergreen_40hc"
+      ],
+      "positions": [
+        [
+          0.0221,
+          -0.017,
+          0.2653
+        ],
+        [
+          0.0221,
+          -0.017,
+          3.1536
+        ]
+      ]
+    }
+  },
+  "axes": "Blender Z-up metres, front (the A end) towards -Y; in the files, glTF Y-up: (x, y, z) here is (x, z, -y) there"
+}

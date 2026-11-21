@@ -316,7 +316,7 @@ public class Railway
 
     /// Puts saved cuts back on the track, each front where it was (toPlan: latitude, longitude to plan x, z) and facing the
     /// same way. A cut whose track has gone, or that would stand on another, is left off. Returns how many went back.
-    public int Restore(IReadOnlyList<PlacedCut> saved, Func<double, double, (double X, double Z)> toPlan)
+    public int Restore(IReadOnlyList<PlacedCut> saved, Func<double, double, (double X, double Z)> toPlan, PlacedAs state = PlacedAs.Running)
     {
         if (Graph is not { } graph)
             return 0;
@@ -338,7 +338,7 @@ public class Railway
 
             var (nx, nz) = graph.FacingOf(near);
             var head = nx * fx + nz * fz >= 0.0 ? near : near.Reversed;
-            var train = Train.Place(graph, new Consist { Name = s.Name, Cars = s.Cars }, head, out var why, PlacedAs.Running);
+            var train = Train.Place(graph, new Consist { Name = s.Name, Cars = s.Cars }, head, out var why, state);
             if (train is null || Overlapping(train) is not null)
             {
                 Log.Warn($"Placed stock: {s.Name} left off, {(train is null ? why : "another cut stands there")}");

@@ -162,9 +162,10 @@ public sealed class DrivingView : IDisposable
                 new float2(size.X, MathF.Min(size.Y, _footerTop)));
     }
 
-    public void Windows()
-    {
-        using (Profiler.Sample("Train window"))
-            _session.Panel.Window(_headerBottom);
-    }
+    /// The Train inspector's contents, the drive strip's, and the air graphs (TrainPanel).
+    public void Inspector() => _session.Panel.Inspector();
+
+    public void Dock() => _session.Panel.DriveStrip();
+
+    public void Windows() => _session.Panel.Windows();
 }

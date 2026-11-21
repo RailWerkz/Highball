@@ -76,53 +76,86 @@ public sealed partial class ConsistEditorScreen
     public override void Draw(ImDrawListPtr draw, float2 size)
     {
         _screen = size;
-        var margin = S(40f);
-        var top = S(112f);
-        var bottom = size.Y - S(76f);
-        var leftWidth = MathF.Min(S(400f), size.X * 0.27f);
-        var rightWidth = MathF.Min(S(500f), size.X * 0.33f);
-        var leftMin = new float2(margin, top);
-        var leftMax = new float2(margin + leftWidth, bottom);
-        var rightMin = new float2(size.X - margin - rightWidth, top);
-        var rightMax = new float2(size.X - margin, bottom);
+        var top = Workspace.Top;
+        var bottom = Workspace.StatusTop;
+        var leftWidth = MathF.Min(S(380f), size.X * 0.27f);
+        var rightWidth = MathF.Min(S(440f), size.X * 0.3f);
+        var leftMin = new float2(0f, top);
+        var leftMax = new float2(leftWidth, bottom);
+        var rightMin = new float2(size.X - rightWidth, top);
+        var rightMax = new float2(size.X, bottom);
         _stageMin = new float2(leftMax.X, top);
         _stageMax = new float2(rightMin.X, bottom - CaptionHeight(rightMin.X - leftMax.X - S(64f)) - S(12f));
-
-        // A shade behind the title and the hints, so they read over a bright sky.
-        Canvas.VGradient(draw, new float2(0f, 0f), new float2(size.X, S(150f)), Style.Background.WithAlpha(0.75f), Style.Background.WithAlpha(0f));
-        Canvas.VGradient(draw, new float2(0f, size.Y - S(90f)), size, Style.Background.WithAlpha(0f), Style.Background.WithAlpha(0.8f));
-
-        Canvas.Text(draw, Heavy, S(34f), new float2(margin, S(38f)), Style.Text, "CONSIST EDITOR");
-        var state = _dirty ? "UNSAVED CHANGES" : _consist.SavedAt is null ? "NOT SAVED YET" : "SAVED";
-        var stateColor = _dirty ? Caution : _consist.SavedAt is null ? TextFaint : Style.Clear;
-        Canvas.Lamp(draw, new float2(margin + S(4f), S(92f)), S(3f), stateColor);
-        Canvas.Spaced(draw, Bold, S(11f), new float2(margin + S(16f), S(85f)), Rgba.Mix(Style.Text, stateColor, 0.5f), state, 0.16f);
-        if (_consist.Missing is > 0 and var missing)
-        {
-            var at = margin + S(16f) + Canvas.SpacedWidth(Bold, S(11f), state, 0.16f) + S(28f);
-            Canvas.Lamp(draw, new float2(at, S(92f)), S(3f), Stop);
-            Canvas.Spaced(draw, Bold, S(11f), new float2(at + S(12f), S(85f)), Stop, missing == 1 ? "1 VEHICLE NOT IN THE CATALOG" : $"{missing} VEHICLES NOT IN THE CATALOG", 0.16f);
-        }
 
         var mouse = ImGui.GetIO().MousePos;
         var pressed = Keyboard.Clicked();
 
         DrawCatalog(draw, leftMin, leftMax, mouse, pressed);
         DrawConsist(draw, rightMin, rightMax, mouse, pressed);
-        DrawCaption(draw, new float2(leftMax.X + S(32f), top), new float2(rightMin.X - S(32f), bottom));
+        DrawCaption(draw, new float2(leftMax.X + S(24f), top), new float2(rightMin.X - S(24f), bottom - S(16f)));
         FinishDrag(draw, mouse);
 
-        Canvas.Hints(draw, new float2(margin, size.Y - S(30f)),
-            ("DRAG", "Orbit / reorder"), ("WASD", "Move view"), ("Q E", "Down, up"), ("ENTER", "Add"), ("DEL", "Remove"), ("CTRL+↑↓", "Move"), ("F", "Flip"),
-            ("CTRL+Z", "Undo"), ("CTRL+S", "Save"), ("ESC", "Back"));
-        DrawToast(draw, size);
+        var missing = _consist.Missing is > 0 and var count ? count == 1 ? "1 VEHICLE NOT IN THE CATALOG" : $"{count} VEHICLES NOT IN THE CATALOG" : null;
+        var toasting = Tween.Now - _toastAt < 2.5 && _toast.Length > 0;
+        Workspace.Status(draw, missing,
+            [("DRAG", "Orbit / reorder"), ("WASD", "Move view"), ("Q E", "Down, up"), ("ENTER", "Add"), ("DEL", "Remove"), ("CTRL+↑↓", "Move"), ("F", "Flip"), ("CTRL+Z", "Undo"), ("CTRL+S", "Save"), ("ESC", "Back")],
+            toasting ? _toast : null, true);
+    }
+
+    /// The menu bar: the consist as a file, and its name and whether it's saved at the right.
+    public override void DrawWindows()
+    {
+        if (Workspace.BeginBar(out var top))
+        {
+            if (ImGui.BeginMenu("File"))
+            {
+                if (ImGui.MenuItem("New"))
+                    New();
+                if (ImGui.MenuItem("Open..."))
+                {
+                    _editingName = false;
+                    HighballApp.Instance.Push(new OpenConsistScreen(this));
+                }
+
+                if (ImGui.MenuItem("Save", "Ctrl+S", false, _dirty || _consist.SavedAt is null))
+                    Save();
+                if (ImGui.MenuItem("Delete...", "", false, _consist.SavedAt is not null))
+                {
+                    _editingName = false;
+                    HighballApp.Instance.Push(new DeleteConsistScreen(this, _consist, fromList: false));
+                }
+
+                ImGui.Separator();
+                if (ImGui.MenuItem("Exit Consist Editor", "Esc"))
+                    Leave();
+                ImGui.EndMenu();
+            }
+
+            if (ImGui.BeginMenu("Edit"))
+            {
+                if (ImGui.MenuItem("Undo", "Ctrl+Z"))
+                    Undo();
+                if (ImGui.MenuItem("Redo", "Ctrl+Y"))
+                    Redo();
+                ImGui.Separator();
+                if (ImGui.MenuItem("Clear"))
+                    Clear();
+                ImGui.EndMenu();
+            }
+
+            Workspace.Views("##none", [], 0, unsaved: _dirty || _consist.SavedAt is null, unsavedTip: _consist.SavedAt is null ? "Not saved yet (Ctrl+S)" : "Unsaved changes (Ctrl+S)");
+            Workspace.EndBar();
+        }
+
+        Workspace.Begin(top, false);
+        Workspace.End();
     }
 
     // --- The catalog: kinds, then the vehicles of the one picked. ---
 
     private void DrawCatalog(ImDrawListPtr draw, float2 min, float2 max, float2 mouse, bool pressed)
     {
-        var content = Canvas.Plate(draw, min, max, 1f, "CATALOG");
+        var content = Workspace.Panel(draw, min, max, "");
         var left = min.X + S(12f);
         var right = max.X - S(12f);
         var y = content.Y - S(10f);
@@ -285,7 +318,7 @@ public sealed partial class ConsistEditorScreen
 
     private void DrawConsist(ImDrawListPtr draw, float2 min, float2 max, float2 mouse, bool pressed)
     {
-        var content = Canvas.Plate(draw, min, max, 1f, "CONSIST");
+        var content = Workspace.Panel(draw, min, max, "");
         var left = min.X + S(16f);
         var right = max.X - S(16f);
         var width = right - left;
@@ -365,36 +398,12 @@ public sealed partial class ConsistEditorScreen
         y += S(44f);
 
         // The list.
-        var footer = S(58f);
         var listTop = y;
-        var listBottom = max.Y - footer - S(10f);
+        var listBottom = max.Y - S(14f);
         _list = (listTop, listBottom, left, right);
         draw.AddRectFilled(new float2(left, listTop), new float2(right, listBottom), Style.Background.WithAlpha(0.35f));
         draw.AddRect(new float2(left, listTop), new float2(right, listBottom), Stroke, 0f, ImDrawFlags.None, 1f);
         DrawRows(draw, mouse, pressed);
-
-        // NEW, OPEN, SAVE, DELETE.
-        var buttonY = max.Y - footer;
-        var quarter = (width - S(24f)) / 4f;
-        float2 Slot(int i) => new(left + i * (quarter + S(8f)), buttonY);
-        var buttonSize = new float2(quarter, S(40f));
-        if (Widgets.Button(draw, "consist.new", "New", Slot(0), buttonSize))
-            New();
-        if (Widgets.Button(draw, "consist.open", "Open", Slot(1), buttonSize))
-        {
-            _editingName = false;
-            HighballApp.Instance.Push(new OpenConsistScreen(this));
-        }
-
-        if (Widgets.Button(draw, "consist.save", "Save", Slot(2), buttonSize, ButtonKind.Primary, _dirty || _consist.SavedAt is null))
-            Save();
-
-        // Only a consist that's on disk can be deleted; asks first.
-        if (Widgets.Button(draw, "consist.delete", "Delete", Slot(3), buttonSize, ButtonKind.Secondary, _consist.SavedAt is not null))
-        {
-            _editingName = false;
-            HighballApp.Instance.Push(new DeleteConsistScreen(this, _consist, fromList: false));
-        }
     }
 
     private static string LoadText(double fill) => fill <= 0.0 ? "Empty" : fill >= 1.0 ? "Loaded" : $"{fill * 100.0:0}% loaded";
@@ -675,25 +684,6 @@ public sealed partial class ConsistEditorScreen
 
         if (ModelFor(ShownModel(shown)) is null)
             Canvas.Spaced(draw, Bold, S(12f), new float2(centre, (min.Y + plateMin.Y) * 0.5f), Stop, "MODEL MISSING", 0.2f, Align.Center);
-    }
-
-    private void DrawToast(ImDrawListPtr draw, float2 size)
-    {
-        var age = (float)(Tween.Now - _toastAt);
-        const float life = 2.5f;
-        if (age > life || _toast.Length == 0)
-            return;
-
-        var enter = Easing.Apply(Ease.OutCubic, age / 0.25f);
-        var alpha = MathF.Min(enter, Math.Clamp((life - age) / 0.3f, 0f, 1f));
-        var text = _toast.ToUpperInvariant();
-        var w = Canvas.SpacedWidth(Medium, S(13f), text, 0.08f) + S(72f);
-        var h = S(44f);
-        var centre = (_stageMin.X + _stageMax.X) * 0.5f;
-        var min = new float2(centre - w * 0.5f, S(40f) - (1f - enter) * S(16f));
-        Canvas.Plate(draw, min, min + new float2(w, h), alpha);
-        Canvas.Lamp(draw, new float2(min.X + S(24f), min.Y + h * 0.5f), S(3.5f), Accent, alpha);
-        Canvas.Spaced(draw, Medium, S(13f), new float2(min.X + S(44f), min.Y + h * 0.5f - S(8f)), Style.Text.Fade(alpha), text, 0.08f);
     }
 
     // --- Small pieces. ---

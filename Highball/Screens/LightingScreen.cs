@@ -9,18 +9,17 @@ using RailWerkz.Vulkan;
 
 namespace Highball.Screens;
 
-/// A place to judge the light: the SD40-2 on a short length of track, with rows of test spheres beside it, under a sun you
+/// A place to judge the light: the AC4400CW on a short length of track, with rows of test spheres beside it, under a sun you
 /// can move. Rail top is y = 0, as in the locomotive's files. --menu lighting opens it; --lighting and --orbit fix what a
 /// screenshot sees, so the same views can be compared after every shader change.
 public sealed class LightingScreen : Screen, IWorldScreen
 {
     private const float GroundY = DisplayTrack.GroundY;
-    private const float Sd40Length = 20.437f;
-
-    private static readonly (string Id, string Label)[] Engines =
+    private static readonly (string Id, string Label, string Model)[] Engines =
     [
-        ("black", "SD40-2, as the game has it"),
-        ("source", "Old SD40 source (PBR maps)"),
+        ("ac4400cw", "AC4400CW (CSX), as the game has it", "Locomotives/AC4400CW/CSX/LOD0/ac4400cw_csx.glb"),
+        ("ac4400cw_bnsf", "AC4400CW (BNSF)", "Locomotives/AC4400CW/BNSF/LOD0/ac4400cw_bnsf.glb"),
+        ("autorack_csx", "89 ft autorack (CSX)", "RollingStock/Autorack/CSX/LOD0/autorack_csx.glb"),
     ];
 
     private readonly WorldDisplay _world = new();
@@ -50,8 +49,8 @@ public sealed class LightingScreen : Screen, IWorldScreen
         {
             DevTools.Lighting = null;
             _panel.Preset(start.Preset);
-            if (start.Model is { } model)
-                _engine = model == "csx" ? "black" : model; // csx was the SD40's
+            if (start.Model is { } model && Engines.Any(e => e.Id == model))
+                _engine = model;
         }
 
         if (DevTools.Orbit is { } orbit)
@@ -97,9 +96,7 @@ public sealed class LightingScreen : Screen, IWorldScreen
         if (_engines.TryGetValue(id, out var engine))
             return engine;
 
-        var model = id == "source"
-            ? Model.Load("Locomotives/SD40/Source/emd-sd40_diesel_electric_locomotive_1k.glb", targetLength: Sd40Length)
-            : Model.Load("Locomotives/SD40-2/Assembled/sd40_2_black.glb");
+        var model = Model.Load(Engines.First(e => e.Id == id).Model);
         return _engines[id] = new RenderModel(model);
     }
 
@@ -153,7 +150,7 @@ public sealed class LightingScreen : Screen, IWorldScreen
         var lamps = _lamps;
         lamps.Clear();
         var on = 1f - MathEx.SmoothStep(-0.02f, 0.1f, _renderer.Sky.RealSunHeight);
-        if (on > 0f && Trains.VehicleCatalog.Find("sd40-2") is { } def)
+        if (on > 0f && Trains.VehicleCatalog.Find(_engine) is { } def)
         {
             // The front end's lamps, where the catalog has them: the headlight's beam shared between its lamps.
             foreach (var lamp in def.Lamps.Where(l => l.Front))
@@ -181,7 +178,7 @@ public sealed class LightingScreen : Screen, IWorldScreen
         LightingWindow.Draw(_panel, () =>
         {
             ImGui.Separator();
-            foreach (var (id, label) in Engines)
+            foreach (var (id, label, _) in Engines)
             {
                 if (ImGui.RadioButton(label, _engine == id))
                     _engine = id;

@@ -23,7 +23,24 @@ public sealed class EditorCamera
     /// Looking round with the right button held: the pointer's captured.
     public bool Looking { get; set; }
 
+    /// How quickly the view catches up with right-button looking, per second (exponential, frame-rate independent): the
+    /// mouse moves a target and the view eases toward it. Higher is snappier; ~30 closes 63% of the gap in 33 ms.
+    public const float LookSharpness = 30f;
+
+    /// How quickly Alt+wheel lens zoom catches up with the wheel, per second, eased in log space so each notch feels the
+    /// same at any zoom.
+    public const float ZoomSharpness = 14f;
+
+    /// How much one wheel notch changes the lens zoom (and the fly speed).
+    public const float WheelStep = 1.25f;
+
     private float2? _panFrom;
+
+    // Where looking and the lens are headed, and what was last put on the camera, so that anything else moving the camera
+    // (a jump to a place, the 2D view) is noticed and taken as the new target rather than fought.
+    private bool _haveAim;
+    private float _yawTarget, _pitchTarget, _zoomTarget;
+    private float _yawShown, _pitchShown, _zoomShown;
 
     public void StopLooking()
     {
@@ -36,22 +53,39 @@ public sealed class EditorCamera
     public void Fly(float dt, bool blocked, bool wheelTurns, Func<double, double, float> heightAt)
     {
         var camera = Camera;
+        if (!_haveAim || camera.Yaw != _yawShown || camera.Pitch != _pitchShown || camera.Zoom != _zoomShown)
+        {
+            _yawTarget = camera.Yaw;
+            _pitchTarget = camera.Pitch;
+            _zoomTarget = camera.Zoom;
+            _haveAim = true;
+        }
+
         Looking = Input.Mouse(GlfwMouseButton.Right) && (Looking || !blocked);
         if (Looking)
         {
             // (Slower zoomed in, so that things move across the screen at the same rate.)
-            var sensitivity = 0.0025f / camera.Zoom;
-            camera.Yaw += Input.MouseDelta.X * sensitivity;
-            camera.Pitch = Math.Clamp(camera.Pitch - Input.MouseDelta.Y * sensitivity, -1.55f, 1.55f);
+            var sensitivity = 0.0025f / _zoomTarget;
+            _yawTarget += Input.MouseDelta.X * sensitivity;
+            _pitchTarget = Math.Clamp(_pitchTarget - Input.MouseDelta.Y * sensitivity, -1.55f, 1.55f);
         }
 
         if (Input.Scroll != 0f && !blocked && !wheelTurns)
         {
             if (Input.Key(GlfwKey.LeftAlt))
-                camera.Zoom = Math.Clamp(camera.Zoom * MathF.Pow(1.25f, Input.Scroll), 1f, MaxLensZoom);
+                _zoomTarget = Math.Clamp(_zoomTarget * MathF.Pow(WheelStep, Input.Scroll), 1f, MaxLensZoom);
             else
-                Speed = Math.Clamp(Speed * MathF.Pow(1.25f, Input.Scroll), MinSpeed, MaxSpeed);
+                Speed = Math.Clamp(Speed * MathF.Pow(WheelStep, Input.Scroll), MinSpeed, MaxSpeed);
         }
+
+        // Ease toward the targets: the fraction of the gap left after dt is exp(-sharpness * dt).
+        var lookLeft = MathF.Exp(-LookSharpness * dt);
+        camera.Yaw = Settle(_yawTarget + (camera.Yaw - _yawTarget) * lookLeft, _yawTarget, 1e-5f);
+        camera.Pitch = Settle(_pitchTarget + (camera.Pitch - _pitchTarget) * lookLeft, _pitchTarget, 1e-5f);
+        camera.Zoom = Settle(_zoomTarget * MathF.Pow(camera.Zoom / _zoomTarget, MathF.Exp(-ZoomSharpness * dt)), _zoomTarget, 1e-4f);
+        _yawShown = camera.Yaw;
+        _pitchShown = camera.Pitch;
+        _zoomShown = camera.Zoom;
 
         var forward = camera.Forward;
         var right = camera.Right;
@@ -74,6 +108,9 @@ public sealed class EditorCamera
 
         camera.Y = Math.Max(camera.Y, heightAt(camera.X, camera.Z) + 1.8);
     }
+
+    private static float Settle(float value, float target, float epsilon) =>
+        MathF.Abs(value - target) < epsilon ? target : value;
 
     /// Seen from above, on a screen this size (pixels).
     public void Pan(float dt, bool blocked, bool wheelTurns, float2 screen, Func<double, double, float> heightAt)

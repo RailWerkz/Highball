@@ -13,7 +13,11 @@ namespace Highball.World;
 /// The temporal pass adds that to the camera's move. Zero where nothing moving is seen.
 ///
 /// No depth buffer of its own: each fragment looks at the depth the world was drawn with, and is kept only if it's what was
-/// seen there (within a whisker: the world's depth is one sample of several).
+/// seen there (within a whisker: the world's depth is its nearest sample).
+///
+/// Plants sway in the wind, which the camera's move knows nothing of either. They write their own sway into the same image as
+/// they're shaded, in the world's pass (plant.frag, through WriteSet): w is minus their depth there, so the temporal pass uses
+/// it only where that plant is still what's seen once everything else is drawn; moving models write w = 1.
 public sealed unsafe class MotionVectors : IDisposable
 {
     [StructLayout(LayoutKind.Sequential)]
@@ -27,6 +31,7 @@ public sealed unsafe class MotionVectors : IDisposable
     private const VkShaderStageFlags Stages = VkShaderStageFlags.VertexBit | VkShaderStageFlags.FragmentBit;
 
     private readonly VkDescriptorSetLayout _setLayout;
+    private VkDescriptorSet _writeSet;
     private readonly VkPipelineLayout _layout;
     private readonly VkPipeline _pipeline;
     private VkDescriptorPool _pool;
@@ -37,11 +42,20 @@ public sealed unsafe class MotionVectors : IDisposable
     /// What the temporal pass reads: xyz the move back to last frame's place, w 1 where something moving is seen.
     public StorageImage? Image { get; private set; }
 
+    /// The image as a storage image the plants write their sway into (plant.frag's set 4), for the world's pipeline layouts.
+    public VkDescriptorSetLayout WriteSetLayout { get; }
+
+    /// Valid after BeginFrame.
+    public VkDescriptorSet WriteSet => _writeSet;
+
     public MotionVectors()
     {
         var binding = new VkDescriptorSetLayoutBinding { Binding = 0, DescriptorType = VkDescriptorType.CombinedImageSampler, DescriptorCount = 1, StageFlags = VkShaderStageFlags.FragmentBit };
         var info = new VkDescriptorSetLayoutCreateInfo { BindingCount = 1, Bindings = &binding };
         _setLayout = Gpu.Device.CreateDescriptorSetLayout(in info, Gpu.Device.VkAllocator);
+        var storage = new VkDescriptorSetLayoutBinding { Binding = 0, DescriptorType = VkDescriptorType.StorageImage, DescriptorCount = 1, StageFlags = VkShaderStageFlags.FragmentBit };
+        var writeInfo = new VkDescriptorSetLayoutCreateInfo { BindingCount = 1, Bindings = &storage };
+        WriteSetLayout = Gpu.Device.CreateDescriptorSetLayout(in writeInfo, Gpu.Device.VkAllocator);
         _layout = Pipelines.Layout(Marshal.SizeOf<Push>(), _setLayout);
         using var vertex = Shader.Load("motion.vert");
         using var fragment = Shader.Load("motion.frag");
@@ -67,22 +81,28 @@ public sealed unsafe class MotionVectors : IDisposable
         (_size, _targetVersion) = (target.Size, target.Version);
         Image = new StorageImage(Math.Max(_size.X, 1), Math.Max(_size.Y, 1), 1, VkFormat.R16G16B16A16SFloat, false, false, "post.motion", drawnTo: true);
 
-        var size = new VkDescriptorPoolSize { Type = VkDescriptorType.CombinedImageSampler, DescriptorCount = 1 };
-        var pool = new VkDescriptorPoolCreateInfo { MaxSets = 1, PoolSizeCount = 1, PoolSizes = &size };
+        var sizes = stackalloc VkDescriptorPoolSize[2];
+        sizes[0] = new VkDescriptorPoolSize { Type = VkDescriptorType.CombinedImageSampler, DescriptorCount = 1 };
+        sizes[1] = new VkDescriptorPoolSize { Type = VkDescriptorType.StorageImage, DescriptorCount = 1 };
+        var pool = new VkDescriptorPoolCreateInfo { MaxSets = 2, PoolSizeCount = 2, PoolSizes = sizes };
         _pool = Gpu.Device.CreateDescriptorPool(in pool, Gpu.Device.VkAllocator);
-        var layout = _setLayout;
-        var allocate = new VkDescriptorSetAllocateInfo { DescriptorPool = _pool, DescriptorSetCount = 1, SetLayouts = &layout };
-        var sets = new VkDescriptorSet[1];
+        var layouts = stackalloc VkDescriptorSetLayout[2];
+        layouts[0] = _setLayout;
+        layouts[1] = WriteSetLayout;
+        var allocate = new VkDescriptorSetAllocateInfo { DescriptorPool = _pool, DescriptorSetCount = 2, SetLayouts = layouts };
+        var sets = new VkDescriptorSet[2];
         Gpu.Device.AllocateDescriptorSets(in allocate, sets);
-        _set = sets[0];
+        (_set, _writeSet) = (sets[0], sets[1]);
         var depth = new VkDescriptorImageInfo { Sampler = target.DepthSampler, ImageView = target.DepthView, ImageLayout = VkImageLayout.DepthStencilReadOnlyOptimal };
+        var asStorage = new VkDescriptorImageInfo { ImageView = Image.View, ImageLayout = VkImageLayout.General };
         var write = new VkWriteDescriptorSet { DstSet = _set, DstBinding = 0, DescriptorCount = 1, DescriptorType = VkDescriptorType.CombinedImageSampler, ImageInfo = &depth };
-        Gpu.Device.UpdateDescriptorSets([write], []);
+        var writeStorage = new VkWriteDescriptorSet { DstSet = _writeSet, DstBinding = 0, DescriptorCount = 1, DescriptorType = VkDescriptorType.StorageImage, ImageInfo = &asStorage };
+        Gpu.Device.UpdateDescriptorSets([write, writeStorage], []);
     }
 
-    /// After the world's drawn (its depth ready to read), before the temporal pass. Always clears the image, so nothing stale
-    /// is read once a thing stops moving.
-    public void Record(CommandBuffer cmd, RenderTarget target, Camera camera, float aspect, IReadOnlyList<ModelInstances.Batch> moving)
+    /// Before the world's pass (the target sized for this frame): clears the image, so nothing stale is read once a thing stops
+    /// moving, and leaves it for the plants to write their sway into as they're shaded.
+    public void BeginFrame(CommandBuffer cmd, RenderTarget target)
     {
         Resize(target);
         var image = Image!;
@@ -93,11 +113,20 @@ public sealed unsafe class MotionVectors : IDisposable
         var clear = new VkClearColorValue();
         var range = Subresources.Full(VkImageAspectFlags.ColorBit);
         cmd.ClearColorImage(image.VkImage, VkImageLayout.General, &clear, [range]);
+        Gpu.Barrier(cmd, image.VkImage, Subresources.Full(VkImageAspectFlags.ColorBit), VkImageLayout.General, VkImageLayout.General,
+            VkPipelineStageFlags.TransferBit, VkPipelineStageFlags.FragmentShaderBit, VkAccessFlags.TransferWriteBit, VkAccessFlags.ShaderWriteBit);
+    }
+
+    /// After the world's drawn (its depth ready to read, the plants' sway written), before the temporal pass.
+    public void Record(CommandBuffer cmd, RenderTarget target, Camera camera, float aspect, IReadOnlyList<ModelInstances.Batch> moving)
+    {
+        var image = Image!;
 
         if (moving.Count > 0)
         {
             Gpu.Barrier(cmd, image.VkImage, Subresources.Full(VkImageAspectFlags.ColorBit), VkImageLayout.General, VkImageLayout.General,
-                VkPipelineStageFlags.TransferBit, VkPipelineStageFlags.ColorAttachmentOutputBit, VkAccessFlags.TransferWriteBit, VkAccessFlags.ColorAttachmentWriteBit);
+                VkPipelineStageFlags.FragmentShaderBit, VkPipelineStageFlags.ColorAttachmentOutputBit, VkAccessFlags.ShaderWriteBit,
+                VkAccessFlags.ColorAttachmentReadBit | VkAccessFlags.ColorAttachmentWriteBit);
             var color = new VkRenderingAttachmentInfo
             {
                 ImageView = image.View,
@@ -125,7 +154,7 @@ public sealed unsafe class MotionVectors : IDisposable
         else
         {
             Gpu.Barrier(cmd, image.VkImage, Subresources.Full(VkImageAspectFlags.ColorBit), VkImageLayout.General, VkImageLayout.General,
-                VkPipelineStageFlags.TransferBit, VkPipelineStageFlags.ComputeShaderBit, VkAccessFlags.TransferWriteBit, VkAccessFlags.ShaderReadBit);
+                VkPipelineStageFlags.FragmentShaderBit, VkPipelineStageFlags.ComputeShaderBit, VkAccessFlags.ShaderWriteBit, VkAccessFlags.ShaderReadBit);
         }
     }
 
@@ -133,12 +162,13 @@ public sealed unsafe class MotionVectors : IDisposable
     {
         Image?.Dispose();
         Pipelines.Destroy(_pipeline, _layout);
-        var (pool, setLayout) = (_pool, _setLayout);
+        var (pool, setLayout, writeSetLayout) = (_pool, _setLayout, WriteSetLayout);
         Gpu.Defer(() =>
         {
             if (!pool.IsNull())
                 Gpu.Device.DestroyDescriptorPool(pool, Gpu.Device.VkAllocator);
             Gpu.Device.DestroyDescriptorSetLayout(setLayout, Gpu.Device.VkAllocator);
+            Gpu.Device.DestroyDescriptorSetLayout(writeSetLayout, Gpu.Device.VkAllocator);
         });
     }
 }

@@ -66,16 +66,18 @@ public sealed class BridgeEndShape
         DeckHalf = BridgePlanner.DeckHalf(line);
         DeckY = line.Y[end.Point];
         SeatY = DeckY - BridgePlanner.DeckDepth(line) - NetworkLines.BridgeClearanceOf;
+        // (No farther than the slope may reach, NetworkLines.SlopeReach, as its paving.)
+        var most = NetworkLines.SlopeReach(line, end);
         float Toe(float side)
         {
-            for (var a = 0f; a < 80f; a += 0.25f)
+            for (var a = 0f; a < most; a += 0.25f)
             {
                 var (x, z) = World(a, side * (DeckHalf + WallThick * 0.5f));
                 if (lines.SlopeRise(end, x, z) <= end.Floor + 0.05f)
                     return a;
             }
 
-            return 80f;
+            return most;
         }
 
         (ToeLeft, ToeRight) = (Toe(-1f), Toe(1f));

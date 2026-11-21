@@ -60,7 +60,7 @@ class WellCar(Car):
     # ------------------------------------------------------------ loads
 
     def cargo(self):
-        """The containers this car carries, built once into Models/RollingStock/Containers."""
+        """The containers this car carries, built once into Meshes/RollingStock/Containers."""
         out = {}
         for spec, paint in ((containers.C53, containers.PAINTS["highball"]), (containers.C40HC, containers.PAINTS["rwkz"])):
             out[containers.model_name(spec, paint)] = (lambda s=spec, p=paint: containers.container(s, p), containers.colours(paint))

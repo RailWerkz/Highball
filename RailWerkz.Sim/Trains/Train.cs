@@ -113,8 +113,13 @@ public sealed class Train
     /// How hard the locomotives' wheels are slipping now, 0 to 1: the worst of them.
     public double WheelSlip => Body.WheelSlip.Length == 0 ? 0.0 : Body.WheelSlip.Max();
 
-    /// Throttle notch, 0 (idle) to Notches.
-    public int Notch { get; set; }
+    /// Throttle notch, 0 (idle) to Notches: the handle has no positions between.
+    public int Notch
+    {
+        get => _notch;
+        set => _notch = Math.Clamp(value, 0, Notches);
+    }
+    private int _notch;
     /// Automatic (train) brake, 0 release, then the service zone from the first notch to full service at 1.
     public double Brake
     {
@@ -129,8 +134,17 @@ public sealed class Train
         set => Body.Brakes.EmergencyHandle = value;
     }
 
-    /// Dynamic brake, 0 off to 1 full. Taking power and dynamic braking are either-or: while it's on, the throttle's ignored.
-    public double Dynamic { get; set; }
+    /// Dynamic brake handle, 0 off then notches 1 to Notches (full). Taking power and dynamic braking are either-or: while
+    /// it's on, the throttle's ignored.
+    public int DynamicNotch
+    {
+        get => _dynamicNotch;
+        set => _dynamicNotch = Math.Clamp(value, 0, Notches);
+    }
+    private int _dynamicNotch;
+
+    /// The dynamic brake handle as the share of full braking effort it asks for, 0 off to 1 at the last notch.
+    public double Dynamic => DynamicNotch / (double)Notches;
 
     /// What the dynamic brakes held back with in the last step, newtons.
     public double DynamicBraking { get; private set; }
@@ -310,7 +324,7 @@ public sealed class Train
     {
         Notch = 0;
         Reverser = 0;
-        Dynamic = 0.0;
+        DynamicNotch = 0;
         Sand = false;
         Emergency = false;
         Brake = 1.0;
@@ -416,7 +430,7 @@ public sealed class Train
     {
         Reverser = flipped ? -other.Reverser : other.Reverser;
         Notch = other.Notch;
-        Dynamic = other.Dynamic;
+        DynamicNotch = other.DynamicNotch;
         Sand = other.Sand;
     }
 

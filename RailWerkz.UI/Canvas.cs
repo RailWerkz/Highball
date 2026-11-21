@@ -25,6 +25,13 @@ public static class Canvas
     /// Letter-spaced capitals.
     public static void Spaced(ImDrawListPtr draw, ImFontPtr font, float size, float2 pos, Rgba color, string text, float tracking = 0.12f, Align align = Align.Left)
     {
+        // The editor's look has no spaced capitals: the same words, plain, in sentence case, a touch larger.
+        if (Style.Editor)
+        {
+            Text(draw, Style.Regular, size * 1.15f, pos - new float2(0f, size * 0.12f), color, Style.Case(text), align);
+            return;
+        }
+
         var gap = size * tracking;
         var width = SpacedWidth(font, size, text, tracking);
         var x = align switch { Align.Center => pos.X - width * 0.5f, Align.Right => pos.X - width, _ => pos.X };
@@ -41,6 +48,8 @@ public static class Canvas
     {
         if (text.Length == 0)
             return 0f;
+        if (Style.Editor)
+            return TextSize(Style.Regular, size * 1.15f, Style.Case(text)).X;
 
         var width = 0f;
         foreach (var c in text)
@@ -62,6 +71,17 @@ public static class Canvas
     /// A filled plate with a hairline frame. Returns where the content starts (below the title band, if any).
     public static float2 Plate(ImDrawListPtr draw, float2 min, float2 max, float alpha = 1f, string? title = null)
     {
+        if (Style.Editor)
+        {
+            // Flat and square-cornered in the editor's look, a hairline round it, its title small and dim.
+            draw.AddRectFilled(min, max, Surface.Fade(alpha), S(4f));
+            draw.AddRect(min, max, Stroke.Fade(alpha), S(4f), ImDrawFlags.None, 1f);
+            if (title is null)
+                return min + new float2(S(20f), S(16f));
+            Text(draw, Style.Bold, S(13.5f), new float2(min.X + S(14f), min.Y + S(10f)), TextDim.Fade(alpha), Style.Case(title));
+            return new float2(min.X + S(20f), min.Y + S(44f));
+        }
+
         var cut = S(16f);
         Span<float2> p = stackalloc float2[6];
         PlatePoints(min, max, cut, p);

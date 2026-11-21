@@ -335,7 +335,8 @@ public sealed class WorldServer : IDisposable
                 train.Notch = Math.Clamp((int)r.U8(), 0, Train.Notches);
                 train.Brake = Math.Clamp(r.F32(), 0f, 1f);
                 train.Independent = Math.Clamp(r.F32(), 0f, 1f);
-                train.Dynamic = Math.Clamp(r.F32(), 0f, 1f);
+                // Sent as the handle's share of full (notch / Notches), so whole notches only.
+                train.DynamicNotch = (int)MathF.Round(Math.Clamp(r.F32(), 0f, 1f) * Train.Notches);
                 train.Emergency = r.Bool();
                 train.Sand = r.Bool();
                 if (r.Overrun)

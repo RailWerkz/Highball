@@ -1,4 +1,4 @@
-﻿using Brutal;
+using Brutal;
 using Brutal.GlfwApi;
 using Brutal.ImGuiApi;
 using Brutal.ImGuiApi.Backends;
@@ -294,6 +294,8 @@ public sealed class HighballApp : IDisposable
         while (!_quit && !_window.ShouldClose)
         {
             Glfw.PollEvents();
+            if (DevTools.Mouse is { } pin && _window.IsFocused)
+                _window.CursorPos = new double2(pin.X, pin.Y);
             TrackWindow();
             Input.BeginFrame();
             Time.Tick();
@@ -321,6 +323,7 @@ public sealed class HighballApp : IDisposable
             AudioEngine.Update();
 
             var top = Top;
+            Style.UseEditor(top?.EditorTheme == true);
             SetCursorCaptured(top?.CapturesMouse == true && _window.IsFocused);
             using (Profiler.Sample("Update"))
                 top?.Update(Time.RealDelta);

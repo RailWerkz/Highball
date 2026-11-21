@@ -1,198 +1,167 @@
 using System.Globalization;
 using Brutal.ImGuiApi;
 using RailWerkz.UI;
-using RailWerkz.UI.Anim;
 using static RailWerkz.UI.Style;
 
 namespace Highball.Builder;
 
-/// The one way every tool's side panel is laid out, in Kit's look: a header (the tool and its key), the tool's mode as one
-/// segmented row, then cards (Kit.BeginCard) of captioned controls, a card for what's picked when something is, and plain
-/// hints and problems in their own colours. Every control a panel needs is here or in Kit, so no panel reaches for ImGui's
-/// own radio buttons, combos or sliders.
+/// How every tool's properties are laid out: modes as one joined strip, sections of compact rows, value bars with their
+/// label inside, list rows, and plain hints and problems. Nothing names what's already on screen: the rail shows the tool.
 public static class ToolPanel
 {
     private static ImDrawListPtr Draw => ImGui.GetWindowDrawList();
 
-    /// Which collapsible sections are open, by id.
+    /// Which folding sections are open, by id.
     private static readonly Dictionary<string, bool> Open = [];
 
-    /// The tool's name in spaced capitals with a lamp before it, its key on the right, what it's doing under it, and a rule.
+    /// What the tool's doing, when it says something the screen doesn't already: one dim line. The title and key aren't
+    /// drawn (the rail and its tooltip have them).
     public static void Header(string title, string? key, string? subtitle = null)
     {
-        var draw = Draw;
+        if (subtitle is not { Length: > 0 })
+            return;
         var at = ImGui.GetCursorScreenPos();
-        var width = Kit.Width;
-        Canvas.Lamp(draw, at + new float2(S(4f), S(9f)), S(4f), Accent);
-        Canvas.Spaced(draw, Bold, S(14f), at + new float2(S(18f), S(1f)), Text, title.ToUpperInvariant(), 0.24f);
-        if (key is { Length: > 0 })
-        {
-            var keyWidth = Canvas.TextSize(Mono, S(13f), key).X + S(12f);
-            var min = new float2(at.X + width - keyWidth, at.Y - S(1f));
-            draw.AddRect(min, min + new float2(keyWidth, S(20f)), StrokeStrong, 0f, ImDrawFlags.None, 1f);
-            Canvas.Text(draw, Mono, S(13f), min + new float2(keyWidth * 0.5f, S(2.5f)), TextDim, key, Align.Center);
-        }
-
-        var height = S(27f);
-        if (subtitle is { Length: > 0 })
-        {
-            Canvas.Text(draw, Regular, S(14.5f), at + new float2(0f, S(25f)), TextDim, Kit.Ellipsize(subtitle, Regular, S(14.5f), width));
-            height += S(20f);
-        }
-
-        draw.AddLine(new float2(at.X, at.Y + height), new float2(at.X + width, at.Y + height), StrokeStrong, 1f);
-        ImGui.Dummy(new float2(width, height + S(8f)));
+        Canvas.Text(Draw, Regular, S(13f), at, TextDim, Kit.Ellipsize(subtitle, Regular, S(13f), Kit.Width));
+        ImGui.Dummy(new float2(Kit.Width, S(20f)));
     }
 
-    /// One of several, as a segmented row (more than `columns` wrap onto further rows). Returns the one picked; current may be
-    /// -1 for none lit.
+    /// One of several, as a joined strip (more than `columns` wrap onto further strips). Returns the one picked; current
+    /// may be -1 for none lit.
     public static int Mode(string id, ReadOnlySpan<string> labels, int current, int columns = 4, bool enabled = true)
     {
         var picked = current;
-        // Wrapped rows keep one cell width: a short last row doesn't stretch.
-        var gap = S(3f);
         var total = labels.Length;
-        float Cell(int across) => (Kit.Width - gap * (Math.Min(across, total) - 1)) / Math.Min(across, total);
-
-        // Fewer across where a label wouldn't fit its cell even set closer and a size smaller (as a cell draws it at the
-        // least): wrapped onto more rows rather than cut short.
         var widest = 0f;
         foreach (var label in labels)
-            widest = MathF.Max(widest, Canvas.SpacedWidth(Bold, S(11f), label.ToUpperInvariant(), 0.04f));
-        while (columns > 1 && Cell(columns) - S(16f) < widest)
+            widest = MathF.Max(widest, Canvas.TextSize(Medium, S(13f), label).X);
+        // One strip if they all fit in it; else rows of as many as were asked for.
+        columns = Kit.Width / total - S(14f) >= widest ? total : Math.Max(columns, 1);
+        while (columns > 1 && Kit.Width / Math.Min(columns, total) - S(14f) < widest)
             columns--;
-        var cell = Cell(columns);
-        for (var start = 0; start < labels.Length; start += columns)
+        var cell = Kit.Width / Math.Min(columns, total);
+        for (var start = 0; start < total; start += columns)
         {
-            var count = Math.Min(columns, labels.Length - start);
-            var row = Kit.Segmented($"{id}.{start}", labels.Slice(start, count), current - start is var local && local >= 0 && local < count ? local : -1, enabled, cell * count + gap * (count - 1));
-            if (row >= 0 && row != current - start)
+            var count = Math.Min(columns, total - start);
+            var local = current - start;
+            var row = Kit.Segmented($"{id}.{start}", labels.Slice(start, count), local >= 0 && local < count ? local : -1, enabled, cell * count);
+            if (row >= 0 && row != local)
                 picked = start + row;
+            if (start + columns < total)
+                ImGui.Dummy(new float2(1f, S(1f)));
         }
 
         return picked;
     }
 
-    /// A caption with the value read out on its right, over a slider from min to max (log: evenly in ratio, for sizes).
-    /// Returns true while it's changed; released is true on the frame it's let go, for an edit that's made once.
+    /// A value from min to max as a bar with its caption inside at the left and the reading at the right (log: evenly in
+    /// ratio, for sizes). Returns true while it's changed; released is true on the frame it's let go.
     public static bool Value(string id, string caption, ref float value, float min, float max, string format, out bool released, bool log = false, bool enabled = true)
     {
-        var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
-        var width = Kit.Width;
-        var shown = value.ToString(format, CultureInfo.InvariantCulture);
-        Canvas.Text(draw, Mono, S(14f), new float2(at.X + width, at.Y - S(1f)), enabled ? Text : TextFaint, shown, Align.Right);
-        // The caption in what's left beside the value: set closer if it must be, and only then cut short.
-        var room = width - Canvas.TextSize(Mono, S(14f), shown).X - S(10f);
-        var text = caption.ToUpperInvariant();
-        var tracking = 0.18f;
-        if (Canvas.SpacedWidth(Medium, S(12f), text, tracking) > room)
-            tracking = 0.04f;
-        while (text.Length > 2 && Canvas.SpacedWidth(Medium, S(12f), text, tracking) > room)
-            text = text[..^2].TrimEnd() + "…";
-        Canvas.Spaced(draw, Medium, S(12f), at, Rgba.Mix(TextFaint, TextDim, 0.7f), text, tracking);
-        ImGui.Dummy(new float2(width, S(16f)));
-
+        var size = new float2(Kit.Width, Kit.RowHeight);
         var t = log ? MathF.Log(MathF.Max(value, min) / min) / MathF.Log(max / min) : (value - min) / MathF.Max(max - min, 1e-6f);
-        var changed = Kit.Slider(id, ref t, out released, enabled);
+        var changed = Kit.Bar(id, ref t, at, size, Kit.Sentence(caption), value.ToString(format, CultureInfo.InvariantCulture), enabled, out released);
         if (changed)
             value = Math.Clamp(log ? min * MathF.Pow(max / min, t) : min + (max - min) * t, min, max);
+        ImGui.SetCursorScreenPos(at);
+        ImGui.Dummy(size);
         return changed;
     }
 
     public static bool Value(string id, string caption, ref float value, float min, float max, string format, bool log = false, bool enabled = true) =>
         Value(id, caption, ref value, min, max, format, out _, log, enabled);
 
-    /// A whole number between min and max: a caption, then a minus, the number and a plus. Returns true when it changed.
+    /// A whole number between min and max: its caption at the left, then minus, the number and plus at the right.
     public static bool Count(string id, string caption, ref int value, int min, int max)
     {
-        Kit.Caption(caption);
-        var width = Kit.Width;
-        var button = S(36f);
+        var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
+        var width = Kit.Width;
+        var height = Kit.RowHeight;
+        Canvas.Text(draw, Regular, S(13f), at + new float2(0f, (height - S(13f)) * 0.5f - S(1f)), TextDim, Kit.Sentence(caption));
+        var button = height;
+        var field = S(44f);
+        var left = at.X + width - button * 2f - field;
         var was = value;
+        ImGui.SetCursorScreenPos(new float2(left, at.Y));
         if (Kit.Button($"{id}.less", "-", button, ButtonKind.Secondary, value > min))
             value--;
-        ImGui.SetCursorScreenPos(at + new float2(width - button, 0f));
+        ImGui.SetCursorScreenPos(new float2(left + button + field, at.Y));
         if (Kit.Button($"{id}.more", "+", button, ButtonKind.Secondary, value < max))
             value++;
-        Canvas.Text(Draw, Mono, S(16f), at + new float2(width * 0.5f, S(6.5f)), Text, value.ToString(CultureInfo.InvariantCulture), Align.Center);
+        Canvas.Text(draw, Mono, S(13.5f), new float2(left + button + field * 0.5f, at.Y + (height - S(13.5f)) * 0.5f), Text, value.ToString(CultureInfo.InvariantCulture), Align.Center);
         ImGui.SetCursorScreenPos(at);
-        ImGui.Dummy(new float2(width, S(31f)));
+        ImGui.Dummy(new float2(width, height));
         value = Math.Clamp(value, min, max);
         return value != was;
     }
 
-    /// A row of a list or palette: an icon or a colour swatch (if either), its name, a word on the right, the accent bar when
-    /// it's the one in hand.
+    /// A list or palette row: an icon or a colour swatch (if either), its name, a word on the right; lit when it's in hand.
     public static bool Item(string id, ToolIcon? icon, string name, string? right, bool on, bool enabled = true, Rgba? swatch = null)
     {
         var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
-        var size = new float2(Kit.Width, S(31f));
+        var size = new float2(Kit.Width, Kit.RowHeight);
         var clicked = ImGui.InvisibleButton(id, size) && enabled;
         var hover = ImGui.IsItemHovered() && enabled;
-        var lit = Tween.Float(id, "lit", on ? 1f : hover ? 0.5f : 0f, 0.15f);
-        if (lit > 0.01f)
-            draw.AddRectFilled(at, at + size, Accent.WithAlpha(0.14f * lit));
         if (on)
-            draw.AddRectFilled(at, new float2(at.X + S(3f), at.Y + size.Y), Accent);
-        var ink = !enabled ? TextFaint : on ? Text : hover ? Text : TextDim;
-        var x = S(12f);
+            draw.AddRectFilled(at, at + size, Accent.WithAlpha(0.3f), S(3f));
+        else if (hover)
+            draw.AddRectFilled(at, at + size, RaisedHover.WithAlpha(0.6f), S(3f));
+        var ink = !enabled ? TextFaint : on || hover ? Text : TextDim;
+        var x = S(8f);
         if (icon is { } shape)
         {
-            ToolIcons.Draw(draw, shape, at + new float2(S(20f), size.Y * 0.5f), S(8.5f), ink, 1.4f);
-            x = S(36f);
+            ToolIcons.Draw(draw, shape, at + new float2(S(16f), size.Y * 0.5f), S(7f), ink, S(1.3f));
+            x = S(30f);
         }
         else if (swatch is { } fill)
         {
-            var c = at + new float2(S(20f), size.Y * 0.5f);
-            draw.AddRectFilled(c - new float2(S(6f), S(6f)), c + new float2(S(6f), S(6f)), fill);
-            x = S(36f);
+            var c = at + new float2(S(14f), size.Y * 0.5f);
+            draw.AddRectFilled(c - new float2(S(5f), S(5f)), c + new float2(S(5f), S(5f)), fill, S(2f));
+            x = S(28f);
         }
 
-        var tagWidth = right is null ? 0f : Canvas.SpacedWidth(Medium, S(11.5f), right, 0.16f) + S(14f);
-        Canvas.Text(draw, on ? Bold : Medium, S(15.5f), at + new float2(x, S(6f)), ink, Kit.Ellipsize(name, Medium, S(15.5f), size.X - x - tagWidth - S(6f)));
+        var tagWidth = right is null ? 0f : Canvas.TextSize(Regular, S(12.5f), Kit.Sentence(right)).X + S(12f);
+        var y = at.Y + (size.Y - S(13.5f)) * 0.5f - S(1f);
+        Canvas.Text(draw, Medium, S(13.5f), new float2(at.X + x, y), ink, Kit.Ellipsize(name, Medium, S(13.5f), size.X - x - tagWidth - S(4f)));
         if (right is not null)
-            Canvas.Spaced(draw, Medium, S(11.5f), new float2(at.X + size.X - tagWidth + S(4f), at.Y + S(9.5f)), TextFaint, right, 0.16f);
-        if (hover)
-            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+            Canvas.Text(draw, Regular, S(12.5f), new float2(at.X + size.X - S(8f), y + S(0.5f)), TextFaint, Kit.Sentence(right), Align.Right);
         if (clicked)
             Sfx.Tick();
         return clicked;
     }
 
-    /// A section that folds: a chevron and its title in spaced capitals, a count on the right. Returns true while it's open.
+    /// A section that folds: a chevron and its title, a count on the right. Returns true while it's open.
     public static bool Section(string id, string title, string? right = null, bool openAtFirst = false)
     {
         if (!Open.TryGetValue(id, out var open))
             Open[id] = open = openAtFirst;
         var draw = Draw;
         var at = ImGui.GetCursorScreenPos();
-        var size = new float2(Kit.Width, S(27f));
+        var size = new float2(Kit.Width, S(24f));
         if (ImGui.InvisibleButton(id, size))
             Open[id] = open = !open;
         var hover = ImGui.IsItemHovered();
-        var ink = hover ? Text : TextDim;
-        var c = at + new float2(S(6f), size.Y * 0.5f);
-        var arm = S(3.5f);
+        draw.AddRectFilled(at, at + size, (hover ? RaisedHover : Raised).WithAlpha(0.55f), S(3f));
+        var ink = hover || open ? Text : TextDim;
+        var c = at + new float2(S(12f), size.Y * 0.5f);
+        var arm = S(3f);
         if (open)
         {
-            draw.AddLine(c + new float2(-arm, -arm * 0.5f), c + new float2(0f, arm * 0.5f), ink, S(1.5f));
-            draw.AddLine(c + new float2(0f, arm * 0.5f), c + new float2(arm, -arm * 0.5f), ink, S(1.5f));
+            draw.AddLine(c + new float2(-arm, -arm * 0.5f), c + new float2(0f, arm * 0.5f), ink, S(1.4f));
+            draw.AddLine(c + new float2(0f, arm * 0.5f), c + new float2(arm, -arm * 0.5f), ink, S(1.4f));
         }
         else
         {
-            draw.AddLine(c + new float2(-arm * 0.5f, -arm), c + new float2(arm * 0.5f, 0f), ink, S(1.5f));
-            draw.AddLine(c + new float2(arm * 0.5f, 0f), c + new float2(-arm * 0.5f, arm), ink, S(1.5f));
+            draw.AddLine(c + new float2(-arm * 0.5f, -arm), c + new float2(arm * 0.5f, 0f), ink, S(1.4f));
+            draw.AddLine(c + new float2(arm * 0.5f, 0f), c + new float2(-arm * 0.5f, arm), ink, S(1.4f));
         }
 
-        Canvas.Spaced(draw, Medium, S(12f), at + new float2(S(18f), S(7f)), ink, title.ToUpperInvariant(), 0.18f);
+        Canvas.Text(draw, Bold, S(13.5f), at + new float2(S(24f), (size.Y - S(13.5f)) * 0.5f - S(1f)), ink, Kit.Sentence(title));
         if (right is not null)
-            Canvas.Text(draw, Mono, S(13.5f), new float2(at.X + size.X, at.Y + S(5.5f)), TextFaint, right, Align.Right);
-        draw.AddLine(new float2(at.X, at.Y + size.Y), new float2(at.X + size.X, at.Y + size.Y), Stroke, 1f);
-        if (hover)
-            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+            Canvas.Text(draw, Regular, S(13f), new float2(at.X + size.X - S(8f), at.Y + (size.Y - S(13f)) * 0.5f - S(1f)), TextFaint, right, Align.Right);
+        ImGui.Dummy(new float2(1f, S(2f)));
         return open;
     }
 

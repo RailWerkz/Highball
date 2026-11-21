@@ -2,7 +2,7 @@
 
     blender -b --factory-startup --python Tools/Blender/turnouts.py -- <Content folder> [preview folder] [--kit]
 
-Writes Models/Track/switch_kit_r.glb and switch_kit_l.glb (right and left hand) under the Content folder: the parts of a
+Writes Meshes/Track/switch_kit_r.glb and switch_kit_l.glb (right and left hand) under the Content folder: the parts of a
 switch that have a look of their own, which the game fits to each switch's routes, whatever curve and frog angle those
 come out at (World/NetworkMeshes.cs). The rails it sweeps along the routes itself. Each part says below how it's fitted:
 
@@ -501,13 +501,13 @@ lights_and_world()
 bpy.context.scene.cycles.samples = 16
 for hand, side in (("r", 1), ("l", -1)):
     parts = build_kit(side)
-    export(parts, os.path.join(CONTENT, "Models", "Track", f"switch_kit_{hand}.glb"))
+    export(parts, os.path.join(CONTENT, "Meshes", "Track", f"switch_kit_{hand}.glb"))
     for part in parts:
         bpy.data.objects.remove(part)
 
 for number in () if KIT_ONLY else SIZES:
     geometry, parts = build(number, 1)
-    thumbnail(geometry, os.path.join(CONTENT, "Models", "Track", f"turnout_{number}.png"))
+    thumbnail(geometry, os.path.join(CONTENT, "Meshes", "Track", f"turnout_{number}.png"))
     if number == 10 and PREVIEW:
         preview(geometry, parts, PREVIEW)
     for part in parts:

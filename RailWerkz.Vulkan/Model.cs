@@ -46,6 +46,9 @@ public sealed class Model : IDisposable
     /// The bones, for a model loaded skinned; null for a static one.
     public Skeleton? Skeleton { get; }
 
+    // The textures this took from the shared ones (LoadImage), given back on Dispose.
+    private IReadOnlyList<Texture2D> Loaded { get; init; } = [];
+
     private Model(Mesh mesh, List<SubMesh> subMeshes, List<Surface> surfaces, float3 min, float3 max, Frame placement, Skeleton? skeleton = null)
     {
         Placement = placement;
@@ -57,7 +60,7 @@ public sealed class Model : IDisposable
         Max = max;
     }
 
-    /// Loads Content/Models/relativePath. targetLength, if set, scales the model so its longest side is that many metres.
+    /// Loads Content/Meshes/relativePath. targetLength, if set, scales the model so its longest side is that many metres.
     /// preRotation (radians XYZ) turns the model before sizing, for files that aren't Y-up. nodeName picks one model
     /// out of a pack: only that node and its children are loaded (or several, comma-separated). skipNode leaves a node and
     /// its children out (or several, comma-separated). Either may end a name in * to match every node starting so
@@ -179,7 +182,7 @@ public sealed class Model : IDisposable
             (slashed.Contains("/LOD0/", StringComparison.OrdinalIgnoreCase) && File.Exists(Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(path)!)!, "LOD1", Path.GetFileName(path))));
         var levels = MeshOptimize.Process(path, $"{nodeName}|{skipNode}", vertices, indices, subMeshes, lods: !handLod);
 
-        var surfaces = LoadSurfaces(loader, perMaterial.Keys.DefaultIfEmpty().Max() + 1);
+        var surfaces = LoadSurfaces(loader, perMaterial.Keys, out var loaded);
 
         if (frame is { } f)
             preRotation = f.Rotation;
@@ -229,7 +232,7 @@ public sealed class Model : IDisposable
         if (targetLength > 0f || frame is not null)
             pivot = (pivot - placement.Origin) * placement.Scale;
 
-        return new Model(mesh, subMeshes, surfaces, min, max, placement) { Origin = pivot, Levels = levels };
+        return new Model(mesh, subMeshes, surfaces, min, max, placement) { Origin = pivot, Loaded = loaded, Levels = levels };
     }
 
     private static HashSet<string> SkipSet(string? skipNode) => NamePatterns(skipNode);
@@ -471,13 +474,13 @@ public sealed class Model : IDisposable
 
         skeleton.Placement = placementMatrix;
 
-        var surfaces = LoadSurfaces(loader, perMaterial.Keys.DefaultIfEmpty().Max() + 1);
+        var surfaces = LoadSurfaces(loader, perMaterial.Keys, out var loaded);
         Log.Info($"Model {relativePath} (skinned): {vertices.Count} vertices, {indices.Count / 3} triangles, {bones.Count} bones, {joints.Count} joints, {skeleton.Clips.Count} clips, size {max - min}");
 
         var mesh = Mesh.Create<SkinnedVertex>(CollectionsMarshal.AsSpan(vertices), Mesh.SkinnedLayout, CollectionsMarshal.AsSpan(indices));
         mesh.BoundsMin = min;
         mesh.BoundsMax = max;
-        return new Model(mesh, subMeshes, surfaces, min, max, placement, skeleton);
+        return new Model(mesh, subMeshes, surfaces, min, max, placement, skeleton) { Loaded = loaded };
     }
 
     // The file's animations, for the bones this model kept.
@@ -557,23 +560,36 @@ public sealed class Model : IDisposable
     // Base colour, metalness and roughness (factors and maps) and alpha cutoff per material; textures are embedded images
     // decoded with stb. Blended materials are cut out too: nothing in the game sorts its triangles, and they're nearly all
     // leaves and grass.
-    private static List<Surface> LoadSurfaces(GltfLoader loader, int count)
+    // Only the materials used get their images (a truck loaded from a whole engine's file needs a few of its forty); the
+    // rest are left blank. loaded is each texture taken from the shared ones, to give back when the model goes.
+    private static List<Surface> LoadSurfaces(GltfLoader loader, ICollection<int> used, out List<Texture2D> loaded)
     {
         var gltf = loader.GltfJson;
+        var count = used.DefaultIfEmpty().Max() + 1;
         var surfaces = new List<Surface>(count);
         var images = new Dictionary<(int Source, bool Srgb), Texture2D?>();
+        var taken = loaded = [];
 
         Texture2D? Image(int textureIndex, bool srgb)
         {
             if (gltf.Textures?[textureIndex].Source is not { } source)
                 return null;
             if (!images.TryGetValue((source, srgb), out var texture))
+            {
                 images[(source, srgb)] = texture = LoadImage(loader, source, srgb);
+                if (texture is not null)
+                    taken.Add(texture);
+            }
             return texture;
         }
 
         for (var m = 0; m < count; m++)
         {
+            if (!used.Contains(m))
+            {
+                surfaces.Add(new Surface(new float4(1f), null, 0f));
+                continue;
+            }
             var material = gltf.Materials is { } materials && m < materials.Length ? materials[m] : null;
             var pbr = material?.PbrMetallicRoughness;
             float4 factor = pbr?.BaseColorFactor ?? new float4(1f);
@@ -592,6 +608,34 @@ public sealed class Model : IDisposable
         return surfaces;
     }
 
+    // Every texture loaded, by its image's bytes and colour space, with how many models use it: a vehicle's body, trucks
+    // and LODs are loaded as several models from files carrying the same images, and each its own copy ran the GPU out of
+    // memory (some 700 MB a time for an AC4400CW). Taken back with Release when the last user goes.
+    private static readonly Dictionary<(string Hash, bool Srgb), (Texture2D Texture, int Users)> Shared = [];
+    private static readonly Dictionary<Texture2D, (string Hash, bool Srgb)> SharedKeys = [];
+    private static readonly Lock SharedLock = new();
+
+    private static void Release(Texture2D texture)
+    {
+        lock (SharedLock)
+        {
+            if (!SharedKeys.TryGetValue(texture, out var key))
+            {
+                texture.Dispose();
+                return;
+            }
+            var (_, users) = Shared[key];
+            if (users > 1)
+            {
+                Shared[key] = (texture, users - 1);
+                return;
+            }
+            Shared.Remove(key);
+            SharedKeys.Remove(texture);
+        }
+        texture.Dispose();
+    }
+
     private static Texture2D? LoadImage(GltfLoader loader, int imageIndex, bool srgb)
     {
         try
@@ -599,8 +643,31 @@ public sealed class Model : IDisposable
             if (loader.GltfJson.Images![imageIndex].BufferView is not { } view)
                 return null;
 
-            using var image = Stb.LoadFromMemory(loader.GetBufferView(view), 4);
-            return Texture2D.FromPixels(image.Width, image.Height, MemoryMarshal.AsBytes(image.AsSpan<byte4>()), true, true, srgb: srgb, name: $"gltf.image{imageIndex}");
+            var bytes = loader.GetBufferView(view);
+            var key = (Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)), srgb);
+            lock (SharedLock)
+            {
+                if (Shared.TryGetValue(key, out var found))
+                {
+                    Shared[key] = (found.Texture, found.Users + 1);
+                    return found.Texture;
+                }
+            }
+
+            using var image = Stb.LoadFromMemory(bytes, 4);
+            var texture = Texture2D.FromPixels(image.Width, image.Height, MemoryMarshal.AsBytes(image.AsSpan<byte4>()), true, true, srgb: srgb, name: $"gltf.image{imageIndex}");
+            lock (SharedLock)
+            {
+                if (Shared.TryGetValue(key, out var raced))  // loaded meanwhile on another thread: keep that one
+                {
+                    Shared[key] = (raced.Texture, raced.Users + 1);
+                    texture.Dispose();
+                    return raced.Texture;
+                }
+                Shared[key] = (texture, 1);
+                SharedKeys[texture] = key;
+            }
+            return texture;
         }
         catch (Exception e)
         {
@@ -719,7 +786,7 @@ public sealed class Model : IDisposable
     public void Dispose()
     {
         Mesh.Dispose();
-        foreach (var texture in Surfaces.SelectMany(s => new[] { s.Texture, s.MetallicRoughness, s.Normal, s.Occlusion }).OfType<Texture2D>().Distinct())
-            texture.Dispose();
+        foreach (var texture in Loaded)
+            Release(texture);
     }
 }

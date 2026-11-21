@@ -1,0 +1,31 @@
+{
+  // One vehicle for the consist editor and the simulation. SI units, named in each key. Sizes are this model's (from
+  // assembly.json, written by Tools/Blender/open_hopper.py); masses are typical of a 286k open hopper.
+  "id": "open_hopper_witx",
+  // It was first brought in as a covered hopper: consists saved with that pick this one up.
+  "replaces": [ "covered_hopper_witx" ],
+  "name": "Four-bay open hopper (WITX)",
+  "kind": "OpenHopper",
+  "type": "Four-bay open hopper, 100-ton trucks",
+  // Knuckle nose to knuckle nose: about 62 ft 5 in. The source gives no size; it's scaled so its truck centres are 45 ft,
+  // which brings its body out at about 58 ft over the end sills, 10 ft 2 in wide and 15 ft 5 in above the rail, as a
+  // typical North American open hopper is. Its couplers stand where the source's did, the A end's pulled in 0.16 m
+  // so the shared coupler's shank reaches the end sill.
+  "lengthM": 19.02,
+  // 45 ft.
+  "truckCentresM": 13.716,
+  // Front (A end) knuckle nose to front truck centre; 2.626 m at the B end (the hand brake end).
+  "frontOverhangM": 2.677,
+  "axles": 4,
+  // The model's tread, once scaled: 36 in.
+  "wheelDiameterM": 0.9243,
+  // About 63,000 lb empty and 286,000 lb loaded (286k gross rail load). The lettering on the car says less (light weight
+  // 51,847 lb, load limit 110,658 lb: 162,505 lb all told, about right for a car meant for carbon black, which fills it
+  // long before it reaches 286,000 lb); these are the usual figures for a open hopper on 100-ton trucks.
+  "massEmptyKg": 28600,
+  "massLoadedKg": 129700,
+  "maxSpeedKmh": 113,
+  "liveries": [
+    { "id": "witx", "name": "WITX", "model": "RollingStock/OpenHopper/WITX/LOD0/open_hopper_witx.glb" }
+  ]
+}

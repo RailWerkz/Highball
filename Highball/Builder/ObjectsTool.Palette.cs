@@ -14,7 +14,7 @@ internal sealed partial class ObjectsTool
     {
         PlaceMode.Track or PlaceMode.Diamond or PlaceMode.GradeCrossing => PlaceGroup.Assemblies,
         PlaceMode.Bridge or PlaceMode.RemoveBridge or PlaceMode.EditBridge => PlaceGroup.Structures,
-        PlaceMode.Signal or PlaceMode.HandThrow => PlaceGroup.Signals,
+        PlaceMode.Signal or PlaceMode.SignalBridge or PlaceMode.HandThrow => PlaceGroup.Signals,
         _ => PlaceGroup.Lineside,
     };
 
@@ -65,6 +65,8 @@ internal sealed partial class ObjectsTool
                 Kit.BeginCard("Place");
                 if (PaletteRow(ToolIcon.Signal, "Signal", _place.Mode == PlaceMode.Signal, source.Objects.Count(o => o.Kind == PlacedKind.Signal)))
                     (_place.Mode, _switchRefused) = (PlaceMode.Signal, null);
+                if (PaletteRow(ToolIcon.Signal, "Signal bridge", _place.Mode == PlaceMode.SignalBridge, source.Objects.Count(o => o.Kind == PlacedKind.SignalBridge)))
+                    (_place.Mode, _switchRefused) = (PlaceMode.SignalBridge, null);
                 Kit.EndCard();
                 break;
             default:
