@@ -56,3 +56,10 @@ Content/Meshes/**/*.cdp
 
 # Logs of the cell routes test runs (Tools/Cells/edit_test.sh)
 Logs/
+
+# Big binary art (textures, models): too big for git, kept on each machine and backed up elsewhere
+Content/Materials/**/*.jpg
+Content/Materials/**/*.png
+Content/Meshes/**/*.glb
+Content/Meshes/**/*.jpg
+Content/Meshes/**/*.png
