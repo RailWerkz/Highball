@@ -137,7 +137,19 @@ internal static partial class CellStore
                 gone.Add(p);
         string? spill = null;
         if (wThings.FirstOrDefault(t => !t.InDirty && !things.ContainsKey(t.Item) && Refers(t.Item, madeSet.Contains)) is { Item: { } stray })
-            spill = $"a {stray.GetType().Name} outside the dirty cells changed (at {cW.Place(stray)})";
+        {
+            NetworkLine? named = null;
+            Refers(stray, l =>
+            {
+                if (!madeSet.Contains(l))
+                    return false;
+                named = l;
+                return true;
+            });
+            spill = $"a {stray.GetType().Name} outside the dirty cells changed (at {cW.Place(stray)}, of line {named?.Name} " +
+                    $"({(named is null ? "" : named.Rail ? "rail" : named.Mark ? "mark" : "road")}, {named?.Count} points from {named?.X[0]:0}, {named?.Z[0]:0}, " +
+                    $"{(named is not null && NetworkLines.TouchesDirty(named, local) ? "in the dirty cells" : "outside them")}, made for {(named is null ? "" : first.GetValueOrDefault(named).Why)}))";
+        }
         foreach (var w in made)
             if (!NetworkLines.TouchesDirty(w, local))
             {

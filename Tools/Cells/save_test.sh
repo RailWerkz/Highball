@@ -17,8 +17,11 @@ rm -rf "$keep"; mkdir -p "$keep"
 find "$route" -maxdepth 1 -type f -exec cp -p {} "$keep/" \;
 for d in Network Cells; do if [ -d "$route/$d" ]; then cp -rp "$route/$d" "$keep/$d"; fi; done
 
+# (Two edits, each saved: the first save after an open from cells written at an open may write them all, see CellStore.Write;
+# the second writes the cells it changed. Then opened again, checked.)
 # shellcheck disable=SC2086
-HB_LOGFILE="$root/Logs/$name.log" "$exe" --route World --view --lay ${lay[*]} --save --quit 240 > /dev/null 2>&1 || true
+HB_LOGFILE="$root/Logs/$name.log" "$exe" --route World --view --lay ${lay[*]} --save --quit 200 > /dev/null 2>&1 || true
+HB_LOGFILE="$root/Logs/$name-second.log" "$exe" --route World --view --lay ${second:-42.38085 -83.4555 42.3800 -83.4545} --save --quit 200 > /dev/null 2>&1 || true
 HB_CELLCHECK=1 HB_LOGFILE="$root/Logs/$name-reopen.log" "$exe" --route World --view --quit 200 > /dev/null 2>&1 || true
 
 for f in "$keep"/*; do if [ -f "$f" ]; then cp -p "$f" "$route/"; fi; done
@@ -26,5 +29,7 @@ for d in Network Cells; do rm -rf "$route/$d"; if [ -d "$keep/$d" ]; then cp -rp
 for f in "$route"/*; do if [ -f "$f" ] && [ ! -e "$keep/$(basename "$f")" ]; then rm -f "$f"; fi; done
 
 grep -E "Track rebuild|Cells merged|Cells: |Cell check|Local check|XX" "$root/Logs/$name.log" | cut -c1-600 || true
+echo "--- second edit"
+grep -E "Track rebuild|Cells merged|Cells: |XX" "$root/Logs/$name-second.log" | cut -c1-600 || true
 echo "--- reopened"
 grep -E "Terrain open, ms|Cells: |Cell check|XX" "$root/Logs/$name-reopen.log" | cut -c1-600 || true

@@ -134,6 +134,9 @@ public sealed partial class TerrainSource
             laid.FinishProfiles();
             Stage("profiles");
             laid.FindLayouts(network.Nodes);
+            // (The bridges found now, not when the meshes are first built: they're kept in the cells with the rest, so an open from
+            // them doesn't find them again, and an edit's save writes only its cells.)
+            laid.Bridges ??= BridgePlanner.Find(laid);
             TrackLayouts.SaveMarkers(route, laid.Layouts);
             Stage("layouts");
             return laid;

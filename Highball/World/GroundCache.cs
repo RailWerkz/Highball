@@ -392,18 +392,27 @@ public sealed partial class NetworkLines
         var size = (samples - 1) * (double)_spacing;
         var (x0, z0) = (tile.I * size - margin, -(tile.J + 1) * size - margin);
         var (x1, z1) = (x0 + size + 2 * margin, z0 + size + 2 * margin);
+        // (Taken in no order: the cells give the shapes back in their own, CellStore.OrdinalOf.)
+        var shapes = new List<ulong>();
         foreach (var shape in EndShapes)
         {
             var b = shape.Bounds;
             if (b.X1 < x0 || b.X0 > x1 || b.Z1 < z0 || b.Z0 > z1)
                 continue;
-            hash.Add(ShapingHash(shape.Line));
-            AddEnd(ref hash, shape.End);
+            var one = new WordHash();
+            one.Add(ShapingHash(shape.Line));
+            AddEnd(ref one, shape.End);
             foreach (var v in (ReadOnlySpan<double>)[shape.Ex, shape.Ez, shape.Fx, shape.Fz, b.X0, b.Z0, b.X1, b.Z1])
-                hash.Add(v, GroundCache.PlaceStep);
+                one.Add(v, GroundCache.PlaceStep);
             foreach (var v in (ReadOnlySpan<float>)[shape.DeckHalf, shape.DeckY, shape.SeatY, shape.ToeLeft, shape.ToeRight, shape.Reach])
-                hash.Add(v, GroundCache.HeightStep);
+                one.Add(v, GroundCache.HeightStep);
+            shapes.Add(one.Value);
         }
+
+        shapes.Sort();
+        hash.Add(shapes.Count);
+        foreach (var h in shapes)
+            hash.Add(h);
 
         // (Pads by where they reach too, with the roads running on from them.)
         hash.Add(PadsHash(x0, z0, x1, z1));

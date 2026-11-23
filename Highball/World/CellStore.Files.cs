@@ -258,6 +258,14 @@ internal static partial class CellStore
 
             Scratch.Pieces.Clear();
             Scratch.Heads.Clear();
+            // (A field that was left out when the cells kept were written, or held there and is left out now, is in cells not written:
+            // they're all written. Bridges, found when the meshes are first built, are one.)
+            if (old is not null && metas.Zip(old.Spread).Any(m => m.First.Present != m.Second.Present || m.First.Name != m.Second.Name))
+            {
+                Log.Info("Cells: a field's come or gone since the cells kept were written, writing them all");
+                return Write(route, stamp, lines, current, null);
+            }
+
             var distributed = watch.ElapsedMilliseconds;
             (int, int)? External(object o) => registry.TryGetValue(o, out var at) ? at : null;
 
