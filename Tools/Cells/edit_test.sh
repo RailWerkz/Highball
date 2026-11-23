@@ -17,16 +17,16 @@ dotnet build "$root/Highball" -c Release 2>&1 | grep -E " error |Build succeeded
 
 rm -rf "$keep"; mkdir -p "$keep"
 find "$route" -maxdepth 1 -type f -exec cp -p {} "$keep/" \;
-for d in Network Cells; do [ -d "$route/$d" ] && cp -rp "$route/$d" "$keep/$d"; done
+for d in Network Cells; do if [ -d "$route/$d" ]; then cp -rp "$route/$d" "$keep/$d"; fi; done
 
 # shellcheck disable=SC2086
 HB_LOGFILE="$root/Logs/$name.log" "$root/Highball/bin/Release/net10.0/Highball.exe" --route World --view --lay ${lay[*]} --quit 200 > /dev/null 2>&1 || true
 
-for f in "$keep"/*; do [ -f "$f" ] && cp -p "$f" "$route/"; done
+for f in "$keep"/*; do if [ -f "$f" ]; then cp -p "$f" "$route/"; fi; done
 # (The folders saves write into put back whole: what the run added to them taken out too.)
-for d in Network Cells; do [ -d "$keep/$d" ] && rm -rf "$route/$d" && cp -rp "$keep/$d" "$route/$d"; done
-for f in "$keep"/*; do [ -f "$f" ] && { cmp -s "$f" "$route/$(basename "$f")" || echo "NOT RESTORED: $f"; }; done
+for d in Network Cells; do if [ -d "$keep/$d" ]; then rm -rf "$route/$d"; cp -rp "$keep/$d" "$route/$d"; fi; done
+for f in "$keep"/*; do if [ -f "$f" ] && ! cmp -s "$f" "$route/$(basename "$f")"; then echo "NOT RESTORED: $f"; fi; done
 # (Files the run made that weren't there before are taken out again.)
-for f in "$route"/*; do [ -f "$f" ] && [ ! -e "$keep/$(basename "$f")" ] && rm -f "$f"; done
+for f in "$route"/*; do if [ -f "$f" ] && [ ! -e "$keep/$(basename "$f")" ]; then rm -f "$f"; fi; done
 
 grep -E "Terrain open, ms|Track rebuild|XX|Local check|Cells" "$root/Logs/$name.log" | cut -c1-600 || true
