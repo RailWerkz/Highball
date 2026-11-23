@@ -7,7 +7,17 @@ namespace Highball.World;
 /// What an edit to the network changed, worked out off the main thread: the new lines, the heights of every tile
 /// whose reshaping changed (reshaped again from the ground as built, with the hand edits on top), and the areas
 /// (world metres: min x, min z, max x, max z) whose line meshes need building again.
-public sealed record NetworkChange(NetworkLines Lines, IReadOnlyDictionary<TileId, float[]> Heights, IReadOnlyList<(double X0, double Z0, double X1, double Z1)> Areas);
+public sealed record NetworkChange(NetworkLines Lines, IReadOnlyDictionary<TileId, float[]> Heights, IReadOnlyList<(double X0, double Z0, double X1, double Z1)> Areas)
+{
+    /// A rebuild of some cells (CellStore.Merge): the lines laid differently or new (in Lines), the last lines gone, and lines moved from
+    /// one place to another; null after a rebuild in full. What taking the change in needs look at, and nothing else.
+    public IReadOnlyList<NetworkLine>? Made { get; init; }
+    public IReadOnlyList<NetworkLine>? Gone { get; init; }
+    public IReadOnlyList<(int From, int To)>? Moved { get; init; }
+
+    /// The cells whose content changed, for saving only those (null: all of them).
+    public IReadOnlySet<TileId>? Touched { get; init; }
+}
 
 public sealed partial class TerrainSource
 {
@@ -17,6 +27,30 @@ public sealed partial class TerrainSource
     /// Places the next rebuild lays the track and shapes the ground round again even though no way's changed there (a bridge's end
     /// set by hand, which shapes the ground under it).
     private readonly List<(double X, double Z)> _rebuildAround = [];
+
+    /// The ways by cell and node, for working out which an edit's rebuild is handed (made when first needed, kept up to date).
+    private WayIndex? _wayIndex;
+    private readonly Lock _wayLock = new();
+
+    /// The ways indexed by cell and node ahead of the first edit (off the main thread, from the network as opened).
+    internal void PrepareWays(List<NetworkWay> ways) => Task.Run(() =>
+    {
+        lock (_wayLock)
+            if (_wayIndex is null && _route.Projection is { } projection && _route.Grid is { } grid)
+            {
+                var index = new WayIndex(projection, grid.TileSize);
+                index.Update(ways);
+                _wayIndex = index;
+            }
+    });
+
+    /// HB_NOCELLREBUILD=1: a local rebuild hands the passes the whole route, as before stage 2 (for comparing).
+    private static readonly bool WholeRoute = Environment.GetEnvironmentVariable("HB_NOCELLREBUILD") == "1";
+
+    private static readonly Lock MarkersLock = new();
+
+    /// The most cells a rebuild of some cells lays again: past it the whole route's handed to the passes (it costs no more).
+    private const int MostCells = 40;
 
     public void RebuildAround(double x, double z)
     {
@@ -55,17 +89,36 @@ public sealed partial class TerrainSource
 
             if (solveAgain)
                 NetworkLines.ForgetSolved(_route);
+            WayIndex index;
+            int reindexed;
+            lock (_wayLock)
+            {
+                index = _wayIndex ??= new WayIndex(_route.Projection!, _route.Grid!.TileSize);
+                reindexed = index.Update(ways);
+            }
+
+            Stage($"ways ({reindexed} indexed again)");
 
             // Laid again near the edit only, if it was to track alone (LocalRebuild); otherwise in full.
             var local = solveAgain ? null : LocalFor(previous, ways, crossings, around);
+            // (Too many cells to be worth it: the whole route handed to the passes, as before stage 2.)
+            if (local?.Dirty is { Count: > MostCells } many)
+            {
+                RailWerkz.Core.Logging.Log.Info($"Local rebuild path: whole route ({many.Count} dirty cells, more than {MostCells})");
+                local = local with { Dirty = null, Context = null, Seen = previous.Lines };
+            }
+
+            Stage(local?.Dirty is { } d0 ? $"window ({d0.Count} cells laid again, {local.Context!.Count} held round them)" : "window");
             NetworkLines Lay(LocalRebuild? near, Action<string> stage)
             {
-                var laid = NetworkLines.Build(ways, _route, built, shapes, near);
+                // (Only the ways through the cells, if it's a rebuild of some: WayIndex.Handed.)
+                var handed = near?.Context is { } cells ? index.Handed(cells).Select(id => index.Way(id)!).ToList() : ways;
+                var laid = NetworkLines.Build(handed, _route, built, shapes, near);
                 laid.BridgeEdits = bridgeEdits;
                 stage("build");
                 laid.SetCrossings(crossings, _route.Projection!);
                 // (Only built tiles have ground to sample: a line running off the built area keeps its points there unsampled, as on open.)
-                var sampled = laid.AdoptGround(previous).Where(built.Contains).ToList();
+                var sampled = laid.AdoptGround(near?.Seen ?? previous.Lines).Where(built.Contains).ToList();
                 Parallel.ForEach(sampled, id =>
                 {
                     var data = _route.LoadTile(id);
@@ -76,7 +129,7 @@ public sealed partial class TerrainSource
                 laid.FinishProfiles();
                 var held = near is null ? 0 : laid.HoldFarRail(near);
                 stage(near is null ? "profiles" : $"profiles ({held} rail points far from the edit held as they were)");
-                laid.AdoptDrapes(previous);
+                laid.AdoptDrapes(near?.Seen ?? previous.Lines);
                 laid.FindLayouts(tagged);
                 stage("layouts");
                 laid.Bridges = BridgePlanner.Find(laid, near?.Previous);
@@ -86,24 +139,74 @@ public sealed partial class TerrainSource
                     RailWerkz.Core.Logging.Log.Info($"Local rebuild: {touched} kept lines were changed by a pass and put back");
                 if (near is not null && laid.KeepFarPads(near) is var pads and > 0)
                     RailWerkz.Core.Logging.Log.Info($"Local rebuild: {pads} crossings' pads far from the edit kept as they were");
+                if (near?.Dirty is not null)
+                    RailWerkz.Core.Logging.Log.Info($"Local rebuild: {laid.HoldAtBorder(near)} lines laid again held as they were outside the dirty cells");
                 if (near is not null)
                     RailWerkz.Core.Logging.Log.Info($"Local rebuild: rail heights at junctions agree to {laid.WorstRailStep():0.000} m (the last lines {previous.WorstRailStep():0.000} m)");
                 return laid;
             }
 
             var lines = Lay(local, Stage);
-            TrackLayouts.SaveMarkers(_route, lines.Layouts);
-            Stage(local is null ? "markers (in full)" : $"markers (near the edit: {local.Near.Count} roads and marks laid again, {local.Halo.Count} round them)");
+            CellStore.Merged? merged = null;
+            if (local?.Dirty is not null)
+            {
+                // The window's lines put in the route's (CellStore.Merge). A line laid differently outside the dirty cells means they
+                // weren't enough: they're grown to take it in, once, and laid again; then in full.
+                merged = CellStore.Merge(previous, lines, local, ways.ToDictionary(w => w.Id));
+                Stage("merged");
+                // (An edit that changes something outside its cells: one ring more, once, if that's few enough; else the whole route.)
+                if (merged.Spill is { } spill)
+                {
+                    var grown = local with { Dirty = Grown(local.Dirty!, 1), Context = Grown(local.Dirty!, 2), Seen = Over(previous, Grown(local.Dirty!, 2)) };
+                    if (grown.Dirty!.Count <= MostCells)
+                    {
+                        RailWerkz.Core.Logging.Log.Info($"Local rebuild path: cells grown by a ring ({spill}; {local.Dirty!.Count} cells grown to {grown.Dirty.Count})");
+                        local = grown;
+                        lines = Lay(local, Stage);
+                        merged = CellStore.Merge(previous, lines, local, ways.ToDictionary(w => w.Id));
+                        Stage("merged");
+                    }
+
+                    if (merged.Spill is { } again)
+                    {
+                        RailWerkz.Core.Logging.Log.Info($"Local rebuild path: whole route ({again})");
+                        local = local with { Dirty = null, Context = null, Seen = previous.Lines };
+                        merged = null;
+                        lines = Lay(local, Stage);
+                    }
+                }
+                else
+                    RailWerkz.Core.Logging.Log.Info($"Local rebuild path: cells ({local.Dirty!.Count})");
+
+                if (merged is not null)
+                {
+                    merged.Lines.BridgeEdits = bridgeEdits;
+                    lines = merged.Lines;
+                }
+            }
+
+            // (The markers file, the junctions' list for the Planner, written off the rebuild's path.)
+            var layouts = lines.Layouts;
+            _ = Task.Run(() =>
+            {
+                lock (MarkersLock)
+                    TrackLayouts.SaveMarkers(_route, layouts);
+            });
             if (local is not null && Environment.GetEnvironmentVariable("HB_LOCALCHECK") == "1")
             {
                 var full = Lay(null, _ => { });
-                RailWerkz.Core.Logging.Log.Info($"Local check: laid in full, rail heights at junctions agree to {full.WorstRailStep():0.000} m");
-                CheckLocal(lines, full);
+                RailWerkz.Core.Logging.Log.Info($"Local check: laid in full, rail heights at junctions agree to {full.WorstRailStep():0.000} m (the local's {lines.WorstRailStep():0.000} m)");
+                if (merged is not null)
+                    CheckCells(previous, merged, full, local);
+                else
+                    CheckLocal(lines, full);
+                Stage("(the check)");
             }
 
             var old = new Dictionary<long, NetworkLine>();
-            foreach (var line in previous.Lines)
-                old.TryAdd(line.Key, line);
+            if (merged is null)
+                foreach (var line in previous.Lines)
+                    old.TryAdd(line.Key, line);
 
             // Where the ground's to be shaped again (world metres, min x, min z, max x, max z): round the stretches of line that
             // came out different, ReshapeReach either side, not the whole of every line that did (a long line that moved at one
@@ -113,24 +216,37 @@ public sealed partial class TerrainSource
             var areas = new List<(double, double, double, double)>();
             var gone = new List<NetworkLine>();
             var made = new List<NetworkLine>();
-            foreach (var line in lines.Lines)
+            if (merged is not null)
             {
-                if (old.TryGetValue(line.Key, out var same) && SameProfile(same, line))
+                // (What came out different is known: the merge's.)
+                made.AddRange(merged.Made);
+                gone.AddRange(merged.Gone);
+                foreach (var line in made.Concat(gone))
+                    areas.Add((line.MinX, line.MinZ, line.MaxX, line.MaxZ));
+                foreach (var (_, to) in merged.Moved)
+                    areas.Add((lines.Lines[to].MinX, lines.Lines[to].MinZ, lines.Lines[to].MaxX, lines.Lines[to].MaxZ));
+            }
+            else
+            {
+                foreach (var line in lines.Lines)
                 {
-                    kept.Add(line.Key);
-                    continue;
+                    if (old.TryGetValue(line.Key, out var same) && SameProfile(same, line))
+                    {
+                        kept.Add(line.Key);
+                        continue;
+                    }
+
+                    areas.Add((line.MinX, line.MinZ, line.MaxX, line.MaxZ));
+                    made.Add(line);
                 }
 
-                areas.Add((line.MinX, line.MinZ, line.MaxX, line.MaxZ));
-                made.Add(line);
-            }
-
-            foreach (var line in previous.Lines)
-            {
-                if (kept.Contains(line.Key))
-                    continue;
-                areas.Add((line.MinX, line.MinZ, line.MaxX, line.MaxZ));
-                gone.Add(line);
+                foreach (var line in previous.Lines)
+                {
+                    if (kept.Contains(line.Key))
+                        continue;
+                    areas.Add((line.MinX, line.MinZ, line.MaxX, line.MaxZ));
+                    gone.Add(line);
+                }
             }
 
             // (Matched by where they lie, not by key: a line split where track's laid off it, or joined, is new lines over the
@@ -224,7 +340,7 @@ public sealed partial class TerrainSource
             Stage($"reshape ({inWindows} tiles round what changed, {whole} whole; {reshape.Count} stretches changed, {made.Count} lines laid differently, {gone.Count} gone)");
             RailWerkz.Core.Logging.Log.Info($"Track rebuild, ms: {string.Join(", ", stages)}");
 
-            return new NetworkChange(lines, heights, areas);
+            return new NetworkChange(lines, heights, areas) { Made = merged?.Made, Gone = merged?.Gone, Moved = merged?.Moved, Touched = merged?.Touched };
         });
     }
 
@@ -385,21 +501,87 @@ public sealed partial class TerrainSource
                 }
             }
 
-        var near = previous.ChainsNear(places, LocalReach);
+        // The cells (tiles) the edit's in, as it was and as it is.
+        var size = _route.Grid!.TileSize;
+        TileId Cell(double x, double z) => new((int)Math.Floor(x / size), (int)Math.Floor(-z / size));
+        var seed = places.Select(p => Cell(p.X, p.Z)).ToHashSet();
+        var candidates = Over(previous, Grown(seed, 2));
+
+        var near = previous.ChainsNear(places, LocalReach, candidates);
         // The halo, HaloRings deep (each ring the chains meeting the last).
         var halo = new HashSet<long>();
         var reached = new HashSet<long>(near);
         for (var ring = 0; ring < HaloRings; ring++)
         {
-            var next = previous.ChainsMeeting(reached);
+            var next = previous.ChainsMeeting(reached, candidates);
             if (next.Count == 0)
                 break;
             halo.UnionWith(next);
             reached.UnionWith(next);
         }
 
-        return new LocalRebuild(previous, near, halo, places);
+        if (WholeRoute)
+            return new LocalRebuild(previous, near, halo, places);
+
+        // What the edit will lay differently, all of it: the lines of the chains through the ways it changed (a line split by a new
+        // switch is new lines its whole length), and rail near it (its heights eased out over RailOuter, and its far junctions with
+        // it). Their cells are dirty, and one ring round them (docs/cell-routes.md, Edits), and one more is held round those.
+        var changedNodes = changed.SelectMany(w => w.Nodes).ToHashSet();
+        var edit = NetworkLines.EditCells(places);
+        var dirty = new HashSet<TileId>(seed);
+        foreach (var line in candidates)
+        {
+            if (!line.Nodes.Any(n => changedNodes.Contains(n.Node)) && !(line.Rail && Enumerable.Range(0, line.Count).Any(q => NetworkLines.NearEdit(edit, line.X[q], line.Z[q]))))
+                continue;
+            foreach (var whole in previous.LinesOfChain(line.Chain))
+                for (var q = 0; q < whole.Count; q++)
+                    dirty.Add(Cell(whole.X[q], whole.Z[q]));
+        }
+
+        dirty = Grown(dirty, 1);
+        var context = Grown(dirty, 1);
+        return new LocalRebuild(previous, near, halo, places) { Dirty = dirty, Context = context, Size = size, Seen = Over(previous, context) };
     }
+
+    /// A local rebuild's cells grown to take in all of these lines (laid differently, and reaching out of them), with the ring round.
+    private static LocalRebuild GrownFor(LocalRebuild local, IEnumerable<NetworkLine> lines)
+    {
+        var dirty = new HashSet<TileId>(local.Dirty!);
+        foreach (var line in lines)
+            for (var q = 0; q < line.Count; q++)
+                if (!local.InDirty(line.X[q], line.Z[q]))
+                    dirty.Add(local.CellOf(line.X[q], line.Z[q]));
+        dirty = Grown(dirty, 1);
+        var context = Grown(dirty, 1);
+        return local with { Dirty = dirty, Context = context, Seen = Over(local.Previous, context) };
+    }
+
+    /// These cells and the rings round them.
+    private static HashSet<TileId> Grown(HashSet<TileId> cells, int rings)
+    {
+        var grown = new HashSet<TileId>(cells);
+        foreach (var c in cells)
+            for (var dj = -rings; dj <= rings; dj++)
+                for (var di = -rings; di <= rings; di++)
+                    grown.Add(new TileId(c.I + di, c.J + dj));
+        return grown;
+    }
+
+    /// The lines over (reaching into) any of these cells.
+    private static List<NetworkLine> Over(NetworkLines lines, IEnumerable<TileId> cells)
+    {
+        var picked = new HashSet<int>();
+        var over = new List<NetworkLine>();
+        foreach (var cell in cells)
+            foreach (var i in lines.LinesIn(cell))
+                if (picked.Add(i))
+                    over.Add(lines.Lines[i]);
+        return over;
+    }
+
+    /// HB_LOCALCHECK=1, a rebuild of some cells: its lines and things against the same laid in full, cell by cell (CellStore.CheckMerge).
+    private static void CheckCells(NetworkLines previous, CellStore.Merged merged, NetworkLines full, LocalRebuild local) =>
+        CellStore.CheckMerge(previous, merged, full, local);
 
     /// HB_LOCALCHECK=1: a local rebuild's lines against the same laid in full, line by line, logged.
     private static void CheckLocal(NetworkLines local, NetworkLines full)
@@ -465,8 +647,11 @@ public sealed partial class TerrainSource
     }
 
     /// The pads in either list that the other hasn't the same of.
-    private static IEnumerable<CrossingPad> PadsChanged(IReadOnlyList<CrossingPad> before, IReadOnlyList<CrossingPad> after) =>
-        before.Where(p => !after.Contains(p)).Concat(after.Where(p => !before.Contains(p)));
+    private static IEnumerable<CrossingPad> PadsChanged(IReadOnlyList<CrossingPad> before, IReadOnlyList<CrossingPad> after)
+    {
+        var (was, now) = (before.ToHashSet(), after.ToHashSet());
+        return before.Where(p => !now.Contains(p)).Concat(after.Where(p => !was.Contains(p)));
+    }
 
     private static bool SameProfile(NetworkLine a, NetworkLine b)
     {
@@ -492,6 +677,16 @@ public sealed partial class TerrainSource
     public List<(int X0, int Z0, int X1, int Z1)> Apply(NetworkChange change)
     {
         Lines = change.Lines;
+        foreach (var (_, to) in change.Moved ?? [])
+            change.Lines.Lines[to].MoveTo(to);
+        lock (_unsavedLock)
+        {
+            if (change.Touched is null)
+                _unsavedCells = null;
+            else
+                _unsavedCells?.UnionWith(change.Touched);
+        }
+
         var rects = new List<(int, int, int, int)>();
         foreach (var (id, heights) in change.Heights)
         {

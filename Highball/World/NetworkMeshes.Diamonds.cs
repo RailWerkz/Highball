@@ -330,12 +330,28 @@ public sealed partial class NetworkMeshes
     private sealed record CrossingDeck(List<DeckQuad> Quads, (double X, double Z, float Y, float3 Face)[] Masts, DeckRoad? Road = null, (int Line, float From, float To)? Gap = null,
         List<(int Line, float From, float To)>? Covered = null, CrossingMesh? Mesh = null);
 
+    /// The lines over the tiles within reach of a place (in the order of the set), rather than every line: what a deck looks along
+    /// (it was every line of the route, tens of milliseconds a deck).
+    private List<NetworkLine> NearLines(double x, double z, double reach)
+    {
+        var size = _source.Quads * (double)_source.Spacing;
+        var picked = new SortedSet<int>();
+        for (var j = (int)Math.Floor(-(z + reach) / size); j <= (int)Math.Floor(-(z - reach) / size); j++)
+            for (var i = (int)Math.Floor((x - reach) / size); i <= (int)Math.Floor((x + reach) / size); i++)
+                foreach (var l in _lines.LinesIn(new Routes.TileId(i, j)))
+                    picked.Add(l);
+        var lines = new List<NetworkLine>(picked.Count);
+        foreach (var l in picked)
+            lines.Add(_lines.Lines[l]);
+        return lines;
+    }
+
     /// The road running along a crossing here, if there is one: the nearest place on it to (x, z), and the way it runs there.
     private (NetworkLine Line, int Segment, float T, double X, double Z, double Dx, double Dz)? RoadAlong(double x, double z, double dx, double dz)
     {
         (NetworkLine, int, float, double, double, double, double)? found = null;
         var best = 12.0 * 12.0;
-        foreach (var road in _lines.Lines)
+        foreach (var road in NearLines(x, z, 12.0))
         {
             if (road.Rail || road.Mark || x < road.MinX - 12.0 || x > road.MaxX + 12.0 || z < road.MinZ - 12.0 || z > road.MaxZ + 12.0)
                 continue;
@@ -370,7 +386,7 @@ public sealed partial class NetworkMeshes
     private List<(NetworkLine Line, float S, float T)> TracksAcross(double x, double z, double dx, double dz)
     {
         var hits = new List<(NetworkLine Line, float S, float T)>();
-        foreach (var line in _lines.Lines)
+        foreach (var line in NearLines(x, z, CrossingSearch))
         {
             if (!line.Rail || line.Disused || x < line.MinX - CrossingSearch || x > line.MaxX + CrossingSearch || z < line.MinZ - CrossingSearch || z > line.MaxZ + CrossingSearch)
                 continue;
@@ -417,7 +433,7 @@ public sealed partial class NetworkMeshes
     private float RampEnd(double x, double z)
     {
         var (best, found) = (9.0 * 9.0, (float?)null);
-        foreach (var road in _lines.Lines)
+        foreach (var road in NearLines(x, z, 9.0))
         {
             if (road.Rail || x < road.MinX - 9.0 || x > road.MaxX + 9.0 || z < road.MinZ - 9.0 || z > road.MaxZ + 9.0)
                 continue;
@@ -564,7 +580,7 @@ public sealed partial class NetworkMeshes
         float ReachOut(float end, int way)
         {
             var best = end;
-            foreach (var l in _lines.Lines)
+            foreach (var l in NearLines(cx, cz, 200.0))
             {
                 if (l.Rail || l.Mark || l.Count < 2)
                     continue;
@@ -611,7 +627,7 @@ public sealed partial class NetworkMeshes
         float EndOffset(float end)
         {
             var (best, found) = (0.25f, 0f);
-            foreach (var l in _lines.Lines)
+            foreach (var l in NearLines(cx, cz, 200.0))
             {
                 if (l.Rail || l.Mark || l.Count < 2)
                     continue;

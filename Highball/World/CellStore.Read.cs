@@ -217,17 +217,18 @@ internal static partial class CellStore
             var root = (NetworkLines)RuntimeHelpers.GetUninitializedObject(typeof(NetworkLines));
             if (index.Spread.Length != SpreadFields.Length || index.Spread.Where((m, fi) => m.Name != SpreadFields[fi].Name).Any())
                 throw new InvalidDataException("the spread fields aren't this build's");
-            var made = new object?[SpreadFields.Length][];
+            var made = new Dictionary<int, object>[SpreadFields.Length];
             for (var fi = 0; fi < SpreadFields.Length; fi++)
-                made[fi] = Registered(SpreadFields[fi]) || RegisteredValues(SpreadFields[fi]) ? new object?[index.Spread[fi].Count] : [];
+                made[fi] = [];
             foreach (var f in files)
                 foreach (var (kind, ordinal, type) in f.Owned)
-                    made[kind - 2][ordinal] = RuntimeHelpers.GetUninitializedObject(type);
+                    if (!made[kind - 2].TryAdd(ordinal, RuntimeHelpers.GetUninitializedObject(type)))
+                        throw new InvalidDataException($"{SpreadFields[kind - 2].Name} {ordinal} in two cells");
             object Resolve(int kind, int i) => kind switch
             {
                 0 => root,
                 1 => lines[i],
-                _ => made[kind - 2][i] ?? throw new InvalidDataException($"{SpreadFields[kind - 2].Name} {i} isn't in the cells read"),
+                _ => made[kind - 2].GetValueOrDefault(i) ?? throw new InvalidDataException($"{SpreadFields[kind - 2].Name} {i} isn't in the cells read"),
             };
             Time("made");
 
@@ -265,7 +266,7 @@ internal static partial class CellStore
                         {
                             object? item;
                             if (r.ReadBoolean())
-                                g.ReadInto(item = made[fi][(int)ordinal]!);
+                                g.ReadInto(item = made[fi][(int)ordinal]);
                             else
                                 item = g.Read(itemType!);
                             file.Elements.Add(new Element(fi, ordinal, item, null, false));
@@ -275,7 +276,7 @@ internal static partial class CellStore
                             var key = g.Read(keyType);
                             object? value;
                             if (RegisteredValues(f) && r.ReadBoolean())
-                                g.ReadInto(value = made[fi][(int)ordinal]!);
+                                g.ReadInto(value = made[fi][(int)ordinal]);
                             else
                                 value = g.Read(valueType!);
                             file.Elements.Add(new Element(fi, ordinal, key, value, false));
@@ -310,17 +311,18 @@ internal static partial class CellStore
                 {
                     var outer = (IList)container;
                     var innerType = f.FieldType.GetGenericArguments()[0];
-                    var at = 0;
+                    var rounds = list.GroupBy(e => e.Ordinal >> RoundShift).ToDictionary(g => g.Key, g => g.ToList());
                     for (var o = 0; o < meta.Inner!.Length; o++)
                     {
                         var inner = (IDictionary)Activator.CreateInstance(innerType)!;
-                        for (var n = 0; n < meta.Inner[o]; n++, at++)
+                        var round = rounds.GetValueOrDefault(o) ?? [];
+                        if (round.Count != meta.Inner[o])
+                            throw new InvalidDataException($"{f.Name}[{o}]: {round.Count} read, {meta.Inner[o]} written");
+                        foreach (var e in round)
                         {
-                            if (list[at].Ordinal != (((long)o << 32) | (uint)n))
-                                throw new InvalidDataException($"{f.Name}: out of order");
-                            if (list[at].Value is null)
-                                throw new InvalidDataException($"{f.Name}[{o}][{n}]: no value for {list[at].Key} ({list.Count(e => e.Value is null)} of {list.Count} without)");
-                            inner.Add(list[at].Key!, list[at].Value);
+                            if (e.Value is null)
+                                throw new InvalidDataException($"{f.Name}[{o}]: no value for {e.Key}");
+                            inner.Add(e.Key!, e.Value);
                         }
 
                         outer.Add(inner);
@@ -328,9 +330,9 @@ internal static partial class CellStore
                 }
                 else
                 {
-                    for (var n = 0; n < list.Count; n++)
-                        if (list[n].Ordinal != n)
-                            throw new InvalidDataException($"{f.Name}: out of order");
+                    for (var n = 1; n < list.Count; n++)
+                        if (list[n].Ordinal == list[n - 1].Ordinal)
+                            throw new InvalidDataException($"{f.Name}: two at {list[n].Ordinal}");
                     switch (container)
                     {
                         case IDictionary dictionary:

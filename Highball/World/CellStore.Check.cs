@@ -19,8 +19,13 @@ internal static partial class CellStore
         c.Pair(read, fresh);
         var order = RootFields.Where(f => RuleOf(f).Place is Place.Lines or Place.Spread or Place.Route)
             .OrderBy(f => RuleOf(f).Place == Place.Lines ? 0 : Registered(f) ? 1 : 2).ThenBy(f => f.Name, StringComparer.Ordinal);
+        // (Spread lists are read back in the order of their elements' places, OrdinalOf, not the order they were made in; sets and
+        // dictionaries are compared by what's in them.)
+        object? Ordered(FieldInfo f, object? v) => RuleOf(f).Place == Place.Spread && !RuleOf(f).Nested && v is IList list && f.FieldType.IsGenericType
+            ? list.Cast<object>().OrderBy(o => OrdinalOf(o, Registered(f))).ToList()
+            : v;
         foreach (var f in order)
-            c.Same(f.GetValue(read), f.GetValue(fresh), f.Name);
+            c.Same(Ordered(f, f.GetValue(read)), Ordered(f, f.GetValue(fresh)), f.Name);
 
         var hashes = 0;
         var first = "";
@@ -184,31 +189,17 @@ internal static partial class CellStore
                         return;
                     }
 
-                    if (t.Name.StartsWith("ConcurrentDictionary", StringComparison.Ordinal))
+                    // (By key: a dictionary's order is what was added when (or its buckets'), and cells are read in their places' order.)
+                    foreach (DictionaryEntry e in x)
                     {
-                        // (Its order is its buckets', not what was added when: by key.)
-                        foreach (DictionaryEntry e in x)
+                        var key = Counterpart(e.Key)!;
+                        if (!y.Contains(key))
                         {
-                            var key = Counterpart(e.Key)!;
-                            if (!y.Contains(key))
-                            {
-                                Differ($"{e.Key} not worked out");
-                                continue;
-                            }
-
-                            Same(e.Value, y[key], $"[{e.Key}]");
+                            Differ($"{e.Key} not worked out");
+                            continue;
                         }
 
-                        return;
-                    }
-
-                    var (ex, ey) = (x.GetEnumerator(), y.GetEnumerator());
-                    var n = 0;
-                    while (ex.MoveNext() && ey.MoveNext())
-                    {
-                        Same(ex.Key, ey.Key, $"[{n}].key");
-                        Same(ex.Value, ey.Value, $"[{n}]");
-                        n++;
+                        Same(e.Value, y[key], $"[{e.Key}]");
                     }
 
                     return;
@@ -222,8 +213,11 @@ internal static partial class CellStore
                         return;
                     }
 
-                    for (var i = 0; i < lx.Count; i++)
-                        Same(lx[i], ly[i], $"[{i}]");
+                    var other = ((IEnumerable)b).Cast<object>().ToHashSet();
+                    foreach (var item in lx)
+                        if (!other.Contains(Counterpart(item)!))
+                            Differ($"{item} not worked out");
+                    Compared += lx.Count;
                     return;
                 }
             }

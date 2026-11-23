@@ -247,7 +247,6 @@ public sealed partial class NetworkLines
 
     internal ulong PreparedShapingKey(TileId tile, int samples) =>
         _preparedKeys is { } keys && keys.TryGetValue(tile, out var key) ? key : ShapingKey(tile, samples);
-    private ulong? _padsHash;
 
     /// Shapes a tile's ground as Conform does, or takes it as kept from the last time it was shaped from the same things
     /// (GroundCache). Returns whether it was taken as kept.
@@ -304,7 +303,7 @@ public sealed partial class NetworkLines
             foreach (var index in list)
                 foreach (var end in BridgeEndsOf(_lines[index]))
                     AddEnd(ref ends, end);
-            w.AppendLine($"T {tile.I} {tile.J} key={ShapingKey(tile, samples):x} ends={ends.Value:x} pads={PadsHash():x} lines={string.Join(",", list.Select(i => _lines[i].Key))}");
+            w.AppendLine($"T {tile.I} {tile.J} key={ShapingKey(tile, samples):x} ends={ends.Value:x} lines={string.Join(",", list.Select(i => _lines[i].Key))}");
         }
 
         File.WriteAllText(path, w.ToString());
@@ -393,21 +392,30 @@ public sealed partial class NetworkLines
         var size = (samples - 1) * (double)_spacing;
         var (x0, z0) = (tile.I * size - margin, -(tile.J + 1) * size - margin);
         var (x1, z1) = (x0 + size + 2 * margin, z0 + size + 2 * margin);
+        // (Taken in no order: the cells give the shapes back in their own, CellStore.OrdinalOf.)
+        var shapes = new List<ulong>();
         foreach (var shape in EndShapes)
         {
             var b = shape.Bounds;
             if (b.X1 < x0 || b.X0 > x1 || b.Z1 < z0 || b.Z0 > z1)
                 continue;
-            hash.Add(ShapingHash(shape.Line));
-            AddEnd(ref hash, shape.End);
+            var one = new WordHash();
+            one.Add(ShapingHash(shape.Line));
+            AddEnd(ref one, shape.End);
             foreach (var v in (ReadOnlySpan<double>)[shape.Ex, shape.Ez, shape.Fx, shape.Fz, b.X0, b.Z0, b.X1, b.Z1])
-                hash.Add(v, GroundCache.PlaceStep);
+                one.Add(v, GroundCache.PlaceStep);
             foreach (var v in (ReadOnlySpan<float>)[shape.DeckHalf, shape.DeckY, shape.SeatY, shape.ToeLeft, shape.ToeRight, shape.Reach])
-                hash.Add(v, GroundCache.HeightStep);
+                one.Add(v, GroundCache.HeightStep);
+            shapes.Add(one.Value);
         }
 
-        // (Pads are few: all of them, and the roads running on from them, in one hash.)
-        hash.Add(PadsHash());
+        shapes.Sort();
+        hash.Add(shapes.Count);
+        foreach (var h in shapes)
+            hash.Add(h);
+
+        // (Pads by where they reach too, with the roads running on from them.)
+        hash.Add(PadsHash(x0, z0, x1, z1));
         return hash.Value;
     }
 
@@ -442,17 +450,20 @@ public sealed partial class NetworkLines
                 h.Add(v, GroundCache.PlaceStep);
         }
 
-        return $"lines={lineHash.Value:x} ({list.Count}: {string.Join(",", list.Take(6).Select(i => _lines[i].Key))}) ends={ends.Value:x} walls={beside.Value:x} allshapes={shapes.Value:x}/{EndShapes.Count} pads={PadsHash():x}";
+        return $"lines={lineHash.Value:x} ({list.Count}: {string.Join(",", list.Take(6).Select(i => _lines[i].Key))}) ends={ends.Value:x} walls={beside.Value:x} allshapes={shapes.Value:x}/{EndShapes.Count}";
     }
 
-    private ulong PadsHash()
+    /// The pads that reach into this box (world metres) and the roads running on from them, in one hash: only those near a tile go
+    /// into its key, so a crossing changed in one place doesn't change every tile's.
+    private ulong PadsHash(double x0, double z0, double x1, double z1)
     {
-        if (_padsHash is { } found)
-            return found;
-        var hash = new WordHash();
-        hash.Add(_pads.Count);
-        foreach (var pad in _pads)
+        var size = _quads * (double)_spacing;
+        var near = _pads.Where(p => p.X + p.Half + 100.0 >= x0 && p.X - p.Half - 100.0 <= x1 && p.Z + p.Half + 100.0 >= z0 && p.Z - p.Half - 100.0 <= z1).ToList();
+        // (Taken in no order, as the slope ends: the cells give the pads back in their own.)
+        var each = new List<ulong>();
+        foreach (var pad in near)
         {
+            var hash = new WordHash();
             hash.Add(pad.Id);
             foreach (var v in (ReadOnlySpan<double>)[pad.X, pad.Z, pad.Dx, pad.Dz])
                 hash.Add(v, GroundCache.PlaceStep);
@@ -460,14 +471,28 @@ public sealed partial class NetworkLines
                 hash.Add(v, GroundCache.HeightStep);
             var (sx, sz) = pad.Start;
             var (ex, ez) = pad.End;
-            foreach (var l in _lines)
+            // (The roads that could end there: those over the tiles its ends are in.)
+            var candidates = new SortedSet<int>();
+            foreach (var (px, pz) in (ReadOnlySpan<(double, double)>)[(sx, sz), (ex, ez)])
+                foreach (var i in LinesIn(new TileId((int)Math.Floor(px / size), (int)Math.Floor(-pz / size))))
+                    candidates.Add(i);
+            foreach (var i in candidates)
+            {
+                var l = _lines[i];
                 if (!l.Rail && !l.Mark && l.Count >= 2 && new[] { 0, l.Count - 1 }.Any(p =>
                         Math.Min((l.X[p] - sx) * (l.X[p] - sx) + (l.Z[p] - sz) * (l.Z[p] - sz), (l.X[p] - ex) * (l.X[p] - ex) + (l.Z[p] - ez) * (l.Z[p] - ez)) <= PadJoin * PadJoin))
                     hash.Add(ShapingHash(l));
+            }
+
+            each.Add(hash.Value);
         }
 
-        _padsHash = hash.Value;
-        return hash.Value;
+        each.Sort();
+        var all = new WordHash();
+        all.Add(each.Count);
+        foreach (var h in each)
+            all.Add(h);
+        return all.Value;
     }
 
     private void AddEnds(ref WordHash hash, IReadOnlyList<BridgeEnd> ends)
@@ -506,7 +531,7 @@ public sealed partial class NetworkLines
     {
         var hash = new WordHash();
         hash.Add(l.Key);
-        hash.Add(l.Index);
+        hash.Add(l.Name);
         hash.Add(l.Rail);
         hash.Add(l.Mark);
         hash.Add(l.Class);

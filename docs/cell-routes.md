@@ -407,6 +407,90 @@ are roads (see Open questions: Roads).
   train moves (the pack's file entries already give each cell's offset, so reading them from the pack without unpacking is
   a small step).
 
+## Edits by cells (stage 2, built 2026-11-22)
+
+Code: `TerrainNetwork.RebuildNetwork` and `LocalFor`, `WayIndex`, `LocalRebuild` (Dirty, Context, Seen), `NetworkLines.Outside`,
+`AddContext`, `FreezeFarRail` (rail outside the cells put back by name), `CellStore.Merge` and `CheckMerge`, `CellStore.Write(only)`,
+`NetworkMeshes.FindRuns(changes)`.
+
+An edit to track alone (anything else, a changed level crossing, new shapes, switch sizes or curves, built tiles: in full, as
+before):
+
+1. **Dirty cells.** The cells of the places the edit changed (its ways as they were and as they are, and `RebuildAround`), the
+   cells of every line of the chains through the changed ways' nodes (a line split by a new switch is new lines its whole
+   length) and of every rail line with a point within `RailOuter` (1 km) of the edit, then one ring. **Context**: one ring more.
+2. **Handed ways.** `WayIndex` (kept up to date way by way, built in the background at open) gives the ways through the context
+   cells, made whole as chains (through every node only two ways end at), plus every way meeting one of those at a node, made whole
+   too: so every chain through the cells is formed, fanned and fitted with all its tracks, as in a full build.
+3. **The passes on the window only.** `Build` lays the chains with any of their length in a dirty cell (roads, marks) and every
+   handed rail chain; every other line over the context is taken from the last lines frozen (`AddContext`), rail laid outside the
+   dirty cells is put back by name (`FreezeFarRail`), and the existing holds (`Keep`, `HoldFarRail`, `KeepFarPads`, halo) work as
+   before but over the window's lines (`LocalRebuild.Seen`), never the route's.
+4. **Merge** (`CellStore.Merge`): a copy of the last lines in which each line the window laid differently (bit for bit) takes the
+   place of the one of its name, new lines fill the places of those gone and then the end (lines from the end fill places left
+   over, keeping their objects: `NetworkLine.MoveTo`), and every spread field's entries anchored in a dirty cell are the window's
+   (with previous's kept where the window didn't work one out and it's of no line changed), every other one previous's. The
+   window's objects are pointed at the lines and things they'll be with (frozen copies at their originals, things alike at
+   previous's). Turnouts, layouts, pads, bridges and the other registered things alike field for field are previous's objects.
+5. **The border.** A line laid again that reaches out of the dirty cells is held there (`NetworkLines.HoldAtBorder`): its points
+   outside are the last line's of its name exactly, those within 600 m inside eased onto them, so outside it is what it was by
+   construction; what's anchored along it outside (a bridge on a 14 km guide mark, a turnout) is previous's, copied to name the line
+   laid (`Repointer`; a turnout copied so has its other lines copied too, sharing their arrays). A window's line with no point in a
+   dirty cell is previous's; one with no line of its name there is the window's own making at its edge (a chain whose far ways
+   weren't handed) and is left out.
+   **Paths** (logged, `Local rebuild path:`): `cells (N)`; `cells grown by a ring` when the edit changes something outside the
+   cells all the same (a thing outside naming a line laid differently and not held); `whole route` (every way handed, as before
+   stage 2) when the cells would be more than 40 (`MostCells`) or the grown window still isn't enough.
+6. **Reshape, take in, save** only what changed: the merge's lines made and gone drive the reshaping and the meshes (`FindRuns`
+   for those lines only; decks look along the lines near them, `NearLines`, not every line); a save writes only the cells touched
+   since the last write (`TerrainSource._unsavedCells`), and the index.
+
+### Identity and the format (FormatVersion 4, BuildVersion 2)
+
+- `NetworkLine.Name`: the chain's id and where along it the line starts. Lines in a tile shape it in an order by name, not index
+  (`Priority`), shaping hashes take the name, road ends are ordered by name: a line's place in the set no longer changes anything
+  it builds.
+- Every spread element's place in its field (`OrdinalOf`) is a hash of what it is (a dictionary's key, a set's or list's item; a
+  line by name, a registered thing by `IdentityOf` and all it holds), not its position: a cell left as it was still fits cells
+  written later. References to registered things are by that place (32 bits; one alike already there takes the next). Lists read
+  back in that order; `HB_CELLCHECK` compares lists in it and sets and dictionaries by content.
+- A tile's ground key takes only the pads near it (it took every pad, so any crossing changed changed every tile's key).
+- `Track.bin.gz` (`SolvedTrack`) is gone: it was good only until the network's next edit, and the cells keep the lines finished.
+  A full build always solves; writing cells deletes an old `Track.bin.gz` and `Track.stamp.bin`; it's no longer in the stamp.
+- Bridges are found with the lines at a full build and kept in the cells (they were found when the meshes were first built, so
+  missing from cells written at an open, and the first save after had to write every cell).
+
+### Measured (World, 2026-11-23)
+
+Background ms (`Track rebuild, ms`), main thread ms (`taken in`):
+
+| Edit | Before (`cells/base`) | Path | After | Taken in, before / after |
+|---|---|---|---|---|
+| Branch off the main line (default) | 5,913 | cells (25) | 3,392 (build 1,297, profiles 955, merge 479, reshape 418) | 720 / 196 |
+| Spur in a yard | 6,903 | cells (25) | 3,386 (build 1,032, profiles 733, merge 416, reshape 948) | 552 / 115 |
+| Branch near a rail bridge | 6,710 | cells (28) | 4,767 (build 1,344, profiles 1,050, merge 473, reshape 1,608 over 7 tiles) | 824 / 224 |
+
+(`HB_LOCALCHECK=1` runs, its full rebuild timed apart. In runs without it the same edits took 2.6 s and 3.9 s, take-in 0.5-0.55 s:
+take-in varies with what the meshes are building at the time.) Over the three edits: 6, 1 and 3 lines held at the border, 0
+re-pointed things needed (the held lines came out as they were everywhere), 14 window-edge lines left out (yard), no spill, no
+growth, no fallback. Before the border hold the bridge and yard edits spilled and took 9.0 s and 20.9 s; the yard's 15 s reshape
+over 32 tiles was the grown window's (lines gone far out); with the cells holding it shapes 4 tiles in 0.9 s.
+
+Exactness (`HB_LOCALCHECK=1`): default and yard: every line in the dirty cells (3,263 and 2,430) within 2 mm in plan and 4.8 mm
+(3.8 mm) in height of a full rebuild, none missing by name; bridge: 3,530 lines, 1 over 1 cm in plan (1.6 cm) and 2 in height,
+worst 12.6 cm, a road laid again near the edit at (-201250, -697511), not explained. Outside the cells touched: 0 lines changed;
+of ~375,000 spread entries, ~1,100 aren't previous's objects (850-940 slope-end shapes, copies pointed at the merged lines;
+~110 each of `_railsNear` and `_wallSpans`, caches the shown lines filled meanwhile). No reference to a line or thing not in the
+merged lines. Rail steps at junctions as in the full rebuild (0.019, 0.009, 0.000 m). Things in the dirty cells differ in count
+from a full rebuild where the window works them out round frozen lines (layouts 80/71, 64/61, 76/72; a few bridges unmatched;
+`_surfaceShifts`, `_sideBySide`).
+
+Saves (`save_test.sh`, `HB_CELLCHECK=1`): two edits, each saved. The first save after cells written by an older build writes them
+all (a field came since); the second wrote 26 cells of 576 (28 asked for, 550 left as they were; spread 1,100 ms over the whole
+route, encode 301, files 121) and read straight back against the lines in memory, 88.8 million values: 0 differ. The open after
+reads all 576 warm, 33,346 lines, as many as a fresh build of the same network. Against a fresh build it can't compare bit for
+bit any more: a merged set keeps lines' places, a fresh one numbers them in solve order, so every index-keyed field differs.
+
 ## Stages
 
 Each stage ends with something measured and checked, and the builder working throughout.

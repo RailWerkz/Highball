@@ -1031,7 +1031,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
             foreach (var (x0, z0, x1, z1) in _terrain!.Source.Apply(change))
                 _terrain.Invalidate(x0, z0, x1, z1);
             var applied = clock.ElapsedMilliseconds;
-            _network!.Replace(change.Lines, change.Areas);
+            _network!.Replace(change.Lines, change.Areas, change);
             Log.Info($"Track rebuild taken in, ms: terrain {applied}, line meshes {clock.ElapsedMilliseconds - applied} ({change.Areas.Count} areas)");
             if (DevTools.SaveAfterRebuild)
             {

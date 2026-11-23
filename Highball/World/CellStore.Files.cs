@@ -15,6 +15,91 @@ internal static partial class CellStore
     /// Something spread over the cells: the field it's of (SpreadFields), its place there, and itself (a list's or set's item: Key).
     private readonly record struct Element(int Field, long Ordinal, object? Key, object? Value, bool Own);
 
+    /// Where what goes into a cell not being written goes (and is let go).
+    [ThreadStatic] private static CellData? t_scratch;
+    private static CellData Scratch => t_scratch ??= new CellData();
+
+    /// A nested field's element: its round in the high bits of its place, what it is hashed in the rest.
+    private const int RoundShift = 48;
+    private const long RoundMask = (1L << RoundShift) - 1;
+
+    /// An element's place in its list, set or dictionary, the same whichever cells are written with it and whatever else is in it (so
+    /// cells written at different times fit together): what it is, hashed. A dictionary's entry by its key; a set's or list's item by
+    /// itself: a line by its name, a registered thing (registered) by what it is (IdentityOf) and all it holds (StableKey). Lists are
+    /// read back in this order, sets and dictionaries by it.
+    private static long OrdinalOf(object? key, bool registered = false)
+    {
+        var hash = new StableHash();
+        StableKey(ref hash, key, registered ? 0 : 1);
+        if (registered && key is not null)
+            hash.Add(IdentityOf(key));
+        return (long)hash.Value & long.MaxValue;
+    }
+
+    private static void StableKey(ref StableHash hash, object? o, int depth)
+    {
+        switch (o)
+        {
+            case null:
+                hash.Add(-7L);
+                return;
+            case NetworkLine line:
+                hash.Add(line.Name);
+                return;
+            case string s:
+                hash.Add(s);
+                return;
+            case double d:
+                hash.Add(d);
+                return;
+            case float f:
+                hash.Add((long)BitConverter.SingleToInt32Bits(f));
+                return;
+            case bool b:
+                hash.Add(b ? 1L : 0L);
+                return;
+            case Enum e:
+                hash.Add(Convert.ToInt64(e, System.Globalization.CultureInfo.InvariantCulture));
+                return;
+            case IConvertible c when o.GetType().IsPrimitive:
+                hash.Add(c.ToInt64(System.Globalization.CultureInfo.InvariantCulture));
+                return;
+            case TileId t:
+                hash.Add(t.I);
+                hash.Add(t.J);
+                return;
+        }
+
+        var type = o.GetType();
+        if (depth > 3)
+            return;
+        if (depth > 0 && !type.IsValueType && type.Assembly == typeof(CellStore).Assembly)
+        {
+            // (Another thing in it, by what it is.)
+            hash.Add(IdentityOf(o));
+            return;
+        }
+
+        if (o is Array array && GraphSnapshot.IsBlittable(type.GetElementType()!))
+        {
+            hash.Add(array.Length);
+            foreach (var b in BytesOf(array))
+                hash.Add(b);
+            return;
+        }
+
+        if (o is IEnumerable items)
+        {
+            foreach (var item in items)
+                StableKey(ref hash, item, depth + 1);
+            return;
+        }
+
+        foreach (var field in GraphSnapshot.FieldsOf(type))
+            if (!field.FieldType.IsSubclassOf(typeof(Delegate)) && field.FieldType != typeof(Lock))
+                StableKey(ref hash, field.GetValue(o), depth + 1);
+    }
+
     /// What's going into one cell (or into the index: what has no cell).
     private sealed class CellData
     {
@@ -36,11 +121,20 @@ internal static partial class CellStore
     // --- Writing. ---
 
     /// Every cell written, and the index last. current: whether what the stamp was taken from is still what's saved, asked before
-    /// anything's put in place (null: it is).
-    public static void Write(RouteInfo route, ulong stamp, NetworkLines lines, Func<bool>? current = null)
+    /// anything's put in place (null: it is). only: the cells to write (those an edit changed since the last write, CellStore.Merge),
+    /// the rest left as they are on disk, their entries in the index kept; null, or no index of this format to keep them from: all.
+    /// (Every reference and every element's place in its list, set or dictionary is stable, OrdinalOf, so a cell left as it was still
+    /// fits the ones written.)
+    /// Returns whether the cells were put in place.
+    public static bool Write(RouteInfo route, ulong stamp, NetworkLines lines, Func<bool>? current = null, IReadOnlySet<TileId>? only = null)
     {
+        var old = only is null ? null : ReadIndex(route);
+        if (old is not null && (old.Rules != RulesHash || old.BuildVersion != BuildVersion || old.Cells.Keys.Any(id => !File.Exists(CellPath(route, id)))))
+            old = null;
+        if (old is null)
+            only = null;
         if (route.Pack is not null)
-            return;
+            return false;
         var watch = Stopwatch.StartNew();
         var folder = FolderOf(route);
         var written = new List<(TileId Id, string Temporary, long Size, ulong Hash)>();
@@ -71,6 +165,7 @@ internal static partial class CellStore
             }
 
             // The lines, cut into pieces at the cells' borders.
+            CellData At2(TileId? id) => only is null || id is null || only.Contains(id.Value) ? At(id) : Scratch;
             for (var i = 0; i < all.Count; i++)
             {
                 var line = all[i];
@@ -78,20 +173,20 @@ internal static partial class CellStore
                     .Select(s => new Slice(s.f, s.Item2.Cut, s.Item2.Stride)).ToArray();
                 if (line.Count == 0)
                 {
-                    var data = At(c.CellOf(0, 0));
+                    var data = At2(c.CellOf(0, 0));
                     data.Pieces.Add(new Piece(i, 0, 0, 0, line.Key, slices));
                     data.Heads.Add(i);
                     continue;
                 }
 
                 var (start, cell) = (0, c.CellOf(line.X[0], line.Z[0]));
-                At(cell).Heads.Add(i);
+                At2(cell).Heads.Add(i);
                 for (var p = 1; p <= line.Count; p++)
                 {
                     var next = p < line.Count ? c.CellOf(line.X[p], line.Z[p]) : default;
                     if (p < line.Count && next == cell)
                         continue;
-                    At(cell).Pieces.Add(new Piece(i, line.Count, start, p - start, line.Key, slices));
+                    At2(cell).Pieces.Add(new Piece(i, line.Count, start, p - start, line.Key, slices));
                     (start, cell) = (p, next);
                 }
             }
@@ -113,14 +208,20 @@ internal static partial class CellStore
                 var registered = Registered(f);
                 var values = RegisteredValues(f);
                 var count = 0;
+                var used = new HashSet<long>();
                 void Add(long ordinal, object? key, object? v)
                 {
+                    // (Its place: what it is, hashed, OrdinalOf; one alike already there takes the next.)
+                    ordinal = registered || values ? (int)ordinal : ordinal;
+                    while (!used.Add(ordinal))
+                        ordinal = registered || values ? (int)(ordinal + 1) : ordinal + 1;
                     var own = (registered && key is not null && registry.TryAdd(key, (2 + fi, (int)ordinal))) ||
                               (values && v is not null && registry.TryAdd(v, (2 + fi, (int)ordinal)));
                     var cell = rule.Anchor!(c, key, v);
                     if (cell is null)
                         unplaced[fi]++;
-                    At(cell).Elements.Add(new Element(fi, ordinal, key, v, own));
+                    if (only is null || cell is null || only.Contains(cell.Value))
+                        At(cell).Elements.Add(new Element(fi, ordinal, key, v, own));
                     count++;
                 }
 
@@ -133,31 +234,43 @@ internal static partial class CellStore
                     {
                         var k = 0;
                         foreach (DictionaryEntry e in (IDictionary)outer[o]!)
-                            Add(((long)o << 32) | (uint)k++, e.Key, e.Value);
+                        {
+                            Add(((long)o << RoundShift) | (OrdinalOf(e.Key) & RoundMask), e.Key, e.Value);
+                            k++;
+                        }
+
                         inner[o] = k;
                     }
                 }
                 else if (value is IDictionary dictionary)
                 {
-                    var k = 0;
                     foreach (DictionaryEntry e in dictionary)
-                        Add(k++, e.Key, e.Value);
+                        Add(OrdinalOf(e.Key), e.Key, e.Value);
                 }
                 else
                 {
-                    var k = 0;
                     foreach (var item in (IEnumerable)value)
-                        Add(k++, item, null);
+                        Add(OrdinalOf(item, registered), item, null);
                 }
 
                 metas[fi] = new SpreadMeta(f.Name, true, count, inner);
+            }
+
+            Scratch.Pieces.Clear();
+            Scratch.Heads.Clear();
+            // (A field that was left out when the cells kept were written, or held there and is left out now, is in cells not written:
+            // they're all written. Bridges, found when the meshes are first built, are one.)
+            if (old is not null && metas.Zip(old.Spread).Any(m => m.First.Present != m.Second.Present || m.First.Name != m.Second.Name))
+            {
+                Log.Info("Cells: a field's come or gone since the cells kept were written, writing them all");
+                return Write(route, stamp, lines, current, null);
             }
 
             var distributed = watch.ElapsedMilliseconds;
             (int, int)? External(object o) => registry.TryGetValue(o, out var at) ? at : null;
 
             // The cells, written side by side.
-            var ids = cells.Keys.OrderBy(t => t.I).ThenBy(t => t.J).ToArray();
+            var ids = cells.Keys.Where(id => only is null || only.Contains(id)).OrderBy(t => t.I).ThenBy(t => t.J).ToArray();
             var results = new (string Temporary, long Size, ulong Hash, Type[] Types, object[]? Objects, long RawA, long RawB)[ids.Length];
             var measures = Measure ? new MeasureTotals() : null;
             var bytesBy = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
@@ -181,8 +294,11 @@ internal static partial class CellStore
                 FindShared(results.Select((r, k) => (ids[k].ToString(), r.Objects!)).Append(("index", restObjects)));
 
             // The index: what the cells are, what they're built from, and what they hold.
-            var schema = FixedTypes().Concat(results.SelectMany(r => r.Types)).Concat(restTypes).Distinct().Where(t => !t.ContainsGenericParameters)
+            var schema = FixedTypes().Concat(results.SelectMany(r => r.Types)).Concat(restTypes)
+                .Concat(old?.Schema.Select(s => Type.GetType(s.Type)).OfType<Type>() ?? []).Distinct().Where(t => !t.ContainsGenericParameters)
                 .OrderBy(GraphSnapshot.NameOf, StringComparer.Ordinal).ToList();
+            // (The cells not written, as they are on disk; those written empty now gone.)
+            var keptCells = old is null ? [] : old.Cells.Where(e => !only!.Contains(e.Key)).OrderBy(e => e.Key.I).ThenBy(e => e.Key.J).ToList();
             var index = IndexPath(route) + ".tmp";
             using (var file = new FileStream(index, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
             using (var w = new BinaryWriter(file))
@@ -211,13 +327,21 @@ internal static partial class CellStore
                         w.Write(n);
                 }
 
-                w.Write(ids.Length);
+                w.Write(ids.Length + keptCells.Count);
                 for (var k = 0; k < ids.Length; k++)
                 {
                     w.Write(ids[k].I);
                     w.Write(ids[k].J);
                     w.Write(results[k].Size);
                     w.Write(results[k].Hash);
+                }
+
+                foreach (var (id, (size, hash)) in keptCells)
+                {
+                    w.Write(id.I);
+                    w.Write(id.J);
+                    w.Write(size);
+                    w.Write(hash);
                 }
 
                 w.Write(restFile.Length);
@@ -229,7 +353,7 @@ internal static partial class CellStore
             if (current is not null && !current())
             {
                 Log.Info("Cells: saved again while they were being written, left for the next save");
-                return;
+                return false;
             }
 
             foreach (var (id, temporary, _, _) in written.Where(x => x.Id.I != int.MinValue))
@@ -238,7 +362,7 @@ internal static partial class CellStore
             written.Clear();
 
             // (Cells no longer in the set, and the compiled route these replace, which nothing reads.)
-            var keep = ids.Select(id => $"{id}.cell").ToHashSet();
+            var keep = ids.Concat(keptCells.Select(e => e.Key)).Select(id => $"{id}.cell").ToHashSet();
             var stale = 0;
             foreach (var path in Directory.EnumerateFiles(folder))
                 if (CellName.IsMatch(Path.GetFileName(path)) && !keep.Contains(Path.GetFileName(path)))
@@ -250,10 +374,11 @@ internal static partial class CellStore
             var compiled = Path.Combine(route.Folder, "Cache", "Lines.bin");
             if (File.Exists(compiled))
                 File.Delete(compiled);
+            NetworkLines.ForgetSolved(route);
 
             var sizes = results.Select(r => r.Size).Order().ToArray();
             var biggest = ids.Length == 0 ? default : ids[Array.IndexOf(results.Select(r => r.Size).ToArray(), sizes[^1])];
-            Log.Info($"Cells: {ids.Length} cells written ({sizes.Sum() / (1 << 20)} MB, from {results.Sum(r => r.RawA + r.RawB) / (1 << 20)} MB; " +
+            Log.Info($"Cells: {ids.Length} cells written{(old is null ? "" : $" of {ids.Length + keptCells.Count} ({only!.Count} asked for, {keptCells.Count} left as they were)")} ({sizes.Sum() / (1 << 20)} MB, from {results.Sum(r => r.RawA + r.RawB) / (1 << 20)} MB; " +
                      $"biggest {(sizes.Length > 0 ? sizes[^1] / 1024 : 0)} KB at {biggest}, median {(sizes.Length > 0 ? sizes[sizes.Length / 2] / 1024 : 0)} KB; " +
                      $"index {new FileInfo(IndexPath(route)).Length / 1024} KB, {schema.Count} types), {all.Count} lines in " +
                      $"{cells.Values.Sum(d => d.Pieces.Count)} pieces, {metas.Sum(m => m.Count)} things spread ({string.Join(", ", unplaced.Select((n, fi) => (n, fi)).Where(x => x.n > 0).Select(x => $"{x.n} of {SpreadFields[x.fi].Name}"))} without a cell, in the index), " +
@@ -264,10 +389,12 @@ internal static partial class CellStore
             // HB_CELLCHECK: what was written read straight back, against the lines it was written from (after an edit as on open).
             if (Check && ReadIndex(route) is { } again && Read(route, again, again.Cells.Keys) is { } back)
                 Compare(back, lines, (int)RootFields.First(f => f.Name == "_quads").GetValue(lines)! + 1, "as written");
+            return true;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotSupportedException or TargetInvocationException or InvalidCastException)
         {
             Log.Warn($"Cells: couldn't write them ({(e as TargetInvocationException)?.InnerException?.Message ?? e.Message})");
+            return false;
         }
         finally
         {
