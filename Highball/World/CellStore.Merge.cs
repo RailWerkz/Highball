@@ -85,13 +85,21 @@ internal static partial class CellStore
         // less round it than it had, and the cells it's in aren't being laid again.)
         var first = new Dictionary<NetworkLine, (NetworkLine? P, string? Why)>(ReferenceEqualityComparer.Instance);
         var outside = new HashSet<NetworkLine>(ReferenceEqualityComparer.Instance);
+        var dropped = new HashSet<NetworkLine>(ReferenceEqualityComparer.Instance);
         foreach (var w in window.Lines)
         {
             var p = w.Origin ?? (byName.TryGetValue(w.Name, out var named) ? named : null);
-            if (p is not null && p.Count == w.Count && !NetworkLines.TouchesDirty(w, local))
+            if (!NetworkLines.TouchesDirty(w, local))
             {
-                outside.Add(w);
-                first[w] = (p, null);
+                // (One with no line of its name, or another count, is the window's own making at its edge, a chain whose far ways weren't
+                // handed: left out, previous's lines there being what they were.)
+                if (p is not null && p.Count == w.Count)
+                {
+                    outside.Add(w);
+                    first[w] = (p, null);
+                }
+                else
+                    dropped.Add(w);
                 continue;
             }
 
@@ -105,6 +113,12 @@ internal static partial class CellStore
             madeSet.Clear();
             foreach (var w in window.Lines)
             {
+                if (dropped.Contains(w))
+                {
+                    map[w] = w;
+                    continue;
+                }
+
                 var (p, why) = first[w];
                 if (why is null && !outside.Contains(w) && !SameZones(w.TurnoutZones, p!.TurnoutZones, things))
                     why = "TurnoutZones";
@@ -228,7 +242,7 @@ internal static partial class CellStore
 
         var movedTo = moved.ToDictionary(m => m.From, m => m.To);
         int IndexOf(NetworkLine l) => movedTo.TryGetValue(l.Index, out var to) && ReferenceEquals(lines[to], l) ? to : l.Index;
-        int FromWindow(int i) => IndexOf(map[window.Lines[i]]);
+        int FromWindow(int i) => dropped.Contains(window.Lines[i]) ? -1 : IndexOf(map[window.Lines[i]]);
         var goneIndex = gone.Select(l => l.Index).ToHashSet();
         Time("places");
 
@@ -345,7 +359,7 @@ internal static partial class CellStore
             touched.UnionWith(lines[to].Tiles);
 
         Time("put together");
-        Log.Info($"Cells merged: {made.Count} lines laid differently or new ({held.Count} reaching out of the cells, held there; {copiedLines.Count} lines and " +
+        Log.Info($"Cells merged: {dropped.Count} of the window's lines outside the cells left out; {made.Count} lines laid differently or new ({held.Count} reaching out of the cells, held there; {copiedLines.Count} lines and " +
                  $"{repoint.Copies} things outside pointed at them), {gone.Count} gone, {moved.Count} moved, {things.Count} things as they were; " +
                  $"{dirty.Count} dirty cells, {touched.Count} touched{(spill is null ? "" : $"; SPILL: {spill}")}; made for: {string.Join(", ", differ.Select(d => $"{d.Value} {d.Key}"))}; ms: {string.Join(", ", times)}");
         return new Merged(root, made, gone, moved, touched, spill);
@@ -573,7 +587,7 @@ internal static partial class CellStore
         {
             result.Remove(tile);
             if (w.TryGetValue(tile, out var list))
-                result[tile] = list.Select(fromWindow).ToList();
+                result[tile] = list.Select(fromWindow).Where(i => i >= 0).ToList();
         }
 
         static (int, long) Priority(NetworkLine line) => ((line.Rail ? 100 : 0) + 10 - line.Class, line.Name);
@@ -603,7 +617,7 @@ internal static partial class CellStore
         {
             result.Remove(tile);
             if (w.TryGetValue(tile, out var list))
-                result[tile] = list.Select(q => (fromWindow(q.Line), q.Point)).ToList();
+                result[tile] = list.Select(q => (fromWindow(q.Line), q.Point)).Where(q => q.Item1 >= 0).ToList();
         }
 
         var movedTo = moved.ToDictionary(m => m.From, m => m.To);
