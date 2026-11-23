@@ -1751,7 +1751,7 @@ public sealed partial class NetworkLines
         if (local is null || chain.Rail || local.Near.Contains(chain.Id) || local.Halo.Contains(chain.Id) || !local.Previous._seenChains.Contains(chain.Id))
             return false;
         var previous = local.Previous;
-        previous._byChain ??= previous._lines.GroupBy(l => l.Chain).ToDictionary(g => g.Key, g => g.ToList());
+        previous._byChain ??= previous._lines.Where(l => !l.IsAbsent).GroupBy(l => l.Chain).ToDictionary(g => g.Key, g => g.ToList());
         foreach (var line in previous._byChain.GetValueOrDefault(chain.Id) ?? [])
             _lines.Add(line.FrozenAt(_lines.Count));
         return true;
@@ -1913,7 +1913,7 @@ public sealed partial class NetworkLines
             foreach (var i in previous.LinesIn(tile))
                 if (picked.Add(i))
                     over.Add(previous._lines[i]);
-        previous._byChain ??= previous._lines.GroupBy(l => l.Chain).ToDictionary(g => g.Key, g => g.ToList());
+        previous._byChain ??= previous._lines.Where(l => !l.IsAbsent).GroupBy(l => l.Chain).ToDictionary(g => g.Key, g => g.ToList());
         var seen = new List<NetworkLine>(over);
         foreach (var chain in _seenChains)
             foreach (var line in previous._byChain.GetValueOrDefault(chain) ?? [])

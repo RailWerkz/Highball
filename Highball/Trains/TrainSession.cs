@@ -190,8 +190,8 @@ public sealed class TrainSession : IDisposable
     }
 
     /// The stock on the track written to the route's Stock.json. With the track a window round the camera (NetworkLines.Window), the
-    /// cuts saved standing outside the cells it's complete in are kept as they were: their track isn't loaded, so they weren't put back
-    /// (or were let go as it was), and aren't on the track here to be saved.
+    /// cuts saved standing outside the cells it's complete in that aren't among those here are kept as they were: their track was let go
+    /// as the window moved, and they with it. (Those left off as they were put back, their track not loaded, the panel keeps.)
     public void SaveStock()
     {
         if (!_stockRestored || _route.Projection is not { } projection)
@@ -205,10 +205,11 @@ public sealed class TrainSession : IDisposable
             });
             if (_world.Source?.Lines?.Window is { } window && _route.Grid is not null)
             {
+                var here = cuts.Select(c => (c.Name, c.Lat, c.Lon)).ToHashSet();
                 var kept = RouteStock.Load(_route).Where(c =>
                 {
                     var p = projection.Forward(new GeoPoint(c.Lat, c.Lon));
-                    return !window.Complete.Contains(World.TerrainSource.CellAt(_route, p.East, -p.North));
+                    return !here.Contains((c.Name, c.Lat, c.Lon)) && !window.Complete.Contains(World.TerrainSource.CellAt(_route, p.East, -p.North));
                 }).ToList();
                 if (kept.Count > 0)
                 {

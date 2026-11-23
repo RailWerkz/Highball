@@ -153,8 +153,7 @@ public sealed class NetworkOverview
     {
         Grid = NetworkCells.GridKey(route);
         using var memory = new MemoryStream();
-        using (var brotli = new BrotliStream(memory, (CompressionLevel)5, true))
-        using (var w = new BinaryWriter(brotli))
+        using (var w = new BinaryWriter(memory, System.Text.Encoding.UTF8, true))
         {
             w.Write(Magic);
             w.Write(Version);
@@ -189,7 +188,11 @@ public sealed class NetworkOverview
             }
         }
 
-        NetworkCells.WriteAtomic(PathIn(route), memory.ToArray());
+        var raw = memory.ToArray();
+        var packed = new byte[BrotliEncoder.GetMaxCompressedLength(raw.Length)];
+        if (!BrotliEncoder.TryCompress(raw, packed, out var written, 5, 22))
+            throw new IOException("Network overview: couldn't compress");
+        NetworkCells.WriteAtomic(PathIn(route), packed[..written]);
     }
 
     private static long Zig(long v) => (v << 1) ^ (v >> 63);
