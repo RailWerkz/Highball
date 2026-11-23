@@ -601,7 +601,16 @@ public static class DevTools
             if (found.Path is null)
                 Log.Warn($"--pack: no installed pack {packName}");
             else
-                app.Push(new DriveScreen(Routes.PackSource.Open(found.Path)));
+            {
+                try
+                {
+                    app.Push(new DriveScreen(Routes.PackSource.Open(found.Path)));
+                }
+                catch (Exception e) when (e is Routes.PackOutdatedException or InvalidDataException or IOException)
+                {
+                    Log.Error($"--pack: {e.Message}");
+                }
+            }
         }
 
         if (_route is { } name)

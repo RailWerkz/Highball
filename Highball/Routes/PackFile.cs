@@ -13,10 +13,14 @@ namespace Highball.Routes;
 /// with hand sculpting already added in; then its land cover. Version 2 stores those differences' low bytes, then their
 /// high bytes (nearly all zero, so they all but vanish), at Brotli quality 9: about 73% of version 1's size, at about
 /// 0.1 s a tile to pack. Version 1 packs (each difference's two bytes together, quality 4) are still read.
+///
+/// Version 4 carries the finished track: the route's cells (Cells/, CellStore) and each tile's shaped ground (Ground/I_J.bin,
+/// EncodeGround), with what they were made with in Pack.json (About), so the game reads the track rather than laying it out. Its
+/// tiles are laid out as version 3's.
 public static class PackFile
 {
     private const uint Magic = 0x4B504248; // "HBPK"
-    private const int Version = 3;
+    public const int Version = 4;
 
     /// Brotli's quality and window for tiles: 9 is the knee (10 and 11 save another 5-7% at 8-20 times the time, which across
     /// the whole country is days). Release builds of the packs can raise it.
@@ -351,6 +355,133 @@ public static class PackFile
         if (x == 0)
             return p[(z - 1) * samples];
         return p[z * samples + x - 1] + p[(z - 1) * samples + x] - p[(z - 1) * samples + x - 1];
+    }
+
+    // --- Version 4: the finished track. ---
+
+    /// What a pack was made with, kept in it as Pack.json: the pack's layout (Version), the cells' format and build
+    /// (CellStore.FormatVersion and BuildVersion), how its shaped ground is stored (GroundVersion), and the game that made it.
+    /// A game that reads other versions refuses the pack ("needs re-exporting") rather than laying the track out itself.
+    public sealed record About(int Pack, int CellFormat, int CellBuild, int Ground, string Game, string Exported);
+
+    public const string AboutName = "Pack.json";
+
+    /// The shaped ground's files: one a tile shaping changed, read from the pack as the tile is (never unpacked).
+    public const string GroundFolder = "Ground/";
+
+    public const int GroundVersion = 1;
+
+    public static string GroundName(TileId id) => $"{GroundFolder}{id}.bin";
+
+    /// A tile's ground as the track's shaped it, for the pack: the runs of samples shaping changed (changed; short stretches
+    /// unchanged inside a run are kept in it), each sample as whole centimetres of cut or fill off the tile's heights as built
+    /// (basis), each the difference from the one before it in its run, zigzagged, as byte planes, Brotli. Null if nothing changed.
+    /// Read back (ApplyGround) the cut or fill is added to the heights as the pack gives them back, so shaped ground meets the ground
+    /// round it without a step wherever the pack keeps that only roughly (away from rail), and is exact to 5 mm where it's kept
+    /// exactly. Thread-safe.
+    public static byte[]? EncodeGround(TileId id, float[] basis, float[] shaped, bool[] changed)
+    {
+        var runs = new List<(int Start, int Length)>();
+        for (var i = 0; i < changed.Length;)
+        {
+            if (!changed[i])
+            {
+                i++;
+                continue;
+            }
+
+            var start = i;
+            var same = 0;
+            while (i < changed.Length && same < 4)
+            {
+                same = changed[i] ? 0 : same + 1;
+                i++;
+            }
+
+            runs.Add((start, i - same - start));
+        }
+
+        if (runs.Count == 0)
+            return null;
+        var count = runs.Sum(r => r.Length);
+        var zig = new uint[count];
+        var k = 0;
+        foreach (var (start, length) in runs)
+        {
+            var previous = 0L;
+            for (var i = start; i < start + length; i++)
+            {
+                var cm = (long)Math.Round((shaped[i] - (double)basis[i]) * 100.0);
+                var step = cm - previous;
+                if (step is > int.MaxValue / 2 or < int.MinValue / 2)
+                    throw new InvalidDataException($"tile {id}: shaped ground too far off its heights to pack");
+                previous = cm;
+                zig[k++] = (uint)(((int)step << 1) ^ ((int)step >> 31));
+            }
+        }
+
+        using var raw = new MemoryStream();
+        using (var w = new BinaryWriter(raw, System.Text.Encoding.UTF8, leaveOpen: true))
+        {
+            w.Write(basis.Length);
+            w.Write(runs.Count);
+            var end = 0;
+            foreach (var (start, length) in runs)
+            {
+                w.Write7BitEncodedInt(start - end);
+                w.Write7BitEncodedInt(length);
+                end = start + length;
+            }
+
+            var planes = new byte[count * 4];
+            for (var i = 0; i < count; i++)
+                for (var b = 0; b < 4; b++)
+                    planes[b * count + i] = (byte)(zig[i] >> (8 * b));
+            w.Write(planes);
+        }
+
+        var source = raw.GetBuffer().AsSpan(0, (int)raw.Length);
+        var output = new byte[BrotliEncoder.GetMaxCompressedLength(source.Length)];
+        if (!BrotliEncoder.TryCompress(source, output, out var written, TileQuality, TileWindow))
+            throw new InvalidDataException($"tile {id}: couldn't compress its ground");
+        return output[..written];
+    }
+
+    /// A tile's heights as the pack gives them back (DecodeTile) shaped as EncodeGround kept them, in place.
+    public static void ApplyGround(byte[] blob, float[] heights)
+    {
+        using var brotli = new BrotliStream(new MemoryStream(blob), CompressionMode.Decompress);
+        using var r = new BinaryReader(brotli);
+        if (r.ReadInt32() != heights.Length)
+            throw new InvalidDataException("shaped ground for a tile of another size");
+        var runs = new (int Start, int Length)[r.ReadInt32()];
+        var end = 0;
+        var count = 0;
+        for (var n = 0; n < runs.Length; n++)
+        {
+            var start = end + r.Read7BitEncodedInt();
+            var length = r.Read7BitEncodedInt();
+            if (start < 0 || length < 0 || start + length > heights.Length)
+                throw new InvalidDataException("shaped ground outside its tile");
+            runs[n] = (start, length);
+            end = start + length;
+            count += length;
+        }
+
+        var planes = r.ReadBytes(count * 4);
+        if (planes.Length != count * 4)
+            throw new InvalidDataException("shaped ground cut short");
+        var k = 0;
+        foreach (var (start, length) in runs)
+        {
+            var cm = 0L;
+            for (var i = start; i < start + length; i++, k++)
+            {
+                var zig = planes[k] | ((uint)planes[count + k] << 8) | ((uint)planes[2 * count + k] << 16) | ((uint)planes[3 * count + k] << 24);
+                cm += (int)(zig >> 1) ^ -(int)(zig & 1);
+                heights[i] = (float)(heights[i] + cm / 100.0);
+            }
+        }
     }
 
     public static Header ReadHeader(Stream file)

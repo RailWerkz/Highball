@@ -34,8 +34,9 @@ public sealed class RouteInfo
     [JsonIgnore]
     public PackSource? Pack { get; private set; }
 
-    /// A pack's route: its manifest and track files in folder (where they've been unpacked), its tiles in the pack.
-    public static RouteInfo FromPack(string folder, string id, PackSource pack)
+    /// A pack's route: its manifest and track files in folder (where they've been unpacked), its tiles in the pack. With no pack,
+    /// the folder alone, as a route of its own (what PackSource hands CellStore).
+    public static RouteInfo FromPack(string folder, string id, PackSource? pack)
     {
         var route = JsonSerializer.Deserialize<RouteInfo>(File.ReadAllText(Path.Combine(folder, "Route.json")), Options)
                     ?? throw new InvalidDataException($"{folder}: no Route.json");
