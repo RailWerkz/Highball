@@ -23,6 +23,10 @@ internal static partial class CellStore
     /// Worked out again when first asked for, from the lines (or by the passes as they run): left for that rather than merged.
     private static readonly HashSet<string> Remade = ["_railCells", "_roadEnds", "_needGround"];
 
+    /// What's made whole when first asked for, from every line there is: a window can't make it whole, so it's left out of a window's
+    /// read (made again from the lines loaded) and written absent by a window (made again from the lines read, whatever's read).
+    private static readonly HashSet<string> WindowRemade = [.. Remade, "_byChain", "_endShapes", "_wallsBeside", "_detailRegions", "_detailCells", "_bridgeEnds", "_railAt"];
+
     /// A rebuild of some cells (local.Dirty) put in place of the last lines' there (docs/cell-routes.md, Edits): in a copy of previous,
     /// every line the window laid differently takes the place of the one of its name (or a free place), the lines gone go, and every
     /// spread thing anchored in a dirty cell is the window's, every other one previous's. The window's things are pointed at the lines

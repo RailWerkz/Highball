@@ -330,6 +330,10 @@ public sealed partial class NetworkLines
     /// window read in the background, so the main thread taking it in doesn't make them.
     internal void Warm()
     {
+        _ = BridgeEndsOf(_lines.Count > 0 ? _lines[0] : NetworkLine.Absent);
+        WallsBeside();
+        _ = EndShapes;
+        HeightsAt(0);
         _ = DetailRegions;
         UnderTrack(0, 0, 3.0);
         _roadEnds ??= FindRoadEnds();

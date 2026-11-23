@@ -247,7 +247,7 @@ internal static partial class CellStore
                 var f = SpreadFields[fi];
                 var rule = Rules[f.Name];
                 var value = f.GetValue(lines);
-                if (value is null)
+                if (value is null || (window is not null && WindowRemade.Contains(f.Name)))
                 {
                     metas[fi] = new SpreadMeta(f.Name, false, 0, null);
                     continue;
@@ -462,7 +462,7 @@ internal static partial class CellStore
             // (A window's: read back as the same window, the cells written and those left as they were together.)
             else if (Check && window is not null && ReadIndex(route) is { } again2 && Read(route, again2, window.Complete) is { } back2)
                 Compare(back2, lines, (int)RootFields.First(f => f.Name == "_quads").GetValue(lines)! + 1, "as written, a window",
-                    Remade.Append("_byChain").Append("_detailRegions").Append("_detailCells").ToHashSet());
+                    WindowRemade.Concat(["_shapingHashes", "_railsNear", "_wallSpans"]).ToHashSet());
             return true;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotSupportedException or TargetInvocationException or InvalidCastException)

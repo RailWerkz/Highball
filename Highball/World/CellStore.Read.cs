@@ -554,7 +554,7 @@ internal static partial class CellStore
             if (!whole)
             {
                 // (Worked out again when first asked for, from the lines loaded: what's read of them names lines that aren't.)
-                foreach (var name in Remade.Append("_byChain"))
+                foreach (var name in WindowRemade)
                     RootFields.First(f => f.Name == name).SetValue(root, null);
                 root.Window = new CellWindow(complete, toRead, tainted.Keys.ToHashSet(), foreign.Keys.ToHashSet(), fromRest.Keys.ToHashSet());
             }
