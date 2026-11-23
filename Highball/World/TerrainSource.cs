@@ -276,12 +276,13 @@ public sealed partial class TerrainSource
     }
 
     /// How many cells each way from the camera's the lines are loaded whole in (HB_WINDOW=N; whole: all of them). Null: the whole
-    /// route.
+    /// route. 4 (9 x 9 cells, 18 km): past the track's furthest drawing (6 km), and an edit where the camera is finds its context (7 x 7
+    /// cells round its dirty ones) loaded already, rather than reading the window again for it (docs/cell-routes.md, Streaming).
     internal static int? WindowRings { get; } = Environment.GetEnvironmentVariable("HB_WINDOW") switch
     {
         "whole" or "all" => null,
         { Length: > 0 } n when int.TryParse(n, out var rings) && rings >= 0 => rings,
-        _ => 3,
+        _ => 4,
     };
 
     /// The cell (tile) a place is in, world metres.

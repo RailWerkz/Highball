@@ -1752,7 +1752,10 @@ public sealed partial class NetworkLines
     {
         chain.Id = ChainIdOf(chain);
         _seenChains.Add(chain.Id);
-        if (local is null || chain.Rail || local.Near.Contains(chain.Id) || local.Halo.Contains(chain.Id) || !local.Previous._seenChains.Contains(chain.Id))
+        // (A window of the last lines, NetworkLines.Window, has seen only the chains anchored in the cells it read: one it hasn't, not near
+        // the edit, is kept as what of it's loaded, nothing if none is: wholly outside the cells loaded, it can't meet what's laid.)
+        if (local is null || chain.Rail || local.Near.Contains(chain.Id) || local.Halo.Contains(chain.Id) ||
+            (!local.Previous._seenChains.Contains(chain.Id) && local.Previous.Window is null))
             return false;
         var previous = local.Previous;
         previous._byChain ??= previous._lines.Where(l => !l.IsAbsent).GroupBy(l => l.Chain).ToDictionary(g => g.Key, g => g.ToList());
