@@ -592,6 +592,8 @@ internal static partial class CellStore
             return t == typeof(double) ? BitConverter.DoubleToInt64Bits((double)a) == BitConverter.DoubleToInt64Bits((double)b)
                 : t == typeof(float) ? BitConverter.SingleToInt32Bits((float)a) == BitConverter.SingleToInt32Bits((float)b)
                 : a.Equals(b);
+        if (a is NetworkLines)
+            return true;
         if (depth > 0 && a is NetworkLine la)
             return byName.TryGetValue(la.Name, out var named) && ReferenceEquals(named, b) || ReferenceEquals(la.Origin, b);
         if (depth > 0 && things is not null && things.TryGetValue(a, out var taken))
@@ -663,7 +665,8 @@ internal static partial class CellStore
         var seen = new HashSet<object>(ReferenceEqualityComparer.Instance);
         bool Walk(object? o, int depth)
         {
-            if (o is null || depth > 12)
+            // (A thing's set of lines, a slope end's: not walked, it's every line there is.)
+            if (o is null || depth > 12 || o is NetworkLines)
                 return false;
             if (o is NetworkLine line)
                 return depth > 0 && which(line);
@@ -706,6 +709,8 @@ internal static partial class CellStore
                     return null;
                 case NetworkLine line:
                     return lines.GetValueOrDefault(line, line);
+                case NetworkLines:
+                    return o;
             }
 
             if (things.TryGetValue(o, out var taken))
