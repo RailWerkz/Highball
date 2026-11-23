@@ -30,12 +30,18 @@ public sealed partial class TerrainSource
         internal float[]? Edits;
         internal bool EditsDirty;
         internal bool CoverDirty;
+        /// Sculpted or painted this session (a stroke to undo may name it): kept in memory, never let go.
+        internal bool Touched;
         internal Task? Loading;
         internal long Used;
     }
 
     private readonly RouteInfo _route;
-    private readonly Dictionary<TileId, Tile> _tiles = [];
+    /// Every built tile, loaded or not.
+    private readonly HashSet<TileId> _built;
+    /// The tiles loaded (their coarse heights and cover in memory): those near the camera (TileRings), see TerrainSource.Tiles.cs.
+    /// Replaced whole, never changed in place, on the main thread, so the workers building patches can read it as it is.
+    private volatile Dictionary<TileId, Tile> _tiles = [];
     private readonly ConcurrentQueue<(Tile Tile, float[] Heights)> _loaded = new();
     private long _clock;
 
@@ -45,7 +51,11 @@ public sealed partial class TerrainSource
     public int CoarseSamples => Quads / CoarseStride + 1;
     public int CoverCells { get; }
     public float Spacing { get; }
+    /// The tiles loaded now.
     public IReadOnlyDictionary<TileId, Tile> Tiles => _tiles;
+
+    /// Every built tile.
+    public IReadOnlySet<TileId> Built => _built;
 
     public float MinHeight { get; }
     public float MaxHeight { get; }
@@ -59,7 +69,8 @@ public sealed partial class TerrainSource
     /// The lines shaped by hand.
     public required TrackEdits TrackEdits { get; init; }
 
-    private TerrainSource(RouteInfo route, List<Tile> tiles)
+    /// built: every built tile; tiles: those loaded; far: every built tile's overview (FarTile), those loaded' or not.
+    private TerrainSource(RouteInfo route, IEnumerable<TileId> built, List<Tile> tiles, IReadOnlyDictionary<TileId, FarTile> far)
     {
         _route = route;
         var grid = route.Grid!;
@@ -67,15 +78,28 @@ public sealed partial class TerrainSource
         Spacing = (float)grid.Spacing;
         CoverCells = grid.CoverCells;
 
+        _built = [.. built];
+        var loaded = new Dictionary<TileId, Tile>();
         foreach (var tile in tiles)
-            _tiles[tile.Id] = tile;
+        {
+            loaded[tile.Id] = tile;
+            _built.Add(tile.Id);
+        }
 
-        MinHeight = tiles.Count > 0 ? tiles.Min(t => t.MinHeight) : 0f;
-        MaxHeight = tiles.Count > 0 ? tiles.Max(t => t.MaxHeight) : 0f;
-        MinGx = tiles.Count > 0 ? tiles.Min(t => t.Id.I) * Quads : 0;
-        MaxGx = tiles.Count > 0 ? (tiles.Max(t => t.Id.I) + 1) * Quads : 0;
-        MinGz = tiles.Count > 0 ? -(tiles.Max(t => t.Id.J) + 1) * Quads : 0;
-        MaxGz = tiles.Count > 0 ? -tiles.Min(t => t.Id.J) * Quads : 0;
+        _tiles = loaded;
+        foreach (var (id, f) in far)
+            if (_built.Contains(id))
+                _far[id] = f;
+        foreach (var tile in tiles)
+            _far[tile.Id] = FarOf(tile);
+
+        var ranges = _built.Select(id => _far.TryGetValue(id, out var f) ? (f.MinHeight, f.MaxHeight) : (0f, 0f)).ToList();
+        MinHeight = ranges.Count > 0 ? ranges.Min(r => r.Item1) : 0f;
+        MaxHeight = ranges.Count > 0 ? ranges.Max(r => r.Item2) : 0f;
+        MinGx = _built.Count > 0 ? _built.Min(t => t.I) * Quads : 0;
+        MaxGx = _built.Count > 0 ? (_built.Max(t => t.I) + 1) * Quads : 0;
+        MinGz = _built.Count > 0 ? -(_built.Max(t => t.J) + 1) * Quads : 0;
+        MaxGz = _built.Count > 0 ? -_built.Min(t => t.J) * Quads : 0;
     }
 
     /// Reads every built tile (on worker threads) and keeps its coarse heights and cover. The route's roads and rails
@@ -107,6 +131,14 @@ public sealed partial class TerrainSource
         var objects = RouteObjects.Load(route);
         var stamp = CellStore.StampOf(route, built, objects);
         Stage("stamp");
+
+        // The tiles loaded: those within TileRings of where the camera starts (the rest stream in as it moves, TerrainSource.Tiles.cs);
+        // every other one is drawn from its overview (FarTile, kept in Cache/Terrain), read for it only when there's none kept.
+        var far = TerrainOverview.Read(route);
+        var near = focus is { } place && TileRings is { } tileRings ? CellStore.Around(CellAt(route, place.X, place.Z), tileRings) : null;
+        bool Near(TileId id) => near is null || near.Contains(id);
+        var farMade = new ConcurrentDictionary<TileId, FarTile>();
+        Stage($"overview ({far.Count} of {ids.Length} tiles kept)");
 
         // The lines worked out from the map data and edits: solved (or read as saved), the ground under them sampled, their
         // profiles fitted. Tiles no line reaches are made as they're read.
@@ -158,10 +190,13 @@ public sealed partial class TerrainSource
         {
             CellStore.Restore(lines, network, edits.Snapshot(), built, bridgeEdits, objects);
             Stage("cells");
-            var asKept = 0;
+            var (asKept, overviewed) = (0, 0);
             Parallel.For(0, ids.Length, i =>
             {
                 if (lines.LinesIn(ids[i]).Count > 0)
+                    return;
+                // (Far off, with an overview kept: not read.)
+                if (!Near(ids[i]) && far.ContainsKey(ids[i]))
                     return;
                 try
                 {
@@ -169,14 +204,21 @@ public sealed partial class TerrainSource
                     // (A tile outside a window's cells, its lines not loaded: its ground as it was last shaped, kept, GroundCache.)
                     if (!lines.Complete(ids[i]) && ShapeAsKept(route, ids[i], data.Heights))
                         Interlocked.Increment(ref asKept);
-                    tiles[i] = MakeTile(ids[i], data.Heights, data.Cover, data.Meta.Samples, (route.Pack is null ? LoadEdits(route.TileFolder(ids[i]), data.Meta.Samples) : null));
+                    var tile = MakeTile(ids[i], data.Heights, data.Cover, data.Meta.Samples, (route.Pack is null ? LoadEdits(route.TileFolder(ids[i]), data.Meta.Samples) : null));
+                    if (Near(ids[i]))
+                        tiles[i] = tile;
+                    else
+                    {
+                        farMade[ids[i]] = FarOf(tile);
+                        Interlocked.Increment(ref overviewed);
+                    }
                 }
                 catch (Exception e)
                 {
                     Log.Warn($"Terrain: tile {ids[i]} unreadable ({e.Message})");
                 }
             });
-            Stage(lines.Window is null ? "bare tiles" : $"tiles outside the window ({asKept} shaped as kept)");
+            Stage(lines.Window is null ? "bare tiles" : $"tiles outside the window ({tiles.Count(t => t is not null)} near, {asKept} shaped as kept; {overviewed} far read for their overview)");
             // (Against the whole route worked out afresh: only when it's read whole, HB_WINDOW=whole.)
             if (CellStore.Check && lines.Window is null)
                 CellStore.Compare(lines, WorkOut(false), route.Grid!.Samples);
@@ -222,7 +264,22 @@ public sealed partial class TerrainSource
         if (Environment.GetEnvironmentVariable("HB_GROUNDKEYS") is { Length: > 0 } keysTo)
             lines.DumpShapingKeys(keysTo, route.Grid!.Samples);
 
-        var source = new TerrainSource(route, [.. tiles.OfType<Tile>()]) { Lines = lines, Network = network, TrackEdits = edits };
+        // (Read whole, worked out afresh: every tile was read; those far off kept only as their overview.)
+        for (var i = 0; i < ids.Length; i++)
+            if (tiles[i] is { } t && !Near(ids[i]))
+            {
+                farMade[ids[i]] = FarOf(t);
+                tiles[i] = null;
+            }
+
+        var overview = new Dictionary<TileId, FarTile>(far);
+        foreach (var (id, f) in farMade)
+            overview[id] = f;
+        var source = new TerrainSource(route, ids, [.. tiles.OfType<Tile>()], overview) { Lines = lines, Network = network, TrackEdits = edits };
+        // (What's kept of the overview brought up to date: the tiles read for it, and those loaded whose overview comes out otherwise.)
+        source.KeepOverview(source._far.Where(e => !far.TryGetValue(e.Key, out var kept) || !kept.Same(e.Value)).Select(e => e.Key));
+        Log.Info($"Terrain: {source._tiles.Count} of {ids.Length} tiles loaded (within {(TileRings is { } r ? $"{r} rings" : "the whole route")} of the camera), " +
+                 $"{source._far.Count} with an overview, {farMade.Count} read for it");
         source.Objects.AddRange(objects);
         if (route.Pack is null)
             source.PrepareWays([.. network.Ways.Values]);
@@ -247,7 +304,8 @@ public sealed partial class TerrainSource
     {
         if (Lines is not { } lines)
             return Task.CompletedTask;
-        var (tiles, objects) = (_tiles.Keys.ToList(), Objects.ToList());
+        var (tiles, objects) = (_built.ToList(), Objects.ToList());
+        WriteOverview(true);
         HashSet<TileId>? only;
         lock (_unsavedLock)
             only = _unsavedCells is null ? null : [.. _unsavedCells];
@@ -338,6 +396,7 @@ public sealed partial class TerrainSource
     public void Want(double x, double z, double aheadX, double aheadZ, double radius)
     {
         _clock++;
+        StreamTiles(x, z, aheadX, aheadZ);
         while (_loaded.TryDequeue(out var done))
         {
             done.Tile.Full = done.Heights;
@@ -403,10 +462,15 @@ public sealed partial class TerrainSource
     /// Whether every built tile whose samples [gx0, gx1] x [gz0, gz1] touch has its full heights in memory.
     public bool FullReady(int gx0, int gz0, int gx1, int gz1)
     {
+        var tiles = _tiles;
         for (var k = FloorDiv(gz0, Quads); k <= FloorDiv(gz1, Quads); k++)
             for (var i = FloorDiv(gx0, Quads); i <= FloorDiv(gx1, Quads); i++)
-                if (_tiles.TryGetValue(new TileId(i, -k - 1), out var tile) && tile.Full is null)
+            {
+                var id = new TileId(i, -k - 1);
+                if (_built.Contains(id) && (!tiles.TryGetValue(id, out var tile) || tile.Full is null))
                     return false;
+            }
+
         return true;
     }
 
@@ -415,7 +479,7 @@ public sealed partial class TerrainSource
     {
         for (var k = FloorDiv(gz0, Quads); k <= FloorDiv(gz1 - 1, Quads); k++)
             for (var i = FloorDiv(gx0, Quads); i <= FloorDiv(gx1 - 1, Quads); i++)
-                if (_tiles.ContainsKey(new TileId(i, -k - 1)))
+                if (_built.Contains(new TileId(i, -k - 1)))
                     return true;
         return false;
     }
@@ -429,10 +493,17 @@ public sealed partial class TerrainSource
         {
             for (var i = FloorDiv(gx0, Quads); i <= FloorDiv(gx1 - 1, Quads); i++)
             {
-                if (!_tiles.TryGetValue(new TileId(i, -k - 1), out var tile))
-                    continue;
-                min = MathF.Min(min, tile.MinHeight);
-                max = MathF.Max(max, tile.MaxHeight);
+                var id = new TileId(i, -k - 1);
+                if (_tiles.TryGetValue(id, out var tile))
+                {
+                    min = MathF.Min(min, tile.MinHeight);
+                    max = MathF.Max(max, tile.MaxHeight);
+                }
+                else if (_far.TryGetValue(id, out var far))
+                {
+                    min = MathF.Min(min, far.MinHeight);
+                    max = MathF.Max(max, far.MaxHeight);
+                }
             }
         }
 
@@ -443,31 +514,32 @@ public sealed partial class TerrainSource
 
     public static int FloorDiv(int a, int b) => a >= 0 ? a / b : -((-a + b - 1) / b);
 
-    /// The tile a sample is read from, and where in it. The tile it falls in by floor division, or on a shared edge,
-    /// the first built one of: the tile to the west, to the north, to the north-west.
-    private bool Canonical(int gx, int gz, out Tile tile, out int sx, out int sz)
+    /// The built tile a sample is read from, and where in it. The tile it falls in by floor division, or on a shared edge,
+    /// the first built one of: the tile to the west, to the north, to the north-west. Built, not loaded: which tile a sample's
+    /// from never changes as tiles load and go.
+    private bool Locate(int gx, int gz, out TileId id, out int sx, out int sz)
     {
         var i = FloorDiv(gx, Quads);
         var k = FloorDiv(gz, Quads);
         sx = gx - i * Quads;
         sz = gz - k * Quads;
 
-        if (_tiles.TryGetValue(new TileId(i, -k - 1), out tile!))
+        if (_built.Contains(id = new TileId(i, -k - 1)))
             return true;
 
-        if (sx == 0 && _tiles.TryGetValue(new TileId(i - 1, -k - 1), out tile!))
+        if (sx == 0 && _built.Contains(id = new TileId(i - 1, -k - 1)))
         {
             sx = Quads;
             return true;
         }
 
-        if (sz == 0 && _tiles.TryGetValue(new TileId(i, -k), out tile!))
+        if (sz == 0 && _built.Contains(id = new TileId(i, -k)))
         {
             sz = Quads;
             return true;
         }
 
-        if (sx == 0 && sz == 0 && _tiles.TryGetValue(new TileId(i - 1, -k), out tile!))
+        if (sx == 0 && sz == 0 && _built.Contains(id = new TileId(i - 1, -k)))
         {
             sx = Quads;
             sz = Quads;
@@ -475,6 +547,13 @@ public sealed partial class TerrainSource
         }
 
         return false;
+    }
+
+    /// The loaded tile a sample is read from (Locate), if it's loaded.
+    private bool Canonical(int gx, int gz, out Tile tile, out int sx, out int sz)
+    {
+        tile = null!;
+        return Locate(gx, gz, out var id, out sx, out sz) && _tiles.TryGetValue(id, out tile!);
     }
 
     // --- Detail regions: ground shaped finer than the tiles' samples (NetworkLines.DetailRegion). ---
@@ -511,10 +590,10 @@ public sealed partial class TerrainSource
             {
                 gx = Math.Clamp(gx, MinGx, MaxGx);
                 gz = Math.Clamp(gz, MinGz, MaxGz);
-                if (!Canonical(gx, gz, out var tile, out var sx, out var sz))
+                if (!Locate(gx, gz, out var id, out var sx, out var sz))
                     return 0f;
-                if (!raw.TryGetValue(tile.Id, out var heights))
-                    raw[tile.Id] = heights = _route.LoadTile(tile.Id).Heights;
+                if (!raw.TryGetValue(id, out var heights))
+                    raw[id] = heights = _route.LoadTile(id).Heights;
                 return heights![sz * Samples + sx];
             }
 
@@ -566,10 +645,17 @@ public sealed partial class TerrainSource
     /// interpolated between coarse samples. False outside the built tiles.
     public bool TryHeight(int gx, int gz, out float height)
     {
-        if (!Canonical(gx, gz, out var tile, out var sx, out var sz))
+        if (!Locate(gx, gz, out var id, out var sx, out var sz))
         {
             height = 0f;
             return false;
+        }
+
+        // (Not loaded: from its overview, or the lowest of the route if it has none yet.)
+        if (!_tiles.TryGetValue(id, out var tile))
+        {
+            height = _far.TryGetValue(id, out var far) ? far.HeightAt(sx, sz, Quads) : MinHeight;
+            return true;
         }
 
         var full = tile.Full;
@@ -615,11 +701,11 @@ public sealed partial class TerrainSource
     /// The WorldCover classes around a sample, averaged over a square radius metres across: the ground colour (and
     /// how much of it is forest), and how much of each ground texture it calls for (grass, bare earth, water).
     /// How much of the ground at sample (gx, gz) is a track's ballast run out over it, 0 to 1.
-    public float BallastAt(int gx, int gz) => Lines is { } lines && Canonical(gx, gz, out var tile, out var sx, out var sz) ? lines.BallastAt(tile.Id, sx, sz) : 0f;
+    public float BallastAt(int gx, int gz) => Lines is { } lines && Locate(gx, gz, out var id, out var sx, out var sz) ? lines.BallastAt(id, sx, sz) : 0f;
 
     public (float4 Cover, float4 Materials) Ground(int gx, int gz, float radius)
     {
-        if (!Canonical(gx, gz, out _, out _, out _))
+        if (!Locate(gx, gz, out _, out _, out _))
             return default;
 
         var x = gx * Spacing;
@@ -680,7 +766,13 @@ public sealed partial class TerrainSource
         if (tile is null || tile.Id.I != i || tile.Id.J != -k - 1)
         {
             if (!_tiles.TryGetValue(new TileId(i, -k - 1), out tile))
-                return null;
+            {
+                // (Not loaded: the overview's coarser cover.)
+                if (!_far.TryGetValue(new TileId(i, -k - 1), out var far))
+                    return null;
+                return far.Cover[(cz - k * CoverCells) * FarTile.Cells / CoverCells * FarTile.Cells + (cx - i * CoverCells) * FarTile.Cells / CoverCells];
+            }
+
             last = tile;
         }
 

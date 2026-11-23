@@ -54,7 +54,7 @@ public sealed partial class TerrainSource
         Stage("tiles");
         Log.Info($"Terrain open (pack), ms: {string.Join(", ", stages)}");
 
-        var source = new TerrainSource(route, [.. tiles.OfType<Tile>()]) { Lines = lines, Network = network, TrackEdits = edits };
+        var source = new TerrainSource(route, ids, [.. tiles.OfType<Tile>()], new Dictionary<TileId, FarTile>()) { Lines = lines, Network = network, TrackEdits = edits };
         source.Objects.AddRange(objects);
         foreach (var (key, edit) in bridgeEdits)
             source.Bridges[key] = edit;

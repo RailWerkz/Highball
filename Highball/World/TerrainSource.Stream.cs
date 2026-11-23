@@ -90,7 +90,7 @@ public sealed partial class TerrainSource
         if (lines is null)
             return null;
         CellStore.RestoreFrom(lines, shown);
-        lines.PrepareShapingKeys(lines.Window?.Complete.Where(_tiles.ContainsKey) ?? _tiles.Keys, Samples);
+        lines.PrepareShapingKeys(lines.Window?.Complete.Where(_built.Contains) ?? _built, Samples);
         lines.Warm();
         return lines;
     }
@@ -116,7 +116,7 @@ public sealed partial class TerrainSource
 
         var areas = made.Concat(gone).Select(l => (l.MinX, l.MinZ, l.MaxX, l.MaxZ)).ToList();
         var heights = new ConcurrentDictionary<TileId, float[]>();
-        var fresh = lines.Window is { } now2 ? now2.Complete.Where(c => _tiles.ContainsKey(c) && !shown.Complete(c) && lines.LinesIn(c).Count > 0).ToList() : [];
+        var fresh = lines.Window is { } now2 ? now2.Complete.Where(c => _built.Contains(c) && !shown.Complete(c) && lines.LinesIn(c).Count > 0).ToList() : [];
         Parallel.ForEach(fresh, id =>
         {
             var raw = _route.LoadTile(id).Heights;
@@ -125,7 +125,7 @@ public sealed partial class TerrainSource
                 return;
             var shaped = (float[])raw.Clone();
             lines.ConformKept(_route, id, shaped, Samples);
-            ApplyEdits(shaped, _tiles[id].Edits);
+            ApplyEdits(shaped, EditsOf(id));
             lines.DrapeMarks(id, shaped, Samples);
             heights[id] = shaped;
         });
@@ -149,7 +149,7 @@ public sealed partial class TerrainSource
         NetworkLines? whole;
         lock (CellsLock)
         {
-            var stamp = CellStore.StampOf(_route, _tiles.Keys, objects);
+            var stamp = CellStore.StampOf(_route, _built, objects);
             if (CellStore.ReadIndex(_route) is not { } index || index.Stale(stamp) is not null)
             {
                 if (CellStore.Write(_route, stamp, window))
