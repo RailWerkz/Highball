@@ -432,9 +432,15 @@ before):
    (with previous's kept where the window didn't work one out and it's of no line changed), every other one previous's. The
    window's objects are pointed at the lines and things they'll be with (frozen copies at their originals, things alike at
    previous's). Turnouts, layouts, pads, bridges and the other registered things alike field for field are previous's objects.
-5. **Too small a window**: a line laid differently with points outside the dirty cells, or a registered thing outside them that
-   names one, means the cells weren't enough (a road or bridge running far out): they're grown to take in the lines laid differently
-   and laid again, twice at most, then in full.
+5. **The border.** A line laid again that reaches out of the dirty cells is held there (`NetworkLines.HoldAtBorder`): its points
+   outside are the last line's of its name exactly, those within 600 m inside eased onto them, so outside it is what it was by
+   construction; what's anchored along it outside (a bridge on a 14 km guide mark, a turnout) is previous's, copied to name the line
+   laid (`Repointer`; a turnout copied so has its other lines copied too, sharing their arrays). A window's line with no point in a
+   dirty cell is previous's; one with no line of its name there is the window's own making at its edge (a chain whose far ways
+   weren't handed) and is left out.
+   **Paths** (logged, `Local rebuild path:`): `cells (N)`; `cells grown by a ring` when the edit changes something outside the
+   cells all the same (a thing outside naming a line laid differently and not held); `whole route` (every way handed, as before
+   stage 2) when the cells would be more than 40 (`MostCells`) or the grown window still isn't enough.
 6. **Reshape, take in, save** only what changed: the merge's lines made and gone drive the reshaping and the meshes (`FindRuns`
    for those lines only; decks look along the lines near them, `NearLines`, not every line); a save writes only the cells touched
    since the last write (`TerrainSource._unsavedCells`), and the index.
@@ -458,28 +464,32 @@ before):
 
 Background ms (`Track rebuild, ms`), main thread ms (`taken in`):
 
-| Edit | Before (whole route handed) | After: first window | After: grown window | Total after | Taken in, before / after |
-|---|---|---|---|---|---|
-| Branch off the main line (default) | 5,913 | 3,081 (25 dirty cells, no spill) | - | 3.5 s with reshape 438 | 720 / 577 |
-| Branch near a rail bridge | 6,710 | 3,033 (28 cells), spilled on a 14 km guide mark | 3,259 (71 cells) | 9.0 s with reshape 2,745 | 824 / 390 |
-| Spur in a yard | 6,903 | 2,421 (25 cells), spilled on a crossing assembly of a new rail line | 3,285 (81 cells) | 20.9 s: reshape 15,203 (32 tiles) | 552 / 481 |
+| Edit | Before (`cells/base`) | Path | After | Taken in, before / after |
+|---|---|---|---|---|
+| Branch off the main line (default) | 5,913 | cells (25) | 3,392 (build 1,297, profiles 955, merge 479, reshape 418) | 720 / 196 |
+| Spur in a yard | 6,903 | cells (25) | 3,386 (build 1,032, profiles 733, merge 416, reshape 948) | 552 / 115 |
+| Branch near a rail bridge | 6,710 | cells (28) | 4,767 (build 1,344, profiles 1,050, merge 473, reshape 1,608 over 7 tiles) | 824 / 224 |
 
-The window's passes cost about half the whole route's (build 1.3 s against 2.8, profiles 0.9-1.0 against 1.5-1.7), the merge
-0.45-0.5 s. A spill doubles it. What's left (see the report): the window is still 25 cells (lines are whole objects, so a split
-main line makes its whole length dirty), the merge walks every spread field of the route (O(route), 0.2-0.4 s), long roads, guide
-marks and new rail laid near an edit spill (and a spill costs more than handing the whole route did), the yard edit's reshape
-shapes 32 tiles where 4 were shaped before (not found yet), and taking in is still 0.4-0.6 s on the main thread (`Mesh replace`:
-placing all 647 objects again, 0.3-0.4 s).
+(`HB_LOCALCHECK=1` runs, its full rebuild timed apart. In runs without it the same edits took 2.6 s and 3.9 s, take-in 0.5-0.55 s:
+take-in varies with what the meshes are building at the time.) Over the three edits: 6, 1 and 3 lines held at the border, 0
+re-pointed things needed (the held lines came out as they were everywhere), 14 window-edge lines left out (yard), no spill, no
+growth, no fallback. Before the border hold the bridge and yard edits spilled and took 9.0 s and 20.9 s; the yard's 15 s reshape
+over 32 tiles was the grown window's (lines gone far out); with the cells holding it shapes 4 tiles in 0.9 s.
 
-Exactness (`HB_LOCALCHECK=1`, default edit, no spill): the 3,263 lines in the 25 dirty cells within 2 mm in plan and 4.8 mm in
-height of a full rebuild, none missing by name; outside the 25 cells touched, every line is the object it was and every spread
-entry previous's own (the 851 slope-end shapes are copies pointed at the merged lines; 104 `_railsNear` and `_wallSpans` entries
-are caches the shown lines filled meanwhile); nothing points at a line or thing that isn't in the merged lines; rail steps at
-junctions 0.019 m, as in the full rebuild. Things in the dirty cells differ in count from a full rebuild where the window works
-them out round frozen lines (layouts 80/71, bridges 11 unmatched, `_surfaceShifts` 42/34, `_sideBySide` 19/15).
+Exactness (`HB_LOCALCHECK=1`): default and yard: every line in the dirty cells (3,263 and 2,430) within 2 mm in plan and 4.8 mm
+(3.8 mm) in height of a full rebuild, none missing by name; bridge: 3,530 lines, 1 over 1 cm in plan (1.6 cm) and 2 in height,
+worst 12.6 cm, a road laid again near the edit at (-201250, -697511), not explained. Outside the cells touched: 0 lines changed;
+of ~375,000 spread entries, ~1,100 aren't previous's objects (850-940 slope-end shapes, copies pointed at the merged lines;
+~110 each of `_railsNear` and `_wallSpans`, caches the shown lines filled meanwhile). No reference to a line or thing not in the
+merged lines. Rail steps at junctions as in the full rebuild (0.019, 0.009, 0.000 m). Things in the dirty cells differ in count
+from a full rebuild where the window works them out round frozen lines (layouts 80/71, 64/61, 76/72; a few bridges unmatched;
+`_surfaceShifts`, `_sideBySide`).
 
-Saves: after two edits, the second save wrote 58 cells of 576 (72 asked for, 518 left as they were) in the background (spread 744
-ms over the whole route, encode 423, files 99); the open after read all 576 warm.
+Saves (`save_test.sh`, `HB_CELLCHECK=1`): two edits, each saved. The first save after cells written by an older build writes them
+all (a field came since); the second wrote 26 cells of 576 (28 asked for, 550 left as they were; spread 1,100 ms over the whole
+route, encode 301, files 121) and read straight back against the lines in memory, 88.8 million values: 0 differ. The open after
+reads all 576 warm, 33,346 lines, as many as a fresh build of the same network. Against a fresh build it can't compare bit for
+bit any more: a merged set keeps lines' places, a fresh one numbers them in solve order, so every index-keyed field differs.
 
 ## Stages
 
