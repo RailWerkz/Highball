@@ -23,6 +23,10 @@ internal static partial class CellStore
     /// Worked out again when first asked for, from the lines (or by the passes as they run): left for that rather than merged.
     private static readonly HashSet<string> Remade = ["_railCells", "_roadEnds", "_needGround"];
 
+    /// What's made whole when first asked for, from every line there is: a window can't make it whole, so it's left out of a window's
+    /// read (made again from the lines loaded) and written absent by a window (made again from the lines read, whatever's read).
+    private static readonly HashSet<string> WindowRemade = [.. Remade, "_byChain", "_endShapes", "_wallsBeside", "_detailRegions", "_detailCells", "_bridgeEnds", "_railAt"];
+
     /// A rebuild of some cells (local.Dirty) put in place of the last lines' there (docs/cell-routes.md, Edits): in a copy of previous,
     /// every line the window laid differently takes the place of the one of its name (or a free place), the lines gone go, and every
     /// spread thing anchored in a dirty cell is the window's, every other one previous's. The window's things are pointed at the lines
@@ -42,7 +46,8 @@ internal static partial class CellStore
         var pLines = previous.Lines;
         var byName = new Dictionary<long, NetworkLine>(pLines.Count);
         foreach (var line in pLines)
-            byName.TryAdd(line.Name, line);
+            if (!line.IsAbsent)
+                byName.TryAdd(line.Name, line);
 
         // Which of the window's registered things are previous's as they were: anchored alike, and alike in every field (the lines they
         // name compared by name; a turnout's lines laid differently show in its own fields, its spread, its frog).
@@ -223,22 +228,11 @@ internal static partial class CellStore
             }
         }
 
+        // (Places left over hold no line: every other line keeps its place, so a window's places stay the route's, and the cells of lines
+        // that would have moved to fill them aren't written again.)
         var moved = new List<(int From, int To)>();
-        while (free.Count > 0)
-        {
-            var last = lines.Count - 1;
-            if (free.Remove(last))
-            {
-                lines.RemoveAt(last);
-                continue;
-            }
-
-            var to = free.Min;
-            free.Remove(to);
-            moved.Add((last, to));
-            lines[to] = lines[last];
-            lines.RemoveAt(last);
-        }
+        foreach (var at in free)
+            lines[at] = NetworkLine.Absent;
 
         var movedTo = moved.ToDictionary(m => m.From, m => m.To);
         int IndexOf(NetworkLine l) => movedTo.TryGetValue(l.Index, out var to) && ReferenceEquals(lines[to], l) ? to : l.Index;
@@ -346,6 +340,7 @@ internal static partial class CellStore
             for (var z = 0; z < c.TurnoutZones.Count; z++)
                 c.TurnoutZones[z] = c.TurnoutZones[z] with { Turnout = (Turnout)repoint.Map(c.TurnoutZones[z].Turnout)! };
         RootFields.First(f => f.Name == "Ways").SetValue(root, ways);
+        root.Window = previous.Window;
         RootFields.First(f => f.Name == Auto(nameof(NetworkLines.DetailCache))).SetValue(root, new System.Collections.Concurrent.ConcurrentDictionary<NetworkLines.DetailRegion, Lazy<float[]>>());
 
         // The cells whose content changed: the dirty ones, and every one a line made or gone crosses or reaches.

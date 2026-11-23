@@ -99,6 +99,9 @@ public sealed partial class EditorView : IDisposable, IToolHost
     private PenTool.Measure? _penMeasure => _penTrack.Measure;
     private Task<NetworkChange>? _rebuild;
     private bool _rebuildAgain;
+    /// The track's window read again round the camera as it moves (TerrainSource.Stream), never while a rebuild's under way.
+    private Task<NetworkChange>? _stream;
+    private bool _streamHeld;
     /// Saved since the route's cells were last written (CellStore): written once the track's caught up with every edit.
     private bool _compileDue;
     private int _saves;
@@ -178,7 +181,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
         _start = start;
         var place = new GeoPoint(route.Origin.Latitude, route.Origin.Longitude);
         _world = new WorldDisplay(place.Lat, place.Lon, route.Projection?.GridNorth(place) ?? 0.0);
-        _routeWorld = new RouteWorld(route);
+        _routeWorld = new RouteWorld(route, FocusOf(route, start));
         _view = new CameraView(_camera);
         _session = new Trains.TrainSession(_routeWorld, _camera) { RestoreAs = Trains.PlacedAs.ShutDown };
         _tools = new ToolContext(this);
@@ -352,6 +355,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
             EditTrack();
             EditCircuits();
             PollRebuild();
+            PollStream();
             _circuitEditor!.Update(_terrain.Source.Network);
             RefreshRailGraph();
             UpdateTrains(dt);
@@ -408,6 +412,24 @@ public sealed partial class EditorView : IDisposable, IToolHost
         var limit = _topDown ? 0.0 : settings.ViewDistance + above;
         _renderer.Sky.SetViewLimit((float)limit);
         _routeWorld.Stream(_camera, limit);
+    }
+
+    /// Where the camera will start, for the track to be read round it (TerrainSource.Open): as PlaceCamera puts it.
+    private static (double X, double Z)? FocusOf(RouteInfo route, RoutePoint? start)
+    {
+        if (DevTools.Camera is { } dev && route.Projection is { } projection)
+        {
+            var p = projection.Forward(new GeoPoint(dev.Lat, dev.Lon));
+            return (p.East, -p.North);
+        }
+
+        if (start is { } s)
+            return (s.East, -s.North);
+        var built = route.BuiltTiles();
+        if (built.Count == 0 || route.Grid is not { } grid)
+            return null;
+        var size = grid.TileSize;
+        return ((built.Min(t => t.I) + built.Max(t => t.I) + 1) * 0.5 * size, -(built.Min(t => t.J) + built.Max(t => t.J) + 1) * 0.5 * size);
     }
 
     private void PlaceCamera(TerrainSource source)
@@ -998,13 +1020,59 @@ public sealed partial class EditorView : IDisposable, IToolHost
 
     private void RebuildNetwork()
     {
-        if (_rebuild is not null)
+        if (_rebuild is not null || _stream is not null)
         {
             _rebuildAgain = true;
             return;
         }
 
         _rebuild = _terrain!.Source.RebuildNetwork();
+    }
+
+    /// The track's window moved with the camera (TerrainSource.Stream): started when it should move and nothing else is under way
+    /// (a rebuild, the cells being written), taken in as a rebuild's change is. Held while anything laid isn't written to the cells
+    /// yet (they'd be read back without it), until the next save.
+    private void PollStream()
+    {
+        if (_terrain?.Source is not { } source)
+            return;
+        if (_stream is { IsCompleted: true } done)
+        {
+            _stream = null;
+            if (done.IsCompletedSuccessfully)
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                var change = done.Result;
+                foreach (var (x0, z0, x1, z1) in source.Apply(change))
+                    _terrain.Invalidate(x0, z0, x1, z1);
+                var applied = clock.ElapsedMilliseconds;
+                _network!.Replace(change.Lines, change.Areas, change);
+                Log.Info($"Track streamed, taken in, ms: terrain {applied}, line meshes {clock.ElapsedMilliseconds - applied} ({change.Areas.Count} areas)");
+            }
+            else
+                Log.Error($"Track streaming: {done.Exception?.InnerException}");
+
+            if (_rebuildAgain)
+            {
+                _rebuildAgain = false;
+                RebuildNetwork();
+            }
+
+            return;
+        }
+
+        if (_stream is not null || _rebuild is not null || _rebuildAgain || _compiling is { IsCompleted: false } || !source.WindowStale(_camera.X, _camera.Z))
+            return;
+        if (source.CellsUnsaved)
+        {
+            if (!_streamHeld)
+                Log.Info("Track streaming: held where it is until the track laid is saved");
+            _streamHeld = true;
+            return;
+        }
+
+        _streamHeld = false;
+        _stream = source.Stream(_camera.X, _camera.Z);
     }
 
     private void PollRebuild()
@@ -1028,6 +1096,14 @@ public sealed partial class EditorView : IDisposable, IToolHost
         {
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var change = done.Result;
+            // (The track's window grown for the edit first: the edit's change is from it.)
+            if (change.Streamed is { } grown)
+            {
+                foreach (var (x0, z0, x1, z1) in _terrain!.Source.Apply(grown))
+                    _terrain.Invalidate(x0, z0, x1, z1);
+                _network!.Replace(grown.Lines, grown.Areas, grown);
+            }
+
             foreach (var (x0, z0, x1, z1) in _terrain!.Source.Apply(change))
                 _terrain.Invalidate(x0, z0, x1, z1);
             var applied = clock.ElapsedMilliseconds;
@@ -1237,6 +1313,14 @@ public sealed partial class EditorView : IDisposable, IToolHost
             try
             {
                 writing?.Wait();
+                // (The track a window round the camera: the packs and servers are of the whole route, so it's read whole for them, the
+                // window's own cells written first if they're not, CellStore.Write.)
+                if (track.Window is not null)
+                {
+                    _exportStatus = "Reading the whole route's track";
+                    (track, graph) = source.WholeTrack(track, graph, objects);
+                }
+
                 var result = Routes.WorldExport.Run(_route, graph, track, objects, s => _exportStatus = s);
                 _exportStatus = result.Lines.Any(l => l.StartsWith("PROBLEM")) ? "Exported, with problems: see the log" : $"Exported to {result.Folder}";
             }

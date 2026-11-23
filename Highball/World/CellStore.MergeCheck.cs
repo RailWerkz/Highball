@@ -29,7 +29,7 @@ internal static partial class CellStore
 
         // Lines in the dirty cells, by name.
         var fullByName = full.Lines.GroupBy(l => l.Name).ToDictionary(g => g.Key, g => g.ToList());
-        var rByName = r.Lines.GroupBy(l => l.Name).ToDictionary(g => g.Key, g => g.ToList());
+        var rByName = r.Lines.Where(l => !l.IsAbsent).GroupBy(l => l.Name).ToDictionary(g => g.Key, g => g.ToList());
         var dupes = rByName.Count(g => g.Value.Count > 1);
         var (compared, missing, counted, offPlan, offHeight) = (0, 0, 0, 0, 0);
         var (worstPlan, worstHeight) = (0.0, 0.0);
@@ -145,13 +145,13 @@ internal static partial class CellStore
         var madeSet = new HashSet<NetworkLine>(merged.Made, ReferenceEqualityComparer.Instance);
         foreach (var line in r.Lines)
         {
-            if (madeSet.Contains(line))
+            if (madeSet.Contains(line) || line.IsAbsent)
                 continue;
             if (!ReferenceEquals(previous.Lines.ElementAtOrDefault(line.Index), line) && !merged.Moved.Any(m => m.To == line.Index))
                 linesOff++;
         }
 
-        var byName = previous.Lines.GroupBy(l => l.Name).ToDictionary(g => g.Key, g => g.First());
+        var byName = previous.Lines.Where(l => !l.IsAbsent).GroupBy(l => l.Name).ToDictionary(g => g.Key, g => g.First());
         var off = new Dictionary<string, int>();
         for (var fi = 0; fi < SpreadFields.Length; fi++)
         {

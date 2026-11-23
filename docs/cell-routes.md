@@ -491,6 +491,211 @@ route, encode 301, files 121) and read straight back against the lines in memory
 reads all 576 warm, 33,346 lines, as many as a fresh build of the same network. Against a fresh build it can't compare bit for
 bit any more: a merged set keeps lines' places, a fresh one numbers them in solve order, so every index-keyed field differs.
 
+## Streaming (stage 4, built 2026-11-23)
+
+Code: `CellStore.Read` (a window), `ReadFor`, `CellWindow` (`CellStore.Read.cs`), `NetworkLine.Absent`, `NetworkLines.Window` and `Warm`,
+`TerrainSource.Stream.cs` (`Stream`, `ReadWindow`, `ChangeTo`, `WholeTrack`), `TerrainNetwork.GrowFor`, `EditorView.PollStream`,
+`NetworkOverview`, `WorldExport` (a region's cells). FormatVersion 5.
+
+### The window
+
+The builder's `NetworkLines` is a window over the route's cells, **complete** in the cells within `HB_WINDOW` rings of the camera's cell
+(default 4: 9 x 9 cells, 18 km square, past the track's 6 km drawing; `HB_WINDOW=whole` reads every cell, as before). Complete means every line with a point there or
+reaching its ground (its tile's `_byTile`) is loaded, and everything anchored there: what's shown, shaped, edited and written back. To be
+complete in cells C, `Read` reads C, the ring round C (so what's anchored in C finds the lines near it: the rails beside a bridge end, a
+road under a deck), and every cell the lines of those reach into (`Index.Reach`). Lines are loaded whole.
+
+- **Places.** A window's lines keep their places in the route's set (the index's `LineCount`). A place whose line isn't loaded holds
+  `NetworkLine.Absent`: one shared object, no points, no nodes, bounds that take in nothing. So every int naming a line by place
+  (`_byTile`, `_pointsByTile`, `Fitted`, `_continuing`, `_needGround`, the meshes' runs) means the same in every window and on disk, and a
+  line read again stands in its old place. The merge no longer moves lines to fill gaps (`Moved` is always empty): a place left over holds
+  `Absent`, and a whole read takes holes.
+- **What a window can't stand behind.** From a cell that isn't complete, the lines' tile indexes (`_byTile`, `_pointsByTile`, `_ballast`)
+  and detail regions aren't taken, and anything naming a line or thing not loaded is dropped. In a complete cell such a name is dropped where
+  it's a list's or set's item or a dictionary's key, else read as null (a bridge end's `Under`; a list of lines has those not loaded taken
+  out), and the cell is **tainted** (`CellWindow.Tainted`: never written from the window). None came up on World.
+- **Made again, not read.** What's made whole when first asked for (`_bridgeEnds`, `_wallsBeside`, `_endShapes`, `_byChain`, `_railCells`,
+  `_roadEnds`, `_railAt`, `_needGround`, the detail regions: `CellStore.WindowRemade`) can't be made whole by a window. It's left out of a
+  window's read and made again from the lines loaded, in the background (`NetworkLines.Warm`); a window's write writes it absent, so a whole
+  read makes it again too.
+- **The ground.** Complete tiles are shaped as at any open (the ground cache, keyed by what shapes them). Other tiles are shown as last
+  shaped (`ShapeAsKept`: the ground cache under the key it was kept with), and so are their full heights as they stream (`Want`). Finer
+  ground (detail regions) is shaped in complete cells only. A tile's key now takes only the bridge ends within `EndReach` (300 m) of it, not
+  every end of every line over it: the far ends of a long line aren't loaded at a window's edge, and keyed with them its edge tiles were
+  shaped again for nothing (every key changed once: the first open after shapes every tile again).
+- **Writes.** A window writes only cells it's complete in, untainted (`CellWindow.Writes`), and only with an index of the rest to keep. It
+  never writes what it read from a cell it isn't complete in (`CellWindow.Foreign`, by field and place: with only the window's lines to go
+  by, a thing anchored by a node or a chain on lines not loaded has no cell, and went into the index besides its own cell: "in two cells"
+  at the next whole read), and of what has no cell only what it read from the index's own part (`CellWindow.Rest`). The index's spread
+  counts aren't the route's after a window's write: written -1, not checked.
+
+### Format 5
+
+- The index has, per cell, its **reach**: the other cells the lines with a piece in it, or reaching its ground, have pieces in. A cell not
+  written keeps its reach (a line through it laid again changes its pieces there, so it's written).
+- A cell's block A ends with its **reach lines**: the places of the lines reaching its ground with no piece in it.
+- Places may have no line (holes).
+- Older cells: "format 4, this build reads 5; working the lines out" (one cold open). A pack of format 4 is refused ("needs re-exporting:
+  its cells are of format 4, this game reads 5").
+
+### Streaming
+
+`EditorView.PollStream`, once a frame: when a cell within the rings isn't complete, or a complete one is more than a ring further out
+(`WindowStale`; the ring more is hysteresis), `TerrainSource.Stream` reads the window again round the camera in the background
+(`ReadWindow`: the cells read, what isn't kept in them taken from the lines shown, `RestoreFrom`; tiles keyed for the ground cache; `Warm`),
+and works out the change from the lines shown (`ChangeTo`), place by place: the same line read again (key, name, count) stands, its meshes
+untouched; any other is made (loaded) or gone (let go); a tile newly complete whose ground the lines shape otherwise than it's shown is
+shaped. It's taken in on the main thread as an edit's change is (`TerrainSource.Apply`; `NetworkMeshes.Replace` with Made and Gone, the runs
+of those lines only; crossings' decks kept for lines read again). Never while a rebuild is under way or cells are being written
+(`TerrainSource.CellsLock`), and **held while anything laid isn't written to the cells yet** (`CellsUnsaved`: reading them would lose it),
+until the next save.
+
+### Edits in a window
+
+1. `LocalFor` works out the dirty cells and context from the window, as before.
+2. `GrowFor`: the context has to be complete (the edit's laid against it). If it isn't, the window's read again complete in it too, and the
+   local rebuild worked out again over it (twice at most). With the camera at the edit and 4 rings it is already; with 3 rings the
+   standard edits grew it by 5-10 cells (0.7-1.0 s).
+3. Laid and merged as before, over the window: the merge copies the window's lines and things, not the route's. A road chain not near
+   the edit is kept as the last lines have it whether or not the window saw it (`Keep`): a window has seen only the chains anchored in the
+   cells it read, and laid again those far roads were sampled and profiled for nothing.
+4. The cells the merge touched have to be complete to be written. If they aren't, the window's grown to them and the edit laid again. (Asking
+   up front for every cell the lines over the dirty cells reach grew the window by 46-74 cells for the standard edits; the merges touched only
+   the dirty cells.)
+5. Growing reads the cells, so it can't be done while something laid isn't written: an edit then needing cells not loaded lays the whole
+   route ("Local rebuild path: whole route (... track laid that isn't saved yet in the cells)").
+6. The window as grown is taken in first (`NetworkChange.Streamed`), then the edit's change.
+
+`HB_LOCALCHECK` still lays the whole route from every way for its comparison (the network isn't a window).
+
+### The rest
+
+- **Exports** are of the whole route (the server needs the whole rail graph): from a window, the editor writes the window's cells if
+  they're not current, then reads every cell (`TerrainSource.WholeTrack`).
+- **Regional packs.** A region's pack carries `ReadFor` of its tiles, its cells read as a window complete in them, and the index whole; one
+  pack of the whole route carries every cell. A pack opens as a window complete in its own tiles (`TerrainSource.OpenPack`); the export's
+  check reads it so. Driving doesn't stream cells as the train moves.
+- **The network in brief** (`Network/Overview.bin`, `NetworkOverview`): per network cell its ways thinned to within 5 m (rail) or 15 m
+  (roads) and each kind's length, written with the network's cells (a cell's part again only when it's written). The Planner draws its map
+  and counts its lengths from it while its network is as saved, rather than from every way's every point.
+- **The stamp** (`StampOf`) hashes the network's index (which holds every cell file's hash) rather than every cell file.
+- **Placed stock** whose track isn't loaded is left off as it's put back (the panel keeps it); stock let go as the window moved is kept
+  as saved when the stock's saved (`TrainSession.SaveStock`; it was dropped from `Stock.json`).
+- **Junction markers** (`Junctions.json`, the Planner's): a window writes those of its complete cells and keeps the rest.
+- **Chunk jobs** build from a copy of their chunk's runs: a take-in edits the runs in place while a job iterates them (an
+  `IndexOutOfRangeException` when a window was grown and an edit taken in on the same frame).
+
+### Measured (World, 2026-11-23)
+
+Same machine and route copy for both; `cells/base` with its own build (Logs/base-bin), its cells written by it first. The camera at the
+default edit's place (42.38216, -83.46732) for the opens.
+
+**Opens** (warm; terrain open from `Terrain open, ms`; to usable: from "Routes: Ok" to the first rail graph):
+
+| | Cells read | Lines loaded | Cells (read + restore) | Terrain open | To usable | Peak working set | Managed heap at open |
+|---|---|---|---|---|---|---|---|
+| `cells/base` | 572 (165 MB) | 33,345 | 1,348-1,433 ms | 4,044-4,384 ms | 9-10 s | 3,249-3,255 MB | 1,771-1,911 MB |
+| window, 1 ring (9 complete) | 65 (31 MB) | 3,117 | 437 ms | 3,163 ms | 7 s | 1,377 MB | 470 MB |
+| window, 2 rings (25) | 73 (34 MB) | 4,776 | 448 ms | 3,339 ms | 7 s | 1,493 MB | 446 MB |
+| window, 3 rings (49) | 102 (48 MB) | 6,187 | 569 ms | 3,470 ms | 7 s | 1,580 MB | 495 MB |
+| window, 4 rings (81, the default) | 114 (53 MB) | 8,166 | 618-625 ms | 3,512-3,761 ms | 7 s | 1,566-1,572 MB | 432-648 MB |
+
+What's left of a windowed open is the route-wide part: the stamp (0.3 s), every tile's heights read for its coarse copy and shaped as kept
+(1.3 s), the network loaded whole (0.7-0.8 s, twice: the editor and the Planner, from the old whole files here). The window's own read is
+0.4-0.6 s for 65-114 cells (files 26-32 ms, made 59-112, read 177-320, put together 104-197).
+
+**Flying** west at 200 m/s with a 2-ring window (`--fly 200`), 80 s, off the end of the rail: a step every 2 km (10 s), 8 steps. Each read
+49-78 cells (15-34 MB) in 0.1-0.6 s in the background and worked out its change in 1-139 ms; taken in on the main thread in 1-46 ms (terrain
+0-5, line meshes 1-45); 38-116 lines loaded and 476-1,404 let go a step, 4,832 lines in memory falling to 749 off the rail, 2 tiles shaped
+again in all. The worst frame of the second a step came in: 39-91 ms (82, 91, 65, 56, 49, 48, 39), against 10-24 ms in the seconds between
+(and 100 ms frames at the start, the first meshes building, as at any open). The take-in accounts for under half of it; the rest is likely
+the collector (a step allocates 100-300 MB; the managed heap swings 0.65-1.7 GB): with the collector's pauses logged (4 rings, the default, 102-126 cells a step read in 0.3-0.8 s), it stopped every thread for 110-242 ms in all during each step's read (0-1 full collections), and the slow frames fall in those seconds (50-100 ms). The read allocates its cells' bytes, every line's arrays and every thing afresh; reading less (only the cells a step adds) or reusing buffers is what would take it away. Working set 1.75-2.5 GB once settled (3.7 GB at
+the first step, meshes still building). The window always had the cells round the camera complete before it got near their edge (a step
+takes under 0.6 s, 120 m at this speed; the window reaches 4 km).
+
+**Edits** (`edit_test.sh`, `HB_LOCALCHECK=1`, the camera at each edit), background ms (`Track rebuild, ms`, without the check) and
+main thread (`taken in`):
+
+| Edit | `cells/base` | 4 rings (default) | 3 rings | Merge, base / 4 rings | Taken in, base / 4 rings / 3 rings |
+|---|---|---|---|---|---|
+| Branch off the main line (default) | 3,963 | 3,671 | 5,222 (995 growing the window) | 482 / 348 | 151 / 169 / 170 |
+| Spur in a yard | 3,495 | 4,034 | 4,470 (691) | 415 / 296 | 87 / 230 / 224 |
+| Branch near a rail bridge | 4,887 | 4,020 | 5,073 (1,031) | 517 / 342 | 174 / 191 / 198 |
+
+(`cells/base` here on this machine today; stage 2 measured 3.4 / 3.4 / 4.8 s.) With 4 rings no edit grew the window; with 3 they grew it by
+the context's cells outside it (5, 5, 10), reading the whole window again. The yard is still 15% slower than `cells/base`: its rail runs on
+out of the window, and rail laid outside it can't be put back by name from lines not loaded (`FreezeFarRail`), so it's profiled (1.26 s
+against 0.74). Take-in is 20-140 ms longer: the window's grown or read lines show up as more runs found again.
+
+Exactness as before, all three: default 3,263 lines in the dirty cells, 0 over 1 cm (worst 2.0 mm in plan, 4.8 mm in height); yard 2,430, 0
+over 1 cm (3.8 mm); bridge 3,530, 1 over 1 cm in plan (1.6 cm) and 2 in height, worst 12.6 cm (the same road near (-201250, -697511)).
+Outside the cells touched: 0 lines changed; 10-76 slope-end shapes not previous's objects (as stage 2's copies). No reference to a line or
+thing not in the merged lines. The merges touched only the dirty cells (25, 25, 28).
+
+**Saves** (`save_test.sh`, `HB_CELLCHECK=1`; the first edit with the camera at it, the second from the camera's start, where the window
+had nothing: grown to 105 cells for it): each wrote only its cells, 23 and 26 of 572 (25 and 28 asked for, the rest left as they were),
+spread 249 and 232 ms over the window (stage 2: 1,100 ms over the whole route), encode 338 and 278, files 80 and 71. Read straight back as
+the same window, 12.9 and 14.1 million values: 1 differs, `_seenChains` (95-104 chains the edit's build saw whose lines aren't loaded: not
+written from a window, by the rule above; they're laid as unseen next time). Ground keys: 16 of 38 and 18 of 42 complete tiles differ (the
+bridge ends are made again on read from every line read; the merged lines kept those the edit's laid lines found, which can differ beside
+the window's edge): those tiles are shaped again at the next open. The index after them is 434 KB with only what has no cell in it (3
+node pins and 17,804 chains), and the next open reads all 572 cells whole. The network's overview: 1,570 cells, 156,812 points, 823 KB,
+worked out in 0.22-0.28 s for all of them (the first save after the old whole files).
+
+**Packs and servers**:
+- Export from a 2-ring window: the whole route's track read for it (33,345 lines), exported in 40 s; World.hbpack 282.6 MB with all 572
+  cells; World.hbserver 709 edges, 188 switches, checksum 47FAA460, as on `cells/base`; the pack's cells read back give the same graph.
+- `--pack World/World`: opens in 5.1 s to the terrain (a window complete in all 574 tiles: the whole route); `--fly` streams the tiles.
+- `--host World/World` and `--join 127.0.0.1`: both players' track checksum 47FAA460 as the server's. The server loads only its
+  `.hbserver` (the whole region's rail graph); it doesn't read cells.
+- Two regions (the copy's tiles split at I = -105 by a `Regions.json` made for the test, then removed): Midwest.hbpack, 187 tiles, carries
+  215 of the 572 cells (112.1 MB); West.hbpack, 387 tiles, 414 cells (73.7 MB); each pack's cells read as a window of its tiles give its
+  server track's checksum (Midwest 513 edges, 56F5995B; West 196 edges, 29284070). `--pack World/West` opens with 414 cells read, 10,184
+  lines, in 3.1 s; `--host World/Midwest` and `--join`: both 56F5995B, as the server.
+
+### At 100 times World (the USA route), from the per-cell costs
+
+World: 574 tiles, 572 cells, 33,345 lines, 60,952 ways. Times 100: ~57,000 cells, 3.3 million lines, 6 million ways.
+
+| | `cells/base` | Stage 4 |
+|---|---|---|
+| Cells on disk | 16.5 GB (0.29 MB a cell) | the same |
+| Cells' index | ~33 MB | ~43 MB (200 B a cell of reach; 30 MB of it the index's own part) |
+| Network on disk | 0.6 GB per cell, + 80 MB of overview | the same |
+| Tiles, ground cache | 18 GB, 11 GB | the same |
+| Track read at open | 150 s, all of it (1.5 s x 100) | 0.5 s for the window round the camera, + ~0.1 s of places, + **~10 s for the index's own part** (17,807 things for World, read at every window read: 1.8 million) |
+| Track in memory | ~100-160 GB managed (0.9-1.6 GB x 100): can't | 0.4-0.5 GB, the window, + ~0.1 GB of places and the index's own part |
+| Network at open | 20 s, whole, and its memory x 100 | the same (not a window yet) |
+| Terrain at open | 130-140 s (every tile read), ~6 GB of coarse copies | the same (not streamed) |
+| Stamp | every network cell file hashed (0.6 GB) + 57,000 tiles' sizes | the network's index hashed (~30 MB) + the tiles' sizes (~1 s) |
+| An edit | whole-route merge and save spread, minutes | the same as on World: ~5 s, the merge 0.3 s and the save's spread 0.25 s over the window (+ tens of ms over the places) |
+| A stream step | - | 0.1-0.6 s, + ~10 s for the index's own part until it's cut down |
+| A region's pack | every cell of the route (16.5 GB) | its cells and those its lines reach (Midwest: 38% of World's cells for 33% of its tiles) |
+
+So at national scale the track no longer decides the open: it's the terrain's every-tile read (~2.5 minutes), the network loaded whole
+(~20 s), and the index's own part (~10 s, also at every stream step). Those three are what's next, in that order of cost; the index's part
+is the cheapest to fix (chains with no line anchored by their first way, or dropped).
+
+### Not done, and what still reads the whole route
+
+- **`RouteNetwork` isn't a window.** The editor loads every network cell at open (0.2 s for World from cells; 0.7-0.8 s from the
+  old whole files), and so does the Planner. Making it one is the same shape as the lines' (Index.json has each cell's `Reach`): load the
+  cells round the complete ones, hold changed cells while unsaved, read a way's new cell before writing it; `WayIndex`, `LocalFor` and the
+  tools then see the window. `HB_LOCALCHECK` and the whole-route fallback would load all of it.
+- **The terrain's tiles.** Every tile's heights are read at open for its coarse copy (1.3-1.5 s for World), and every coarse copy and its
+  land cover are kept. At national scale this is the largest cost left at open; it needs the terrain itself to stream (a coarse pyramid).
+- **The index's own part** (what has no cell: 17,807 things for World, 17,804 of them `_seenChains`, chains that gave no line) is read at
+  every window read, ~0.1 s for World. Chains with no line could be anchored by their first way's cell, or not kept.
+- **Places for every line of the route.** A window's set of lines is as long as the route's (`Absent` in most places), and the read makes a
+  few arrays that long: 33,346 places for World, ~3.3 million at 100 times. Cheap (tens of MB, tens of ms) but not nothing.
+- **Driving** reads a region's pack as one window, not streamed as the train moves; multiplayer needs the region's whole rail graph (the
+  server's) to check against, which a streamed client would take from the region's `.hbserver` rather than its lines.
+- **A long line is one object.** A line laid again changes its pieces in every cell it crosses (their point counts), so the cells touched by
+  an edit include all of every line laid again; with `HoldAtBorder` that was the dirty cells in all three standard edits, but a main line
+  laid again its whole length would touch all its cells.
+- **Window growth reads the whole window again** (0.6-1.2 s for 5-10 cells more), rather than only the cells it adds.
+- **Unsaved edits hold the window** where it is (until a save); an edit needing cells not loaded then lays the whole route.
+
 ## Stages
 
 Each stage ends with something measured and checked, and the builder working throughout.
@@ -504,8 +709,10 @@ Each stage ends with something measured and checked, and the builder working thr
    Measured: edit times for a switch, a crossover, a siding, a yard, a bridge. Gains: edits cost what they touch.
 3. **The network per cell.** Ways and nodes saved and loaded per cell; Ctrl+S writes only changed cells.
 4. **Streaming in the builder.** Only cells near the camera are loaded; `NetworkLines` and `RouteNetwork` become windows;
-   the Planner draws from the overview. Gains: opens in seconds and memory follows the camera, at any size.
-5. **Packs and servers from cells.** Packs carry cells; driving streams them; the server graph is built from them.
+   the Planner draws from the overview. Gains: opens in seconds and memory follows the camera, at any size. Built 2026-11-23 for
+   `NetworkLines` (see Streaming); `RouteNetwork` and the terrain's tiles still load whole.
+5. **Packs and servers from cells.** Packs carry cells; driving streams them; the server graph is built from them. Built 2026-11-22;
+   regional packs carrying their own window's cells 2026-11-23; driving doesn't stream them yet.
 
 Stages 1 and 2 fix what hurts now (slow opens, slow edits). Stage 4 is what makes national scale work.
 

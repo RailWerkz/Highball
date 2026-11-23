@@ -17,6 +17,9 @@ public sealed record NetworkChange(NetworkLines Lines, IReadOnlyDictionary<TileI
 
     /// The cells whose content changed, for saving only those (null: all of them).
     public IReadOnlySet<TileId>? Touched { get; init; }
+
+    /// The track's window grown for the edit before it was laid (TerrainSource.GrowFor): taken in first, this change is from it.
+    public NetworkChange? Streamed { get; init; }
 }
 
 public sealed partial class TerrainSource
@@ -108,6 +111,16 @@ public sealed partial class TerrainSource
                 local = local with { Dirty = null, Context = null, Seen = previous.Lines };
             }
 
+            // (The lines a window over some cells: the edit's context is loaded whole first, GrowFor; and again once it's laid, if it
+            // touched cells that aren't, below.)
+            var shown = previous;
+            if (local?.Dirty is not null && previous.Window is not null)
+            {
+                (previous, local) = GrowFor(previous, local, ways, crossings, around, []);
+                if (!ReferenceEquals(previous, shown))
+                    Stage($"window grown ({previous.Window?.Complete.Count ?? 0} cells loaded whole)");
+            }
+
             Stage(local?.Dirty is { } d0 ? $"window ({d0.Count} cells laid again, {local.Context!.Count} held round them)" : "window");
             NetworkLines Lay(LocalRebuild? near, Action<string> stage)
             {
@@ -148,14 +161,32 @@ public sealed partial class TerrainSource
 
             var lines = Lay(local, Stage);
             CellStore.Merged? merged = null;
+            // (The window as grown for the edit, taken in before it: the lines it loaded are new to what's shown.)
+            NetworkChange? streamed = null;
             if (local?.Dirty is not null)
             {
                 // The window's lines put in the route's (CellStore.Merge). A line laid differently outside the dirty cells means they
                 // weren't enough: they're grown to take it in, once, and laid again; then in full.
                 merged = CellStore.Merge(previous, lines, local, ways.ToDictionary(w => w.Id));
                 Stage("merged");
+                // (A window's: the cells the edit touched must be loaded whole to be written. If they aren't, the window's grown to them
+                // and the edit laid again over it.)
+                if (merged.Spill is null && previous.Window is { } laidIn && !laidIn.Writes(merged.Touched))
+                {
+                    (previous, local) = GrowFor(previous, local, ways, crossings, around, merged.Touched);
+                    Stage($"window grown for the cells touched ({previous.Window?.Complete.Count ?? 0} cells loaded whole)");
+                    if (local?.Dirty is null)
+                        merged = null;
+                    lines = Lay(local, Stage);
+                    if (local?.Dirty is not null)
+                    {
+                        merged = CellStore.Merge(previous, lines, local, ways.ToDictionary(w => w.Id));
+                        Stage("merged");
+                    }
+                }
+
                 // (An edit that changes something outside its cells: one ring more, once, if that's few enough; else the whole route.)
-                if (merged.Spill is { } spill)
+                if (merged?.Spill is { } spill)
                 {
                     var grown = local with { Dirty = Grown(local.Dirty!, 1), Context = Grown(local.Dirty!, 2), Seen = Over(previous, Grown(local.Dirty!, 2)) };
                     if (grown.Dirty!.Count <= MostCells)
@@ -175,8 +206,8 @@ public sealed partial class TerrainSource
                         lines = Lay(local, Stage);
                     }
                 }
-                else
-                    RailWerkz.Core.Logging.Log.Info($"Local rebuild path: cells ({local.Dirty!.Count})");
+                else if (merged is not null)
+                    RailWerkz.Core.Logging.Log.Info($"Local rebuild path: cells ({local!.Dirty!.Count})");
 
                 if (merged is not null)
                 {
@@ -185,12 +216,15 @@ public sealed partial class TerrainSource
                 }
             }
 
+            if (!ReferenceEquals(previous, shown))
+                streamed = ChangeTo(shown, previous);
+
             // (The markers file, the junctions' list for the Planner, written off the rebuild's path.)
-            var layouts = lines.Layouts;
+            var (layouts, layoutsWindow) = (lines.Layouts, lines.Window);
             _ = Task.Run(() =>
             {
                 lock (MarkersLock)
-                    TrackLayouts.SaveMarkers(_route, layouts);
+                    TrackLayouts.SaveMarkers(_route, layouts, layoutsWindow);
             });
             if (local is not null && Environment.GetEnvironmentVariable("HB_LOCALCHECK") == "1")
             {
@@ -340,7 +374,7 @@ public sealed partial class TerrainSource
             Stage($"reshape ({inWindows} tiles round what changed, {whole} whole; {reshape.Count} stretches changed, {made.Count} lines laid differently, {gone.Count} gone)");
             RailWerkz.Core.Logging.Log.Info($"Track rebuild, ms: {string.Join(", ", stages)}");
 
-            return new NetworkChange(lines, heights, areas) { Made = merged?.Made, Gone = merged?.Gone, Moved = merged?.Moved, Touched = merged?.Touched };
+            return new NetworkChange(lines, heights, areas) { Made = merged?.Made, Gone = merged?.Gone, Moved = merged?.Moved, Touched = merged?.Touched, Streamed = streamed };
         });
     }
 
@@ -541,6 +575,47 @@ public sealed partial class TerrainSource
         dirty = Grown(dirty, 1);
         var context = Grown(dirty, 1);
         return new LocalRebuild(previous, near, halo, places) { Dirty = dirty, Context = context, Size = size, Seen = Over(previous, context) };
+    }
+
+    /// The cells an edit to a window of the lines needs loaded whole, naming nothing outside (CellWindow.Writes), that aren't: the
+    /// context round its dirty cells (what it's laid against), and those it's found to touch (written after).
+    private static HashSet<TileId> NeededFor(NetworkLines lines, LocalRebuild local, IEnumerable<TileId> touched)
+    {
+        var need = new HashSet<TileId>(local.Context!);
+        need.UnionWith(touched);
+        if (lines.Window is { } window)
+            need.RemoveWhere(c => window.Complete.Contains(c) && !window.Tainted.Contains(c));
+        return need;
+    }
+
+    /// A rebuild of some cells of a window of the lines: the window grown to take in the cells it needs loaded whole (NeededFor), read
+    /// from the route's cells and the local rebuild worked out again over it, twice at most; the whole route laid if the window can't
+    /// be read again (the cells have something laid that isn't written yet, CellsUnsaved) or still isn't enough.
+    private (NetworkLines Previous, LocalRebuild? Local) GrowFor(NetworkLines previous, LocalRebuild? local, List<NetworkWay> ways, List<PlacedObject> crossings,
+        List<(double X, double Z)> around, IEnumerable<TileId> touched)
+    {
+        var also = touched.ToHashSet();
+        for (var grow = 0; local?.Dirty is not null && previous.Window is { } window; grow++)
+        {
+            var need = NeededFor(previous, local, also);
+            if (need.Count == 0)
+                return (previous, local);
+            string? why = grow >= 2 ? $"still {need.Count} cells not loaded whole after growing it twice" : CellsUnsaved ? "track laid that isn't saved yet in the cells" : null;
+            var grown = why is null ? ReadWindow(previous, window.Complete.Concat(need).ToHashSet()) : null;
+            if (grown is null)
+            {
+                RailWerkz.Core.Logging.Log.Info($"Local rebuild path: whole route (the edit needs {need.Count} cells the window hasn't loaded whole; {why ?? "the cells couldn't be read"})");
+                return (previous, local with { Dirty = null, Context = null, Seen = previous.Lines });
+            }
+
+            RailWerkz.Core.Logging.Log.Info($"Local rebuild: the window grown by {need.Count} cells for the edit ({window.Complete.Count} loaded whole, now {grown.Window?.Complete.Count})");
+            previous = grown;
+            local = LocalFor(previous, ways, crossings, around);
+            if (local?.Dirty is { Count: > MostCells } many)
+                return (previous, local with { Dirty = null, Context = null, Seen = previous.Lines });
+        }
+
+        return (previous, local);
     }
 
     /// A local rebuild's cells grown to take in all of these lines (laid differently, and reaching out of them), with the ring round.

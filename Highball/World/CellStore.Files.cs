@@ -106,6 +106,10 @@ internal static partial class CellStore
         public readonly List<Piece> Pieces = [];
         public readonly List<int> Heads = [];
         public readonly List<Element> Elements = [];
+        /// The lines reaching this cell's ground (its tile's _byTile) with no piece in it: a window complete here loads them too.
+        public readonly List<int> ReachLines = [];
+        /// The other cells the lines in it (with a piece, or reaching its ground) have pieces in: what a window complete here reads too.
+        public readonly HashSet<TileId> Reach = [];
     }
 
     /// A spread field as it was: whether it was there at all (null), how many it held, and for a list of dictionaries, how many each.
@@ -126,8 +130,13 @@ internal static partial class CellStore
     /// (Every reference and every element's place in its list, set or dictionary is stable, OrdinalOf, so a cell left as it was still
     /// fits the ones written.)
     /// Returns whether the cells were put in place.
+    /// A window of the lines (NetworkLines.Window) writes only cells it's complete in, and only with an index of the rest to keep: never
+    /// all of them (null only: every cell it's complete in).
     public static bool Write(RouteInfo route, ulong stamp, NetworkLines lines, Func<bool>? current = null, IReadOnlySet<TileId>? only = null)
     {
+        var window = lines.Window;
+        if (window is not null)
+            only ??= window.Complete.Where(c => !window.Tainted.Contains(c)).ToHashSet();
         var old = only is null ? null : ReadIndex(route);
         if (old is not null && (old.Rules != RulesHash || old.BuildVersion != BuildVersion || old.Cells.Keys.Any(id => !File.Exists(CellPath(route, id)))))
             old = null;
@@ -135,6 +144,13 @@ internal static partial class CellStore
             only = null;
         if (route.Pack is not null)
             return false;
+        if (window is not null && (old is null || !window.Writes(only!)))
+        {
+            Log.Warn(old is null
+                ? "Cells: not written: the lines are a window over some cells, and there's no index of this format to keep the rest by"
+                : $"Cells: not written: {only!.Count(c => !window.Complete.Contains(c))} of the cells to write aren't loaded whole, {only!.Count(window.Tainted.Contains)} name what isn't loaded");
+            return false;
+        }
         var watch = Stopwatch.StartNew();
         var folder = FolderOf(route);
         var written = new List<(TileId Id, string Temporary, long Size, ulong Hash)>();
@@ -151,7 +167,8 @@ internal static partial class CellStore
 
             var registry = new Dictionary<object, (int Kind, int Index)>(ReferenceEqualityComparer.Instance) { [lines] = (0, 0) };
             for (var i = 0; i < all.Count; i++)
-                registry[all[i]] = (1, i);
+                if (!all[i].IsAbsent)
+                    registry[all[i]] = (1, i);
 
             var cells = new Dictionary<TileId, CellData>();
             var rest = new CellData();
@@ -166,9 +183,13 @@ internal static partial class CellStore
 
             // The lines, cut into pieces at the cells' borders.
             CellData At2(TileId? id) => only is null || id is null || only.Contains(id.Value) ? At(id) : Scratch;
+            // (Which cells each line has pieces in, for each cell's reach.)
+            var lineCells = new HashSet<TileId>?[all.Count];
             for (var i = 0; i < all.Count; i++)
             {
                 var line = all[i];
+                if (line.IsAbsent)
+                    continue;
                 var slices = Cuttable.Select(f => (f, CutOf((Array?)LineFields[f].GetValue(line), line.Count))).Where(s => s.Item2.Cut != Cut.None)
                     .Select(s => new Slice(s.f, s.Item2.Cut, s.Item2.Stride)).ToArray();
                 if (line.Count == 0)
@@ -176,10 +197,12 @@ internal static partial class CellStore
                     var data = At2(c.CellOf(0, 0));
                     data.Pieces.Add(new Piece(i, 0, 0, 0, line.Key, slices));
                     data.Heads.Add(i);
+                    lineCells[i] = [c.CellOf(0, 0)];
                     continue;
                 }
 
                 var (start, cell) = (0, c.CellOf(line.X[0], line.Z[0]));
+                var mine = lineCells[i] = [];
                 At2(cell).Heads.Add(i);
                 for (var p = 1; p <= line.Count; p++)
                 {
@@ -187,9 +210,34 @@ internal static partial class CellStore
                     if (p < line.Count && next == cell)
                         continue;
                     At2(cell).Pieces.Add(new Piece(i, line.Count, start, p - start, line.Key, slices));
+                    mine.Add(cell);
                     (start, cell) = (p, next);
                 }
             }
+
+            // Each cell's reach: the cells its lines (and those reaching its ground) have pieces in.
+            bool Writes(TileId cell) => only is null || only.Contains(cell);
+            for (var i = 0; i < all.Count; i++)
+                if (lineCells[i] is { } mine)
+                    foreach (var cell in mine)
+                        if (Writes(cell))
+                            At(cell).Reach.UnionWith(mine);
+            foreach (var (tile, list) in (Dictionary<TileId, List<int>>)RootFields.First(f => f.Name == "_byTile").GetValue(lines)!)
+            {
+                if (!Writes(tile))
+                    continue;
+                var data = At(tile);
+                foreach (var i in list)
+                    if (i >= 0 && i < all.Count && lineCells[i] is { } mine)
+                    {
+                        data.Reach.UnionWith(mine);
+                        if (!mine.Contains(tile))
+                            data.ReachLines.Add(i);
+                    }
+            }
+
+            foreach (var (cell, data) in cells)
+                data.Reach.Remove(cell);
 
             // Everything else spread over them, each where it's anchored.
             var metas = new SpreadMeta[SpreadFields.Length];
@@ -199,7 +247,7 @@ internal static partial class CellStore
                 var f = SpreadFields[fi];
                 var rule = Rules[f.Name];
                 var value = f.GetValue(lines);
-                if (value is null)
+                if (value is null || (window is not null && WindowRemade.Contains(f.Name)))
                 {
                     metas[fi] = new SpreadMeta(f.Name, false, 0, null);
                     continue;
@@ -211,6 +259,15 @@ internal static partial class CellStore
                 var used = new HashSet<long>();
                 void Add(long ordinal, object? key, object? v)
                 {
+                    // (A window's read from a cell it isn't complete in: that cell's, on disk, not the window's to write. And of no cell,
+                    // what wasn't read from the index's own part: with only the window's lines to go by, a thing in a cell not loaded has
+                    // none either. Places compared as written: a registered thing's in 32 bits.)
+                    if (window is not null)
+                    {
+                        var place = registered || values ? (int)ordinal : ordinal;
+                        if (window.Foreign.Contains((fi, place)) || (rule.Anchor!(c, key, v) is null && !window.Rest.Contains((fi, place))))
+                            return;
+                    }
                     // (Its place: what it is, hashed, OrdinalOf; one alike already there takes the next.)
                     ordinal = registered || values ? (int)ordinal : ordinal;
                     while (!used.Add(ordinal))
@@ -253,14 +310,15 @@ internal static partial class CellStore
                         Add(OrdinalOf(item, registered), item, null);
                 }
 
-                metas[fi] = new SpreadMeta(f.Name, true, count, inner);
+                // (A window's counts aren't the route's: -1, not checked when read.)
+                metas[fi] = window is null ? new SpreadMeta(f.Name, true, count, inner) : new SpreadMeta(f.Name, true, -1, inner is null ? null : [.. inner.Select(_ => -1)]);
             }
 
             Scratch.Pieces.Clear();
             Scratch.Heads.Clear();
             // (A field that was left out when the cells kept were written, or held there and is left out now, is in cells not written:
             // they're all written. Bridges, found when the meshes are first built, are one.)
-            if (old is not null && metas.Zip(old.Spread).Any(m => m.First.Present != m.Second.Present || m.First.Name != m.Second.Name))
+            if (old is not null && window is null && metas.Zip(old.Spread).Any(m => m.First.Present != m.Second.Present || m.First.Name != m.Second.Name))
             {
                 Log.Info("Cells: a field's come or gone since the cells kept were written, writing them all");
                 return Write(route, stamp, lines, current, null);
@@ -327,6 +385,16 @@ internal static partial class CellStore
                         w.Write(n);
                 }
 
+                void WriteReach(IReadOnlyCollection<TileId> reach)
+                {
+                    w.Write(reach.Count);
+                    foreach (var r in reach.OrderBy(t => t.I).ThenBy(t => t.J))
+                    {
+                        w.Write(r.I);
+                        w.Write(r.J);
+                    }
+                }
+
                 w.Write(ids.Length + keptCells.Count);
                 for (var k = 0; k < ids.Length; k++)
                 {
@@ -334,6 +402,7 @@ internal static partial class CellStore
                     w.Write(ids[k].J);
                     w.Write(results[k].Size);
                     w.Write(results[k].Hash);
+                    WriteReach(cells[ids[k]].Reach);
                 }
 
                 foreach (var (id, (size, hash)) in keptCells)
@@ -342,6 +411,7 @@ internal static partial class CellStore
                     w.Write(id.J);
                     w.Write(size);
                     w.Write(hash);
+                    WriteReach(old!.Reach.GetValueOrDefault(id) ?? []);
                 }
 
                 w.Write(restFile.Length);
@@ -381,14 +451,18 @@ internal static partial class CellStore
             Log.Info($"Cells: {ids.Length} cells written{(old is null ? "" : $" of {ids.Length + keptCells.Count} ({only!.Count} asked for, {keptCells.Count} left as they were)")} ({sizes.Sum() / (1 << 20)} MB, from {results.Sum(r => r.RawA + r.RawB) / (1 << 20)} MB; " +
                      $"biggest {(sizes.Length > 0 ? sizes[^1] / 1024 : 0)} KB at {biggest}, median {(sizes.Length > 0 ? sizes[sizes.Length / 2] / 1024 : 0)} KB; " +
                      $"index {new FileInfo(IndexPath(route)).Length / 1024} KB, {schema.Count} types), {all.Count} lines in " +
-                     $"{cells.Values.Sum(d => d.Pieces.Count)} pieces, {metas.Sum(m => m.Count)} things spread ({string.Join(", ", unplaced.Select((n, fi) => (n, fi)).Where(x => x.n > 0).Select(x => $"{x.n} of {SpreadFields[x.fi].Name}"))} without a cell, in the index), " +
+                     $"{cells.Values.Sum(d => d.Pieces.Count)} pieces, {cells.Values.Sum(d => d.Elements.Count) + rest.Elements.Count} things spread ({string.Join(", ", unplaced.Select((n, fi) => (n, fi)).Where(x => x.n > 0).Select(x => $"{x.n} of {SpreadFields[x.fi].Name}"))} without a cell, in the index), " +
                      $"{stale} stale removed; ms: spread {distributed}, encode {encoded - distributed}, written {watch.ElapsedMilliseconds - encoded}");
             Log.Info($"Cells: raw bytes by what: {string.Join(", ", bytesBy.OrderByDescending(x => x.Value).Select(x => $"{x.Key} {x.Value / 1024} KB"))}");
             measures?.Log();
 
             // HB_CELLCHECK: what was written read straight back, against the lines it was written from (after an edit as on open).
-            if (Check && ReadIndex(route) is { } again && Read(route, again, again.Cells.Keys) is { } back)
+            if (Check && window is null && ReadIndex(route) is { } again && Read(route, again, again.Cells.Keys) is { } back)
                 Compare(back, lines, (int)RootFields.First(f => f.Name == "_quads").GetValue(lines)! + 1, "as written");
+            // (A window's: read back as the same window, the cells written and those left as they were together.)
+            else if (Check && window is not null && ReadIndex(route) is { } again2 && Read(route, again2, window.Complete) is { } back2)
+                Compare(back2, lines, (int)RootFields.First(f => f.Name == "_quads").GetValue(lines)! + 1, "as written, a window",
+                    WindowRemade.Concat(["_shapingHashes", "_railsNear", "_wallSpans"]).ToHashSet());
             return true;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotSupportedException or TargetInvocationException or InvalidCastException)
@@ -453,6 +527,10 @@ internal static partial class CellStore
                 w.Write((int)e.Ordinal);
                 w.Write(types.IndexOf(Thing(e).GetType()));
             }
+
+            w.Write(d.ReachLines.Count);
+            foreach (var i in d.ReachLines)
+                w.Write(i);
         }
 
         using var b = new MemoryStream();

@@ -81,7 +81,9 @@ public sealed partial class TerrainSource
     /// Reads every built tile (on worker threads) and keeps its coarse heights and cover. The route's roads and rails
     /// are read too: their profiles come from the ground as built, then every tile they touch is read again and
     /// reshaped to carry them.
-    public static Task<TerrainSource> Open(RouteInfo route) => Task.Run(() =>
+    /// focus: where the camera will start (world metres, x east, z south): the lines are read as a window round it (WindowRings cells
+    /// each way, CellStore.Read), and stream in and out as it moves (Stream). Null, or HB_WINDOW=whole: the whole route.
+    public static Task<TerrainSource> Open(RouteInfo route, (double X, double Z)? focus = null) => Task.Run(() =>
     {
         using var counted = Background.Begin("Opening terrain");
         var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -149,13 +151,14 @@ public sealed partial class TerrainSource
             if (index.Stale(stamp) is { } why)
                 Log.Info($"Cells: out of date ({why}), working the lines out");
             else
-                lines = CellStore.Read(route, index, index.Cells.Keys);
+                lines = CellStore.Read(route, index, focus is { } at && WindowRings is { } rings ? CellStore.Around(CellAt(route, at.X, at.Z), rings) : index.Cells.Keys);
         }
 
         if (lines is not null)
         {
             CellStore.Restore(lines, network, edits.Snapshot(), built, bridgeEdits, objects);
             Stage("cells");
+            var asKept = 0;
             Parallel.For(0, ids.Length, i =>
             {
                 if (lines.LinesIn(ids[i]).Count > 0)
@@ -163,6 +166,9 @@ public sealed partial class TerrainSource
                 try
                 {
                     var data = route.LoadTile(ids[i]);
+                    // (A tile outside a window's cells, its lines not loaded: its ground as it was last shaped, kept, GroundCache.)
+                    if (!lines.Complete(ids[i]) && ShapeAsKept(route, ids[i], data.Heights))
+                        Interlocked.Increment(ref asKept);
                     tiles[i] = MakeTile(ids[i], data.Heights, data.Cover, data.Meta.Samples, (route.Pack is null ? LoadEdits(route.TileFolder(ids[i]), data.Meta.Samples) : null));
                 }
                 catch (Exception e)
@@ -170,9 +176,12 @@ public sealed partial class TerrainSource
                     Log.Warn($"Terrain: tile {ids[i]} unreadable ({e.Message})");
                 }
             });
-            Stage("bare tiles");
-            if (CellStore.Check)
+            Stage(lines.Window is null ? "bare tiles" : $"tiles outside the window ({asKept} shaped as kept)");
+            // (Against the whole route worked out afresh: only when it's read whole, HB_WINDOW=whole.)
+            if (CellStore.Check && lines.Window is null)
                 CellStore.Compare(lines, WorkOut(false), route.Grid!.Samples);
+            else if (CellStore.Check)
+                Log.Info("Cell check: the lines are a window, not compared with the whole route worked out afresh (HB_WINDOW=whole for that)");
         }
         else
         {
@@ -182,6 +191,8 @@ public sealed partial class TerrainSource
         }
 
         lines.PrepareShapingKeys(ids, route.Grid!.Samples);
+        if (lines.Window is not null)
+            lines.Warm();
         Stage("ground keys");
         var kept = 0;
         var shaped = 0;
@@ -245,7 +256,10 @@ public sealed partial class TerrainSource
             try
             {
                 var stamp = CellStore.StampOf(_route, tiles, objects);
-                if (current() && CellStore.Write(_route, stamp, lines, current, only))
+                bool written;
+                lock (CellsLock)
+                    written = current() && CellStore.Write(_route, stamp, lines, current, only);
+                if (written)
                     lock (_unsavedLock)
                     {
                         if (only is null)
@@ -260,6 +274,28 @@ public sealed partial class TerrainSource
             }
         });
     }
+
+    /// How many cells each way from the camera's the lines are loaded whole in (HB_WINDOW=N; whole: all of them). Null: the whole
+    /// route. 4 (9 x 9 cells, 18 km): past the track's furthest drawing (6 km), and an edit where the camera is finds its context (7 x 7
+    /// cells round its dirty ones) loaded already, rather than reading the window again for it (docs/cell-routes.md, Streaming).
+    internal static int? WindowRings { get; } = Environment.GetEnvironmentVariable("HB_WINDOW") switch
+    {
+        "whole" or "all" => null,
+        { Length: > 0 } n when int.TryParse(n, out var rings) && rings >= 0 => rings,
+        _ => 4,
+    };
+
+    /// The cell (tile) a place is in, world metres.
+    internal static TileId CellAt(RouteInfo route, double x, double z)
+    {
+        var size = route.Grid!.TileSize;
+        return new TileId((int)Math.Floor(x / size), -(int)Math.Floor(z / size) - 1);
+    }
+
+    /// A tile's ground as it was last shaped (GroundCache), whatever it was shaped from: for a tile whose lines aren't loaded (outside
+    /// a window), shown as it was until they are. False if none's kept.
+    private static bool ShapeAsKept(RouteInfo route, TileId id, float[] heights) =>
+        route.Pack is null && GroundCache.KeptKey(route, id) is { } key && GroundCache.TryLoad(route, id, key, heights);
 
     private static Tile MakeTile(TileId id, float[] heights, byte[] cover, int samples, float[]? edits)
     {
@@ -338,7 +374,11 @@ public sealed partial class TerrainSource
                         else
                         {
                             heights = route.LoadTile(tile.Id).Heights;
-                            Lines?.Conform(tile.Id, heights, samples);
+                            // (Outside a window's cells, as last shaped: the lines there aren't loaded.)
+                            if (Lines is { } lines && !lines.Complete(tile.Id))
+                                ShapeAsKept(route, tile.Id, heights);
+                            else
+                                Lines?.Conform(tile.Id, heights, samples);
                         }
 
                         ApplyEdits(heights, tile.Edits);

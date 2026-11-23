@@ -188,6 +188,15 @@ public static class WorldExport
         var trackBytes = files.Sum(f => (long)f.data.Length);
         var cellBytes = files.Where(f => cellFiles.Contains(f.name)).Sum(f => (long)f.data.Length);
 
+        // A region's pack carries the cells its own tiles' track is read from as a window complete in them (CellStore.ReadFor: those
+        // cells, the ring round them, and every cell their lines reach into), not every cell of the route; one pack of the whole route,
+        // all of them. The cells' index goes in whole.
+        var cellIndex = CellStore.ReadIndex(route) ?? throw new InvalidOperationException("the route's cells' index couldn't be read");
+        var cellFolder = Path.GetFileName(CellStore.FolderOf(route));
+        HashSet<string> CellsFor(List<TileId> tiles) => groups.Count == 1
+            ? [.. cellFiles]
+            : [$"{cellFolder}/index.bin", .. CellStore.ReadFor(cellIndex, tiles.ToHashSet()).Select(t => $"{cellFolder}/{t}.cell")];
+
         var manifest = new Dictionary<string, object>
         {
             ["world"] = route.Name, ["version"] = route.Version, ["zone"] = zone, ["exported"] = about.Exported,
@@ -203,6 +212,7 @@ public static class WorldExport
         {
             var path = Path.Combine(folder, name + ".hbpack");
             var hashes = new Dictionary<string, string>();
+            var carried = CellsFor(tiles);
             using (var pack = new PackFile.Writer(path, zone, name, grid))
             {
                 // Loaded and compressed a batch at a time on every core (each tile is a tenth of a second of Brotli), written in order.
@@ -290,13 +300,15 @@ public static class WorldExport
                 foreach (var (id, blob) in grounds)
                     pack.AddFile(PackFile.GroundName(id), blob);
                 foreach (var (fileName, data) in files)
-                    pack.AddFile(fileName, data);
+                    if (!cellFiles.Contains(fileName) || carried.Contains(fileName))
+                        pack.AddFile(fileName, data);
             }
 
             var bytes = new FileInfo(path).Length;
             packBytes += bytes;
             packs.Add(new { name, file = Path.GetFileName(path), tiles = tiles.Count, bytes, sha256 = Convert.ToHexString(PackFile.Hash(File.ReadAllBytes(path))), tileHashes = hashes });
-            lines.Add($"{name}.hbpack: {tiles.Count} tiles, {bytes / 1048576.0:0.0} MB");
+            lines.Add($"{name}.hbpack: {tiles.Count} tiles, {bytes / 1048576.0:0.0} MB, {carried.Count - 1} cells of {cellFiles.Count - 1} " +
+                      $"({files.Where(f => cellFiles.Contains(f.name) && carried.Contains(f.name)).Sum(f => (long)f.data.Length) / 1048576.0:0.0} MB)");
         }
 
         lines.Add($"Packed: tiles {tileBytes / 1048576.0:0.0} MB, shaped ground {groundBytes / 1048576.0:0.0} MB for {shapedTiles} tiles (the ground cache's {groundCacheBytes / 1048576.0:0.0} MB), " +
@@ -437,7 +449,8 @@ public static class WorldExport
             {
                 var watch = System.Diagnostics.Stopwatch.StartNew();
                 using var pack = PackSource.Open(path);
-                var lines = CellStore.Read(pack.CellRoute, pack.Cells, pack.Cells.Cells.Keys);
+                // (A region's: a window complete in its tiles, what its pack carries the cells of.)
+                var lines = CellStore.Read(pack.CellRoute, pack.Cells, pack.Built());
                 if (lines is null)
                     problems.Add($"{Path.GetFileName(path)}: its cells couldn't be read back");
                 else
@@ -446,12 +459,12 @@ public static class WorldExport
                     var read = RailGraphBuilder.Build(lines);
                     var server = Path.ChangeExtension(path, ".hbserver");
                     var mine = PackTrack.Checksum(read, pack);
-                    if (read.Checksum() != graph.Checksum())
+                    if (PackTrack.Checksum(graph, pack) != mine)
                         problems.Add($"{Path.GetFileName(path)}: the rail graph from its cells ({read.Edges.Count} edges, checksum {read.Checksum():X8}) isn't the editor's ({graph.Edges.Count}, {graph.Checksum():X8})");
                     else if (File.Exists(server) && RailGraphFile.Read(server).Graph.Checksum() is var theirs && theirs != mine)
                         problems.Add($"{Path.GetFileName(path)}: the rail graph from its cells has checksum {mine:X8}, its server track {theirs:X8}");
                     else
-                        notes.Add($"{Path.GetFileName(path)}: {lines.Lines.Count} lines read back from {pack.Cells.Cells.Count} cells, the rail graph built from them the editor's, checksum {mine:X8}" +
+                        notes.Add($"{Path.GetFileName(path)}: {lines.Lines.Count(l => !l.IsAbsent)} lines read back from {lines.Window?.Read.Count ?? pack.Cells.Cells.Count} cells, the rail graph built from them the editor's, checksum {mine:X8}" +
                                   $"{(File.Exists(server) ? " as its server track's" : "")}, in {watch.ElapsedMilliseconds} ms");
                 }
             }

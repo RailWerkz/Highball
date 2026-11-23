@@ -377,21 +377,31 @@ public sealed partial class NetworkLines
             return hash.Value;
         var walls = WallsBeside();
         hash.Add(list.Count);
+        // (Shapes and pads by where they reach, well past the tile's edge: either may be a line's off the tile.)
+        const double margin = 200.0;
+        var size = (samples - 1) * (double)_spacing;
+        var (x0, z0) = (tile.I * size - margin, -(tile.J + 1) * size - margin);
+        var (x1, z1) = (x0 + size + 2 * margin, z0 + size + 2 * margin);
+        // (A line's bridge ends and the walls beside it only where they can shape this tile, EndReach round it: one far along a long line
+        // doesn't, and a window of the lines, CellStore.Read, needn't have what's round it loaded.)
+        bool Near(NetworkLine on, int point)
+        {
+            if (on.Count == 0)
+                return false;
+            var p = Math.Clamp(point, 0, on.Count - 1);
+            return on.X[p] >= x0 - EndReach && on.X[p] <= x1 + EndReach && on.Z[p] >= z0 - EndReach && on.Z[p] <= z1 + EndReach;
+        }
+
         foreach (var index in list)
         {
             var line = _lines[index];
             hash.Add(ShapingHash(line));
             // (Ends taken in no order: the walls beside a line are gathered from bridge ends found in parallel, in whatever order
             // they came.)
-            AddEnds(ref hash, BridgeEndsOf(line));
-            AddEnds(ref hash, walls.TryGetValue(line, out var beside) ? beside : []);
+            AddEnds(ref hash, [.. BridgeEndsOf(line).Where(e => Near(line, e.Point))]);
+            AddEnds(ref hash, [.. (walls.TryGetValue(line, out var beside) ? beside : []).Where(e => Near(e.Deck ?? line, e.Point))]);
         }
 
-        // (Shapes and pads by where they reach, well past the tile's edge: either may be a line's off the tile.)
-        const double margin = 200.0;
-        var size = (samples - 1) * (double)_spacing;
-        var (x0, z0) = (tile.I * size - margin, -(tile.J + 1) * size - margin);
-        var (x1, z1) = (x0 + size + 2 * margin, z0 + size + 2 * margin);
         // (Taken in no order: the cells give the shapes back in their own, CellStore.OrdinalOf.)
         var shapes = new List<ulong>();
         foreach (var shape in EndShapes)
@@ -418,6 +428,10 @@ public sealed partial class NetworkLines
         hash.Add(PadsHash(x0, z0, x1, z1));
         return hash.Value;
     }
+
+    /// How far past a tile's edge (and ShapingKey's margin) a bridge end can reach to shape it, metres: a wall's run along what's under
+    /// it (WallMost) and a slope's spill, with room to spare.
+    private const double EndReach = 300.0;
 
     internal string ShapingParts(TileId tile, int samples)
     {

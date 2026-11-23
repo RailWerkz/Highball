@@ -12,12 +12,13 @@ internal static partial class CellStore
     /// bit for bit, references to lines and things checked to come back to the same ones; then every line's shaping hash and every
     /// tile's shaping key (what the ground cache is keyed by). Left out: what's put back from what the route's opened with (Restore),
     /// and what's left out of the cells (Dropped, LineDropped).
-    public static void Compare(NetworkLines read, NetworkLines fresh, int samples, string label = "worked out")
+    /// skip: fields not compared (a window's indexes made again when first asked for, which one side may have made and the other not).
+    public static void Compare(NetworkLines read, NetworkLines fresh, int samples, string label = "worked out", IReadOnlySet<string>? skip = null)
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
         var c = new Comparer();
         c.Pair(read, fresh);
-        var order = RootFields.Where(f => RuleOf(f).Place is Place.Lines or Place.Spread or Place.Route)
+        var order = RootFields.Where(f => RuleOf(f).Place is Place.Lines or Place.Spread or Place.Route && skip?.Contains(f.Name) != true)
             .OrderBy(f => RuleOf(f).Place == Place.Lines ? 0 : Registered(f) ? 1 : 2).ThenBy(f => f.Name, StringComparer.Ordinal);
         // (Spread lists are read back in the order of their elements' places, OrdinalOf, not the order they were made in; sets and
         // dictionaries are compared by what's in them.)

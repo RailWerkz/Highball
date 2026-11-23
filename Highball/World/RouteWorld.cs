@@ -49,11 +49,12 @@ public sealed class RouteWorld : IDisposable
     /// The rail graph was built from the track's lines as they are now.
     public bool GraphCurrent => Source?.Lines is { } lines && ReferenceEquals(lines, _graphFor);
 
-    public RouteWorld(RouteInfo route)
+    /// focus: where the camera starts (world metres, x east, z south), for the track to be read round it (TerrainSource.Open); null: all of it.
+    public RouteWorld(RouteInfo route, (double X, double Z)? focus = null)
     {
         Route = route;
         // (A pack's track is read from its cells, never laid out: TerrainSource.OpenPack.)
-        _opening = route.Pack is { } pack ? TerrainSource.OpenPack(pack) : TerrainSource.Open(route);
+        _opening = route.Pack is { } pack ? TerrainSource.OpenPack(pack) : TerrainSource.Open(route, focus);
         Railway.Switches = Switches;
     }
 

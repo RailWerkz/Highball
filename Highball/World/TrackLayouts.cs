@@ -231,17 +231,26 @@ public static class TrackLayouts
 
     public static string MarkersPath(RouteInfo route) => Path.Combine(route.Folder, "Junctions.json");
 
-    public static void SaveMarkers(RouteInfo route, IEnumerable<Layout> layouts)
+    /// window: the lines' (NetworkLines.Window), if they're a window over some cells: the layouts are those of the cells it's complete in,
+    /// and the markers kept elsewhere stay as they are.
+    public static void SaveMarkers(RouteInfo route, IEnumerable<Layout> layouts, CellWindow? window = null)
     {
         if (route.Projection is not { } projection)
             return;
         try
         {
-            var markers = layouts.Select(l =>
+            bool Inside(double x, double z) => window is null || window.Complete.Contains(TerrainSource.CellAt(route, x, z));
+            var markers = layouts.Where(l => Inside(l.X, l.Z)).Select(l =>
             {
                 var g = projection.Inverse(new RoutePoint(l.X, -l.Z));
                 return new Marker(Math.Round(g.Lat, 7), Math.Round(g.Lon, 7), l.Kind, l.Number ?? 0, l.Number is not null, l.Issue);
             }).ToList();
+            if (window is not null)
+                markers.AddRange(LoadMarkers(route).Where(m =>
+                {
+                    var p = projection.Forward(new GeoPoint(m.Lat, m.Lon));
+                    return !Inside(p.East, -p.North);
+                }));
             File.WriteAllText(MarkersPath(route), JsonSerializer.Serialize(markers, Options));
         }
         catch (Exception e)

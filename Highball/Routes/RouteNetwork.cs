@@ -239,6 +239,11 @@ public sealed class RouteNetwork
         return [.. new[] { WholeName, WholeNodesName }.Where(name => File.Exists(Path.Combine(route.Folder, name)))];
     }
 
+    /// The files what's stamped with the network hashes (CellStore.StampOf): per cell, only the index, which holds every cell's file's
+    /// hash (a save writes it last), so a stamp reads one small file rather than all of them; else the whole-route files of before.
+    public static IReadOnlyList<string> StampFiles(RouteInfo route) =>
+        File.Exists(NetworkCells.IndexIn(route)) ? [$"{NetworkCells.Folder}/{NetworkCells.IndexName}"] : Files(route);
+
     public void Merge(IEnumerable<NetworkWay> ways, IEnumerable<NetworkNode>? nodes = null)
     {
         foreach (var way in ways)
@@ -513,6 +518,7 @@ public sealed class RouteNetwork
 
             NetworkCells.WriteIndex(route, index);
             NetworkCells.WriteAtomic(IdsIn(route), JsonSerializer.SerializeToUtf8Bytes(new Ids { Next = _nextId }));
+            SaveOverview(route, all ? null : names);
         }
         catch
         {
@@ -540,6 +546,27 @@ public sealed class RouteNetwork
         LastSave = (names.Length, index.Cells.Count, bytes, watch.Elapsed.TotalMilliseconds);
         Log.Info($"Network save: {names.Length} of {index.Cells.Count} cells written ({bytes / 1024.0:0.#} KB), " +
                  $"{ways.Count} ways and {nodes.Count} nodes changed, {watch.Elapsed.TotalMilliseconds:0} ms");
+    }
+
+    /// The network in brief (NetworkOverview) brought up to date with the cells just written (null: all of them): their parts worked out
+    /// again from their ways, every other cell's kept as it was. Every cell's worked out when there's none kept to keep them from.
+    private void SaveOverview(RouteInfo route, IReadOnlyCollection<string>? written)
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var overview = written is null ? null : NetworkOverview.Read(route);
+        var cells = overview is null ? (IEnumerable<string>)[.. _cells.Keys] : written!;
+        overview ??= new NetworkOverview();
+        foreach (var name in cells)
+        {
+            if (_cells.TryGetValue(name, out var members) && members.Ways.Count > 0)
+                overview.Cells[name] = NetworkOverview.Of(members.Ways.Where(Ways.ContainsKey).Select(id => Ways[id]));
+            else
+                overview.Cells.Remove(name);
+        }
+
+        overview.Write(route);
+        Log.Info($"Network overview: {cells.Count()} of {overview.Cells.Count} cells' parts worked out, {overview.Cells.Values.Sum(c => c.Lines.Sum(l => l.Lat.Length))} points " +
+                 $"({new FileInfo(NetworkOverview.PathIn(route)).Length / 1024} KB), {watch.ElapsedMilliseconds} ms");
     }
 
     /// Reads Network/ if it has an index, else the whole-route files of before (Network.json.gz, Nodes.json.gz).

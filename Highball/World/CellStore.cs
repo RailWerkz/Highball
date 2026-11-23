@@ -32,7 +32,7 @@ namespace Highball.World;
 internal static partial class CellStore
 {
     /// The layout of the files. Bumped when it changes; cells of another are never read.
-    public const int FormatVersion = 4;
+    public const int FormatVersion = 5;
 
     /// The passes' build (laying, grading, shaping): bumped by hand when a change to them should show in cells already built. Cells of
     /// another are built again.
@@ -61,7 +61,8 @@ internal static partial class CellStore
 
     // --- The inputs stamp. ---
 
-    /// The files the lines are worked out from, read whole into the stamp (the network's too, whatever files it's in: RouteNetwork.Files).
+    /// The files the lines are worked out from, read whole into the stamp (the network's too: RouteNetwork.StampFiles, its index alone when
+    /// it's stored per cell).
     private static readonly string[] Inputs = ["Route.json", "TrackEdits.bin.gz", "Bridges.json", "Switches.json", "SwitchCurves.json"];
 
     /// What the lines are worked out from: the input files, the solved track (by size and time), each built tile's heights (by size and
@@ -69,7 +70,7 @@ internal static partial class CellStore
     public static ulong StampOf(RouteInfo route, IEnumerable<TileId> built, IEnumerable<PlacedObject> objects)
     {
         var hash = new WordHash();
-        foreach (var name in Inputs.Concat(RouteNetwork.Files(route)))
+        foreach (var name in Inputs.Concat(RouteNetwork.StampFiles(route)))
         {
             var path = Path.Combine(route.Folder, name);
             if (!File.Exists(path))
@@ -210,6 +211,9 @@ internal static partial class CellStore
         [Auto(nameof(NetworkLines.BridgeEdits))] = new(Place.Restored),
         [Auto(nameof(NetworkLines.DetailCache))] = new(Place.Restored),
 
+        // Which cells a window of the lines is complete in (CellStore.Read): set as it's read, carried by a merge.
+        [Auto(nameof(NetworkLines.Window))] = new(Place.Dropped),
+
         // LiftBridges' grid of the lines' segments: only ever used inside FinishProfiles, which lets it go first.
         ["_liftCells"] = new(Place.Dropped),
 
@@ -320,6 +324,8 @@ internal static partial class CellStore
         var c = new Context { Size = quads * (double)spacing, Spacing = spacing, Lines = lines.Lines };
         foreach (var line in lines.Lines)
         {
+            if (line.IsAbsent)
+                continue;
             c.Chains.TryAdd(line.Chain, line);
             foreach (var (node, point) in line.Nodes)
                 if (point >= 0 && point < line.Count)
@@ -448,6 +454,17 @@ internal static partial class CellStore
         Set(Auto(nameof(NetworkLines.DetailCache)), new System.Collections.Concurrent.ConcurrentDictionary<NetworkLines.DetailRegion, Lazy<float[]>>());
         lines.BridgeEdits = bridgeEdits;
         Set("_crossingObjects", objects.Where(o => o.Kind == PlacedKind.GradeCrossing).ToList());
+    }
+
+    /// What was left out of the cells, put back as the lines shown have it (a window read again as the camera moves, or grown for an
+    /// edit): the ways they were laid from (not the network as it is now: an edit since is still to be laid), the shapes, tiles, bridge
+    /// settings and crossings; the detail regions' shaped ground kept (the lines read are those shown, bit for bit, where both have them).
+    public static void RestoreFrom(NetworkLines lines, NetworkLines shown)
+    {
+        foreach (var f in RootFields.Where(f => RuleOf(f).Place == Place.Restored))
+            f.SetValue(lines, f.GetValue(shown));
+        var cache = new System.Collections.Concurrent.ConcurrentDictionary<NetworkLines.DetailRegion, Lazy<float[]>>(shown.DetailCache);
+        RootFields.First(f => f.Name == Auto(nameof(NetworkLines.DetailCache))).SetValue(lines, cache);
     }
 
     // --- The schema: every type the cells hold, and its layout. ---
