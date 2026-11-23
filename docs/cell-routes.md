@@ -327,6 +327,86 @@ memory: 0 differ, and no object written into two cells.
 - **Version policy**: a field added to `NetworkLines` gets a rule in `CellStore.Rules` (unruled ones are kept in the
   index, with a warning). Changing any held type's fields, or the rules, makes the cells unreadable, so they're rebuilt.
 
+## Packs (stage 5, built 2026-11-22)
+
+Code: `Routes/WorldExport.cs`, `Routes/PackFile.cs` (pack version 4), `Routes/PackSource.cs`, `Routes/PackTrack.cs`,
+`World/TerrainSource.Pack.cs`. A player's game reads the finished track from the pack; it never solves, grades or reshapes
+at open.
+
+**What a pack carries** (`REGION.hbpack`, files after the tiles):
+
+- The tiles as before (heights as decimetre residuals, sculpting baked in, cover).
+- `Cells/index.bin` and every `Cells/I_J.cell` of the route, as written by `CellStore` (byte for byte). The export writes the
+  route's cells first if they aren't of the lines as they stand (`CellStore.Write` with `StampOf`); from the editor it waits for
+  any cell write under way and holds off the save's own.
+- `Ground/I_J.bin` for every tile shaping changed: its shaped ground as cut and fill off the heights as built (whole
+  centimetres, run by run, delta-coded, byte planes, Brotli 9: `PackFile.EncodeGround`). The game adds it to the pack's heights
+  (`PackSource.LoadShaped`), so shaped ground meets the ground round it with no step. Not unpacked: read with the tile.
+- The small track files still read beside the cells: `Route.json`, objects, bridge and switch settings, hand shapes,
+  signalling, and the network (`RouteNetwork.Files`) that `CellStore.Restore` puts the ways back from.
+- `Pack.json` (`PackFile.About`): pack version, `CellStore.FormatVersion` and `BuildVersion`, ground version, the game
+  version that made it.
+
+**Region borders.** For now every region's pack carries every cell of the route: `CellStore.Read` reads only the whole set
+(a line's pieces, a turnout or a bridge can be in cells of other regions, and a thing is in its anchor's cell only). So a
+region's pack has all the world's lines, including some over ground it doesn't have. Once cells can be read as a window
+(stage 4), a region's pack carries the cells of its tiles plus every cell holding a piece of a line, or the anchor of a thing,
+that has a piece in its tiles: the same closure a window round the region would load. The server track is unchanged: a region
+keeps the edges whose middle is in its tiles (`WorldExport.RegionKeeps`), and the game playing a region's pack checks the same
+subset (`PackTrack.Checksum`, through `RailGraphFile` so the renumbering is the server's).
+
+**Ground exact under shaped ground.** Ground away from rail is kept within 1 m (`PackFile.TerrainTolerance`); with shaped ground
+added to that, roads away from rail would sit up to 1 m off their beds. So the export also keeps ground exact in every 100 m cell
+(and one round it) where a shaped sample would be more than 0.1 m off (`NearShaped`, worked out for the whole route first so
+tiles sharing a border judge it alike). That's most of World, roads being everywhere: tiles 93 MB against 30 MB.
+`HB_PACKROUGHROADS=1` packs as before (rail only).
+
+**Opening** (`PackSource.Open`, then `TerrainSource.OpenPack` from `RouteWorld`): `Pack.json` checked, the track files
+unpacked to `%APPDATA%/Highball/PackCache/WORLD/REGION-HASH` (the hash of the pack's path; only when the pack's changed, each file
+checked against the pack's hash), the cells' index read and checked (`ReadIndex`, `Index.Stale(index.Stamp)`: build version,
+rules and schema; the inputs stamp is the editor's business). Then the cells read, `Restore`, every tile read with its shaped
+ground, and the road marks draped. Anything this game can't read (an older pack, another cell format or build, another schema)
+is refused with `PackOutdatedException`: "World.hbpack needs re-exporting: ...". `CellStore` reads a route's cells only when it
+isn't a pack's, so the pack hands it the cache folder as a route of its own (`PackSource.CellRoute`).
+
+**Still shaped on the player's machine:** full-resolution tiles near the camera are shaped as they stream in,
+`TerrainSource.Want` calling `Lines.Conform` on the heights as loaded, as in the editor (and `ConformFine` for detail inserts).
+For a pack that should be `route.Pack?.LoadShaped(id).Heights` with no `Conform`; `TerrainSource.cs` is stage 2's, so it's left.
+The coarse heights and everything at open come from the pack.
+
+**Checked by the export** (read back): tiles and cover as before; every embedded file byte for byte; shaped ground's cut and
+fill within 5 mm; the pack opened as Single Player opens it, its cells read, and the rail graph built from them the editor's and
+of the same checksum as the server track's.
+
+### Measured (World, one region, 2026-11-22)
+
+| | Before (lays out) | After (cells) |
+|---|---|---|
+| `World.hbpack` | 38.7 MB | 279.5 MB: tiles 93.0, shaped ground 14.8 (552 tiles), cells 162.7 (572 + index), network 8.2, rest 0.6 |
+| Export, after a warm open | 15 s | 54 s (cells current; NearShaped's first pass, tiles at Brotli 9, the check's 2–3.5 s read-back) |
+| Open from the pack | 52.7 s twice (solve 4.8 s or read, profiles 10–11 s, reshape 28–33 s) | 4.7–5.4 s to the terrain open (files 1.1, cells 1.3, tiles 2.3); pack open 60 ms, 0.8 s when it unpacks |
+| Peak working set at open | 6.0 GB | 1.9–2.1 GB |
+
+Shaped ground: kept apart 14.8 MB, against the ground cache's 111.6 MB; baked into the tiles instead it would be 93.6 MB against
+107.8 MB apart (31.5 MB against 44.7 with rough roads). Baking is smaller, but the game's streaming still shapes the heights it
+loads (above), so the heights as they came have to be in the pack; once that's taken out, baking saves 14 MB.
+
+The cells dominate a pack (they're 58% of it): X, Z, RawX, RawZ, `_pointsByTile`, per point, for 33,000 lines of which 31,000
+are roads (see Open questions: Roads).
+
+### For stage 2 (stable names, partial rewrites) and stage 4 (streaming)
+
+- A pack carries the cells byte for byte with the index's hashes, so whatever stage 2 changes in the format needs nothing here
+  but `CellStore.FormatVersion` bumped; old packs are then refused plainly. A partial rewrite that keeps one consistent written
+  set (an index whose hashes are the cells') packs the same way.
+- `PackSource` relies on `ReadIndex` returning null for another format, `Index.Stale` (with the index's own stamp) for build,
+  rules and schema, and `Read` taking the whole set. If stamps or hashes move into the cells, or `Read` takes a window, a pack
+  still opens with `Read(CellRoute, index, index.Cells.Keys)`.
+- `ReadIndex` logs "working the lines out" when it refuses a format; for a pack that isn't what happens (the pack's refused).
+- Stage 4: regional packs cut down to the closure above, read through the same window the builder uses, cell by cell as the
+  train moves (the pack's file entries already give each cell's offset, so reading them from the pack without unpacking is
+  a small step).
+
 ## Stages
 
 Each stage ends with something measured and checked, and the builder working throughout.

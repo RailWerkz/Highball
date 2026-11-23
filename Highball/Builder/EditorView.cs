@@ -1222,17 +1222,22 @@ public sealed partial class EditorView : IDisposable, IToolHost
     /// stands.
     private void Export()
     {
-        if (_terrain?.Source is not { } source || _railGraph is not { } graph)
+        if (_terrain?.Source is not { } source || _railGraph is not { } graph || source.Lines is not { } track)
             return;
         if (source.Unsaved || source.Network.Unsaved)
             Save(source);
         var objects = source.Objects.ToList();
         _exportStatus = "Exporting...";
+        // The packs carry the route's cells: the export writes them itself if they're not of the lines as they stand, once any write
+        // under way is done, and no other's started till it's finished (it stands in for the save's own, below).
+        var writing = _compiling;
+        _compileDue = false;
         _export = Task.Run(() =>
         {
             try
             {
-                var result = Routes.WorldExport.Run(_route, graph, objects, s => _exportStatus = s);
+                writing?.Wait();
+                var result = Routes.WorldExport.Run(_route, graph, track, objects, s => _exportStatus = s);
                 _exportStatus = result.Lines.Any(l => l.StartsWith("PROBLEM")) ? "Exported, with problems: see the log" : $"Exported to {result.Folder}";
             }
             catch (Exception e)
@@ -1241,6 +1246,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
                 _exportStatus = $"Export failed: {e.Message}";
             }
         });
+        _compiling = _export;
     }
 
     public void MenuEdit()

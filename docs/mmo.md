@@ -294,6 +294,8 @@ In order. Each step ends with something to test.
      kept. `--pack WORLD/REGION` opens one the same way.
    - Checked with `Content/Routes/World` hidden: Plymouth opened from the pack alone (8.6 s, against 6.7 s from the
      folder) and a locomotive placed and driven.
+   - Since cell routes stage 5 (`cell-routes.md`, Packs), a pack carries the finished track (the route's cells and shaped
+     ground) and the game reads it instead of laying it out: World opens in about 5 s, not 53.
    - Still to come: a driving screen of its own (the editor's tool strip still shows, its edits just aren't kept),
      stock left on the track when a pack's made, and a version check against the manifest.
 
