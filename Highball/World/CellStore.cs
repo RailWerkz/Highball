@@ -32,7 +32,7 @@ namespace Highball.World;
 internal static partial class CellStore
 {
     /// The layout of the files. Bumped when it changes; cells of another are never read.
-    public const int FormatVersion = 1;
+    public const int FormatVersion = 2;
 
     /// The passes' build (laying, grading, shaping): bumped by hand when a change to them should show in cells already built. Cells of
     /// another are built again.
@@ -258,6 +258,12 @@ internal static partial class CellStore
 
     /// Whether a spread field's items are objects others refer to (a turnout zone to its turnout): made before any cell's read, so a
     /// reference to one in another cell finds it.
+    /// Whether a spread dictionary's values are objects of this game's own that could be one under two keys (a crossover's two switches'
+    /// options): made before any cell's read too, so one under two keys in two cells comes back as one.
+    private static bool RegisteredValues(FieldInfo f) =>
+        !RuleOf(f).Nested && f.FieldType.IsGenericType && f.FieldType.GetGenericArguments() is { Length: 2 } args && !args[1].IsValueType &&
+        args[1].Assembly == typeof(CellStore).Assembly;
+
     private static bool Registered(FieldInfo f) =>
         !RuleOf(f).Nested && f.FieldType.IsGenericType && f.FieldType.GetGenericTypeDefinition() == typeof(List<>) && f.FieldType.GetGenericArguments()[0] is { IsValueType: false } item && item != typeof(string);
 

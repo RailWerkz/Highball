@@ -1033,6 +1033,11 @@ public sealed partial class EditorView : IDisposable, IToolHost
             var applied = clock.ElapsedMilliseconds;
             _network!.Replace(change.Lines, change.Areas);
             Log.Info($"Track rebuild taken in, ms: terrain {applied}, line meshes {clock.ElapsedMilliseconds - applied} ({change.Areas.Count} areas)");
+            if (DevTools.SaveAfterRebuild)
+            {
+                DevTools.SaveAfterRebuild = false;
+                Save(_terrain.Source);
+            }
         }
         else
             Log.Error($"Track rebuild: {done.Exception?.InnerException}");

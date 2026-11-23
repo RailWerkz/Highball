@@ -111,10 +111,12 @@ internal static partial class CellStore
                 }
 
                 var registered = Registered(f);
+                var values = RegisteredValues(f);
                 var count = 0;
                 void Add(long ordinal, object? key, object? v)
                 {
-                    var own = registered && key is not null && registry.TryAdd(key, (2 + fi, (int)ordinal));
+                    var own = (registered && key is not null && registry.TryAdd(key, (2 + fi, (int)ordinal))) ||
+                              (values && v is not null && registry.TryAdd(v, (2 + fi, (int)ordinal)));
                     var cell = rule.Anchor!(c, key, v);
                     if (cell is null)
                         unplaced[fi]++;
@@ -258,6 +260,10 @@ internal static partial class CellStore
                      $"{stale} stale removed; ms: spread {distributed}, encode {encoded - distributed}, written {watch.ElapsedMilliseconds - encoded}");
             Log.Info($"Cells: raw bytes by what: {string.Join(", ", bytesBy.OrderByDescending(x => x.Value).Select(x => $"{x.Key} {x.Value / 1024} KB"))}");
             measures?.Log();
+
+            // HB_CELLCHECK: what was written read straight back, against the lines it was written from (after an edit as on open).
+            if (Check && ReadIndex(route) is { } again && Read(route, again, again.Cells.Keys) is { } back)
+                Compare(back, lines, (int)RootFields.First(f => f.Name == "_quads").GetValue(lines)! + 1, "as written");
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotSupportedException or TargetInvocationException or InvalidCastException)
         {
@@ -284,7 +290,8 @@ internal static partial class CellStore
         System.Collections.Concurrent.ConcurrentDictionary<string, long>? sizes = null)
     {
         var owned = d.Elements.Where(e => e.Own).ToList();
-        var types = owned.Select(e => e.Key!.GetType()).Distinct().ToList();
+        static object Thing(Element e) => RegisteredValues(SpreadFields[e.Field]) ? e.Value! : e.Key!;
+        var types = owned.Select(e => Thing(e).GetType()).Distinct().ToList();
 
         using var a = new MemoryStream();
         using (var w = new BinaryWriter(a, System.Text.Encoding.UTF8, true))
@@ -317,7 +324,7 @@ internal static partial class CellStore
             {
                 w.Write(2 + e.Field);
                 w.Write((int)e.Ordinal);
-                w.Write(types.IndexOf(e.Key!.GetType()));
+                w.Write(types.IndexOf(Thing(e).GetType()));
             }
         }
 
@@ -377,6 +384,16 @@ internal static partial class CellStore
                     else if (keyType is not null)
                     {
                         g.Write(keyType, e.Key);
+                        if (RegisteredValues(f))
+                        {
+                            w.Write(e.Own);
+                            if (e.Own)
+                            {
+                                g.WriteFields(e.Value!);
+                                continue;
+                            }
+                        }
+
                         g.Write(valueType!, e.Value);
                     }
                     else

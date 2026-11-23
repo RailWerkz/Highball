@@ -12,10 +12,11 @@ internal static partial class CellStore
     /// bit for bit, references to lines and things checked to come back to the same ones; then every line's shaping hash and every
     /// tile's shaping key (what the ground cache is keyed by). Left out: what's put back from what the route's opened with (Restore),
     /// and what's left out of the cells (Dropped, LineDropped).
-    public static void Compare(NetworkLines read, NetworkLines fresh, int samples)
+    public static void Compare(NetworkLines read, NetworkLines fresh, int samples, string label = "worked out")
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
         var c = new Comparer();
+        c.Pair(read, fresh);
         var order = RootFields.Where(f => RuleOf(f).Place is Place.Lines or Place.Spread or Place.Route)
             .OrderBy(f => RuleOf(f).Place == Place.Lines ? 0 : Registered(f) ? 1 : 2).ThenBy(f => f.Name, StringComparer.Ordinal);
         foreach (var f in order)
@@ -36,7 +37,7 @@ internal static partial class CellStore
         var keys = tiles.Count(t => read.ShapingKey(t, samples) != fresh.ShapingKey(t, samples));
 
         var total = c.Differences.Values.Sum(d => d.Count);
-        Log.Info($"Cell check: {read.Lines.Count} lines read, {fresh.Lines.Count} worked out; {c.Compared} values compared, {total} differ" +
+        Log.Info($"Cell check: {read.Lines.Count} lines read, {fresh.Lines.Count} {label}; {c.Compared} values compared, {total} differ" +
                  (total == 0 ? "" : " XX: " + string.Join("; ", c.Differences.OrderByDescending(d => d.Value.Count).Take(20).Select(d => $"{d.Key} {d.Value.Count} (first {d.Value.First})"))) +
                  $"; shaping hashes {hashes} of {read.Lines.Count} differ{first}{(hashes > 0 ? " XX" : "")}; shaping keys {keys} of {tiles.Count} tiles differ{(keys > 0 ? " XX" : "")}; " +
                  $"turnouts {read.Turnouts.Count}/{fresh.Turnouts.Count}, layouts {read.Layouts.Count}/{fresh.Layouts.Count}, pads {read.Pads.Count}/{fresh.Pads.Count}, " +
@@ -49,6 +50,26 @@ internal static partial class CellStore
         private readonly List<string> _path = [];
         public readonly Dictionary<string, (int Count, string First)> Differences = [];
         public long Compared;
+
+        public void Pair(object a, object b) => _seen[a] = b;
+
+        /// A key as the other side has it: a reference in it (a line) swapped for the one it was paired with.
+        private object? Counterpart(object? key)
+        {
+            if (key is null)
+                return null;
+            if (!key.GetType().IsValueType)
+                return _seen.TryGetValue(key, out var mapped) ? mapped : key;
+            if (key is System.Runtime.CompilerServices.ITuple tuple && key.GetType().IsGenericType)
+            {
+                var items = new object?[tuple.Length];
+                for (var i = 0; i < items.Length; i++)
+                    items[i] = Counterpart(tuple[i]);
+                return Activator.CreateInstance(key.GetType(), items);
+            }
+
+            return key;
+        }
 
         private void Differ(string what)
         {
@@ -168,7 +189,7 @@ internal static partial class CellStore
                         // (Its order is its buckets', not what was added when: by key.)
                         foreach (DictionaryEntry e in x)
                         {
-                            var key = e.Key is { } k && !k.GetType().IsValueType && _seen.TryGetValue(k, out var mapped) ? mapped : e.Key;
+                            var key = Counterpart(e.Key)!;
                             if (!y.Contains(key))
                             {
                                 Differ($"{e.Key} not worked out");

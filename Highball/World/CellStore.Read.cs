@@ -219,7 +219,7 @@ internal static partial class CellStore
                 throw new InvalidDataException("the spread fields aren't this build's");
             var made = new object?[SpreadFields.Length][];
             for (var fi = 0; fi < SpreadFields.Length; fi++)
-                made[fi] = Registered(SpreadFields[fi]) ? new object?[index.Spread[fi].Count] : [];
+                made[fi] = Registered(SpreadFields[fi]) || RegisteredValues(SpreadFields[fi]) ? new object?[index.Spread[fi].Count] : [];
             foreach (var f in files)
                 foreach (var (kind, ordinal, type) in f.Owned)
                     made[kind - 2][ordinal] = RuntimeHelpers.GetUninitializedObject(type);
@@ -273,7 +273,12 @@ internal static partial class CellStore
                         else if (keyType is not null)
                         {
                             var key = g.Read(keyType);
-                            file.Elements.Add(new Element(fi, ordinal, key, g.Read(valueType!), false));
+                            object? value;
+                            if (RegisteredValues(f) && r.ReadBoolean())
+                                g.ReadInto(value = made[fi][(int)ordinal]!);
+                            else
+                                value = g.Read(valueType!);
+                            file.Elements.Add(new Element(fi, ordinal, key, value, false));
                         }
                         else
                             file.Elements.Add(new Element(fi, ordinal, g.Read(itemType!), null, false));

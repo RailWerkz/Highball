@@ -61,6 +61,7 @@ namespace Highball.App;
 ///   --lay LAT LON LAT LON                           with --view, once loaded, lay track between two points (branching off
 ///                                                   any track within 20 m of the first)
 ///   --shot SECONDS FILE.png [SECONDS FILE.png ...]  save the screen at those times
+///   --save                                          with --lay, once the laid track's rebuild is taken in, save as Ctrl+S does
 ///   --quit SECONDS                                  close after that long
 ///   --novsync                                       run uncapped, to time frames (not saved)
 ///   --noshadows                                     no sun shadows, to see what they cost
@@ -168,6 +169,9 @@ public static class DevTools
 
     /// The sky to show in the 3D view (--skybox), read once by it.
     public static string? Skybox { get; set; }
+
+    /// Save once the next track rebuild's taken in, as Ctrl+S does (--save, for --lay), read once by the 3D view.
+    public static bool SaveAfterRebuild { get; set; }
 
     /// Scripted track in the 3D view (--lay), read once by it.
     public static (double Lat0, double Lon0, double Lat1, double Lon1)? Lay { get; set; }
@@ -430,6 +434,9 @@ public static class DevTools
                     var t = System.Globalization.CultureInfo.InvariantCulture;
                     TrackOp = (double.Parse(args[i + 1], t), double.Parse(args[i + 2], t), double.Parse(args[i + 3], t), args[i + 4]);
                     i += 4;
+                    break;
+                case "--save":
+                    SaveAfterRebuild = true;
                     break;
                 case "--lay" when i + 4 < args.Length:
                     var g = System.Globalization.CultureInfo.InvariantCulture;
