@@ -763,17 +763,26 @@ public sealed partial class TerrainSource
         }
 
         var rects = new List<(int, int, int, int)>();
-        foreach (var (id, heights) in change.Heights)
+        // (Each tile's coarse copy and range worked out side by side: a window grown can bring tens of tiles shaped, each a million samples.)
+        var tiles = _tiles;
+        var made = new ConcurrentDictionary<TileId, Tile>();
+        Parallel.ForEach(change.Heights, pair =>
         {
             // (A tile not loaded: its overview as shaped now; it's shaped again from the ground kept when it's loaded.)
-            if (!_tiles.TryGetValue(id, out var tile))
+            if (!tiles.TryGetValue(pair.Key, out var tile))
+                ShapedFar(pair.Key, pair.Value);
+            else
+                made[pair.Key] = MakeTile(pair.Key, pair.Value, tile.Cover, Samples, null);
+        });
+
+        foreach (var (id, heights) in change.Heights)
+        {
+            if (!tiles.TryGetValue(id, out var tile) || !made.TryGetValue(id, out var fresh))
             {
-                ShapedFar(id, heights);
                 rects.Add((id.I * Quads, -(id.J + 1) * Quads, (id.I + 1) * Quads, -id.J * Quads));
                 continue;
             }
 
-            var fresh = MakeTile(id, heights, tile.Cover, Samples, null);
             Array.Copy(fresh.Coarse, tile.Coarse, tile.Coarse.Length);
             tile.MinHeight = fresh.MinHeight;
             tile.MaxHeight = fresh.MaxHeight;
