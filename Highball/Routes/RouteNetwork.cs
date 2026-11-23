@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text.Json;
+using RailWerkz.Core.Logging;
 
 namespace Highball.Routes;
 
@@ -100,9 +101,9 @@ public sealed class NetworkNode
     public static bool Kept(string key) => key.StartsWith("railway", StringComparison.Ordinal) || key is "ref" or "name";
 }
 
-/// Every road and rail way of a route, keyed by OpenStreetMap id: Network.json.gz in the route's folder, with the tagged
-/// rail nodes in Nodes.json.gz. Each build merges what it fetched into this, so a line that runs on into a newly built
-/// tile stays one line.
+/// Every road and rail way of a route, keyed by OpenStreetMap id, with the tagged rail nodes: stored per cell in Network/ in
+/// the route's folder (NetworkCells), a save writing only the cells changed since. Each build merges what it fetched into
+/// this, so a line that runs on into a newly built tile stays one line.
 public sealed class RouteNetwork
 {
     /// The tags worth keeping: names and numbers, track and lane counts, gauge, power, speed, structures.
@@ -179,22 +180,83 @@ public sealed class RouteNetwork
     /// Bumped on every change, so views that cache projected lines know to redo them.
     public int Version { get; private set; }
 
-    private static string PathIn(RouteInfo route) => Path.Combine(route.Folder, "Network.json.gz");
+    // --- How it's stored (NetworkCells): what's on disk as of the last load or save, and what's changed since. ---
+
+    /// Each way and node as stored: the object last loaded or saved and the cell it's stored in. A way is only ever put in
+    /// or replaced whole (Set, Merge and the rest), never changed in place, so one that's still the same object is as stored.
+    private readonly Dictionary<long, (NetworkWay Way, string Cell)> _storedWays = [];
+    private readonly Dictionary<long, (NetworkNode Node, string Cell)> _storedNodes = [];
+
+    /// What's in each cell's file, by id.
+    private readonly Dictionary<string, (HashSet<long> Ways, HashSet<long> Nodes)> _cells = new(StringComparer.Ordinal);
+
+    /// Ways and nodes put in, replaced or taken out since the last load or save: their cells as they were and as they are
+    /// now are written by the next save.
+    private readonly HashSet<long> _changedWays = [];
+    private readonly HashSet<long> _changedNodes = [];
+
+    /// Cells written by the next save whatever's changed (read with a problem: a way in two of them, a file not matching its hash).
+    private readonly HashSet<string> _changedCells = new(StringComparer.Ordinal);
+
+    /// Every cell is written by the next save: read from the whole-route files of before, or cut on another grid.
+    private bool _rewriteAll;
+
+    /// Read from Network.json.gz and Nodes.json.gz: the next save renames them once every cell is written.
+    private bool _fromWhole;
+
+    /// The index as last read or written, and when its file was written, so a save after another RouteNetwork of the same
+    /// route (the Planner's and the Editor's) saved keeps the cells that one wrote.
+    private NetworkCells.Index? _index;
+    private DateTime _indexTime;
+
+    /// What the last save wrote (cells written, of how many, bytes, milliseconds), for logs and checks.
+    internal (int Cells, int OfCells, long Bytes, double Ms) LastSave { get; private set; }
+
+    /// The cell a way's stored in (null: not stored yet), for checks.
+    internal string? StoredCell(long way) => _storedWays.TryGetValue(way, out var s) ? s.Cell : null;
+
+    /// Ways and nodes found in two cells on load (a save cut short).
+    internal int Duplicates { get; private set; }
+
+    /// The next id NewId hands out, as Ids.json keeps it.
+    internal long NextId => _nextId;
+
+    /// Every cell written by the next save.
+    internal void RewriteAll() => _rewriteAll = true;
+
+    private const string WholeName = "Network.json.gz";
+    private const string WholeNodesName = "Nodes.json.gz";
+    private static string PathIn(RouteInfo route) => Path.Combine(route.Folder, WholeName);
+    private static string NodesIn(RouteInfo route) => Path.Combine(route.Folder, WholeNodesName);
 
     /// The files the network is stored in, relative to the route's folder, those that exist: what anything stamped with the
     /// network hashes (CompiledRoute) and what a pack carries of it (WorldExport). Only this class knows how it's stored.
-    public static IReadOnlyList<string> Files(RouteInfo route) =>
-        [.. new[] { "Network.json.gz", "Nodes.json.gz" }.Where(name => File.Exists(Path.Combine(route.Folder, name)))];
-    private static string NodesIn(RouteInfo route) => Path.Combine(route.Folder, "Nodes.json.gz");
+    /// Per cell: the index, then every cell's file in name order; else the whole-route files of before.
+    public static IReadOnlyList<string> Files(RouteInfo route)
+    {
+        if (NetworkCells.ReadIndex(route) is { } index)
+            return [$"{NetworkCells.Folder}/{NetworkCells.IndexName}", .. index.Cells.Keys.Select(NetworkCells.Relative)];
+        return [.. new[] { WholeName, WholeNodesName }.Where(name => File.Exists(Path.Combine(route.Folder, name)))];
+    }
 
     public void Merge(IEnumerable<NetworkWay> ways, IEnumerable<NetworkNode>? nodes = null)
     {
         foreach (var way in ways)
             if (!Ways.TryGetValue(way.Id, out var mine) || !mine.Tags.ContainsKey(EditedTag))
+            {
                 Ways[way.Id] = way;
+                _changedWays.Add(way.Id);
+            }
+
         foreach (var node in nodes ?? [])
-            Nodes[node.Id] = node;
+            PutNode(node);
         Version++;
+    }
+
+    private void PutNode(NetworkNode node)
+    {
+        Nodes[node.Id] = node;
+        _changedNodes.Add(node.Id);
     }
 
     /// Every mapped road (a positive id: from OpenStreetMap, edited or taken out or not) that inArea says is in the area taken out,
@@ -205,11 +267,19 @@ public sealed class RouteNetwork
         var ids = fetched.Select(w => w.Id).ToHashSet();
         var doomed = Ways.Values.Where(w => w.Id > 0 && !w.Rail && (ids.Contains(w.Id) || (w.Lat.Length > 0 && inArea(w)))).Select(w => w.Id).ToList();
         foreach (var id in doomed)
+        {
             Ways.Remove(id);
+            _changedWays.Add(id);
+        }
+
         foreach (var way in fetched)
+        {
             Ways[way.Id] = way;
+            _changedWays.Add(way.Id);
+        }
+
         foreach (var node in nodes ?? [])
-            Nodes[node.Id] = node;
+            PutNode(node);
         Version++;
         Unsaved = true;
         return (doomed.Count, fetched.Count);
@@ -225,11 +295,12 @@ public sealed class RouteNetwork
             if (Ways.TryGetValue(way.Id, out var mine) && mine.Tags.ContainsKey(EditedTag))
                 changed++;
             Ways[way.Id] = way;
+            _changedWays.Add(way.Id);
             restored++;
         }
 
         foreach (var node in nodes ?? [])
-            Nodes[node.Id] = node;
+            PutNode(node);
         Version++;
         Unsaved = true;
         return (restored, changed);
@@ -239,7 +310,12 @@ public sealed class RouteNetwork
     public void DropFetched()
     {
         foreach (var id in Ways.Where(w => !w.Value.Tags.ContainsKey(EditedTag)).Select(w => w.Key).ToList())
+        {
             Ways.Remove(id);
+            _changedWays.Add(id);
+        }
+
+        _changedNodes.UnionWith(Nodes.Keys);
         Nodes.Clear();
         Version++;
     }
@@ -254,6 +330,7 @@ public sealed class RouteNetwork
             Ways.Remove(id);
         else
             Ways[id] = way;
+        _changedWays.Add(id);
         Version++;
         Unsaved = true;
     }
@@ -303,35 +380,277 @@ public sealed class RouteNetwork
         return lowest;
     }
 
+    /// Writes the cells changed since the last load or save (as they were and as they are: a way whose first point moved
+    /// into another cell is taken out of the old one's file), then the index and Ids.json. After reading the whole-route
+    /// files of before, every cell is written and those files are renamed *.old.
     public void Save(RouteInfo route)
     {
-        Directory.CreateDirectory(route.Folder);
-        using var file = File.Create(PathIn(route));
-        using (var gzip = new GZipStream(file, CompressionLevel.SmallestSize))
-            JsonSerializer.Serialize(gzip, Ways.Values.ToList());
-        using (var nodes = new GZipStream(File.Create(NodesIn(route)), CompressionLevel.SmallestSize))
-            JsonSerializer.Serialize(nodes, Nodes.Values.ToList());
-        File.WriteAllText(IdsIn(route), JsonSerializer.Serialize(new Ids { Next = _nextId }));
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Directory.CreateDirectory(NetworkCells.FolderIn(route));
+        var locate = new NetworkCells.Locator(route);
+        var grid = NetworkCells.GridKey(route);
+
+        // Another RouteNetwork of this route may have saved since: the cells it wrote stay listed.
+        var indexPath = NetworkCells.IndexIn(route);
+        if (File.Exists(indexPath) && (_index is null || File.GetLastWriteTimeUtc(indexPath) != _indexTime))
+            _index = NetworkCells.ReadIndex(route);
+        if (_index is { } had && (had.Format != NetworkCells.Format || had.Grid != grid))
+            _rewriteAll = true;
+        var all = _rewriteAll;
+        var index = new NetworkCells.Index { Format = NetworkCells.Format, Grid = grid };
+        if (!all && _index is { } kept)
+            foreach (var (name, cell) in kept.Cells)
+                index.Cells[name] = cell;
+
+        // What changed: what was marked, and (for safety) any way or node that isn't the object stored.
+        var ways = new HashSet<long>(_changedWays);
+        var nodes = new HashSet<long>(_changedNodes);
+        var unmarked = 0;
+        foreach (var (id, way) in Ways)
+            if ((all || !_storedWays.TryGetValue(id, out var s) || !ReferenceEquals(s.Way, way)) && ways.Add(id) && !all)
+                unmarked++;
+        foreach (var id in _storedWays.Keys)
+            if (!Ways.ContainsKey(id) && ways.Add(id))
+                unmarked++;
+        foreach (var (id, node) in Nodes)
+            if ((all || !_storedNodes.TryGetValue(id, out var s) || !ReferenceEquals(s.Node, node)) && nodes.Add(id) && !all)
+                unmarked++;
+        foreach (var id in _storedNodes.Keys)
+            if (!Nodes.ContainsKey(id) && nodes.Add(id))
+                unmarked++;
+        if (unmarked > 0)
+            Log.Warn($"Network save: {unmarked} ways and nodes changed without being marked");
+
+        var dirty = new HashSet<string>(_changedCells, StringComparer.Ordinal);
+        if (all)
+            dirty.UnionWith(_index?.Cells.Keys ?? Enumerable.Empty<string>());
+        (HashSet<long> Ways, HashSet<long> Nodes) Members(string cell) =>
+            _cells.TryGetValue(cell, out var m) ? m : _cells[cell] = ([], []);
+        foreach (var id in ways)
+        {
+            if (_storedWays.TryGetValue(id, out var s))
+            {
+                Members(s.Cell).Ways.Remove(id);
+                dirty.Add(s.Cell);
+            }
+
+            if (Ways.TryGetValue(id, out var way))
+            {
+                var cell = locate.Of(way);
+                Members(cell).Ways.Add(id);
+                dirty.Add(cell);
+                _storedWays[id] = (way, cell);
+            }
+            else
+                _storedWays.Remove(id);
+        }
+
+        foreach (var id in nodes)
+        {
+            if (_storedNodes.TryGetValue(id, out var s))
+            {
+                Members(s.Cell).Nodes.Remove(id);
+                dirty.Add(s.Cell);
+            }
+
+            if (Nodes.TryGetValue(id, out var node))
+            {
+                var cell = locate.Of(node);
+                Members(cell).Nodes.Add(id);
+                dirty.Add(cell);
+                _storedNodes[id] = (node, cell);
+            }
+            else
+                _storedNodes.Remove(id);
+        }
+
+        // Each changed cell written whole, on every core (the first save after the old files writes them all).
+        var names = dirty.Order(StringComparer.Ordinal).ToArray();
+        var written = new NetworkCells.Cell?[names.Length];
+        long bytes = 0;
+        try
+        {
+            Parallel.For(0, names.Length, k =>
+            {
+                var name = names[k];
+                var path = NetworkCells.PathIn(route, name);
+                if (!_cells.TryGetValue(name, out var members) || members.Ways.Count + members.Nodes.Count == 0)
+                {
+                    File.Delete(path);
+                    return;
+                }
+
+                var cellWays = members.Ways.Order().Select(id => Ways[id]).ToList();
+                var cellNodes = members.Nodes.Order().Select(id => Nodes[id]).ToList();
+                var data = NetworkCells.Encode(cellWays, cellNodes);
+                NetworkCells.WriteAtomic(path, data);
+                var reach = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var way in cellWays)
+                    locate.Reach(way, reach);
+                reach.Remove(name);
+                Interlocked.Add(ref bytes, data.Length);
+                written[k] = new NetworkCells.Cell
+                {
+                    Hash = NetworkCells.Hash(data), Bytes = data.Length, Ways = cellWays.Count, Nodes = cellNodes.Count,
+                    Reach = [.. reach.Order(StringComparer.Ordinal)],
+                };
+            });
+
+            for (var k = 0; k < names.Length; k++)
+                if (written[k] is { } cell)
+                    index.Cells[names[k]] = cell;
+                else
+                {
+                    index.Cells.Remove(names[k]);
+                    _cells.Remove(names[k]);
+                }
+
+            // A full write leaves nothing in the folder the index doesn't list.
+            if (all)
+                foreach (var stray in Directory.GetFiles(NetworkCells.FolderIn(route), "*.bin"))
+                    if (!index.Cells.ContainsKey(Path.GetFileNameWithoutExtension(stray)))
+                        File.Delete(stray);
+
+            NetworkCells.WriteIndex(route, index);
+            NetworkCells.WriteAtomic(IdsIn(route), JsonSerializer.SerializeToUtf8Bytes(new Ids { Next = _nextId }));
+        }
+        catch
+        {
+            // Some cells may be written and some not: the next save writes them all.
+            _rewriteAll = true;
+            throw;
+        }
+
+        _index = index;
+        _indexTime = File.GetLastWriteTimeUtc(indexPath);
+        if (_fromWhole)
+        {
+            foreach (var path in new[] { PathIn(route), NodesIn(route) })
+                if (File.Exists(path))
+                    File.Move(path, path + ".old", overwrite: true);
+            Log.Info($"Network: {WholeName} and {WholeNodesName} now stored per cell in {NetworkCells.Folder}/; the old files renamed *.old");
+        }
+
+        _fromWhole = false;
+        _rewriteAll = false;
+        _changedWays.Clear();
+        _changedNodes.Clear();
+        _changedCells.Clear();
         Unsaved = false;
+        LastSave = (names.Length, index.Cells.Count, bytes, watch.Elapsed.TotalMilliseconds);
+        Log.Info($"Network save: {names.Length} of {index.Cells.Count} cells written ({bytes / 1024.0:0.#} KB), " +
+                 $"{ways.Count} ways and {nodes.Count} nodes changed, {watch.Elapsed.TotalMilliseconds:0} ms");
     }
 
+    /// Reads Network/ if it has an index, else the whole-route files of before (Network.json.gz, Nodes.json.gz).
     public static RouteNetwork Load(RouteInfo route)
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         var network = new RouteNetwork();
-        var path = PathIn(route);
-        if (!File.Exists(path))
-            return network;
-
-        using (var gzip = new GZipStream(File.OpenRead(path), CompressionMode.Decompress))
-            network.Merge(JsonSerializer.Deserialize<List<NetworkWay>>(gzip) ?? []);
-        if (File.Exists(NodesIn(route)))
+        if (NetworkCells.ReadIndex(route) is { } index)
+            network.LoadCells(route, index);
+        else if (File.Exists(PathIn(route)))
         {
-            using var nodes = new GZipStream(File.OpenRead(NodesIn(route)), CompressionMode.Decompress);
-            network.Merge([], JsonSerializer.Deserialize<List<NetworkNode>>(nodes) ?? []);
+            using (var gzip = new GZipStream(File.OpenRead(PathIn(route)), CompressionMode.Decompress))
+                foreach (var way in JsonSerializer.Deserialize<List<NetworkWay>>(gzip) ?? [])
+                    network.Ways[way.Id] = way;
+            if (File.Exists(NodesIn(route)))
+            {
+                using var nodes = new GZipStream(File.OpenRead(NodesIn(route)), CompressionMode.Decompress);
+                foreach (var node in JsonSerializer.Deserialize<List<NetworkNode>>(nodes) ?? [])
+                    network.Nodes[node.Id] = node;
+            }
+
+            network._fromWhole = true;
+            network._rewriteAll = true;
+            Log.Info($"Network load: {network.Ways.Count} ways, {network.Nodes.Count} nodes from {WholeName}, {watch.Elapsed.TotalMilliseconds:0} ms");
         }
+        else
+            return network;
 
         var saved = File.Exists(IdsIn(route)) ? JsonSerializer.Deserialize<Ids>(File.ReadAllText(IdsIn(route)))?.Next : null;
         network._nextId = Math.Min(saved ?? -1L, LowestReferenced(route) - 1);
         return network;
+    }
+
+    /// Every cell the index lists read (on every core), then put in by cell name.
+    private void LoadCells(RouteInfo route, NetworkCells.Index index)
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        if (index.Format != NetworkCells.Format)
+            throw new InvalidDataException($"{NetworkCells.IndexIn(route)}: network format {index.Format}, not {NetworkCells.Format}");
+        _index = index;
+        _indexTime = File.GetLastWriteTimeUtc(NetworkCells.IndexIn(route));
+        if (index.Grid != NetworkCells.GridKey(route))
+        {
+            Log.Warn($"Network load: cells cut on {index.Grid}, the route's now on {NetworkCells.GridKey(route)}; every cell is written again on save");
+            _rewriteAll = true;
+        }
+
+        var names = index.Cells.Keys.ToArray();
+        var read = new (List<NetworkWay> Ways, List<NetworkNode> Nodes, bool Stale)?[names.Length];
+        Parallel.For(0, names.Length, k =>
+        {
+            var path = NetworkCells.PathIn(route, names[k]);
+            if (!File.Exists(path))
+                return;
+            var data = File.ReadAllBytes(path);
+            var (ways, nodes) = NetworkCells.Decode(data, path);
+            read[k] = (ways, nodes, NetworkCells.Hash(data) != index.Cells[names[k]].Hash);
+        });
+
+        for (var k = 0; k < names.Length; k++)
+        {
+            var name = names[k];
+            if (read[k] is not { } cell)
+            {
+                Log.Warn($"Network load: cell {name} is in the index but has no file");
+                _changedCells.Add(name);
+                continue;
+            }
+
+            if (cell.Stale)
+            {
+                Log.Warn($"Network load: cell {name} doesn't match the index's hash of it");
+                _changedCells.Add(name);
+            }
+
+            var members = (Ways: new HashSet<long>(cell.Ways.Count), Nodes: new HashSet<long>(cell.Nodes.Count));
+            _cells[name] = members;
+            foreach (var way in cell.Ways)
+            {
+                if (_storedWays.TryGetValue(way.Id, out var other))
+                {
+                    // A save cut short between two cells' files: the one read first is kept, and both are written again.
+                    Duplicates++;
+                    _changedCells.Add(other.Cell);
+                    _changedCells.Add(name);
+                    continue;
+                }
+
+                Ways[way.Id] = way;
+                _storedWays[way.Id] = (way, name);
+                members.Ways.Add(way.Id);
+            }
+
+            foreach (var node in cell.Nodes)
+            {
+                if (_storedNodes.TryGetValue(node.Id, out var other))
+                {
+                    Duplicates++;
+                    _changedCells.Add(other.Cell);
+                    _changedCells.Add(name);
+                    continue;
+                }
+
+                Nodes[node.Id] = node;
+                _storedNodes[node.Id] = (node, name);
+                members.Nodes.Add(node.Id);
+            }
+        }
+
+        if (Duplicates > 0)
+            Log.Warn($"Network load: {Duplicates} ways and nodes found in two cells; those cells are written again on save");
+        Log.Info($"Network load: {Ways.Count} ways, {Nodes.Count} nodes from {names.Length} cells, {watch.Elapsed.TotalMilliseconds:0} ms");
     }
 }
