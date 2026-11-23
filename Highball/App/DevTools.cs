@@ -130,6 +130,9 @@ public static class DevTools
 
     private static string? _route;
     private static string? _migrateZone;
+
+    /// --networkcheck ROUTE: the network written per cell and read back, checked against what it was read from (Routes.NetworkCheck).
+    private static string? _networkCheck;
     private static bool _exportPending;
     private static string? _pack;
 
@@ -329,6 +332,9 @@ public static class DevTools
                 case "--migrate-zone" when i + 1 < args.Length:
                     _migrateZone = args[++i];
                     break;
+                case "--networkcheck" when i + 1 < args.Length:
+                    _networkCheck = args[++i];
+                    break;
                 case "--select" when i + 3 < args.Length:
                     var culture = System.Globalization.CultureInfo.InvariantCulture;
                     Select = (double.Parse(args[i + 1], culture), double.Parse(args[i + 2], culture), int.Parse(args[i + 3], culture));
@@ -519,6 +525,19 @@ public static class DevTools
             catch (Exception e)
             {
                 Log.Error($"--migrate-zone {migrate}: {e}");
+            }
+        }
+
+        if (_networkCheck is { } check)
+        {
+            _networkCheck = null;
+            try
+            {
+                Routes.NetworkCheck.Run(check);
+            }
+            catch (Exception e)
+            {
+                Log.Error($"--networkcheck {check}: {e}");
             }
         }
 
