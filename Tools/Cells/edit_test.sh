@@ -17,12 +17,15 @@ dotnet build "$root/Highball" -c Release 2>&1 | grep -E " error |Build succeeded
 
 rm -rf "$keep"; mkdir -p "$keep"
 find "$route" -maxdepth 1 -type f -exec cp -p {} "$keep/" \;
+for d in Network Cells; do [ -d "$route/$d" ] && cp -rp "$route/$d" "$keep/$d"; done
 
 # shellcheck disable=SC2086
 HB_LOGFILE="$root/Logs/$name.log" "$root/Highball/bin/Release/net10.0/Highball.exe" --route World --view --lay ${lay[*]} --quit 200 > /dev/null 2>&1 || true
 
-for f in "$keep"/*; do cp -p "$f" "$route/"; done
-for f in "$keep"/*; do cmp -s "$f" "$route/$(basename "$f")" || echo "NOT RESTORED: $f"; done
+for f in "$keep"/*; do [ -f "$f" ] && cp -p "$f" "$route/"; done
+# (The folders saves write into put back whole: what the run added to them taken out too.)
+for d in Network Cells; do [ -d "$keep/$d" ] && rm -rf "$route/$d" && cp -rp "$keep/$d" "$route/$d"; done
+for f in "$keep"/*; do [ -f "$f" ] && { cmp -s "$f" "$route/$(basename "$f")" || echo "NOT RESTORED: $f"; }; done
 # (Files the run made that weren't there before are taken out again.)
 for f in "$route"/*; do [ -f "$f" ] && [ ! -e "$keep/$(basename "$f")" ] && rm -f "$f"; done
 
