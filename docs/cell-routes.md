@@ -146,6 +146,39 @@ loaded and saved whole on every Ctrl+S.
 - Saving writes only the cells changed since the last save.
 - The editor's network (`RouteNetwork`) becomes a window over the cells loaded, with the same API for the tools.
 
+### Network files
+
+Built in stage 3 (`Routes/NetworkCells.cs`, `Routes/RouteNetwork.cs`). Under `<route>/Network/`:
+
+- `I_J.bin`, one per cell with anything in it (`TileId`'s name; the tile of a point is
+  `route.Grid.TileAt(route.Projection.Forward(geo))`). A way is in the cell of its first point, a tagged node in its own
+  cell. Ways with no position (what's left of an OpenStreetMap way taken out by hand) are in `Loose.bin`.
+- `Index.json`: the format version, the grid the cells were cut on (zone and tile size: a change rewrites every cell),
+  and per cell its hash (SHA-256 of the file, 16 bytes), size, way and node counts, and **`Reach`**: the other cells its
+  ways pass through (their points and the boxes of the segments between them).
+- A cell file is Brotli (quality 5) over a small binary layout: ways by id with delta-coded ids and node ids, points as
+  delta-coded whole numbers of 1e-7 degrees with how the double is made from them (the JSON and PBF readers make them
+  differently), or the raw double when neither gives it back bit for bit (track laid by hand). Everything reads back
+  exactly.
+- Every file is written to `NAME.tmp` and moved over; the index last. A save cut short can leave a way in two cells (the
+  new one written, the old not yet): the load keeps one and writes both cells again on the next save.
+
+`RouteNetwork` remembers each way's and node's stored object and cell; a save writes the cells of everything changed
+since (as it was and as it is, so a way whose first point moves across a border leaves the old cell's file), then the
+index and `Ids.json`. A way must be replaced whole (`Set`), never changed in place: the save also finds any way that isn't
+the stored object, and warns if it wasn't marked. Old routes: `Load` reads `Network.json.gz` and `Nodes.json.gz` when
+there's no index; the first save writes every cell and renames them `*.old` (nothing reads those).
+
+**Loading a subset later (stage 4).** Everything needed to load only some cells is in the index: to load the network round
+cell X, read the cell files of X and of every cell whose `Reach` names X (each way crossing X is stored once, in the cell
+it starts in). Nodes need only their own cell. The load already decodes cells independently (in parallel) and keeps
+which cell each way came from, so a window over some cells is a filter on which files it reads, plus saving only cells
+whose every way is loaded. `Loose.bin` is small and always read.
+
+On World (60,952 ways, 629 nodes, 2026-11-22): 1,570 cells (ways run beyond the 574 built tiles), 5.8 MB on disk against
+8.2 MB for the old files; load 0.2 s against 0.5–0.8 s; a save after a small edit writes 1 or 2 cells in about 15 ms
+against 1.8 s for the whole files.
+
 ## Multiplayer and single player
 
 - **Driving** (single player and multiplayer) loads cells from packs as the train moves, as `mmo.md` plans for tiles:

@@ -46,8 +46,16 @@ public sealed class PackSource : IDisposable
         }
 
         Directory.CreateDirectory(cache);
+        // (A file's name is relative to the route's folder, perhaps in a folder of its own: Network/ has one file a cell.)
+        var root = System.IO.Path.GetFullPath(cache) + System.IO.Path.DirectorySeparatorChar;
         foreach (var entry in Header.Files)
-            File.WriteAllBytes(System.IO.Path.Combine(cache, entry.Name), PackFile.ReadBlob(_file, entry.Offset, entry.Length));
+        {
+            var target = System.IO.Path.GetFullPath(System.IO.Path.Combine(cache, entry.Name));
+            if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException($"{path}: a track file outside the route's folder ({entry.Name})");
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(target)!);
+            File.WriteAllBytes(target, PackFile.ReadBlob(_file, entry.Offset, entry.Length));
+        }
 
         Route = RouteInfo.FromPack(cache, $"{world}.{name}", this);
         if (Route.Zone != Header.Zone)
