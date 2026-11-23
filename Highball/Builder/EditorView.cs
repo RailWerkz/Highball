@@ -1313,6 +1313,14 @@ public sealed partial class EditorView : IDisposable, IToolHost
             try
             {
                 writing?.Wait();
+                // (The track a window round the camera: the packs and servers are of the whole route, so it's read whole for them, the
+                // window's own cells written first if they're not, CellStore.Write.)
+                if (track.Window is not null)
+                {
+                    _exportStatus = "Reading the whole route's track";
+                    (track, graph) = source.WholeTrack(track, graph, objects);
+                }
+
                 var result = Routes.WorldExport.Run(_route, graph, track, objects, s => _exportStatus = s);
                 _exportStatus = result.Lines.Any(l => l.StartsWith("PROBLEM")) ? "Exported, with problems: see the log" : $"Exported to {result.Folder}";
             }

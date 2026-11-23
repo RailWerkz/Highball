@@ -177,8 +177,11 @@ public sealed partial class TerrainSource
                 }
             });
             Stage(lines.Window is null ? "bare tiles" : $"tiles outside the window ({asKept} shaped as kept)");
-            if (CellStore.Check)
+            // (Against the whole route worked out afresh: only when it's read whole, HB_WINDOW=whole.)
+            if (CellStore.Check && lines.Window is null)
                 CellStore.Compare(lines, WorkOut(false), route.Grid!.Samples);
+            else if (CellStore.Check)
+                Log.Info("Cell check: the lines are a window, not compared with the whole route worked out afresh (HB_WINDOW=whole for that)");
         }
         else
         {
@@ -272,13 +275,13 @@ public sealed partial class TerrainSource
         });
     }
 
-    /// How many cells each way from the camera's the lines are loaded whole in (HB_WINDOW=N; whole: all of them, as is any check
-    /// against the lines worked out afresh, HB_CELLCHECK). Null: the whole route.
+    /// How many cells each way from the camera's the lines are loaded whole in (HB_WINDOW=N; whole: all of them). Null: the whole
+    /// route.
     internal static int? WindowRings { get; } = Environment.GetEnvironmentVariable("HB_WINDOW") switch
     {
         "whole" or "all" => null,
-        { Length: > 0 } n when int.TryParse(n, out var rings) && rings >= 0 => CellStore.Check ? null : rings,
-        _ => CellStore.Check ? null : 3,
+        { Length: > 0 } n when int.TryParse(n, out var rings) && rings >= 0 => rings,
+        _ => 3,
     };
 
     /// The cell (tile) a place is in, world metres.

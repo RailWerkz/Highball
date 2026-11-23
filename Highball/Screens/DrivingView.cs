@@ -83,6 +83,8 @@ public sealed class DrivingView : IDisposable
         var heightAt = _world.Source!.HeightAt;
         if (!_session.InCab)
             _eye.Fly(dt, Blocked, false, heightAt);
+        if (DevTools.FlySpeed is { } fly && !_session.InCab)
+            FlyTest(fly, dt);
         using (Profiler.Sample("Trains"))
         {
             if (_world.RefreshGraph())
@@ -108,6 +110,31 @@ public sealed class DrivingView : IDisposable
         var limit = Settings.Current.ViewDistance + above;
         _display.Renderer.Sky.SetViewLimit((float)limit);
         _world.Stream(Camera, limit);
+    }
+
+    private double _flyLogAt;
+    private float _flyWorst;
+
+    /// --fly: straight ahead at speed metres a second, logging each second's worst frame and the terrain left waiting, as the
+    /// editor's does.
+    private void FlyTest(float speed, float dt)
+    {
+        var forward = Camera.Forward;
+        var flat = MathF.Sqrt(forward.X * forward.X + forward.Z * forward.Z);
+        if (flat > 0f)
+        {
+            Camera.X += forward.X / flat * speed * dt;
+            Camera.Z += forward.Z / flat * speed * dt;
+        }
+
+        _flyWorst = MathF.Max(_flyWorst, dt * 1000f);
+        var now = RailWerkz.Core.Time.Time.Now;
+        if (now - _flyLogAt < 1.0)
+            return;
+        RailWerkz.Core.Logging.Log.Info(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"Fly: worst frame {_flyWorst:0.0} ms, {_world.Terrain!.Waiting} patches waiting, {_world.Terrain.Building} building, {_world.Terrain.DrawnPatches} drawn; working set {Environment.WorkingSet >> 20} MB"));
+        _flyLogAt = now;
+        _flyWorst = 0f;
     }
 
     private void PlaceCamera(TerrainSource source)

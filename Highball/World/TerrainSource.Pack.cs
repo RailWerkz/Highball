@@ -29,7 +29,8 @@ public sealed partial class TerrainSource
         var objects = RouteObjects.Load(route);
         Stage("files");
 
-        var lines = CellStore.Read(pack.CellRoute, pack.Cells, pack.Cells.Cells.Keys)
+        // (A window complete in the pack's own tiles: a region's pack carries only the cells that's read from, CellStore.ReadFor.)
+        var lines = CellStore.Read(pack.CellRoute, pack.Cells, pack.Built())
                     ?? throw new PackOutdatedException(pack.Path, "its cells couldn't be read (see the log)");
         CellStore.Restore(lines, network, edits.Snapshot(), built, bridgeEdits, objects);
         Stage("cells");
@@ -57,7 +58,7 @@ public sealed partial class TerrainSource
         source.Objects.AddRange(objects);
         foreach (var (key, edit) in bridgeEdits)
             source.Bridges[key] = edit;
-        Log.Info($"Terrain: {source._tiles.Count} tiles and {lines.Lines.Count} lines opened from the pack in {watch.ElapsedMilliseconds} ms " +
+        Log.Info($"Terrain: {source._tiles.Count} tiles and {lines.Lines.Count(l => !l.IsAbsent)} lines opened from the pack in {watch.ElapsedMilliseconds} ms " +
                  $"(peak working set so far {System.Diagnostics.Process.GetCurrentProcess().PeakWorkingSet64 >> 20} MB, managed heap {GC.GetTotalMemory(false) >> 20} MB)");
         return source;
     });

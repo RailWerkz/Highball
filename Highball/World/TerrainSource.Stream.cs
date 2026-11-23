@@ -137,6 +137,35 @@ public sealed partial class TerrainSource
         return new NetworkChange(lines, heights, areas) { Made = made, Gone = gone, Moved = [], Touched = new HashSet<TileId>() };
     }
 
+    /// The whole route's track, for what's of all of it (the packs and servers, WorldExport): a window's own cells written first if
+    /// they're not as it stands, then every cell read; its rail graph built (switches set as graph's). The window's lines and graph
+    /// as they are if they're the whole route already.
+    internal (NetworkLines Lines, Trains.RailGraph Graph) WholeTrack(NetworkLines window, Trains.RailGraph graph, IReadOnlyList<PlacedObject> objects)
+    {
+        if (window.Window is null)
+            return (window, graph);
+        NetworkLines? whole;
+        lock (CellsLock)
+        {
+            var stamp = CellStore.StampOf(_route, _tiles.Keys, objects);
+            if (CellStore.ReadIndex(_route) is not { } index || index.Stale(stamp) is not null)
+            {
+                if (CellStore.Write(_route, stamp, window))
+                    lock (_unsavedLock)
+                        _unsavedCells = [];
+            }
+
+            var now = CellStore.ReadIndex(_route) ?? throw new InvalidOperationException("the route's cells couldn't be read");
+            whole = CellStore.Read(_route, now, now.Cells.Keys) ?? throw new InvalidOperationException("the route's cells couldn't be read whole");
+        }
+
+        CellStore.RestoreFrom(whole, window);
+        var built = RailGraphBuilder.Build(whole);
+        built.Reversed = graph.Reversed;
+        Log.Info($"Export: the whole route's track read ({whole.Lines.Count(l => !l.IsAbsent)} lines; the window had {window.Lines.Count(l => !l.IsAbsent)})");
+        return (whole, built);
+    }
+
     /// Whether two lines in one place are the same line read twice (or both no line).
     private static bool SameLine(NetworkLine a, NetworkLine b) =>
         ReferenceEquals(a, b) || (!a.IsAbsent && !b.IsAbsent && a.Key == b.Key && a.Name == b.Name && a.Count == b.Count && a.Chain == b.Chain);

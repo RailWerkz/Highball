@@ -450,6 +450,10 @@ internal static partial class CellStore
             // HB_CELLCHECK: what was written read straight back, against the lines it was written from (after an edit as on open).
             if (Check && window is null && ReadIndex(route) is { } again && Read(route, again, again.Cells.Keys) is { } back)
                 Compare(back, lines, (int)RootFields.First(f => f.Name == "_quads").GetValue(lines)! + 1, "as written");
+            // (A window's: read back as the same window, the cells written and those left as they were together.)
+            else if (Check && window is not null && ReadIndex(route) is { } again2 && Read(route, again2, window.Complete) is { } back2)
+                Compare(back2, lines, (int)RootFields.First(f => f.Name == "_quads").GetValue(lines)! + 1, "as written, a window",
+                    Remade.Append("_byChain").Append("_detailRegions").Append("_detailCells").ToHashSet());
             return true;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotSupportedException or TargetInvocationException or InvalidCastException)
