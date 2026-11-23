@@ -1,0 +1,10 @@
+{
+  "name": "Road012A",
+  "category": "Asphalt",
+  "sizes": [
+    "1K",
+    "2K"
+  ],
+  "source": "ambientCG",
+  "license": "CC0"
+}

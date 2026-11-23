@@ -1,0 +1,29 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (23,768 kg); loaded, the gross rail load its trucks are rated for.
+{
+  "id": "flatcar_aar_50ton",
+  "name": "50-ton AAR flatcar",
+  "kind": "Flatcar",
+  "type": "AAR 50-ton general-service flatcar",
+  "lengthM": 16.867,
+  "truckCentresM": 13.181,
+  "frontOverhangM": 1.888,
+  "axles": 4,
+  "wheelDiameterM": 0.8387,
+  "massEmptyKg": 23768,
+  "massLoadedKg": 76660,
+  "maxSpeedKmh": 89,
+  "liveries": [
+    {
+      "id": "cn",
+      "name": "CN",
+      "model": "Vehicles/Freight/Flatcars/AAR50Ton/LOD0/flatcar_aar_50ton_cn.glb"
+    },
+    {
+      "id": "cp",
+      "name": "CP",
+      "model": "Vehicles/Freight/Flatcars/AAR50Ton/LOD0/flatcar_aar_50ton_cp.glb"
+    }
+  ]
+}

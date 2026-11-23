@@ -8,7 +8,7 @@
 layout(local_size_x = 64) in;
 
 // Vegetation.SlotCount + 1: checked there (CullSlotStarts) before this is used.
-const int Slots = 19;
+const int Slots = 29;
 
 struct CellData
 {
@@ -136,7 +136,7 @@ void main()
         if (kind.enabled == 0)
             continue;
         int count = c.starts[kind.slot + 1] - c.starts[kind.slot];
-        if (count == 0 || nearest >= kind.far * 1.1 || furthest < kind.near * 0.9)
+        if (count == 0 || nearest >= kind.far * 1.2 || furthest < kind.near * 0.8)
             continue;
         uint shown = showing(count, nearest, kind.fade);
         if (shown == 0u)

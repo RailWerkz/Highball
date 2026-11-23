@@ -115,8 +115,11 @@ public sealed partial class NetworkLines
         {
             BridgeEndsOf(_lines[0]);
             lock (_bridgeEndsLock)
+                // (In one order every time, whatever order the ends were found in: the walls shape the ground one after another, and
+                // taken in another order a few samples beside them came out metres apart from one open to the next.)
                 _wallsBeside ??= _bridgeEnds!.Values.SelectMany(e => e).Where(e => e.Kind == BridgeEndKind.Wall && e.Under is not null)
-                    .GroupBy(e => e.Under!).ToDictionary(g => g.Key, g => g.ToList());
+                    .GroupBy(e => e.Under!).OrderBy(g => g.Key.Index)
+                    .ToDictionary(g => g.Key, g => g.OrderBy(e => e.Deck?.Index ?? int.MaxValue).ThenBy(e => e.Point).ThenBy(e => e.Start).ThenBy(e => e.UnderS).ToList());
         }
 
         return _wallsBeside;

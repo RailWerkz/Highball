@@ -1,0 +1,169 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (25,000 kg); loaded, the gross rail load its trucks are rated for.
+{
+  "id": "open_hopper_55ton",
+  "name": "55-ton two-bay hopper",
+  "kind": "OpenHopper",
+  "type": "55-ton two-bay open hopper, 70-ton trucks",
+  "lengthM": 10.106,
+  "truckCentresM": 6.392,
+  "frontOverhangM": 1.857,
+  "axles": 4,
+  "wheelDiameterM": 0.0,
+  "massEmptyKg": 25000,
+  "massLoadedKg": 99790,
+  "maxSpeedKmh": 89,
+  "liveries": [
+    {
+      "id": "am",
+      "name": "AM",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_am.glb"
+    },
+    {
+      "id": "bo_chessie",
+      "name": "B&O (Chessie)",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_bo_chessie.glb"
+    },
+    {
+      "id": "bo_original",
+      "name": "B&O (original)",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_bo_original.glb"
+    },
+    {
+      "id": "bo_roman",
+      "name": "B&O (Roman)",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_bo_roman.glb"
+    },
+    {
+      "id": "bo_ex_co",
+      "name": "B&O (ex-C&O)",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_bo_ex_co.glb"
+    },
+    {
+      "id": "co_1",
+      "name": "C&O 1",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_co_1.glb"
+    },
+    {
+      "id": "co_2",
+      "name": "C&O 2",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_co_2.glb"
+    },
+    {
+      "id": "co_3",
+      "name": "C&O 3",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_co_3.glb"
+    },
+    {
+      "id": "cnj",
+      "name": "CNJ",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_cnj.glb"
+    },
+    {
+      "id": "crr",
+      "name": "CRR",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_crr.glb"
+    },
+    {
+      "id": "dh_1",
+      "name": "D&H 1",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_dh_1.glb"
+    },
+    {
+      "id": "dh_2",
+      "name": "D&H 2",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_dh_2.glb"
+    },
+    {
+      "id": "erie",
+      "name": "Erie",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_erie.glb"
+    },
+    {
+      "id": "lne_1",
+      "name": "LNE 1",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_lne_1.glb"
+    },
+    {
+      "id": "lne_2",
+      "name": "LNE 2",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_lne_2.glb"
+    },
+    {
+      "id": "lne_3",
+      "name": "LNE 3",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_lne_3.glb"
+    },
+    {
+      "id": "nw",
+      "name": "N&W",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_nw.glb"
+    },
+    {
+      "id": "nmw",
+      "name": "NM&W",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_nmw.glb"
+    },
+    {
+      "id": "ns",
+      "name": "NS",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_ns.glb"
+    },
+    {
+      "id": "pwv_1",
+      "name": "P&WV 1",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_pwv_1.glb"
+    },
+    {
+      "id": "pwv_2",
+      "name": "P&WV 2",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_pwv_2.glb"
+    },
+    {
+      "id": "pwv_3",
+      "name": "P&WV 3",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_pwv_3.glb"
+    },
+    {
+      "id": "pwv_4",
+      "name": "P&WV 4",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_pwv_4.glb"
+    },
+    {
+      "id": "rfp_ballast",
+      "name": "RF&P (ballast)",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_rfp_ballast.glb"
+    },
+    {
+      "id": "reading_roman",
+      "name": "Reading (Roman)",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_reading_roman.glb"
+    },
+    {
+      "id": "reading_speed_lettering_2",
+      "name": "Reading (speed lettering 2)",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_reading_speed_lettering_2.glb"
+    },
+    {
+      "id": "reading_speed_lettering",
+      "name": "Reading (speed lettering)",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_reading_speed_lettering.glb"
+    },
+    {
+      "id": "reading_sand",
+      "name": "Reading (sand)",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_reading_sand.glb"
+    },
+    {
+      "id": "usaf",
+      "name": "USAF",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_usaf.glb"
+    },
+    {
+      "id": "vo",
+      "name": "V&O",
+      "model": "Vehicles/Freight/OpenHoppers/Hopper55Ton/LOD0/open_hopper_55ton_vo.glb"
+    }
+  ]
+}

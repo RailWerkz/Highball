@@ -115,7 +115,7 @@ public static class CrossoverFitting
     {
         var projection = route.Projection!;
         var pieces = new Dictionary<long, List<long>>();
-        var ways = Split(network, pieces).ToDictionary(w => w.Id);
+        var ways = new WayTable(Split(network, pieces).ToDictionary(w => w.Id));
         var forced = new Dictionary<long, (int, float)>();
         var options = new Dictionary<long, SwitchOptions>();
         var problems = new Dictionary<long, string>();
@@ -157,7 +157,7 @@ public static class CrossoverFitting
             while (Plain(end) && path.Count < 8)
             {
                 var (prev, _) = path[^1];
-                var next = ways.Values.FirstOrDefault(o => Usable(o) && o != prev && (o.Nodes[0] == end || o.Nodes[^1] == end));
+                var next = ways.At(end).FirstOrDefault(o => Usable(o) && o != prev && (o.Nodes[0] == end || o.Nodes[^1] == end));
                 if (next is null || path.Any(q => q.Way == next))
                     break;
                 path.Add((next, next.Nodes[^1] == end));
@@ -182,10 +182,10 @@ public static class CrossoverFitting
             }
 
             // The toe of a switch at either end: a track leading to a switch, not a crossover. Each is fitted on its own.
-            if (IsToe(ways.Values.Where(Usable), first, path[0].Way, mine, P) || IsToe(ways.Values.Where(Usable), last, path[^1].Way, mine, P))
+            if (IsToe(ways.At(first).Where(Usable), first, path[0].Way, mine, P) || IsToe(ways.At(last).Where(Usable), last, path[^1].Way, mine, P))
                 continue;
 
-            if (TrackAt(ways.Values.Where(Usable), first, mine, P) is not { } a || TrackAt(ways.Values.Where(Usable), last, mine, P) is not { } b)
+            if (TrackAt(ways.At(first).Where(Usable), first, mine, P) is not { } a || TrackAt(ways.At(last).Where(Usable), last, mine, P) is not { } b)
             {
                 Why("A switch's track doesn't run straight on through it");
                 continue;
@@ -282,7 +282,7 @@ public static class CrossoverFitting
             var start = (X: f.Item1 + u.X * (middle - total / 2), Z: f.Item2 + u.Z * (middle - total / 2));
             var atA = Move(a, u, middle - total / 2, ways, ref nextId, projection);
             // (Read again: the two tracks may share a way, which the first move just changed.)
-            var atB = Move(TrackAt(ways.Values.Where(Usable), last, mine, P) ?? b, u, middle + total / 2 - along, ways, ref nextId, projection);
+            var atB = Move(TrackAt(ways.At(last).Where(Usable), last, mine, P) ?? b, u, middle + total / 2 - along, ways, ref nextId, projection);
 
             var designEnd = (X: start.X + u.X * total + n.X * spacing, Z: start.Z + u.Z * total + n.Z * spacing);
             var lat = new List<double>();
@@ -413,7 +413,7 @@ public static class CrossoverFitting
         // from the toe first) and its toe.
         (List<(NetworkWay Way, List<(double X, double Z)> Points)> Heels, NetworkWay Toe)? Legs(long at)
         {
-            var legs = ways.Values.Where(w => Usable(w) && (w.Nodes[0] == at || w.Nodes[^1] == at)).Select(w =>
+            var legs = ways.At(at).Where(w => Usable(w) && (w.Nodes[0] == at || w.Nodes[^1] == at)).Select(w =>
             {
                 var points = w.Nodes.Select((_, k) => P(w.Lat[k], w.Lon[k])).ToList();
                 if (w.Nodes[0] != at)
@@ -505,7 +505,7 @@ public static class CrossoverFitting
 
             // The track through the next switch, and the switch's other route, which starts from wherever it goes.
             var other = there.Heels[1];
-            if (TrackAt(ways.Values.Where(Usable), next, [other.Way.Id], P) is not { } track)
+            if (TrackAt(ways.At(next).Where(Usable), next, [other.Way.Id], P) is not { } track)
                 return false;
             var ahead = there.Heels[0].Points[Math.Min(2, there.Heels[0].Points.Count - 1)];
             var tangent = Tangent(track);
@@ -586,7 +586,7 @@ public static class CrossoverFitting
             problems.Remove(node);
         if (forced.Count > 0)
             Log.Info($"Crossovers and ladder links: {forced.Count / 2} laid out to a standard design ({forced.Keys.Count(links.Contains) / 2} links)");
-        return new Result(Join(ways, pieces), forced, options, problems, links);
+        return new Result(Join(ways.All, pieces), forced, options, problems, links);
     }
 
     /// The ways Split cut, put back together (each run of pieces still there, end to end), so a track keeps running
@@ -762,7 +762,7 @@ public static class CrossoverFitting
 
     /// Moves a track's switch node along it by distance: the old point stays (under a new id, so the shape is kept),
     /// the node goes in at the new point, and where the track is two ways, they now meet there. Returns where it went.
-    private static (double X, double Z) Move(Track t, (double X, double Z) u, double distance, Dictionary<long, NetworkWay> ways, ref long nextId,
+    private static (double X, double Z) Move(Track t, (double X, double Z) u, double distance, WayTable ways, ref long nextId,
         RouteProjection projection)
     {
         if (Math.Abs(distance) < 0.05 || Slide(t, u, distance) is not { } slid)
@@ -796,5 +796,72 @@ public static class CrossoverFitting
         }
 
         return slid.At;
+    }
+}
+
+/// The ways crossover fitting works on, by id as a dictionary of them is, and by the nodes on them: what meets a node is found
+/// without looking through every way. Taken in the order the dictionary has them, as looking through them all did.
+internal sealed class WayTable(Dictionary<long, NetworkWay> ways)
+{
+    private readonly Dictionary<long, int> _order = Ordered(ways);
+    private readonly Dictionary<long, List<long>> _at = Indexed(ways);
+
+    public Dictionary<long, NetworkWay> All => ways;
+    public IEnumerable<NetworkWay> Values => ways.Values;
+
+    public NetworkWay this[long id]
+    {
+        get => ways[id];
+        set
+        {
+            ways[id] = value;
+            if (!_order.ContainsKey(id))
+                _order[id] = _order.Count;
+            Add(_at, value);
+        }
+    }
+
+    public bool TryGetValue(long id, out NetworkWay way) => ways.TryGetValue(id, out way!);
+    public bool Remove(long id) => ways.Remove(id);
+
+    /// The ways a node is on now, in the dictionary's order.
+    public IEnumerable<NetworkWay> At(long node)
+    {
+        if (!_at.TryGetValue(node, out var ids))
+            return [];
+        var found = new List<NetworkWay>(ids.Count);
+        foreach (var id in ids)
+            if (ways.TryGetValue(id, out var way) && Array.IndexOf(way.Nodes, node) >= 0 && !found.Contains(way))
+                found.Add(way);
+        if (found.Count > 1)
+            found.Sort((a, b) => _order[a.Id].CompareTo(_order[b.Id]));
+        return found;
+    }
+
+    private static Dictionary<long, int> Ordered(Dictionary<long, NetworkWay> ways)
+    {
+        var order = new Dictionary<long, int>(ways.Count);
+        foreach (var id in ways.Keys)
+            order[id] = order.Count;
+        return order;
+    }
+
+    private static Dictionary<long, List<long>> Indexed(Dictionary<long, NetworkWay> ways)
+    {
+        var at = new Dictionary<long, List<long>>();
+        foreach (var way in ways.Values)
+            Add(at, way);
+        return at;
+    }
+
+    private static void Add(Dictionary<long, List<long>> at, NetworkWay way)
+    {
+        foreach (var node in way.Nodes)
+        {
+            if (!at.TryGetValue(node, out var list))
+                at[node] = list = [];
+            if (!list.Contains(way.Id))
+                list.Add(way.Id);
+        }
     }
 }

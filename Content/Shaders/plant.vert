@@ -4,6 +4,7 @@
 // hillside thins out without any of them popping.
 
 #include "plant_wind.glsl"
+#include "plant_fade.glsl"
 
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
@@ -18,6 +19,8 @@ layout(location = 3) out vec3 vTint;
 layout(location = 4) out float vHeight;
 // From where this point is now to where the wind had it last frame, in metres (MotionVectors, through plant.frag).
 layout(location = 5) out vec3 vBack;
+// Its hand-overs to the levels either side (plant_fade.glsl), the same over the whole instance.
+layout(location = 6) flat out vec2 vFade;
 
 // The depth prepass (plant_depth.frag) and the shaded pass after it must land on exactly the same depth, or the shaded pass's
 // equal test would miss.
@@ -55,10 +58,14 @@ void main()
     float away = length(standing);
     size *= 1.0 - smoothstep(0.75, 1.0, away / (pc.shape.z * mix(0.25, 1.0, random)));
 
-    // Outside its detail level's distances it collapses to nothing, the next level drawn there instead. Each instance moves the
-    // change by up to a tenth, the same for every level of it, so they don't all change at once.
+    // Outside its detail level's distances it collapses to nothing, the next level drawn there instead, the two dithered into
+    // each other over the stretch between (plant_fade.glsl). Each instance moves the change by up to a tenth, the same for every
+    // level of it, so they don't all change at once.
     float stagger = 0.9 + 0.2 * fract(random * 13.1);
-    if (away < pc.band.x * stagger || away >= pc.band.y * stagger)
+    float from = pc.band.x * stagger;
+    float to = pc.band.y < 1e8 ? pc.band.y * stagger : 1e9;
+    vFade = levelFade(away, from, to);
+    if (!levelShown(away, from, to))
         size = 0.0;
 
     float turn = fract(random * 37.7) * 6.2831853;

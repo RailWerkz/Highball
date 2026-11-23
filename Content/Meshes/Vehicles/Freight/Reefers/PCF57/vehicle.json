@@ -1,0 +1,34 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (40,370 kg); loaded, the gross rail load its trucks are rated for.
+{
+  "id": "reefer_pcf_57",
+  "name": "57 ft mechanical reefer",
+  "kind": "Reefer",
+  "type": "PCF 57 ft mechanical refrigerator car",
+  "lengthM": 19.472,
+  "truckCentresM": 14.072,
+  "frontOverhangM": 2.7,
+  "axles": 4,
+  "wheelDiameterM": 0.8509,
+  "massEmptyKg": 40370,
+  "massLoadedKg": 119290,
+  "maxSpeedKmh": 113,
+  "liveries": [
+    {
+      "id": "armn",
+      "name": "ARMN",
+      "model": "Vehicles/Freight/Reefers/PCF57/LOD0/reefer_pcf_57_armn.glb"
+    },
+    {
+      "id": "bnfe_green",
+      "name": "BNFE (green)",
+      "model": "Vehicles/Freight/Reefers/PCF57/LOD0/reefer_pcf_57_bnfe_green.glb"
+    },
+    {
+      "id": "upfe",
+      "name": "UPFE",
+      "model": "Vehicles/Freight/Reefers/PCF57/LOD0/reefer_pcf_57_upfe.glb"
+    }
+  ]
+}

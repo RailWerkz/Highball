@@ -4,7 +4,7 @@ using RailWerkz.Vulkan;
 namespace Highball.World;
 
 /// Signals and signal bridges: their heads stacked top to bottom on a mast or over each track on a bridge, built from the kit
-/// Tools/Blender/signals.py makes (Meshes/Track/Signals), each lens lit as its head's lamps say.
+/// Tools/Blender/signals.py makes (Meshes/Lineside/Signals), each lens lit as its head's lamps say.
 public sealed partial class NetworkMeshes
 {
     /// Each head type's model, the mast kit and the bridge kit.
@@ -46,15 +46,41 @@ public sealed partial class NetworkMeshes
     private sealed record SignalSpan(float3 Face, float3 Right, (double X, double Z, float Rail)[] Tracks, (double X, double Z, float Ground) Left,
         (double X, double Z, float Ground) Far, float Deck);
 
+    /// The signals' models, under Content/Meshes (what their paints are looked up by: LinesidePaints).
+    private const string MastFile = "Lineside/Signals/mast.glb";
+    private const string BridgeFile = "Lineside/Signals/bridge.glb";
+
+    private static string HeadFile(SignalHeadType type) => type switch
+    {
+        SignalHeadType.Hooded => "Lineside/Signals/head_hooded.glb",
+        SignalHeadType.Searchlight => "Lineside/Signals/head_search.glb",
+        _ => "Lineside/Signals/head_triple.glb",
+    };
+
+    /// The models a placed object's built from, under Content/Meshes: a signal's mast and its heads' kinds, a bridge's kit, its stubs'
+    /// mast kit and heads; anything else its one model. (What the Inspector shows its paints for: LinesidePaints.)
+    public static List<string> ModelsOf(PlacedObject o)
+    {
+        if (o.Kind is not (PlacedKind.Signal or PlacedKind.SignalBridge))
+            return [ModelFile(o.Kind)];
+        var models = new List<string> { o.Kind == PlacedKind.Signal ? MastFile : BridgeFile };
+        if (o.Kind == PlacedKind.SignalBridge)
+            models.Add(MastFile);
+        var heads = o.Kind == PlacedKind.Signal
+            ? o.MastHeads.Concat(o.MastBackHeads)
+            : (o.Stacks ?? []).Concat(o.BackStacks ?? []).SelectMany(s => s);
+        models.AddRange(heads.Distinct().Order().Select(HeadFile));
+        return [.. models.Distinct()];
+    }
+
     private void LoadSignalModels()
     {
         try
         {
-            _heads[SignalHeadType.Triple] = Model.LoadParts("Track/Signals/head_triple.glb");
-            _heads[SignalHeadType.Hooded] = Model.LoadParts("Track/Signals/head_hooded.glb");
-            _heads[SignalHeadType.Searchlight] = Model.LoadParts("Track/Signals/head_search.glb");
-            _mastKit = Model.LoadParts("Track/Signals/mast.glb");
-            _bridgeParts = Model.LoadParts("Track/Signals/bridge.glb");
+            foreach (var type in (ReadOnlySpan<SignalHeadType>)[SignalHeadType.Triple, SignalHeadType.Hooded, SignalHeadType.Searchlight])
+                _heads[type] = Model.LoadParts(HeadFile(type));
+            _mastKit = Model.LoadParts(MastFile);
+            _bridgeParts = Model.LoadParts(BridgeFile);
         }
         catch (Exception e)
         {
@@ -193,11 +219,11 @@ public sealed partial class NetworkMeshes
     }
 
     /// The kit's parts whose names start with role (Pole_, Leg_...), each with its paint.
-    private static IEnumerable<(Model.Part Part, float Paint)> Kit(Dictionary<string, Model.Part>? kit, string role)
+    private static IEnumerable<(Model.Part Part, float Paint)> Kit(Dictionary<string, Model.Part>? kit, string file, string role)
     {
         foreach (var (name, part) in kit ?? [])
             if (name.StartsWith(role, StringComparison.Ordinal))
-                yield return (part, PaintOf(name));
+                yield return (part, PaintOf(file, name));
     }
 
     /// A signal or signal bridge, built: its mast or bridge, then each head with its lenses lit as its lamps say.
@@ -213,17 +239,17 @@ public sealed partial class NetworkMeshes
             var back = o.MastBackHeads.Count > 0;
             var top = MastFoot + MathF.Max(StackHeight(o.MastHeads), StackHeight(o.MastBackHeads)) + 0.1f;
             var platform = MastFoot - 0.1f;
-            foreach (var (part, paint) in Kit(_mastKit, "Base_"))
+            foreach (var (part, paint) in Kit(_mastKit, MastFile, "Base_"))
                 Stretched(builder, part, at, face, paint, one, default);
-            foreach (var (part, paint) in Kit(_mastKit, "Pole_"))
+            foreach (var (part, paint) in Kit(_mastKit, MastFile, "Pole_"))
                 Stretched(builder, part, at, face, paint, new float3(1f, top - MastBottom, 1f), new float3(0f, MastBottom, 0f));
             // A platform under each side's heads; with heads on the back, the ladder goes up the mast's side, clear of them.
             foreach (var (_, way) in back ? MastSides(o) : MastSides(o)[..1])
-                foreach (var (part, paint) in Kit(_mastKit, "Platform_"))
+                foreach (var (part, paint) in Kit(_mastKit, MastFile, "Platform_"))
                     Stretched(builder, part, at, face * way, paint, one, new float3(0f, platform, 0f));
             var ladder = back ? new float3(-face.Z, 0f, face.X) : face;
             for (var y = MastBottom; y + LadderStep <= platform + 0.01f; y += LadderStep)
-                foreach (var (part, paint) in Kit(_mastKit, "Ladder_"))
+                foreach (var (part, paint) in Kit(_mastKit, MastFile, "Ladder_"))
                     Stretched(builder, part, at, ladder, paint, one, new float3(0f, y, 0f));
         }
         else if (placed.Span is { } span)
@@ -252,7 +278,7 @@ public sealed partial class NetworkMeshes
 
         if (Array.FindIndex(Lamps, l => l.Part == name) is var lamp and >= 0 && shown.HasFlag(Lamps[lamp].Lamp))
             return Code(LineMaterial.Painted, Array.IndexOf(Paints, Lamps[lamp].Paint) + LitLens);
-        return PaintOf(name);
+        return PaintOf(HeadFile(type), name);
     }
 
     /// A signal bridge's legs (a cantilever's one), its truss across over them in bays (a cantilever's out from its leg to past the
@@ -268,9 +294,9 @@ public sealed partial class NetworkMeshes
         foreach (var (x, z, ground) in legs)
         {
             var at = Local(x, ground, z);
-            foreach (var (part, paint) in Kit(_bridgeParts, "Base_"))
+            foreach (var (part, paint) in Kit(_bridgeParts, BridgeFile, "Base_"))
                 Stretched(builder, part, at, face, paint, one, default);
-            foreach (var (part, paint) in Kit(_bridgeParts, "Leg_"))
+            foreach (var (part, paint) in Kit(_bridgeParts, BridgeFile, "Leg_"))
                 Stretched(builder, part, at, face, paint, new float3(1f, span.Deck + TrussHigh - ground, 1f), default);
         }
 
@@ -287,9 +313,9 @@ public sealed partial class NetworkMeshes
         var start = Local(span.Left.X + ux * from, span.Deck, span.Left.Z + uz * from);
         for (var k = 0; k < bays; k++)
             foreach (var role in (ReadOnlySpan<string>)["Bay_", "Walk_"])
-                foreach (var (part, paint) in Kit(_bridgeParts, role))
+                foreach (var (part, paint) in Kit(_bridgeParts, BridgeFile, role))
                     Stretched(builder, part, start, face, paint, new float3(stretch, 1f, 1f), new float3(k * Bay * stretch, 0f, 0f));
-        foreach (var (part, paint) in Kit(_bridgeParts, "End_"))
+        foreach (var (part, paint) in Kit(_bridgeParts, BridgeFile, "End_"))
             Stretched(builder, part, start, face, paint, one, new float3(length, 0f, 0f));
 
         // Over each track with heads: two arms off the truss's front (or its back, out past the walkway), and a stub of mast from the
@@ -304,10 +330,10 @@ public sealed partial class NetworkMeshes
                 var at = Local(x, span.Deck, z);
                 var top = 0.05f + StackHeight(heads) + 0.1f;
                 foreach (var y in (ReadOnlySpan<float>)[0.05f, TrussHigh - 0.05f])
-                    foreach (var (part, paint) in Kit(_mastKit, "Pole_"))
+                    foreach (var (part, paint) in Kit(_mastKit, MastFile, "Pole_"))
                         Stretched(builder, part, at + new float3(0f, y, 0f), face * way, paint, new float3(0.5f, reach - TrussHalf, 0.5f), new float3(0f, 0f, TrussHalf),
                             sideways: true);
-                foreach (var (part, paint) in Kit(_mastKit, "Pole_"))
+                foreach (var (part, paint) in Kit(_mastKit, MastFile, "Pole_"))
                     Stretched(builder, part, at, face * way, paint, new float3(1f, top + 0.05f, 1f), new float3(0f, -0.05f, reach));
             }
     }

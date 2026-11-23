@@ -2,7 +2,7 @@
 
     blender -b --factory-startup --python Tools/Blender/ac4400cw.py -- <Content folder> [--livery csx|bnsf]
 
-Each livery is its own source model, with its own textures, under Meshes/Locomotives/AC4400CW/<Livery>/Source (LIVERIES):
+Each livery is its own source model, with its own textures, under Meshes/Vehicles/Locomotives/AC4400CW/<Livery>/Source (LIVERIES):
 CSX's Locomotive_FBX.fbx (textures in CSX-max), BNSF's BNSF.fbx (textures in Textures). They're the same engine from the
 same maker, each some 3,500 loose objects and 4.7 million triangles, but not the same file: BNSF's parts are named
 otherwise (its trucks' parts plain Cylinder and Box, not HiAd-*), so before anything else each of its objects takes the
@@ -22,7 +22,7 @@ parts it's put together from, in Source/Parts (working files, not loaded by the 
     wheelset.glb             origin at the axle's centre, rolling about X
 and LOD0/ac4400cw_csx.glb, the whole engine, which the game loads (Truck_Front and Truck_Rear apart), with its .blend in
 Source. Tools/Blender/lods.py then makes LOD1 and LOD2 from it, beside LOD0.
-The source has no couplers: the engine takes the shared one from Meshes/Couplers, set on the pilots at its standard height.
+The source has no couplers: the engine takes the shared one from Meshes/Vehicles/Couplers, set on the pilots at its standard height.
 
 What's done to the source:
   - The running gear is told apart by name: the source calls the Hi-Ad truck's parts HiAd-*. A wheelset is the two wheels
@@ -56,14 +56,14 @@ args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 LIVERY = args[args.index("--livery") + 1].lower() if "--livery" in args else "csx"
 args = [a for i, a in enumerate(args) if a != "--livery" and (i == 0 or args[i - 1] != "--livery")]
 CONTENT = os.path.abspath(args[0] if args else "Content")
-ENGINE = os.path.join(CONTENT, "Meshes", "Locomotives", "AC4400CW")
+ENGINE = os.path.join(CONTENT, "Meshes", "Vehicles", "Locomotives", "AC4400CW")
 # Each livery: its folder, its source model and its textures (under the folder's Source).
 LIVERIES = {"csx": ("CSX", "Locomotive_FBX.fbx", "CSX-max"), "bnsf": ("BNSF", "BNSF.fbx", "Textures")}
 if LIVERY not in LIVERIES:
     raise SystemExit(f"no livery {LIVERY}: there's {', '.join(LIVERIES)}")
 FOLDER, SOURCE_FILE, TEXTURE_FOLDER = LIVERIES[LIVERY]
 OUT = os.path.join(ENGINE, FOLDER)
-COUPLERS = os.path.join(CONTENT, "Meshes", "Couplers")
+COUPLERS = os.path.join(CONTENT, "Meshes", "Vehicles", "Couplers")
 PARTS = os.path.join(OUT, "Source", "Parts")
 SOURCE = os.path.join(OUT, "Source", SOURCE_FILE)
 TEXTURES = os.path.join(OUT, "Source", TEXTURE_FOLDER)
@@ -617,13 +617,13 @@ def on_truck(axles, pivot):
     return [[0, round(-(a - pivot), 4), TREAD_R] for a in axles]
 
 
-COUPLER_MODEL = "Couplers/coupler.glb"
+COUPLER_MODEL = "Vehicles/Couplers/coupler.glb"
 assembly = {
     "source": SOURCE_NAME,
     "lengthOverCouplers": round(OVER_COUPLERS, 3),
     "lods": ["LOD0", "LOD1", "LOD2"],
     "trianglesWholeEngine": {"LOD0": whole},
-    "models": "The game loads LOD0/ac4400cw_csx.glb (LOD1 and LOD2 beside it, from Tools/Blender/lods.py). The parts below are Source/Parts/<model>.glb, put together into it, except the couplers: Meshes/Couplers/coupler.glb, the same on every engine and car",
+    "models": "The game loads LOD0/ac4400cw_csx.glb (LOD1 and LOD2 beside it, from Tools/Blender/lods.py). The parts below are Source/Parts/<model>.glb, put together into it, except the couplers: Meshes/Vehicles/Couplers/coupler.glb, the same on every engine and car",
     "bodies": [f"body_{LIVERY}"],
     "truckByBody": {},
     "trucks": [

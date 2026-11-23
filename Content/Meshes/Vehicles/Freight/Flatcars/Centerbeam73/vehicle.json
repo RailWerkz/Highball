@@ -1,0 +1,44 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (28,122 kg); loaded, the gross rail load its trucks are rated for.
+{
+  "id": "flatcar_centerbeam_73",
+  "name": "73 ft centerbeam flatcar",
+  "kind": "Flatcar",
+  "type": "73 ft centerbeam lumber flatcar",
+  "lengthM": 24.116,
+  "truckCentresM": 18.278,
+  "frontOverhangM": 2.91,
+  "axles": 4,
+  "wheelDiameterM": 0.889,
+  "massEmptyKg": 28122,
+  "massLoadedKg": 119290,
+  "maxSpeedKmh": 113,
+  "liveries": [
+    {
+      "id": "gtw_2",
+      "name": "GTW  2",
+      "model": "Vehicles/Freight/Flatcars/Centerbeam73/LOD0/flatcar_centerbeam_73_gtw_2.glb"
+    },
+    {
+      "id": "gtw_3",
+      "name": "GTW  3",
+      "model": "Vehicles/Freight/Flatcars/Centerbeam73/LOD0/flatcar_centerbeam_73_gtw_3.glb"
+    },
+    {
+      "id": "strx",
+      "name": "STRX",
+      "model": "Vehicles/Freight/Flatcars/Centerbeam73/LOD0/flatcar_centerbeam_73_strx.glb"
+    },
+    {
+      "id": "ttx_2",
+      "name": "TTX  2",
+      "model": "Vehicles/Freight/Flatcars/Centerbeam73/LOD0/flatcar_centerbeam_73_ttx_2.glb"
+    },
+    {
+      "id": "ttx_3",
+      "name": "TTX  3",
+      "model": "Vehicles/Freight/Flatcars/Centerbeam73/LOD0/flatcar_centerbeam_73_ttx_3.glb"
+    }
+  ]
+}

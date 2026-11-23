@@ -67,6 +67,126 @@ public static class Workspace
 
     public static void EndBar() => ImGui.EndMainMenuBar();
 
+    // --- The plain menu bar, the dockspace and the viewport's view switch (the Route Builder). ---
+
+    /// ImGui's own main menu bar, as it comes. Returns its height, or 0 if it isn't shown.
+    public static bool BeginMenuBar(out float height)
+    {
+        var open = ImGui.BeginMainMenuBar();
+        height = open ? ImGui.GetWindowSize().Y : 0f;
+        return open;
+    }
+
+    /// The viewport (the dockspace's empty middle) as last laid out, for windows to open over it.
+    public static (float2 Min, float2 Max) Viewport { get; private set; }
+
+    /// The private ImGuiDockNodeFlags_DockSpace, which a node made with DockBuilderAddNode needs to be a dockspace.
+    private const ImGuiDockNodeFlags DockSpaceNode = (ImGuiDockNodeFlags)(1 << 10);
+
+    /// The dockspace between the rail and the right edge, under the menu bar and over the status bar. Its central node is
+    /// kept empty and see-through, so the world (or the map) behind shows in it and takes the pointer: that's the viewport.
+    /// layout puts the windows in their places the first time (and after reset). Returns the viewport's rectangle.
+    public static (float2 Min, float2 Max) DockSpace(string id, Action<ImGuiID> layout, ref bool reset)
+    {
+        var min = new float2(RailWidth, Top);
+        var size = new float2(MathF.Max(S(100f), Display.X - RailWidth), MathF.Max(S(100f), Bottom - Top));
+        ImGui.SetNextWindowPos(min, ImGuiCond.Always);
+        ImGui.SetNextWindowSize(size, ImGuiCond.Always);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new float2(0f, 0f));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 0f);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 0f);
+        ImGui.Begin("##dockhost"u8, Fixed | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoBringToFrontOnFocus | ImGuiWindowFlags.NoNavFocus |
+                                    ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+        ImGui.PopStyleVar(3);
+
+        var dock = ImGui.GetID(id);
+        if (reset || ImGui.Internal.DockBuilderGetNode(dock).IsNull())
+        {
+            ImGui.Internal.DockBuilderRemoveNode(dock);
+            ImGui.Internal.DockBuilderAddNode(dock, DockSpaceNode);
+            ImGui.Internal.DockBuilderSetNodeSize(dock, size);
+            layout(dock);
+            ImGui.Internal.DockBuilderFinish(dock);
+            reset = false;
+        }
+
+        float2? dockSize = size;
+        ImGui.DockSpace(dock, ref dockSize, ImGuiDockNodeFlags.PassthruCentralNode, default);
+        var central = ImGui.Internal.DockBuilderGetCentralNode(dock);
+        ImGui.End();
+        if (central.IsNull())
+            return Viewport = (min, min + size);
+        float2 at = central.Pos, extent = central.Size;
+        return Viewport = (at, at + extent);
+    }
+
+    /// Splits a dock node: the part on the side dir, ratio of it, and the rest.
+    public static (ImGuiID Side, ImGuiID Other) Split(ImGuiID node, ImGuiDir dir, float ratio)
+    {
+
+        ImGui.Internal.DockBuilderSplitNode(node, dir, ratio, out var side, out var rest);
+        return (side, rest);
+    }
+
+    /// The view switch floating at the top middle of the viewport (MAP, 2D, 3D), a dot before it while there's something
+    /// unsaved. Returns the view picked.
+    public static int ViewSwitch(string id, (float2 Min, float2 Max) viewport, ReadOnlySpan<string> labels, int current, ReadOnlySpan<bool> enabled = default,
+        bool unsaved = false, string? unsavedTip = null)
+    {
+        var cell = S(40f);
+        var cellHeight = S(26f);
+        var pad = S(4f);
+        var dot = unsaved ? S(18f) : 0f;
+        var size = new float2(dot + cell * labels.Length + pad * 2f, cellHeight + pad * 2f);
+        var pos = new float2((viewport.Min.X + viewport.Max.X - size.X) * 0.5f, viewport.Min.Y + S(8f));
+        ImGui.SetNextWindowPos(pos, ImGuiCond.Always);
+        ImGui.SetNextWindowSize(size, ImGuiCond.Always);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new float2(0f, 0f));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 0f);
+        var picked = current;
+        if (ImGui.Begin(id, Fixed | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.NoScrollbar |
+                            ImGuiWindowFlags.NoFocusOnAppearing | ImGuiWindowFlags.NoNav))
+        {
+            var draw = ImGui.GetWindowDrawList();
+            draw.AddRectFilled(pos, pos + size, Style.Background.WithAlpha(0.85f), S(5f));
+            draw.AddRect(pos, pos + size, Stroke, S(5f));
+            if (unsaved)
+            {
+                var c = pos + new float2(pad + S(9f), size.Y * 0.5f);
+                draw.AddCircleFilled(c, S(4f), Caution);
+                ImGui.SetCursorScreenPos(c - new float2(S(8f), S(8f)));
+                ImGui.InvisibleButton($"{id}.unsaved", new float2(S(16f), S(16f)));
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(unsavedTip ?? "Unsaved changes (Ctrl+S)");
+            }
+
+            var at = pos + new float2(pad + dot, pad);
+            for (var i = 0; i < labels.Length; i++)
+            {
+                var min = at + new float2(i * cell, 0f);
+                var open = enabled.IsEmpty || enabled[i];
+                ImGui.SetCursorScreenPos(min);
+                if (ImGui.InvisibleButton($"{id}.{i}", new float2(cell, cellHeight)) && open && i != current)
+                {
+                    picked = i;
+                    Sfx.Tick();
+                }
+
+                var hover = ImGui.IsItemHovered() && open;
+                if (i == current)
+                    draw.AddRectFilled(min, min + new float2(cell, cellHeight), Accent, S(3f));
+                else if (hover)
+                    draw.AddRectFilled(min, min + new float2(cell, cellHeight), RaisedHover, S(3f));
+                var ink = i == current ? OnAccent : !open ? TextFaint : hover ? Style.Text : TextDim;
+                Canvas.Text(draw, Bold, S(12.5f), min + new float2(cell * 0.5f, (cellHeight - S(12.5f)) * 0.5f - S(1f)), ink, labels[i], Align.Center);
+            }
+        }
+
+        ImGui.End();
+        ImGui.PopStyleVar(2);
+        return picked;
+    }
+
     /// The tool's modes in the top bar after the menus: a joined strip of words. Returns the one picked.
     public static int Modes(string id, ReadOnlySpan<string> labels, int current)
     {

@@ -135,11 +135,139 @@ public sealed partial class NetworkMeshes
     /// The deck's reach across, room and all.
     private (float Left, float Right) DeckAcross(BridgeGroup group, BridgeEdit edit)
     {
+        // (One carriageway's deck of a bridge that carries several, built on its own: no room added, BuildParts.)
+        if (group.Part)
+            return (group.Left, group.Right);
         var unit = group.Rail ? NetworkLine.TrackSpacing : 3.65f;
         return (group.Left - edit.RoomLeft * unit, group.Right + edit.RoomRight * unit);
     }
 
     private void BuildBridge(Builder builder, BridgeGroup group)
+    {
+        // A road bridge carrying several carriageways (a divided road's two, a slip road beside them): each its own deck along its own
+        // line, ends and all, as the ground at each end is shaped line by line (BridgeEndShape). One deck swept along one of them, as wide
+        // as they ever reach apart, fanned out into the fields where they splay, and its ends stood where only that line's were.
+        if (!group.Rail && group.Members.Count(m => !m.Line.Mark) > 1)
+        {
+            BuildParts(builder, group);
+            return;
+        }
+
+        BuildDeck(builder, group, null);
+    }
+
+    /// How near beside each other (metres between their decks' edges) two carriageways' decks are joined by a strip of deck between
+    /// them, with no parapets on the edges that face each other; further apart, each has its own parapet and the gap is left open.
+    private const float MedianMost = 4f;
+
+    /// The parts of a road bridge carrying several carriageways: a deck for each, and the piers under them all.
+    private void BuildParts(Builder builder, BridgeGroup group)
+    {
+        var members = group.Members.Where(m => !m.Line.Mark).ToList();
+        foreach (var m in members)
+        {
+            var end0 = _lines.BridgeEndAt(m.Line, m.First);
+            var end1 = _lines.BridgeEndAt(m.Line, m.Last);
+            var part = new BridgeGroup
+            {
+                Key = group.Key, Reference = m.Line, First = m.First, Last = m.Last, Rail = false, X = group.X, Z = group.Z, Whole = group,
+                Members = [(m.Line, m.First, m.Last, 0f, m.Half)],
+                StartJoined = end0?.Kind == BridgeEndKind.Joined, EndJoined = end1?.Kind == BridgeEndKind.Joined,
+            };
+
+            // At each of its points, how far its deck's edge is from the nearest other carriageway's beside it, each side (null: none).
+            var others = members.Where(o => o.Line != m.Line).ToList();
+            var sides = new (bool OpenLeft, bool OpenRight, float Fill)[m.Last - m.First + 1];
+            for (var q = m.First; q <= m.Last; q++)
+            {
+                var (center, r) = FrameAt(m.Line, m.Line.S[q], default);
+                var (px, pz) = (m.Line.X[q], m.Line.Z[q]);
+                var (leftGap, rightGap) = (float.MaxValue, float.MaxValue);
+                foreach (var o in others)
+                {
+                    if (AcrossTo(o.Line, o.First, o.Last, px, pz, r) is not { } across)
+                        continue;
+                    var gap = MathF.Abs(across) - o.Half - m.Half;
+                    if (across > 0f)
+                        rightGap = MathF.Min(rightGap, gap);
+                    else
+                        leftGap = MathF.Min(leftGap, gap);
+                }
+
+                sides[q - m.First] = (leftGap > MedianMost, rightGap > MedianMost, rightGap is > 0f and <= MedianMost ? rightGap : 0f);
+            }
+
+            BuildDeck(builder, part, sides);
+        }
+
+        // The piers, each across all the decks over it, from the outermost's edge to the other's.
+        var edit = EditOf(group);
+        var style = edit.Style != PierStyle.Auto ? edit.Style : PierStyle.Columns;
+        var depth = BridgePlanner.DeckDepth(group.Reference);
+        foreach (var pier in PiersOf(group))
+        {
+            var (center, r) = FrameAt(group.Reference, group.From + pier.S, default);
+            var (cx, cz) = ((double)center.X, (double)center.Z);
+            var (lo, hi) = (float.MaxValue, float.MinValue);
+            foreach (var m in members)
+                if (CrossingAt(m.Line, m.First, m.Last, cx, cz, r) is { } across)
+                    (lo, hi) = (MathF.Min(lo, across - m.Half), MathF.Max(hi, across + m.Half));
+            if (lo < hi)
+                Pier(builder, group, pier, style, lo, hi, depth, []);
+        }
+    }
+
+    /// How far across (along r, a unit vector in the world) from a place another line's bridged stretch is, measured to the nearest place
+    /// on it: null if that's past either end of the stretch, or the line runs across rather than beside.
+    private static float? AcrossTo(NetworkLine line, int first, int last, double x, double z, float3 r)
+    {
+        var (best, across) = (double.MaxValue, (float?)null);
+        for (var q = first; q < last; q++)
+        {
+            var (ax, az, dx, dz) = (line.X[q], line.Z[q], line.X[q + 1] - line.X[q], line.Z[q + 1] - line.Z[q]);
+            var length2 = Math.Max(dx * dx + dz * dz, 1e-9);
+            var t = ((x - ax) * dx + (z - az) * dz) / length2;
+            // (Past the stretch's ends, by more than a little, it isn't beside this place.)
+            var length = Math.Sqrt(length2);
+            if ((q == first && t * length < -0.5) || (q == last - 1 && (t - 1.0) * length > 0.5))
+                continue;
+            t = Math.Clamp(t, 0.0, 1.0);
+            var (ex, ez) = (ax + dx * t - x, az + dz * t - z);
+            var d = ex * ex + ez * ez;
+            if (d >= best)
+                continue;
+            best = d;
+            // (Beside, much the same way, not across.)
+            var square = Math.Abs((dx * r.Z - dz * r.X) / length);
+            across = square < 0.7 ? null : (float)(ex * r.X + ez * r.Z);
+        }
+
+        return across;
+    }
+
+    /// Where a line's bridged stretch crosses the line through (x, z) along r, how far along r: null if it doesn't.
+    private static float? CrossingAt(NetworkLine line, int first, int last, double x, double z, float3 r)
+    {
+        for (var q = first; q < last; q++)
+        {
+            var (ax, az, ux, uz) = (line.X[q], line.Z[q], line.X[q + 1] - line.X[q], line.Z[q + 1] - line.Z[q]);
+            var cross = ux * r.Z - uz * r.X;
+            if (Math.Abs(cross) < 1e-9)
+                continue;
+            var (wx, wz) = (x - ax, z - az);
+            var t = (wx * r.Z - wz * r.X) / cross;
+            if (t < 0.0 || t > 1.0)
+                continue;
+            var (px, pz) = (ax + ux * t, az + uz * t);
+            return (float)((px - x) * r.X + (pz - z) * r.Z);
+        }
+
+        return null;
+    }
+
+    /// One deck, its ends, and (for a bridge built whole) its piers. sides: for one carriageway's deck of several (BuildParts), at each of
+    /// its points, whether each edge is open (its parapet built) and how wide a strip of deck to lay out from its right edge to the next.
+    private void BuildDeck(Builder builder, BridgeGroup group, (bool OpenLeft, bool OpenRight, float Fill)[]? sides)
     {
         var edit = EditOf(group);
         var line = group.Reference;
@@ -189,28 +317,87 @@ public sealed partial class NetworkMeshes
         foreach (var (from, to) in gaps)
             Sweep(builder, line, first, last, [(from, deckBottom), (from, surface), (to, surface), (to, deckBottom), (from, deckBottom)], _ => concrete, (_, _, _) => 0f, capped: true);
 
+        // One carriageway's deck of several: the strip of deck out from its right edge to the next one's, where that's near.
+        if (sides is not null)
+            for (var q = first; q < last; q++)
+            {
+                var (f0, f1) = (sides[q - first].Fill, sides[q + 1 - first].Fill);
+                if (f0 <= 0f && f1 <= 0f)
+                    continue;
+                var (c0, r0) = Frame(line, q, builder.Origin);
+                var (c1, r1) = Frame(line, q + 1, builder.Origin);
+                // (A little into its neighbour's deck, so no seam shows.)
+                var (o0, o1) = (f0 > 0f ? f0 + 0.1f : 0f, f1 > 0f ? f1 + 0.1f : 0f);
+                var up = new float3(0f, 1f, 0f);
+                foreach (var (y, normal) in (ReadOnlySpan<(float, float3)>)[(surface, up), (deckBottom, up * -1f)])
+                {
+                    var v0 = builder.Add(c0 + r0 * right + new float3(0f, y, 0f), normal, concreteData);
+                    var v1 = builder.Add(c1 + r1 * right + new float3(0f, y, 0f), normal, concreteData);
+                    var v2 = builder.Add(c0 + r0 * (right + o0) + new float3(0f, y, 0f), normal, concreteData);
+                    var v3 = builder.Add(c1 + r1 * (right + o1) + new float3(0f, y, 0f), normal, concreteData);
+                    builder.Indices.AddRange([v0, v1, v2, v1, v3, v2, v0, v2, v1, v1, v2, v3]);
+                }
+            }
+
+        // The points along which each edge is open, in runs (all of them, for a deck built whole).
+        List<List<int>> Runs(bool rightSide)
+        {
+            var runs = new List<List<int>>();
+            List<int>? run = null;
+            for (var q = first; q <= last; q++)
+            {
+                if (sides is null || (rightSide ? sides[q - first].OpenRight : sides[q - first].OpenLeft))
+                    (run ??= []).Add(q);
+                else if (run is not null)
+                {
+                    if (run.Count >= 2)
+                        runs.Add(run);
+                    run = null;
+                }
+            }
+
+            if (run is { Count: >= 2 })
+                runs.Add(run);
+            return runs;
+        }
+
+        bool OpenAt(float s, bool rightSide)
+        {
+            if (sides is null)
+                return true;
+            var q = Math.Clamp(Array.BinarySearch(line.S, s) is var i && i >= 0 ? i : ~i - 1, first, last);
+            return rightSide ? sides[q - first].OpenRight : sides[q - first].OpenLeft;
+        }
+
+        var (leftRuns, rightRuns) = (Runs(false), Runs(true));
+
         // Along the outer edges only: on a railway, railings; on a road, a concrete parapet with a rail along its top.
         var road = !group.Rail;
         if (road)
         {
-            Sweep(builder, line, first, last,
+            foreach (var run in leftRuns)
+            Sweep(builder, line, run,
                 [(left, deckBottom - 0.15f), (left, edge + ParapetHeight), (left + 0.25f, edge + ParapetHeight), (left + 0.3f, edge + 0.25f), (left + 0.45f, edge), (left + 0.45f, deckBottom), (left, deckBottom - 0.15f)],
                 _ => concrete, (_, _, _) => 0f, capped: true);
-            Sweep(builder, line, first, last,
+            foreach (var run in rightRuns)
+            Sweep(builder, line, run,
                 [(right - 0.45f, deckBottom), (right - 0.45f, edge), (right - 0.3f, edge + 0.25f), (right - 0.25f, edge + ParapetHeight), (right, edge + ParapetHeight), (right, deckBottom - 0.15f), (right - 0.45f, deckBottom)],
                 _ => concrete, (_, _, _) => 0f, capped: true);
-            foreach (var u in (float[])[left + 0.12f, right - 0.12f])
-                Sweep(builder, line, first, last, Tube(u, edge + ParapetHeight + ParapetRail, 0.045f), _ => galvanised, (_, _, _) => 0f);
+            foreach (var (tubeAt, runs) in ((float, List<List<int>>)[])[(left + 0.12f, leftRuns), (right - 0.12f, rightRuns)])
+                foreach (var run in runs)
+                    Sweep(builder, line, run, Tube(tubeAt, edge + ParapetHeight + ParapetRail, 0.045f), _ => galvanised, (_, _, _) => 0f);
         }
         else
             foreach (var u in (float[])[left + 0.08f, right - 0.08f])
                 foreach (var height in (float[])[0.4f, 0.72f, RailingHeight])
                     Sweep(builder, line, first, last, Tube(u, edge + height, 0.04f), _ => galvanised, (_, _, _) => 0f);
 
+        var alongS = line.S[first];
         void Along(float gap, Action<float3, float3, float3> place)
         {
             for (var s = MathF.Ceiling(line.S[first] / gap) * gap; s < line.S[last]; s += gap)
             {
+                alongS = s;
                 var (center, r) = FrameAt(line, s, builder.Origin);
                 place(center, r, new float3(r.Z, 0f, -r.X));
             }
@@ -221,8 +408,11 @@ public sealed partial class NetworkMeshes
         void Post(float3 center, float3 r, float3 forward)
         {
             if (road)
+            {
                 foreach (var u in (float[])[left + 0.12f, right - 0.12f])
-                    Solid(builder, center + r * u, r * 0.035f, forward * 0.05f, center.Y + edge + ParapetHeight, center.Y + edge + ParapetHeight + ParapetRail + 0.04f, bright);
+                    if (OpenAt(alongS, u > (left + right) * 0.5f))
+                        Solid(builder, center + r * u, r * 0.035f, forward * 0.05f, center.Y + edge + ParapetHeight, center.Y + edge + ParapetHeight + ParapetRail + 0.04f, bright);
+            }
             else
                 foreach (var u in (float[])[left + 0.08f, right - 0.08f])
                     // (Down the slab's edge to its underside, bolted to its face, as a railway bridge's railings are: started at the
@@ -261,8 +451,9 @@ public sealed partial class NetworkMeshes
                 continue;
             }
 
-            var (center, r) = FrameAt(line, s, builder.Origin);
+            var (center, r) = FrameAt(line, s + inward * 0.05f, builder.Origin);
             var forward = new float3(r.Z, 0f, -r.X);
+            alongS = s;
             Post(center, r, forward);
             Solid(builder, center + r * ((left + right) * 0.5f), r * ((right - left) * 0.5f), forward * 0.04f, center.Y + deckBottom, center.Y + surface - 0.02f, concreteData);
             var start = inward > 0f;
@@ -270,7 +461,9 @@ public sealed partial class NetworkMeshes
                 _lines.BridgeEndAt(line, start ? first : last));
         }
 
-        // The piers.
+        // The piers (for one carriageway's deck of several, they're the whole bridge's: BuildParts).
+        if (sides is not null)
+            return;
         var style = edit.Style != PierStyle.Auto ? edit.Style : group.Rail ? PierStyle.Wall : PierStyle.Columns;
         foreach (var pier in PiersOf(group))
             Pier(builder, group, pier, style, left, right, depth, girders);
@@ -355,7 +548,7 @@ public sealed partial class NetworkMeshes
     private void Abutment(Builder builder, BridgeGroup group, float s, float inward, float left, float right, float depth, float edge, float? wing, float flare, BridgeEnd? end)
     {
         var line = group.Reference;
-        var (center, r) = FrameAt(line, s, builder.Origin);
+        var (center, r) = FrameAt(line, s + inward * 0.05f, builder.Origin);
         // Into the gap, from this end.
         var forward = new float3(r.Z, 0f, -r.X) * inward;
         var world = (X: center.X + builder.Origin.X, Z: center.Z + builder.Origin.Z);
@@ -440,7 +633,8 @@ public sealed partial class NetworkMeshes
         const float thick = BridgeEndShape.WallThick;
         foreach (var side in (float[])[-1f, 1f])
         {
-            var toe = shape.Toe(side);
+            // (Only as far as it has the bank to hold back: BridgeEndShape.WallEnd.)
+            var toe = shape.WallEnd(side);
             var middle = side * (shape.DeckHalf + thick * 0.5f);
             var points = new List<(float3 At, float Top, float Low)>();
             for (var a = BridgeEndShape.WallFrom; ; a = MathF.Min(a + 0.5f, toe))
@@ -496,11 +690,18 @@ public sealed partial class NetworkMeshes
 
             if (met is not { } from || MathF.Abs(from - s) < 0.5f)
                 continue;
-            var (ca, ra) = FrameAt(line, from, origin);
-            var (cb, rb) = FrameAt(line, s - inward * 1.2f, origin);
-            var (a, b) = (ca + ra * across, cb + rb * across);
+            // (In pieces a metre or so long along the deck's side: one straight wall from end to end cut across the bank wherever the deck
+            // curves, as a ramp's does, standing out of it as a sheet.)
             float Top(float3 p) => _lines.EmbankmentAt(end, p.X + origin.X, p.Z + origin.Z) + 0.1f;
-            Wing(builder, a, b, 0.4f, MathF.Min(ca.Y, cb.Y) - depth - 1.8f, Top(a), Top(b), data);
+            var until = s - inward * 1.2f;
+            var pieces = Math.Max(1, (int)MathF.Ceiling(MathF.Abs(until - from)));
+            for (var k = 0; k < pieces; k++)
+            {
+                var (ca, ra) = FrameAt(line, from + (until - from) * k / pieces, origin);
+                var (cb, rb) = FrameAt(line, from + (until - from) * (k + 1) / pieces, origin);
+                var (a, b) = (ca + ra * across, cb + rb * across);
+                Wing(builder, a, b, 0.4f, MathF.Min(ca.Y, cb.Y) - depth - 1.8f, Top(a), Top(b), data);
+            }
         }
     }
 
@@ -529,20 +730,41 @@ public sealed partial class NetworkMeshes
         var (left, right) = DeckAcross(group, EditOf(group));
         var endY = deck.Y[end.Point];
 
+        // One carriageway's deck of several: the decks beside it stand over the same wall, which is built once, by the first of them
+        // with a wall on this side of this road, under all their decks.
+        var decks = new List<(NetworkLine Line, int First, int Last, float Left, float Right)> { (deck, group.First, group.Last, left, right) };
+        if (group.Whole is { } whole)
+        {
+            var walled = whole.Members.Where(m => !m.Line.Mark).FirstOrDefault(m => ((int[])[m.First, m.Last])
+                .Any(p => _lines.BridgeEndAt(m.Line, p) is { Kind: BridgeEndKind.Wall } e && e.Under == under && e.Side == end.Side));
+            if (walled.Line is not null && walled.Line != deck)
+                return;
+            decks = [.. whole.Members.Where(m => !m.Line.Mark).Select(m => (m.Line, m.First, m.Last, -m.Half, m.Half))];
+        }
+
         // The deck's underside over a place, if it's over it.
         float? DeckOver(double x, double z)
         {
+            float? highest = null;
+            foreach (var (line, first, last, l, r) in decks)
+                if (DeckOverOne(line, first, last, l, r, x, z) is { } y && (highest is null || y > highest))
+                    highest = y;
+            return highest;
+        }
+
+        float? DeckOverOne(NetworkLine line, int first, int last, float left, float right, double x, double z)
+        {
             var (best, at, y) = (double.MaxValue, 0.0, 0f);
-            for (var p = group.First; p < group.Last; p++)
+            for (var p = first; p < last; p++)
             {
-                var (ax, az, dx, dz) = (deck.X[p], deck.Z[p], deck.X[p + 1] - deck.X[p], deck.Z[p + 1] - deck.Z[p]);
+                var (ax, az, dx, dz) = (line.X[p], line.Z[p], line.X[p + 1] - line.X[p], line.Z[p + 1] - line.Z[p]);
                 var t = Math.Clamp(((x - ax) * dx + (z - az) * dz) / Math.Max(dx * dx + dz * dz, 1e-9), 0.0, 1.0);
                 var (ex, ez) = (ax + dx * t - x, az + dz * t - z);
                 if (ex * ex + ez * ez < best)
                 {
                     // (Across to the deck's right: the right of (dx, dz) is (-dz, dx).)
                     var length = Math.Max(Math.Sqrt(dx * dx + dz * dz), 1e-6);
-                    (best, at, y) = (ex * ex + ez * ez, ((x - ax) * -dz + (z - az) * dx) / length, deck.Y[p] + (deck.Y[p + 1] - deck.Y[p]) * (float)t);
+                    (best, at, y) = (ex * ex + ez * ez, ((x - ax) * -dz + (z - az) * dx) / length, line.Y[p] + (line.Y[p + 1] - line.Y[p]) * (float)t);
                 }
             }
 
@@ -555,7 +777,7 @@ public sealed partial class NetworkMeshes
         var (lowest, highest) = (end.UnderS - WallMost, end.UnderS + WallMost);
         foreach (var other in _bridges)
         {
-            if (other == group)
+            if (other == group || (group.Part && other.Key == group.Key))
                 continue;
             foreach (var point in (int[])[other.First, other.Last])
                 if (_lines.BridgeEndAt(other.Reference, point) is { Kind: BridgeEndKind.Wall } e && e.Under == under && e.Side == end.Side)

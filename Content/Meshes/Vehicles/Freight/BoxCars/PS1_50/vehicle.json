@@ -1,0 +1,64 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (34,350 kg); loaded, the gross rail load its trucks are rated for.
+{
+  "id": "boxcar_ps1_50",
+  "name": "50 ft PS-1 boxcar",
+  "kind": "Boxcar",
+  "type": "Pullman-Standard PS-1 50 ft boxcar",
+  "lengthM": 17.706,
+  "truckCentresM": 12.141,
+  "frontOverhangM": 2.782,
+  "axles": 4,
+  "wheelDiameterM": 0.8382,
+  "massEmptyKg": 34350,
+  "massLoadedKg": 99790,
+  "maxSpeedKmh": 105,
+  "liveries": [
+    {
+      "id": "acl",
+      "name": "ACL",
+      "model": "Vehicles/Freight/BoxCars/PS1_50/LOD0/boxcar_ps1_50_acl.glb"
+    },
+    {
+      "id": "atsf",
+      "name": "ATSF",
+      "model": "Vehicles/Freight/BoxCars/PS1_50/LOD0/boxcar_ps1_50_atsf.glb"
+    },
+    {
+      "id": "bo",
+      "name": "B&O",
+      "model": "Vehicles/Freight/BoxCars/PS1_50/LOD0/boxcar_ps1_50_bo.glb"
+    },
+    {
+      "id": "bar_2",
+      "name": "BAR  2",
+      "model": "Vehicles/Freight/BoxCars/PS1_50/LOD0/boxcar_ps1_50_bar_2.glb"
+    },
+    {
+      "id": "bar",
+      "name": "BAR",
+      "model": "Vehicles/Freight/BoxCars/PS1_50/LOD0/boxcar_ps1_50_bar.glb"
+    },
+    {
+      "id": "cgw",
+      "name": "CGW",
+      "model": "Vehicles/Freight/BoxCars/PS1_50/LOD0/boxcar_ps1_50_cgw.glb"
+    },
+    {
+      "id": "gmo",
+      "name": "GM&O",
+      "model": "Vehicles/Freight/BoxCars/PS1_50/LOD0/boxcar_ps1_50_gmo.glb"
+    },
+    {
+      "id": "gn",
+      "name": "GN",
+      "model": "Vehicles/Freight/BoxCars/PS1_50/LOD0/boxcar_ps1_50_gn.glb"
+    },
+    {
+      "id": "rdg",
+      "name": "RDG",
+      "model": "Vehicles/Freight/BoxCars/PS1_50/LOD0/boxcar_ps1_50_rdg.glb"
+    }
+  ]
+}

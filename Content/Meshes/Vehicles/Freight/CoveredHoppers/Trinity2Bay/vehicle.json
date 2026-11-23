@@ -1,0 +1,64 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (25,500 kg); loaded, the gross rail load its trucks are rated for.
+{
+  "id": "covered_hopper_trinity_2bay",
+  "name": "Trinity two-bay covered hopper",
+  "kind": "CoveredHopper",
+  "type": "Trinity two-bay covered hopper, 100-ton trucks",
+  "lengthM": 12.231,
+  "truckCentresM": 8.084,
+  "frontOverhangM": 2.074,
+  "axles": 4,
+  "wheelDiameterM": 0.896,
+  "massEmptyKg": 25500,
+  "massLoadedKg": 119290,
+  "maxSpeedKmh": 113,
+  "liveries": [
+    {
+      "id": "crdx_clean",
+      "name": "CRDX clean",
+      "model": "Vehicles/Freight/CoveredHoppers/Trinity2Bay/LOD0/covered_hopper_trinity_2bay_crdx_clean.glb"
+    },
+    {
+      "id": "crdx_weathered_1",
+      "name": "CRDX weathered 1",
+      "model": "Vehicles/Freight/CoveredHoppers/Trinity2Bay/LOD0/covered_hopper_trinity_2bay_crdx_weathered_1.glb"
+    },
+    {
+      "id": "crdx_weathered_2",
+      "name": "CRDX weathered 2",
+      "model": "Vehicles/Freight/CoveredHoppers/Trinity2Bay/LOD0/covered_hopper_trinity_2bay_crdx_weathered_2.glb"
+    },
+    {
+      "id": "csx_clean_1",
+      "name": "CSX clean 1",
+      "model": "Vehicles/Freight/CoveredHoppers/Trinity2Bay/LOD0/covered_hopper_trinity_2bay_csx_clean_1.glb"
+    },
+    {
+      "id": "csx_clean_2",
+      "name": "CSX clean 2",
+      "model": "Vehicles/Freight/CoveredHoppers/Trinity2Bay/LOD0/covered_hopper_trinity_2bay_csx_clean_2.glb"
+    },
+    {
+      "id": "up_clean_1",
+      "name": "UP clean 1",
+      "model": "Vehicles/Freight/CoveredHoppers/Trinity2Bay/LOD0/covered_hopper_trinity_2bay_up_clean_1.glb"
+    },
+    {
+      "id": "up_clean_2",
+      "name": "UP clean 2",
+      "model": "Vehicles/Freight/CoveredHoppers/Trinity2Bay/LOD0/covered_hopper_trinity_2bay_up_clean_2.glb"
+    },
+    {
+      "id": "up_clean_3",
+      "name": "UP clean 3",
+      "model": "Vehicles/Freight/CoveredHoppers/Trinity2Bay/LOD0/covered_hopper_trinity_2bay_up_clean_3.glb"
+    },
+    {
+      "id": "up_weathered",
+      "name": "UP weathered",
+      "model": "Vehicles/Freight/CoveredHoppers/Trinity2Bay/LOD0/covered_hopper_trinity_2bay_up_weathered.glb"
+    }
+  ]
+}

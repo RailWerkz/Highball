@@ -1,0 +1,98 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: about 50,500 lb empty (the Trainz asset's 22,906 kg); with two loaded containers, about 150,000 lb.
+// Consists saved with the old RollingStock car (wellcar_ttx, well_53) get this one.
+{
+  "id": "wellcar_dttx_53",
+  "replaces": [
+    "wellcar_ttx",
+    "well_53"
+  ],
+  "name": "53 ft Husky Stack well car",
+  "kind": "Intermodal",
+  "type": "Stand-alone 53 ft double-stack well car (TTX Husky Stack)",
+  "lengthM": 23.302,
+  "truckCentresM": 19.075,
+  "frontOverhangM": 2.116,
+  "axles": 4,
+  "wheelDiameterM": 0.8382,
+  "massEmptyKg": 22906,
+  "massLoadedKg": 68040,
+  "maxSpeedKmh": 113,
+  "loads": [
+    {
+      "id": "20ft_msc",
+      "name": "Two 20 ft containers (MSC yellow, MSC red)"
+    },
+    {
+      "id": "20ft_alianca_apl",
+      "name": "Two 20 ft containers (Alianca, APL)"
+    },
+    {
+      "id": "20ft_msc_apl",
+      "name": "Two 20 ft containers (MSC, APL)"
+    }
+  ],
+  "liveries": [
+    {
+      "id": "dttx",
+      "name": "DTTX",
+      "model": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_dttx.glb",
+      "loads": {
+        "20ft_msc": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_dttx_20ft_msc.glb",
+        "20ft_alianca_apl": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_dttx_20ft_alianca_apl.glb",
+        "20ft_msc_apl": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_dttx_20ft_msc_apl.glb"
+      }
+    },
+    {
+      "id": "dttx_weathered",
+      "name": "DTTX (weathered)",
+      "model": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_dttx_weathered.glb",
+      "loads": {
+        "20ft_msc": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_dttx_weathered_20ft_msc.glb",
+        "20ft_alianca_apl": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_dttx_weathered_20ft_alianca_apl.glb",
+        "20ft_msc_apl": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_dttx_weathered_20ft_msc_apl.glb"
+      }
+    },
+    {
+      "id": "bnsf_h2",
+      "name": "BNSF H2",
+      "model": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h2.glb",
+      "loads": {
+        "20ft_msc": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h2_20ft_msc.glb",
+        "20ft_alianca_apl": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h2_20ft_alianca_apl.glb",
+        "20ft_msc_apl": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h2_20ft_msc_apl.glb"
+      }
+    },
+    {
+      "id": "bnsf_h2_weathered",
+      "name": "BNSF H2 (weathered)",
+      "model": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h2_weathered.glb",
+      "loads": {
+        "20ft_msc": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h2_weathered_20ft_msc.glb",
+        "20ft_alianca_apl": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h2_weathered_20ft_alianca_apl.glb",
+        "20ft_msc_apl": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h2_weathered_20ft_msc_apl.glb"
+      }
+    },
+    {
+      "id": "bnsf_h3",
+      "name": "BNSF H3",
+      "model": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h3.glb",
+      "loads": {
+        "20ft_msc": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h3_20ft_msc.glb",
+        "20ft_alianca_apl": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h3_20ft_alianca_apl.glb",
+        "20ft_msc_apl": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h3_20ft_msc_apl.glb"
+      }
+    },
+    {
+      "id": "bnsf_h3_weathered",
+      "name": "BNSF H3 (weathered)",
+      "model": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h3_weathered.glb",
+      "loads": {
+        "20ft_msc": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h3_weathered_20ft_msc.glb",
+        "20ft_alianca_apl": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h3_weathered_20ft_alianca_apl.glb",
+        "20ft_msc_apl": "Vehicles/Freight/WellCars/Husky53/LOD0/wellcar_dttx_53_bnsf_h3_weathered_20ft_msc_apl.glb"
+      }
+    }
+  ]
+}

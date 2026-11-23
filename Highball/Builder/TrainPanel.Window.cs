@@ -176,7 +176,8 @@ public sealed partial class TrainPanel
 
     private static readonly string[] PlacedNames = ["Running", "Starting up", "Cold"];
 
-    private void Setup(Train? train)
+    /// view: the View card (camera, tags, graphs), which the Route Builder keeps in its View menu instead.
+    private void Setup(Train? train, bool view = true)
     {
         Kit.BeginCard(train is null ? "Place a train" : "Consist", _consists.Count == 1 ? "1 saved" : $"{_consists.Count} saved");
         Kit.Caption("Consist");
@@ -214,7 +215,7 @@ public sealed partial class TrainPanel
         Kit.EndCard();
 
         OnTheTrack();
-        if (train is null)
+        if (train is null || !view)
             return;
         Kit.BeginCard("View");
         Kit.Toggle("train.follow", "Camera follows", ref Follow);
@@ -326,12 +327,13 @@ public sealed partial class TrainPanel
         if (Controlled is not { } train)
             return;
         var draw = ImGui.GetWindowDrawList();
-        var pos = ImGui.GetWindowPos();
-        var size = ImGui.GetWindowSize();
+        // Laid out from the cursor, so it sits in the drive strip (centred in its height) or at the top of a window.
+        var pos = ImGui.GetCursorScreenPos();
+        var avail = ImGui.GetContentRegionAvail();
         var height = S(28f);
-        var y = pos.Y + (size.Y - height) * 0.5f;
+        var y = pos.Y + MathF.Max(0f, (MathF.Min(avail.Y, S(40f)) - height) * 0.5f);
         var gap = S(8f);
-        var x = pos.X + S(12f);
+        var x = pos.X;
 
         bool Lever(string id, string label, string reading, ref float value, float width, bool enabled = true)
         {
@@ -432,7 +434,7 @@ public sealed partial class TrainPanel
         x += gap * 2f;
 
         // The readings from the right: the air, then the speed.
-        var right = pos.X + size.X - S(12f);
+        var right = pos.X + avail.X;
         var textY = y + (height - S(13f)) * 0.5f - S(1f);
         ReadOnlySpan<(string Label, string Value, Rgba Color)> readings =
         [
@@ -476,6 +478,9 @@ public sealed partial class TrainPanel
                 Canvas.Text(draw, Medium, S(13f), new float2(right - width, textY), w.Color, w.Text);
             }
         }
+
+        ImGui.SetCursorScreenPos(new float2(pos.X, y + height));
+        ImGui.Dummy(new float2(1f, S(6f)));
     }
 
     /// A combo of sound names; picking one keeps it in the settings.
@@ -653,7 +658,6 @@ public sealed partial class TrainPanel
 
         ImGui.EndChild();
         ImGui.PopStyleColor();
-        Kit.Toggle("vehicle.tags", "Name tags", ref ShowTags);
         Kit.EndCard();
 
         if (Selected < 0 || Selected >= train.Cars.Count)

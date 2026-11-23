@@ -29,7 +29,10 @@ Content/Meshes/**/Assembled/*.blend
 Content/Meshes/Vegetation/low_poly_vegetation_for_games_4k.glb
 
 # Terrain textures nothing loads
-Content/Textures/Terrain/Modifiers/
+Content/Terrain/Modifiers/
+
+# Downloads and unpacked third-party packs that content is made from (Tools/Content/migrate_meshes.py)
+ContentSource/
 
 # Exported packs and server track, made from the routes
 Export/
@@ -44,5 +47,9 @@ Tools/Audio/**/*.wav
 Content/Meshes/**/LOD1/
 Content/Meshes/**/LOD2/
 
-# Downloaded crossing-signal source model (~850 MB, two files over GitHub's 100 MB limit); not loaded by the game.
-Content/Meshes/CrossingSignals/
+# The grass and flowers: under Sketchfab's Standard licence, which doesn't allow handing the model itself out; kept on each machine
+Content/Meshes/Vegetation/grass_1k.glb
+Content/Meshes/Vegetation/grass_2k.glb
+
+# Trainz packs the freight cars are built from (Tools/RollingStock/build_game.py), if any are dropped in Content
+Content/Meshes/**/*.cdp

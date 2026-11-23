@@ -93,6 +93,8 @@ public sealed class HighballApp : IDisposable
 
         _imgui = ImGui.CreateContext();
         ImGui.GetIO().IniFilename = default;
+        // Docking: the Route Builder lays its panels out in a dockspace (Workspace.DockSpace).
+        ImGui.GetIO().ConfigFlags |= ImGuiConfigFlags.DockingEnable;
         _glfwBackend = new GlfwBackend(_window, GlfwBackend.ClientApi.Vulkan);
         var backend = new VulkanBackend.CreateInfo
         {
@@ -337,6 +339,9 @@ public sealed class HighballApp : IDisposable
             const ImGuiWindowFlags flags = ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.NoMove |
                                            ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoBringToFrontOnFocus | ImGuiWindowFlags.NoScrollWithMouse;
             ImGui.Begin("##deck"u8, flags);
+            // Always under every other window (the Route Builder's docked panels among them), so what screens draw on it
+            // never shows over them and it never takes the pointer from them.
+            ImGui.Internal.BringWindowToDisplayBack(ImGui.Internal.GetCurrentWindow());
             var draw = ImGui.GetWindowDrawList();
 
             // Windows above the deck (future tools); while one has the pointer or a text field, the deck ignores input.

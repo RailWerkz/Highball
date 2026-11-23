@@ -6,7 +6,7 @@ using RailWerkz.Core.Logging;
 
 namespace RailWerkz.Vulkan;
 
-/// An RGBA8 texture with its view and sampler: loaded from Content/Textures with stb_image, or made from pixels.
+/// An RGBA8 texture with its view and sampler: loaded from a path under Content with stb_image, or made from pixels.
 public sealed unsafe class Texture2D : IDisposable
 {
     private ImageEx _image;
@@ -26,9 +26,9 @@ public sealed unsafe class Texture2D : IDisposable
         MipLevels = mipLevels;
     }
 
-    /// srgb for colour maps (see FromPixels).
+    /// An image by its path under Content ("Sky/Planets/2k_moon.jpg"). srgb for colour maps (see FromPixels).
     public static Texture2D Load(string relativePath, bool repeat = true, bool mipmaps = true, bool srgb = false) =>
-        LoadFile(ContentPath.Texture(relativePath), repeat, mipmaps, srgb);
+        LoadFile(ContentPath.Get(relativePath), repeat, mipmaps, srgb);
 
     /// An image from anywhere on disk (PNG, JPEG, BMP, TGA: whatever stb_image reads).
     public static Texture2D LoadFile(string path, bool repeat = true, bool mipmaps = true, bool srgb = false)
@@ -117,13 +117,13 @@ public sealed unsafe class Texture2D : IDisposable
         return texture;
     }
 
-    /// A block-compressed DDS from Content/Textures (BC1, BC3, BC4 or BC5, with its own mip chain), uploaded as it is.
+    /// A block-compressed DDS by its path under Content (BC1, BC3, BC4 or BC5, with its own mip chain), uploaded as it is.
     /// srgb for colour maps: the blocks are read back linear whatever the file says.
     /// skip: how many of its largest levels to leave out, so it takes a quarter of the memory for each (it always keeps at least a
     /// 256 pixel level, if it has one).
     public static Texture2D LoadDds(string relativePath, bool srgb, int skip = 0)
     {
-        var path = ContentPath.Texture(relativePath);
+        var path = ContentPath.Get(relativePath);
         using var dds = new Gli.Texture(path);
         var format = dds.Format switch
         {
@@ -157,11 +157,11 @@ public sealed unsafe class Texture2D : IDisposable
         return FromBlocks(Path.GetFileName(path), format, extent.X, extent.Y, data, levels);
     }
 
-    /// A block-compressed KTX2 from Content/Textures (BC1, BC3, BC4, BC5 or BC7, each level as it is or Zstandard-compressed),
+    /// A block-compressed KTX2 by its path under Content (BC1, BC3, BC4, BC5 or BC7, each level as it is or Zstandard-compressed),
     /// uploaded as it is. srgb for colour maps: the blocks are read back linear whatever the file says.
     public static Texture2D LoadKtx2(string relativePath, bool srgb)
     {
-        var path = ContentPath.Texture(relativePath);
+        var path = ContentPath.Get(relativePath);
         var file = File.ReadAllBytes(path);
         ReadOnlySpan<byte> identifier = [0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A];
         if (file.Length < 80 || !file.AsSpan(0, 12).SequenceEqual(identifier))

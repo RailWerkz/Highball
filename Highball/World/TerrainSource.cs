@@ -92,33 +92,87 @@ public sealed partial class TerrainSource
         if (App.DevTools.Refit)
             NetworkLines.ForgetSolved(route);
         var edits = TrackEdits.Load(route);
-        var lines = NetworkLines.Build(network.Ways.Values, route, built, edits.Snapshot());
+        var stages = new List<string>();
+        var stage = System.Diagnostics.Stopwatch.StartNew();
+        void Stage(string name)
+        {
+            stages.Add($"{name} {stage.ElapsedMilliseconds}");
+            stage.Restart();
+        }
+
         // (The bridges' hand settings before the ground's shaped: an end set to a wall or a slope shapes it.)
         var bridgeEdits = RouteBridges.Load(route);
-        lines.BridgeEdits = bridgeEdits;
         var objects = RouteObjects.Load(route);
-        lines.SetCrossings(objects, route.Projection!);
+        var stamp = CompiledRoute.StampOf(route, built, objects);
+        Stage("stamp");
 
-        Parallel.For(0, ids.Length, i =>
+        // The lines worked out from the map data and edits: solved (or read as saved), the ground under them sampled, their
+        // profiles fitted. Tiles no line reaches are made as they're read.
+        NetworkLines WorkOut(bool makeTiles)
         {
-            try
+            var laid = NetworkLines.Build(network.Ways.Values, route, built, edits.Snapshot());
+            Stage("lines");
+            laid.BridgeEdits = bridgeEdits;
+            laid.SetCrossings(objects, route.Projection!);
+            Parallel.For(0, ids.Length, i =>
             {
-                var folder = route.TileFolder(ids[i]);
-                var data = route.LoadTile(ids[i]);
-                lines.SampleGround(ids[i], data.Heights, data.Meta.Samples);
-                if (lines.LinesIn(ids[i]).Count == 0)
-                    tiles[i] = MakeTile(ids[i], data.Heights, data.Cover, data.Meta.Samples, (route.Pack is null ? LoadEdits(folder, data.Meta.Samples) : null));
-            }
-            catch (Exception e)
+                try
+                {
+                    var folder = route.TileFolder(ids[i]);
+                    var data = route.LoadTile(ids[i]);
+                    laid.SampleGround(ids[i], data.Heights, data.Meta.Samples);
+                    if (makeTiles && laid.LinesIn(ids[i]).Count == 0)
+                        tiles[i] = MakeTile(ids[i], data.Heights, data.Cover, data.Meta.Samples, (route.Pack is null ? LoadEdits(folder, data.Meta.Samples) : null));
+                }
+                catch (Exception e)
+                {
+                    Log.Warn($"Terrain: tile {ids[i]} unreadable ({e.Message})");
+                }
+            });
+
+            Stage("ground");
+            laid.FinishProfiles();
+            Stage("profiles");
+            laid.FindLayouts(network.Nodes);
+            TrackLayouts.SaveMarkers(route, laid.Layouts);
+            Stage("layouts");
+            return laid;
+        }
+
+        var lines = App.DevTools.Refit ? null : CompiledRoute.TryLoad(route, stamp);
+        if (lines is not null)
+        {
+            CompiledRoute.Restore(lines, network, edits.Snapshot(), built, bridgeEdits, objects, route.Projection!);
+            Stage("compiled");
+            Parallel.For(0, ids.Length, i =>
             {
-                Log.Warn($"Terrain: tile {ids[i]} unreadable ({e.Message})");
-            }
-        });
+                if (lines.LinesIn(ids[i]).Count > 0)
+                    return;
+                try
+                {
+                    var data = route.LoadTile(ids[i]);
+                    tiles[i] = MakeTile(ids[i], data.Heights, data.Cover, data.Meta.Samples, (route.Pack is null ? LoadEdits(route.TileFolder(ids[i]), data.Meta.Samples) : null));
+                }
+                catch (Exception e)
+                {
+                    Log.Warn($"Terrain: tile {ids[i]} unreadable ({e.Message})");
+                }
+            });
+            Stage("bare tiles");
+            if (CompiledRoute.Check)
+                CompiledRoute.Compare(lines, WorkOut(false));
+        }
+        else
+        {
+            lines = WorkOut(true);
+            CompiledRoute.Save(route, stamp, lines);
+            Stage("compile");
+        }
 
-        lines.FinishProfiles();
-        lines.FindLayouts(network.Nodes);
-        TrackLayouts.SaveMarkers(route, lines.Layouts);
-
+        lines.PrepareShapingKeys(ids, route.Grid!.Samples);
+        Stage("ground keys");
+        var kept = 0;
+        var shaped = 0;
         Parallel.For(0, ids.Length, i =>
         {
             if (tiles[i] is not null || lines.LinesIn(ids[i]).Count == 0)
@@ -127,7 +181,10 @@ public sealed partial class TerrainSource
             {
                 var folder = route.TileFolder(ids[i]);
                 var data = route.LoadTile(ids[i]);
-                lines.Conform(ids[i], data.Heights, data.Meta.Samples);
+                if (lines.ConformKept(route, ids[i], data.Heights, data.Meta.Samples))
+                    Interlocked.Increment(ref kept);
+                else
+                    Interlocked.Increment(ref shaped);
                 tiles[i] = MakeTile(ids[i], data.Heights, data.Cover, data.Meta.Samples, (route.Pack is null ? LoadEdits(folder, data.Meta.Samples) : null));
                 lines.DrapeMarks(ids[i], data.Heights, data.Meta.Samples);
             }
@@ -136,6 +193,11 @@ public sealed partial class TerrainSource
                 Log.Warn($"Terrain: tile {ids[i]} unreadable ({e.Message})");
             }
         });
+
+        Stage($"reshape ({kept} tiles as kept, {shaped} shaped again)");
+        Log.Info($"Terrain open, ms: {string.Join(", ", stages)}");
+        if (Environment.GetEnvironmentVariable("HB_GROUNDKEYS") is { Length: > 0 } keysTo)
+            lines.DumpShapingKeys(keysTo, route.Grid!.Samples);
 
         var source = new TerrainSource(route, [.. tiles.OfType<Tile>()]) { Lines = lines, Network = network, TrackEdits = edits };
         source.Objects.AddRange(objects);
@@ -146,6 +208,30 @@ public sealed partial class TerrainSource
             BridgeAudit.Run(source, route);
         return source;
     });
+
+    /// The lines as they are now written as the route's compiled lines (CompiledRoute), stamped with what's on disk: for after a
+    /// save, with no rebuild under way, so the next open reads them.
+    /// Writes the compiled route off the main thread (it's hundreds of megabytes). current: whether nothing's been saved since,
+    /// asked before the stamp's taken and before the file's put in place, so the file never carries lines older than its stamp.
+    public Task Compile(Func<bool> current)
+    {
+        if (Lines is not { } lines)
+            return Task.CompletedTask;
+        var (tiles, objects) = (_tiles.Keys.ToList(), Objects.ToList());
+        return Task.Run(() =>
+        {
+            try
+            {
+                var stamp = CompiledRoute.StampOf(_route, tiles, objects);
+                if (current())
+                    CompiledRoute.Save(_route, stamp, lines, current);
+            }
+            catch (Exception e)
+            {
+                RailWerkz.Core.Logging.Log.Warn($"Compiled route: not written ({e.Message})");
+            }
+        });
+    }
 
     private static Tile MakeTile(TileId id, float[] heights, byte[] cover, int samples, float[]? edits)
     {

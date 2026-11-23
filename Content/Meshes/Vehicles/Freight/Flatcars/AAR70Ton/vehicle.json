@@ -1,0 +1,44 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (27,669 kg); loaded, the gross rail load its trucks are rated for.
+{
+  "id": "flatcar_aar_70ton",
+  "name": "70-ton AAR flatcar",
+  "kind": "Flatcar",
+  "type": "AAR 70-ton general-service flatcar",
+  "lengthM": 16.867,
+  "truckCentresM": 13.181,
+  "frontOverhangM": 1.888,
+  "axles": 4,
+  "wheelDiameterM": 0.8387,
+  "massEmptyKg": 27669,
+  "massLoadedKg": 99790,
+  "maxSpeedKmh": 89,
+  "liveries": [
+    {
+      "id": "atsf_ft_v",
+      "name": "ATSF FT-V",
+      "model": "Vehicles/Freight/Flatcars/AAR70Ton/LOD0/flatcar_aar_70ton_atsf_ft_v.glb"
+    },
+    {
+      "id": "co",
+      "name": "C&O",
+      "model": "Vehicles/Freight/Flatcars/AAR70Ton/LOD0/flatcar_aar_70ton_co.glb"
+    },
+    {
+      "id": "dti",
+      "name": "DT&I",
+      "model": "Vehicles/Freight/Flatcars/AAR70Ton/LOD0/flatcar_aar_70ton_dti.glb"
+    },
+    {
+      "id": "nh",
+      "name": "NH",
+      "model": "Vehicles/Freight/Flatcars/AAR70Ton/LOD0/flatcar_aar_70ton_nh.glb"
+    },
+    {
+      "id": "pm",
+      "name": "PM",
+      "model": "Vehicles/Freight/Flatcars/AAR70Ton/LOD0/flatcar_aar_70ton_pm.glb"
+    }
+  ]
+}

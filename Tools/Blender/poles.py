@@ -2,7 +2,8 @@
 
     blender -b --factory-startup --python Tools/Blender/poles.py -- <Content folder> [preview folder]
 
-Writes these under Content/Meshes/Poles, and all of them side by side in Assembled/poles.blend:
+Writes the poles under Content/Meshes/Lineside/Poles and the ties under Lineside/Ties, and all of them side by side in
+Lineside/Poles/Source/poles.blend:
 
     pole_telegraph     a railroad pole line's: bare wood, two crossarms of glass insulators
     pole_distribution  a street's: three phases on a crossarm, a transformer, then the phone cable
@@ -591,10 +592,10 @@ def shoot(scene, camera, path, location, target, lens, size):
     bpy.ops.render.render(write_still=True)
 
 
-folder = os.path.join(CONTENT, "Meshes", "Poles")
 for name, builder in UTILITY + LIGHTS + TIES:
     model, _ = builder()
-    model.export(os.path.join(folder, f"{name}.glb"))
+    kind = "Ties" if name.startswith("tie_") else "Poles"
+    model.export(os.path.join(CONTENT, "Meshes", "Lineside", kind, f"{name}.glb"))
 
 # Where the close preview of each looks: the point, and how far back.
 CLOSE = {"pole_telegraph": ((0, 0, 9.0), 3.6), "pole_distribution": ((0, -0.2, 11.0), 4.6), "pole_telecom": ((0, 0, 6.6), 3.6),
@@ -618,7 +619,7 @@ for name, builder in UTILITY + LIGHTS + TIES:
         collection.objects.link(obj)
     x += 7.0
 scene, camera = setup_look()
-assembled = os.path.join(folder, "Assembled", "poles.blend")
+assembled = os.path.join(CONTENT, "Meshes", "Lineside", "Poles", "Source", "poles.blend")
 os.makedirs(os.path.dirname(assembled), exist_ok=True)
 bpy.ops.wm.save_as_mainfile(filepath=assembled)
 print("wrote", assembled)

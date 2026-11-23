@@ -1,0 +1,61 @@
+{
+  "id": "signals",
+  "kind": "lineside",
+  "name": "Signal",
+  "about": "Signals and signal bridges: masts, heads and the bridge kit.",
+  "models": [
+    {
+      "file": "bridge.glb",
+      "materials": {
+        "Concrete": "Concrete",
+        "Galv": "Galv"
+      }
+    },
+    {
+      "file": "head_hooded.glb",
+      "materials": {
+        "Black": "Black",
+        "Galv": "Galv",
+        "LensGreen": "LensGreen",
+        "LensRed": "LensRed",
+        "LensYellow": "LensYellow"
+      }
+    },
+    {
+      "file": "head_search.glb",
+      "materials": {
+        "Black": "Black",
+        "Galv": "Galv",
+        "LensSearch": "LensSearch"
+      }
+    },
+    {
+      "file": "head_triple.glb",
+      "materials": {
+        "Black": "Black",
+        "Galv": "Galv",
+        "LensGreen": "LensGreen",
+        "LensRed": "LensRed",
+        "LensYellow": "LensYellow"
+      }
+    },
+    {
+      "file": "mast.glb",
+      "materials": {
+        "Concrete": "Concrete",
+        "Galv": "Galv"
+      }
+    },
+    {
+      "file": "signal.glb",
+      "materials": {
+        "Black": "Black",
+        "Concrete": "Concrete",
+        "Galv": "Galv",
+        "LensGreen": "LensGreen",
+        "LensRed": "LensRed",
+        "LensYellow": "LensYellow"
+      }
+    }
+  ]
+}

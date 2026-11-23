@@ -57,11 +57,19 @@ public sealed class BridgeEndShape
         _lines = lines;
         Line = line;
         End = end;
-        var p = Math.Clamp(end.Point, 0, line.Count - 2);
-        var (dx, dz) = (line.X[p + 1] - line.X[p], line.Z[p + 1] - line.Z[p]);
+        // Into the gap: the way the deck runs over its first few metres from the end. (Taken from the segment after the end's point, a
+        // far end's way was the line's past the bridge, which turns off it wherever the line bends there: the walls, the slope and the
+        // ground shaped round them all swung off under the deck.)
+        var step = end.Start ? 1 : -1;
+        var q = end.Point;
+        while (q + step >= 0 && q + step < line.Count && (q == end.Point || MathF.Abs(line.S[q] - line.S[end.Point]) < 4f) &&
+               line.Structures[Math.Min(q, q + step)] == Structure.Bridge)
+            q += step;
+        if (q == end.Point)
+            q = Math.Clamp(end.Point + step, 0, line.Count - 1);
+        var (dx, dz) = (line.X[q] - line.X[end.Point], line.Z[q] - line.Z[end.Point]);
         var length = Math.Max(Math.Sqrt(dx * dx + dz * dz), 1e-6);
-        var inward = end.Start ? 1.0 : -1.0;
-        (Fx, Fz) = (dx / length * inward, dz / length * inward);
+        (Fx, Fz) = (dx / length, dz / length);
         (Ex, Ez) = (line.X[end.Point], line.Z[end.Point]);
         DeckHalf = BridgePlanner.DeckHalf(line);
         DeckY = line.Y[end.Point];
@@ -81,6 +89,24 @@ public sealed class BridgeEndShape
         }
 
         (ToeLeft, ToeRight) = (Toe(-1f), Toe(1f));
+
+        // How far down the slope each wing wall has the bank outside it to hold back, over the slope inside: past that, the slope and the
+        // bank coned round the walls are one plane, and a wall carried on to the toe only lay on the grass, a strip of concrete down it.
+        float WallEnd(float side)
+        {
+            var toe = side < 0f ? ToeLeft : ToeRight;
+            for (var a = toe; a > 0f; a -= 0.25f)
+            {
+                var (ix, iz) = World(a, side * DeckHalf);
+                var (ox, oz) = World(a, side * (DeckHalf + WallThick));
+                if (ConeTop(a, ox, oz) - Inner(a, ix, iz) > WallHolds)
+                    return MathF.Min(a + 0.5f, toe);
+            }
+
+            return MathF.Min(Seat + 0.5f, toe);
+        }
+
+        (WallEndLeft, WallEndRight) = (WallEnd(-1f), WallEnd(1f));
         Reach = DeckHalf + WallThick + MathF.Max(DeckY - end.Floor, 0f) * NetworkLines.SpillRun + Ease + 2f;
         var far = MathF.Max(ToeLeft, ToeRight) + Ease + 2f;
         var (minX, minZ, maxX, maxZ) = (double.MaxValue, double.MaxValue, double.MinValue, double.MinValue);
@@ -97,6 +123,12 @@ public sealed class BridgeEndShape
     public (float A, float C) Local(double x, double z) => ((float)((x - Ex) * Fx + (z - Ez) * Fz), (float)((x - Ex) * Rx + (z - Ez) * Rz));
 
     public float Toe(float c) => c < 0f ? ToeLeft : ToeRight;
+
+    /// How far along each wing wall runs (left, right): as far as the bank beside it stands more than WallHolds over the slope inside.
+    public float WallEndLeft { get; }
+    public float WallEndRight { get; }
+    public float WallEnd(float c) => c < 0f ? WallEndLeft : WallEndRight;
+    public const float WallHolds = 0.2f;
 
     /// The track's height along the line at a along from the end (behind it, the approach's).
     public float TrackY(float a)
@@ -122,6 +154,13 @@ public sealed class BridgeEndShape
     /// What's inside the deck's edge: the slope under it, or the formation behind its end.
     public float Inner(float a, double x, double z) => a >= 0f ? _lines.SlopeAt(Line, End, x, z) : Formation(a);
 
+    /// Whether the slope under the deck is paved (a road's: NetworkMeshes.Paving; a railway's is left as levelled earth).
+    public bool Paved => !Line.Rail && !Line.Mark;
+
+    /// The ground inside the deck's edge: the slope, cut out SlabDepth under its top where it's paved, so the slab lies in it. (Shaped to
+    /// the slab's top, the ground's triangles, which never quite follow its plane, came up through it in teeth.)
+    public float InnerGround(float a, double x, double z) => Inner(a, x, z) - (Paved && a >= 0f ? NetworkLines.SlabDepth : 0f);
+
     /// The top of the wing wall on a side at a along.
     public float WallTop(float a, float side)
     {
@@ -133,7 +172,7 @@ public sealed class BridgeEndShape
     public bool Hidden(float a, float c)
     {
         var u = MathF.Abs(c);
-        if (u >= DeckHalf - 0.05f && u <= DeckHalf + WallThick + 0.05f && a >= WallFrom && a <= Toe(c) + 0.25f)
+        if (u >= DeckHalf - 0.05f && u <= DeckHalf + WallThick + 0.05f && a >= WallFrom && a <= WallEnd(c) + 0.25f)
             return true;
         if (a >= -BlockBehind && a <= BlockAhead && u >= DeckHalf - BlockIn && u <= DeckHalf + WallThick + BlockOut)
             return true;
@@ -156,7 +195,7 @@ public sealed class BridgeEndShape
             // (Under the deck past the toe, what's underneath has its own ground: the end's is only as far as the slope runs.)
             if (a > toe + 1f)
                 return null;
-            var inner = Inner(a, x, z);
+            var inner = InnerGround(a, x, z);
             return (inner, inner, MathF.Max(weight, a <= toe ? 1f : 0f));
         }
 
@@ -168,7 +207,7 @@ public sealed class BridgeEndShape
             // (Climbing well inside the wall, so the ground's triangles across the climb stay in it.)
             var (ix, iz) = World(a, side * DeckHalf);
             var climb = Math.Clamp((u - DeckHalf - 0.1f) / (WallThick * 0.4f), 0f, 1f);
-            var inside = Inner(a, ix, iz) + (outer - Inner(a, ix, iz)) * climb;
+            var inside = InnerGround(a, ix, iz) + (outer - InnerGround(a, ix, iz)) * climb;
             return (inside, inside, weight);
         }
 

@@ -1,7 +1,7 @@
 namespace Highball.World;
 
 /// The textures paved surfaces are laid with: the roads' asphalt, and a grade crossing's panels (asphalt, concrete or wood). Each
-/// kind's are whatever ambientCG zips are in its folder under Content/Textures (Asphalt, Concrete, Wood), in name order, however
+/// kind's are whatever materials are in its folder under Content/Materials (Asphalt, Concrete, Wood), in name order, however
 /// many there are.
 ///
 /// Only the ones in use are loaded: the roads' own, and whichever each crossing's laid with (Use, as its deck's built). line.frag
@@ -121,18 +121,15 @@ public static class SurfaceTextures
         {
             var folder = ((Kind)k).ToString();
             var ids = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var root in (string[])[Path.Combine(RailWerkz.Core.IO.ContentPath.SourceRoot, "Textures"), Path.Combine(RailWerkz.Core.IO.ContentPath.Root, "Textures")])
+            foreach (var root in (string[])[Path.Combine(RailWerkz.Core.IO.ContentPath.SourceRoot, "Materials"), Path.Combine(RailWerkz.Core.IO.ContentPath.Root, "Materials")])
             {
                 var dir = Path.Combine(root, folder);
                 if (!Directory.Exists(dir))
                     continue;
-                foreach (var zip in Directory.EnumerateFiles(dir, "*.zip"))
-                {
-                    // ambientCG's names: Road012C_1K-JPG.zip, Road012C_2K-JPG.zip, one texture.
-                    var name = Path.GetFileNameWithoutExtension(zip);
-                    var cut = name.IndexOf('_');
-                    ids.Add(folder + "/" + (cut > 0 ? name[..cut] : name));
-                }
+                // Each material of the kind: a folder of its own with a material.json (Content/Materials/Asphalt/Road012C).
+                foreach (var material in Directory.EnumerateDirectories(dir))
+                    if (File.Exists(Path.Combine(material, "material.json")))
+                        ids.Add(folder + "/" + Path.GetFileName(material));
             }
 
             found[k] = [.. ids];

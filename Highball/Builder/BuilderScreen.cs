@@ -8,10 +8,11 @@ using static RailWerkz.UI.Style;
 
 namespace Highball.Builder;
 
-//// The Route Builder for one route, in the workspace layout: the rail of tools down the left (the Area tool first, which
-/// is the map of the route's tiles over OpenStreetMap, picked and built; then the editor's tools for the built terrain),
-/// the inspector for the tool in hand beside it, and the view switch (MAP, 2D, 3D) in the viewport's corner. The editor is
-/// one view of the terrain, kept open once it's been opened, so switching costs nothing; it opens again only after a build.
+/// The Route Builder for one route: ImGui's menu bar over the top, the rail of tools down the left (the Area tool first,
+/// which is the map of the route's tiles over OpenStreetMap, picked and built; then the editor's tools for the built
+/// terrain), the status bar along the bottom, and between them a dockspace: the Outliner and the Inspector docked down the
+/// right at first, the viewport the empty middle with the view switch (MAP, 2D, 3D) floating at its top. The editor is one
+/// view of the terrain, kept open once it's been opened, so switching costs nothing; it opens again only after a build.
 public sealed class BuilderScreen : Screen, IWorldScreen
 {
     /// What the viewport shows: the map (with the Area tool in hand), or the built terrain from above or flown through.
@@ -251,24 +252,39 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         Canvas.Spaced(draw, Medium, S(10f), new float2(x - Canvas.SpacedWidth(Medium, S(10f), title, 0.18f), y + S(1f)), TextFaint, title, 0.18f);
     }
 
-    // --- The menu bar, rail, inspector, dock and windows (ImGui). ---
+    // --- The menu bar, rail, dockspace and windows (ImGui). ---
+
+    /// The docked windows shown (Window menu), and the layout to be put back as it was at first.
+    private bool _showOutliner = true;
+    private bool _showInspector = true;
+    private bool _resetLayout;
+
+    /// Where the viewport is this frame: the dockspace's empty middle.
+    private (float2 Min, float2 Max) _viewport;
+
+    /// The first layout: the Outliner over the Inspector down the right, the viewport the rest.
+    private void Layout(ImGuiID dock)
+    {
+        var (right, _) = Workspace.Split(dock, ImGuiDir.Right, 0.24f);
+        var (outliner, inspector) = Workspace.Split(right, ImGuiDir.Up, 0.36f);
+        ImGui.Internal.DockBuilderDockWindow("Outliner", outliner);
+        ImGui.Internal.DockBuilderDockWindow("Inspector", inspector);
+        _inspectorNode = inspector;
+    }
+
+    /// The Inspector's dock node, where the editor's other windows go as tabs when first opened.
+    private ImGuiID _inspectorNode;
 
     public override void DrawWindows()
     {
         var editing = _view != ViewMode.Map;
-        if (Workspace.BeginBar(out var top))
+        if (Workspace.BeginMenuBar(out var top))
         {
             Menus(editing);
-            if (editing)
-                _editor!.ToolModes();
-            var picked = Workspace.Views("##view", ViewNames, (int)_view, [true, CanOpenEditor || editing, CanOpenEditor || editing],
-                editing && _editor!.Unsaved, editing ? _editor!.SaveState : null);
             Workspace.EndBar();
-            if (picked != (int)_view)
-                Show((ViewMode)picked);
         }
 
-        Workspace.Begin(top, editing && _editor!.HasDock);
+        Workspace.Begin(top, false);
 
         // The rail: the Area tool (the map), then the editor's tools, the train, undo and redo.
         if (Workspace.BeginRail())
@@ -284,35 +300,58 @@ public sealed class BuilderScreen : Screen, IWorldScreen
 
         Workspace.EndRail();
 
-        if (!editing || _editor!.HasProperties)
+        _viewport = Workspace.DockSpace("BuilderDock", Layout, ref _resetLayout);
+
+        if (_showOutliner)
         {
-            if (Workspace.BeginProperties("##properties"))
+            if (ImGui.Begin("Outliner", ref _showOutliner))
             {
                 if (editing)
-                    _editor!.Panel();
+                    _editor!.Outliner();
+                else
+                    MapOutliner();
+            }
+
+            ImGui.End();
+        }
+
+        if (_showInspector)
+        {
+            if (ImGui.Begin("Inspector", ref _showInspector))
+            {
+                if (editing)
+                    _editor!.Inspector();
                 else
                     _planner.Panel();
             }
 
-            Workspace.EndProperties();
+            ImGui.End();
         }
+
+        var picked = Workspace.ViewSwitch("##viewswitch", _viewport, ViewNames, (int)_view, [true, CanOpenEditor || editing, CanOpenEditor || editing],
+            editing && _editor!.Unsaved, editing ? _editor!.SaveState : null);
+        if (picked != (int)_view)
+            Show((ViewMode)picked);
 
         if (editing)
         {
-            if (_editor!.HasDock)
-            {
-                if (Workspace.BeginDock("##dock", 0f))
-                    _editor.Dock();
-                Workspace.EndDock();
-            }
-
+            _editor!.DockWindowsAt(_inspectorNode);
             _editor.Windows();
             MaterialsWindow.Instance.Draw();
         }
 
         Action lines = !editing || _editor is null ? _planner.DebugStats : _editor.DebugStats;
-        DebugWindows.Draw(Workspace.RailWidth + S(12f), top + S(12f), lines, _planner.BuildJob, !editing || _editor is null ? null : _editor.CameraInfo);
+        DebugWindows.Draw(_viewport.Min.X + S(12f), _viewport.Min.Y + S(48f), lines, _planner.BuildJob, !editing || _editor is null ? null : _editor.CameraInfo);
         Workspace.End();
+    }
+
+    /// The Outliner while the map's open: the route and its tiles; the scene's listed once the editor's open.
+    private void MapOutliner()
+    {
+        ImGui.Text(_route.Name);
+        ImGui.TextDisabled(string.Create(CultureInfo.InvariantCulture, $"{_planner.Built.Count:#,0} tiles built"));
+        ImGui.Separator();
+        ImGui.TextWrapped(CanOpenEditor ? "Open 2D or 3D to see what's in the route." : "Pick an area on the map and build it to start.");
     }
 
     /// The editor's rail buttons shown greyed while only the map is open: any of them opens the editor.
@@ -354,8 +393,6 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         if (editing && ImGui.BeginMenu("Route"))
         {
             _editor!.MenuRoute();
-            if (ImGui.MenuItem("Material Editor...", "M", MaterialsWindow.Instance.Open, true))
-                MaterialsWindow.Instance.Toggle();
             ImGui.EndMenu();
         }
 
@@ -363,7 +400,7 @@ public sealed class BuilderScreen : Screen, IWorldScreen
         {
             if (ImGui.MenuItem("Map", "F1", _view == ViewMode.Map, true))
                 Show(ViewMode.Map);
-            if (ImGui.MenuItem("Top down", "F2", _view == ViewMode.TopDown, editing || CanOpenEditor))
+            if (ImGui.MenuItem("2D", "F2", _view == ViewMode.TopDown, editing || CanOpenEditor))
                 Show(ViewMode.TopDown);
             if (ImGui.MenuItem("3D", "F3", _view == ViewMode.Free, editing || CanOpenEditor))
                 Show(ViewMode.Free);
@@ -371,8 +408,30 @@ public sealed class BuilderScreen : Screen, IWorldScreen
             {
                 ImGui.Separator();
                 _editor!.MenuView();
+                ImGui.Separator();
+                _editor.MenuViewTrains();
             }
 
+            ImGui.EndMenu();
+        }
+
+        if (ImGui.BeginMenu("Window"))
+        {
+            if (ImGui.MenuItem("Outliner", "", _showOutliner, true))
+                _showOutliner = !_showOutliner;
+            if (ImGui.MenuItem("Inspector", "", _showInspector, true))
+                _showInspector = !_showInspector;
+            if (editing)
+            {
+                ImGui.Separator();
+                _editor!.MenuWindow();
+                if (ImGui.MenuItem("Material Editor", "M", MaterialsWindow.Instance.Open, true))
+                    MaterialsWindow.Instance.Toggle();
+            }
+
+            ImGui.Separator();
+            if (ImGui.MenuItem("Reset Layout"))
+                (_showOutliner, _showInspector, _resetLayout) = (true, true, true);
             ImGui.EndMenu();
         }
 

@@ -261,21 +261,24 @@ OpenAL with a pool of 64 voices, sounds placed in the world with Doppler (`RailW
   automatic and independent brakes, sander), and work each unit's switches, distributed power, couplings, hoses,
   angle cocks and handbrakes. The brakes and couplers can be graphed.
 - **Track materials** (View > Track Materials, or **M**): pick the texture, colour, roughness and metal of every track
-  and lineside material. They show live and save to `Content/Materials/Track.json`.
+  and lineside material. They show live and save to `Content/Presets/Track.json`.
 - **Debug windows:** frame statistics with CPU and GPU timings, and a Camera window (**F7**) that gives a launch line
   for the exact view, sky and clouds on screen.
 
 ## Layout
 
 ```
-Content/                 Everything the game loads
+Content/                 Everything the game loads, one folder per asset (see Content/README.md)
   Audio/                 Music, engines, horns, bells, trucks, couplers (not in git)
   Fonts/                 JetBrains Mono, and Inter for the interface if it's there
-  Materials/             Track.json: the track and lineside materials
-  Meshes/                Locomotives, rolling stock, couplers, track parts, lineside, vegetation (glTF, vehicle.json)
+  Materials/             PBR surfaces, Materials/<Category>/<Name>/ with a material.json and 1K/, 2K/ maps
+  Meshes/                Track/, Lineside/<Kind>/ (asset.json), Vehicles/ (vehicle.json), Vegetation/, Characters/
+  Presets/               Track.json: which materials the track and lineside are drawn with
   Routes/                Each route's tiles, network, objects, signalling and stock (not in git)
   Shaders/               GLSL, compiled to SPIR-V at build time; Post/, Clouds/ and Occlusion/ are compute passes
-  Textures/              Ground, ballast, metal and concrete sets, sky and planets
+  Sky/                   Skyboxes and the sun and moon
+  Terrain/               The ground's layers, clutter and modifiers
+ContentSource/           Downloads and unpacked packs that content is made from (not in git)
 Vendor/                  FastNoiseLite (MIT), BRUTAL's licence and notice
 RailWerkz.Core/          Time, content paths, logging, settings, maths, OpenAL audio, music streaming
 RailWerkz.Vulkan/        The GPU, buffers, meshes, textures, render targets, shadow maps, pipelines, glTF models
@@ -313,5 +316,8 @@ Highball --skipsplash --menu options --shot 3 options.png --quit 3.5
 ## Licences
 
 BRUTAL: see `Vendor/BRUTAL_LICENSE.txt` and `Vendor/BRUTAL_NOTICE.txt`. FastNoiseLite and NLayer: MIT. JetBrains
-Mono: OFL. Volumetric clouds adapted from Kitten Space Agency's cloud shaders. Locomotive and coupler models: see the
-`CREDITS.txt` beside each one under `Content/Meshes` (the EMD SD40 by Heataker, CC BY 4.0, modified).
+Mono: OFL. Volumetric clouds adapted from Kitten Space Agency's cloud shaders. Far trees' octahedral impostors (normal
+spread, one frame a pixel), dithered level-of-detail hand-overs and hex-tiled ground follow SamG-Coder's SmartImposter
+(MIT); the hex tiling is Mikkelsen's (2022). Locomotive and coupler models: see the
+`CREDITS.txt` beside each one under `Content/Meshes` (the EMD SD40 by Heataker, CC BY 4.0, modified). Trees: Dari's Various Forest
+Assets Pack, CC BY 4.0 (`Content/Meshes/Vegetation/CREDITS.txt`).

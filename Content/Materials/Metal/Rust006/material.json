@@ -1,0 +1,10 @@
+{
+  "name": "Rust006",
+  "category": "Metal",
+  "sizes": [
+    "1K",
+    "2K"
+  ],
+  "source": "ambientCG",
+  "license": "CC0"
+}

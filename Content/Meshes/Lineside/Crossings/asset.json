@@ -1,0 +1,19 @@
+{
+  "id": "crossing_mast",
+  "kind": "lineside",
+  "name": "Grade crossing",
+  "about": "A grade crossing's masts, flashers and gates.",
+  "models": [
+    {
+      "file": "crossing_mast.glb",
+      "materials": {
+        "Black": "Black",
+        "Concrete": "Concrete",
+        "Galv": "Galv",
+        "LensRed": "LensRed",
+        "Red": "Red",
+        "White": "White"
+      }
+    }
+  ]
+}

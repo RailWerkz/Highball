@@ -69,24 +69,6 @@ public sealed partial class EditorView
         _trains.Open = false;
     }
 
-    /// The rail tool's modes in the top bar.
-    public void ToolModes()
-    {
-        if (_terrain is null || _trains.Open)
-            return;
-        var (index, mode) = Current;
-        var rail = Rail[index];
-        var pick = Workspace.Modes($"mode.{rail.Name}", rail.Modes.Select(m => m.Name).ToArray(), mode);
-        if (pick != mode && pick >= 0)
-        {
-            Use(rail.Modes[pick]);
-            _lastMode[index] = pick;
-        }
-    }
-
-    /// Whether the Train inspector is showing in place of the tool's.
-    public bool TrainInspector => _trains.Open;
-
     /// The editor's tools on the rail (inside Workspace.BeginRail), then the train, then undo and redo at its foot.
     public void RailItems()
     {

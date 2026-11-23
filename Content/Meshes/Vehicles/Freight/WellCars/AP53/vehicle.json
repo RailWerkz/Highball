@@ -1,0 +1,93 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (24,494 kg); loaded, as full as it fills by volume.
+{
+  "id": "wellcar_ap53",
+  "name": "53 ft AP53 well car",
+  "kind": "Intermodal",
+  "type": "Stand-alone 53 ft All-Purpose double-stack well car",
+  "lengthM": 23.374,
+  "truckCentresM": 18.927,
+  "frontOverhangM": 2.243,
+  "axles": 4,
+  "wheelDiameterM": 0.8382,
+  "massEmptyKg": 24494,
+  "massLoadedKg": 68040,
+  "maxSpeedKmh": 113,
+  "loads": [
+    {
+      "id": "20ft_msc",
+      "name": "Two 20 ft containers (MSC yellow, MSC red)"
+    },
+    {
+      "id": "20ft_alianca_apl",
+      "name": "Two 20 ft containers (Alianca, APL)"
+    },
+    {
+      "id": "20ft_msc_apl",
+      "name": "Two 20 ft containers (MSC, APL)"
+    }
+  ],
+  "liveries": [
+    {
+      "id": "ttx_a",
+      "name": "TTX A",
+      "model": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_ttx_a.glb",
+      "loads": {
+        "20ft_msc": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_ttx_a_20ft_msc.glb",
+        "20ft_alianca_apl": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_ttx_a_20ft_alianca_apl.glb",
+        "20ft_msc_apl": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_ttx_a_20ft_msc_apl.glb"
+      }
+    },
+    {
+      "id": "ttx_c",
+      "name": "TTX C",
+      "model": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_ttx_c.glb",
+      "loads": {
+        "20ft_msc": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_ttx_c_20ft_msc.glb",
+        "20ft_alianca_apl": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_ttx_c_20ft_alianca_apl.glb",
+        "20ft_msc_apl": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_ttx_c_20ft_msc_apl.glb"
+      }
+    },
+    {
+      "id": "fec_weathered",
+      "name": "FEC  Weathered",
+      "model": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_weathered.glb",
+      "loads": {
+        "20ft_msc": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_weathered_20ft_msc.glb",
+        "20ft_alianca_apl": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_weathered_20ft_alianca_apl.glb",
+        "20ft_msc_apl": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_weathered_20ft_msc_apl.glb"
+      }
+    },
+    {
+      "id": "fec",
+      "name": "FEC",
+      "model": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec.glb",
+      "loads": {
+        "20ft_msc": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_20ft_msc.glb",
+        "20ft_alianca_apl": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_20ft_alianca_apl.glb",
+        "20ft_msc_apl": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_20ft_msc_apl.glb"
+      }
+    },
+    {
+      "id": "fec_2_weathered",
+      "name": "FEC 2  Weathered",
+      "model": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_2_weathered.glb",
+      "loads": {
+        "20ft_msc": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_2_weathered_20ft_msc.glb",
+        "20ft_alianca_apl": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_2_weathered_20ft_alianca_apl.glb",
+        "20ft_msc_apl": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_2_weathered_20ft_msc_apl.glb"
+      }
+    },
+    {
+      "id": "fec_2",
+      "name": "FEC 2",
+      "model": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_2.glb",
+      "loads": {
+        "20ft_msc": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_2_20ft_msc.glb",
+        "20ft_alianca_apl": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_2_20ft_alianca_apl.glb",
+        "20ft_msc_apl": "Vehicles/Freight/WellCars/AP53/LOD0/wellcar_ap53_fec_2_20ft_msc_apl.glb"
+      }
+    }
+  ]
+}

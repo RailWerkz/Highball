@@ -44,6 +44,23 @@ public sealed record ConsistCar(string Vehicle, string? Livery = null, bool Reve
     /// The model it's drawn with: its paint, carrying its cargo once it's loaded.
     [JsonIgnore]
     public string? ModelPath => Def?.FindLivery(Livery)?.ModelFor(CargoId, Fill);
+
+    /// What the catalogs' paint pickers remember for "Random" in place of a livery id: each car added then comes from Random.
+    public const string RandomPaint = "*random";
+
+    /// Whether picking at random gives a car anything to vary: rolling stock with more than one paint, or a load.
+    public static bool CanRandomize(VehicleDef def) => def.Kind != VehicleKind.Locomotive && (def.Liveries.Count > 1 || def.CanLoad);
+
+    /// The vehicle in any of its paints, empty or loaded (half the time each), and carrying any of its cargoes when loaded:
+    /// for making up a freight train that doesn't look like one car repeated.
+    public static ConsistCar Random(VehicleDef def, Random? rng = null)
+    {
+        rng ??= System.Random.Shared;
+        var livery = def.Liveries.Count > 0 ? def.Liveries[rng.Next(def.Liveries.Count)].Id : null;
+        var loaded = def.CanLoad && rng.Next(2) == 1;
+        var cargo = loaded && def.Cargoes.Count > 0 ? def.Cargoes[rng.Next(def.Cargoes.Count)].Id : null;
+        return new ConsistCar(def.Id, livery, Loaded: loaded, Load: loaded ? 1.0 : 0.0, Cargo: cargo);
+    }
 }
 
 /// A train as made up: its vehicles from the front (index 0) to the rear. Saved under the user's data folder, one file

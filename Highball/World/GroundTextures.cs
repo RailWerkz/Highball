@@ -2,7 +2,7 @@ using RailWerkz.Vulkan;
 
 namespace Highball.World;
 
-/// The terrain's detail textures from Content/Textures/Terrain, bound for terrain.frag in this order: grass albedo and
+/// The terrain's detail textures from Content/Terrain, bound for terrain.frag in this order: grass albedo and
 /// normals, bare earth albedo and normals, cliff albedo and normals, then the grass, bare earth and cliff maps of ambient
 /// occlusion (red) and roughness (green), then desert mountain and beach albedo, normals and those maps, then grass and earth
 /// displacement, for blending them by height. The albedos are detail to multiply the land cover's colour by (the shader divides

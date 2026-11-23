@@ -128,7 +128,7 @@ public static class PlacedKinds
     /// What goes down anywhere, or off a road or track, singly or in runs: the poles, and the loose ties.
     public static bool IsPole(this PlacedKind kind) => kind.IsUtilityPole() || kind.IsLightPole() || kind.IsTie();
 
-    /// Its model under Meshes/Poles.
+    /// Its model under Meshes/Lineside/Poles.
     public static string PoleModel(this PlacedKind kind) => kind switch
     {
         PlacedKind.PoleTelegraph => "pole_telegraph",

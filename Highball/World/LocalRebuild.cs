@@ -6,4 +6,7 @@ namespace Highball.World;
 ///
 /// Halo: the chains meeting those laid again (sharing a node), laid again too so the lines near the edit are worked out against
 /// them as each pass has them (as in a full rebuild), but then put back as they were: they're past the edit's reach.
-public sealed record LocalRebuild(NetworkLines Previous, HashSet<long> Near, HashSet<long> Halo);
+///
+/// Places: where the edit changed track (world metres, as it was and as it is). Rail too far from all of them is kept as it was,
+/// heights and all (NetworkLines.HoldFarRail), so a grade worked out along a long line doesn't shift miles from the edit.
+public sealed record LocalRebuild(NetworkLines Previous, HashSet<long> Near, HashSet<long> Halo, List<(double X, double Z)> Places);

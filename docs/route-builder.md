@@ -445,7 +445,7 @@ they change, and Ctrl+Z undoes them. Signals don't show aspects or tie into circ
 A crossing's deck is built again whenever the track changes, so it follows the track. Signals and masts stay where they were
 placed, and a hand throw whose switch has gone does nothing. Signals, stands and masts are from `Tools/Blender/lineside.py`.
 Poles are from `Tools/Blender/poles.py`; like signals, they aren't drawn past the track's near radius (1 km). Their wood is Wood062, at 4K if
-`Content/Textures/Wood/Wood062_4K-JPG.zip` is there, and otherwise the size the ties use. They have no wires yet, and the lights don't light.
+`Content/Materials/Wood/Wood062` comes in 4K, and otherwise the size the ties use. They have no wires yet, and the lights don't light.
 
 ## Bridges
 

@@ -93,6 +93,149 @@ float worth(float tile, float pixel)
     return 1.0 - smoothstep(tile / 32.0, tile / 12.0, pixel);
 }
 
+// --- Hex tiling (after Mikkelsen 2022, "Practical Real-Time Hex-Tiling", as SmartImposter lays its ground; MIT). ---
+// The near scale of grass, earth and desert is read three times, from the corners of the triangle of a lattice it stands in,
+// each corner its own random turn and offset of the map, blended by how near it is (sharpened, so the blend doesn't wash the
+// grain out). No two neighbouring patches show the same part of the map the same way round, so no repeat ever lines up.
+//
+// The lattice is a triangle one squashed a little (HexSkew 8/7, not 2/sqrt 3) so it fits WorldRenderer.TexturePeriod a whole
+// number of times for every tile here (4, 6 and 12 m at HexRate 2): where the texture coordinates wrap, its corners land on
+// corners again, and their randoms are taken from where they are in the world (worked out exactly, in whole corners), so
+// nothing jumps when the camera crosses a wrap.
+const float HexRate = 2.0;
+const float HexSkew = 8.0 / 7.0;
+const float HexSharp = 5.0;
+
+struct Hex
+{
+    vec2 uv[3];
+    vec2 turn[3]; // each corner's cos and sin
+    vec3 w;
+    vec2 dx, dy;  // the unturned coordinate's footprint, for each read's blur
+};
+
+// Where a pixel of a map with this repeat stands in the lattice. p: the place in repeats (tex / tile); wrap: how many repeats
+// the world is ahead of tex (the camera's place less its wrapped one, over the tile); dx, dy: p's footprint.
+Hex hexAt(vec2 p, vec2 wrap, vec2 dx, vec2 dy)
+{
+    vec2 q = p * HexRate;
+    vec2 s = vec2(q.x - 0.5 * HexSkew * q.y, HexSkew * q.y);
+    vec2 baseF = floor(s);
+    ivec2 base = ivec2(baseF);
+    vec2 f = s - baseF;
+    float z = 1.0 - f.x - f.y;
+    float upper = z < 0.0 ? 1.0 : 0.0;
+    float sign2 = 2.0 * upper - 1.0;
+    vec3 w = vec3(-z * sign2, upper - f.y * sign2, upper - f.x * sign2);
+    int u = int(upper);
+    ivec2 corner[3] = ivec2[3](base + ivec2(u, u), base + ivec2(u, 1 - u), base + ivec2(1 - u, u));
+
+    vec2 wq = wrap * HexRate;
+    ivec2 ahead = ivec2(round(vec2(wq.x - 0.5 * HexSkew * wq.y, HexSkew * wq.y)));
+
+    Hex h;
+    h.dx = dx;
+    h.dy = dy;
+    w = pow(max(w, vec3(0.0)), vec3(HexSharp));
+    h.w = w / (w.x + w.y + w.z);
+    for (int i = 0; i < 3; i++)
+    {
+        ivec2 c = corner[i];
+        // The corner in repeats, from its lattice place (the skew undone).
+        vec2 at = vec2(float(c.x) + 0.5 * float(c.y), float(c.y) / HexSkew) / HexRate;
+        ivec2 id = c + ahead;
+        float angle = hash(id) * 6.2831853;
+        vec2 offset = vec2(hash(id + ivec2(131, 17)), hash(id + ivec2(-71, 293)));
+        vec2 cs = vec2(cos(angle), sin(angle));
+        vec2 d = p - at;
+        h.turn[i] = cs;
+        h.uv[i] = vec2(cs.x * d.x - cs.y * d.y, cs.y * d.x + cs.x * d.y) + offset;
+    }
+    return h;
+}
+
+// A lattice place that reads the map once, unturned: what a material's Hex holds where its near scale isn't read, so it's never
+// left undefined (an undefined one, even unused, gave the optimiser leave to make black specks of the ground).
+Hex hexPlain(vec2 p, vec2 dx, vec2 dy)
+{
+    Hex h;
+    for (int i = 0; i < 3; i++)
+    {
+        h.uv[i] = p;
+        h.turn[i] = vec2(1.0, 0.0);
+    }
+    h.w = vec3(1.0, 0.0, 0.0);
+    h.dx = dx;
+    h.dy = dy;
+    return h;
+}
+
+vec2 turned(vec2 cs, vec2 v)
+{
+    return vec2(cs.x * v.x - cs.y * v.y, cs.y * v.x + cs.x * v.y);
+}
+
+vec4 hexRead(sampler2D map, Hex h)
+{
+    vec4 sum = vec4(0.0);
+    for (int i = 0; i < 3; i++)
+        sum += textureGrad(map, h.uv[i], turned(h.turn[i], h.dx), turned(h.turn[i], h.dy)) * h.w[i];
+    return sum;
+}
+
+// A normal map's xy, each read turned back into the ground's own frame.
+vec2 hexRelief(sampler2D map, Hex h)
+{
+    vec2 sum = vec2(0.0);
+    for (int i = 0; i < 3; i++)
+    {
+        vec2 n = textureGrad(map, h.uv[i], turned(h.turn[i], h.dx), turned(h.turn[i], h.dy)).rg * 2.0 - 1.0;
+        vec2 cs = h.turn[i];
+        sum += vec2(cs.x * n.x + cs.y * n.y, -cs.y * n.x + cs.x * n.y) * h.w[i];
+    }
+    return sum;
+}
+
+// A map's near read: hex-tiled while that scale is worth reading at all, plain past it (where a pixel spans so much of a repeat
+// that its small mips are all but its average either way).
+vec4 nearRead(sampler2D map, Hex h, vec2 p, bool hex)
+{
+    if (hex)
+        return hexRead(map, h);
+    return texture(map, p);
+}
+
+// The hex-tiled near scale and a turned far one of a detail map.
+vec3 detailHex(sampler2D map, Hex h, vec2 p, float tile, float pixel)
+{
+    vec3 d = vec3(1.0);
+    float near = worth(tile, pixel);
+    if (near > 0.0)
+    {
+        vec3 average = max(textureLod(map, vec2(0.5), 16.0).rgb, vec3(0.01));
+        d = mix(vec3(1.0), hexRead(map, h).rgb / average, near);
+    }
+    float far = worth(tile * Second, pixel);
+    if (far > 0.0)
+        d *= mix(vec3(1.0), detail(map, Turn * p / (tile * Second)), 0.5 * far);
+    return d;
+}
+
+vec2 reliefHex(sampler2D map, Hex h, vec2 p, float tile, float pixel)
+{
+    vec2 sum = vec2(0.0);
+    float near = worth(tile, pixel);
+    if (near > 0.0)
+        sum = hexRelief(map, h) * near;
+    float far = worth(tile * Second, pixel);
+    if (far > 0.0)
+    {
+        vec2 large = texture(map, Turn * p / (tile * Second)).rg * 2.0 - 1.0;
+        sum += mat2(0.8, -0.6, 0.6, 0.8) * large * (0.35 * far);
+    }
+    return sum * 0.75;
+}
+
 // Two scales of a detail map, the larger one turned so its repeats run a different way.
 vec3 detail2(sampler2D map, vec2 p, float tile, float pixel)
 {
@@ -152,11 +295,29 @@ void main()
     vec4 m = max(vMaterials, vec4(0.0));
     m /= max(dot(m, vec4(1.0)), 1e-3);
 
+    // Each material's place in its hex lattice (hexAt), worked out only where its near scale is read.
+    // (The footprint taken here, where every pixel runs: derivatives inside the branches below would be undefined.)
+    vec2 wrap = pc.camera.xz - pc.texOrigin.xz;
+    vec2 tdx = dFdx(tex);
+    vec2 tdy = dFdy(tex);
+    bool grassHex = m.x > Unused && worth(GrassTile, pixel) > 0.0;
+    bool earthHex = m.y > Unused && worth(EarthTile, pixel) > 0.0;
+    bool desertHex = m.y > Unused && worth(DesertTile, pixel) > 0.0;
+    Hex gh = hexPlain(tex / GrassTile, tdx / GrassTile, tdy / GrassTile);
+    Hex eh = hexPlain(tex / EarthTile, tdx / EarthTile, tdy / EarthTile);
+    Hex dh = hexPlain(tex / DesertTile, tdx / DesertTile, tdy / DesertTile);
+    if (grassHex)
+        gh = hexAt(tex / GrassTile, wrap / GrassTile, tdx / GrassTile, tdy / GrassTile);
+    if (earthHex)
+        eh = hexAt(tex / EarthTile, wrap / EarthTile, tdx / EarthTile, tdy / EarthTile);
+    if (desertHex)
+        dh = hexAt(tex / DesertTile, wrap / DesertTile, tdx / DesertTile, tdy / DesertTile);
+
     // Where grass meets earth, whichever stands taller at this spot wins, so the edge follows clumps and stones, not a smooth fade.
     float land = m.x + m.y;
     if (m.x > Unused && m.y > Unused)
     {
-        float taller = texture(grassHeight, tex / GrassTile).r - texture(earthHeight, tex / EarthTile).r;
+        float taller = nearRead(grassHeight, gh, tex / GrassTile, grassHex).r - nearRead(earthHeight, eh, tex / EarthTile, earthHex).r;
         float grassShare = smoothstep(-0.12, 0.12, (m.x / land - 0.5) * 2.0 + taller * 0.8);
         m.x = land * grassShare;
         m.y = land * (1.0 - grassShare);
@@ -178,25 +339,25 @@ void main()
     vec2 finish = WaterSurface * (m.z + m.w);
     if (m.x > Unused)
     {
-        grain += detail2(grassAlbedo, tex, GrassTile, pixel) * m.x;
-        bump += relief2(grassNormal, tex, GrassTile, pixel) * m.x;
-        finish += texture(grassSurface, tex / GrassTile).rg * m.x;
+        grain += detailHex(grassAlbedo, gh, tex, GrassTile, pixel) * m.x;
+        bump += reliefHex(grassNormal, gh, tex, GrassTile, pixel) * m.x;
+        finish += nearRead(grassSurface, gh, tex / GrassTile, grassHex).rg * m.x;
     }
 
     float earth = m.y * (1.0 - desert);
     if (earth > Unused)
     {
-        grain += detail2(earthAlbedo, tex, EarthTile, pixel) * earth;
-        bump += relief2(earthNormal, tex, EarthTile, pixel) * earth;
-        finish += texture(earthSurface, tex / EarthTile).rg * earth;
+        grain += detailHex(earthAlbedo, eh, tex, EarthTile, pixel) * earth;
+        bump += reliefHex(earthNormal, eh, tex, EarthTile, pixel) * earth;
+        finish += nearRead(earthSurface, eh, tex / EarthTile, earthHex).rg * earth;
     }
 
     float rocky = m.y * desert;
     if (rocky > Unused)
     {
-        grain += detail2(desertAlbedo, tex, DesertTile, pixel) * rocky;
-        bump += relief2(desertNormal, tex, DesertTile, pixel) * rocky;
-        finish += texture(desertSurface, tex / DesertTile).rg * rocky;
+        grain += detailHex(desertAlbedo, dh, tex, DesertTile, pixel) * rocky;
+        bump += reliefHex(desertNormal, dh, tex, DesertTile, pixel) * rocky;
+        finish += nearRead(desertSurface, dh, tex / DesertTile, desertHex).rg * rocky;
     }
 
     albedo *= grain;

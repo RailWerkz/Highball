@@ -23,7 +23,8 @@
     </ItemGroup>
     <!-- Content travels with the build, so the game runs from bin/ as well as from the repository. -->
     <ItemGroup>
-        <None Include="$(RwRoot)Content/**/*" LinkBase="Content" CopyToOutputDirectory="PreserveNewest" />
+        <!-- (Not what an asset is made from: every Source/ folder and Blender file stays out.) -->
+        <None Include="$(RwRoot)Content/**/*" Exclude="$(RwRoot)Content/Meshes/**/Source/**;$(RwRoot)Content/**/*.blend;$(RwRoot)Content/**/*.blend1" LinkBase="Content" CopyToOutputDirectory="PreserveNewest" />
         <!-- BRUTAL's logo, shown at startup as its licence requires. -->
         <None Include="$(RwRoot)Vendor/Brutal/*.png" LinkBase="Content/Vendor/Brutal" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>

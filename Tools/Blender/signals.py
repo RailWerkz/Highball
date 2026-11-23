@@ -2,7 +2,7 @@
 
     blender -b --factory-startup --python Tools/Blender/signals.py -- <Content folder> [preview folder]
 
-Writes under Meshes/Track/Signals in the Content folder:
+Writes under Meshes/Lineside/Signals in the Content folder:
 
     head_triple.glb     three lenses (green, yellow, red top to bottom), each with its own hood, on a round-ended target
     head_hooded.glb     the same three lenses under one long hood that covers the lot, on a narrow target
@@ -214,6 +214,6 @@ def bridge():
 if __name__ == "__main__":
     for name, builder in (("head_triple", head_triple), ("head_hooded", head_hooded), ("head_search", head_search), ("mast", mast), ("bridge", bridge)):
         model, height = builder()
-        model.export(os.path.join(CONTENT, "Meshes", "Track", "Signals", f"{name}.glb"))
+        model.export(os.path.join(CONTENT, "Meshes", "Lineside", "Signals", f"{name}.glb"))
         if PREVIEW:
             render(os.path.join(PREVIEW, f"{name}.png"), height)

@@ -19,7 +19,7 @@ public static class CouplerAngles
     /// Past this a car's counted long, metres over its couplers.
     public const double LongCar = 25.0;
 
-    /// How far a coupler's draft pivot is behind its pulling face, metres (Couplers/coupler.json: reach less the knuckle's nose).
+    /// How far a coupler's draft pivot is behind its pulling face, metres (Vehicles/Couplers/coupler.json: reach less the knuckle's nose).
     public const double PivotBack = 0.42;
 
     /// The L/V past which a flange climbs the rail, and for how long it must stay past it, seconds.

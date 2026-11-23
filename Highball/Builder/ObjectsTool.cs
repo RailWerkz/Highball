@@ -66,6 +66,7 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
             BridgeDraw(draw);
         else
             _place.Draw(draw, context.ProjectGround, context.Source.Objects, PlacedAtWorld, S(1f));
+        GizmoDraw(draw);
         if (_place.Mode == PlaceMode.RemoveBridge && !context.Blocked && context.Hit is { } at2
             && context.Roads.Nearest(at2.X, at2.Z, context.PickReach(at2.X, at2.Z), RoadEditor.IsBridge) is { } gone && context.Roads.Shape(gone.Way) is { } goneLine)
             context.DrawPicked(draw, goneLine.X, goneLine.Z, Stop);
@@ -77,6 +78,8 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
 
     public bool Escape()
     {
+        if (GizmoEscape())
+            return true;
         if (_bridgeFrom is not null)
             _bridgeFrom = null;
         else if (_place.RunFrom is not null)
@@ -99,6 +102,7 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
         { Mode: PlaceMode.Pole, Drawn: PoleDraw.Fence, Selected: null } => [("LMB", "Start run"), ("CTRL+Z", "Undo")],
         { Mode: PlaceMode.Pole, Drawn: PoleDraw.Pen } => [("LMB", "Point"), ("DRAG", "Curve"), ("ENTER", "Lay"), ("BACKSPACE", "Remove point"), ("ESC", "Cancel"), ("CTRL+Z", "Undo")],
         { Mode: PlaceMode.Track, Selected: null } => [("LMB", "Lay piece"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Mirror"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
+        { Selected: not null } => [("LMB", "Gizmo: move, turn"), ("CTRL", "Swap snapping"), ("R", "Turn 15"), ("V", "Flip"), ("DEL", "Delete"), ("ESC", "Let go"), ("CTRL+Z", "Undo")],
         _ => [("LMB", "Place, pick, drag"), ("R", "Turn 15"), ("R+WHEEL", "Turn slowly"), ("V", "Flip"), ("DEL", "Delete"), ("CTRL+Z", "Undo")],
     };
 
@@ -118,7 +122,8 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
     public void ApplyPlaced(PlacedObject? gone, PlacedObject? added) => ApplyPlaced([new PlacedEdit(gone, added)]);
 
     /// Many such swaps, saved and shown once. (Each one's "before" goes and its "after" comes.)
-    public void ApplyPlaced(IReadOnlyList<PlacedEdit> edits)
+    /// save: written to the route's file (false while the gizmo's dragging it; the drag's end saves).
+    public void ApplyPlaced(IReadOnlyList<PlacedEdit> edits, bool save = true)
     {
         var source = _terrain!.Source;
         var changed = new List<(double X, double Z)>();
@@ -137,7 +142,8 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
             }
         }
 
-        RouteObjects.Save(_route, source.Objects);
+        if (save)
+            RouteObjects.Save(_route, source.Objects);
         _network!.SetObjects(source.Objects, changed, _route.Projection!);
 
         // A crossing's pad shapes the ground and its roads' ends: placed, taken away or moved, the lines are worked out again.
@@ -416,32 +422,32 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
     /// Moves the picked object to a place on the ground: it snaps as when it's placed.
     public void PlaceMove(NetworkLines lines, PlacedObject o, double x, double z)
     {
-        switch (o.Kind)
-        {
-            case var kind when kind.IsPole():
-                // As the tool's set: dropped where it's let go, keeping its turn; or set off the road or track again.
-                if (_place.Snap == PoleSnap.Anywhere)
-                    PlacedChange(o, Placed(o.Kind, x, z, o.Heading, id: o.Id) with { Run = o.Run });
-                else if (PoleRuns.At(lines, _place.Snap, o.Kind, _place.PoleOffset, x, z) is { } pole)
-                    PlacedChange(o, Placed(o.Kind, pole.X, pole.Z, pole.Heading, id: o.Id) with { Run = o.Run });
-                break;
-            case PlacedKind.Signal when PlaceTool.SignalAt(lines, x, z) is { } signal:
-                PlacedChange(o, Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, signal.Node, id: o.Id) with { Toward = signal.Toward, Heads = o.Heads, BackHeads = o.BackHeads });
-                break;
-            case PlacedKind.SignalBridge when PlaceTool.SignalBridgeAt(lines, x, z) is { } bridge:
-                PlacedChange(o, Placed(PlacedKind.SignalBridge, bridge.X, bridge.Z, bridge.Heading, bridge.Node, id: o.Id) with
-                {
-                    Toward = bridge.Toward, Stacks = o.Stacks, BackStacks = o.BackStacks, Style = o.Style, Opposite = o.Opposite,
-                });
-                break;
-            case PlacedKind.GradeCrossing when PlaceTool.CrossingAt(lines, x, z) is { } crossing:
-                PlacedChange(o, Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, o.Opposite, id: o.Id) with { Turn = o.Turn, Style = o.Style, Approach = o.Approach, Bell = o.Bell, Surface = o.Surface, Warning = o.Warning, Fill = o.Fill });
-                break;
-            case PlacedKind.HandThrow when PlaceTool.SwitchAt(lines, x, z) is { } turnout && _terrain!.Source.Objects.All(p => p.Node != turnout.Node):
-                PlacedChange(o, Placed(PlacedKind.HandThrow, turnout.X, turnout.Z, 0.0, turnout.Node, opposite: o.Opposite, id: o.Id));
-                break;
-        }
+        if (MovedOnto(lines, o, x, z) is { } moved)
+            PlacedChange(o, moved);
     }
+
+    /// The object as it would be moved to a place on the ground, snapped as when it's placed; null if it can't go there.
+    private PlacedObject? MovedOnto(NetworkLines lines, PlacedObject o, double x, double z) => o.Kind switch
+    {
+        // As the tool's set: dropped where it's let go, keeping its turn; or set off the road or track again.
+        var kind when kind.IsPole() => _place.Snap == PoleSnap.Anywhere
+            ? Placed(o.Kind, x, z, o.Heading, id: o.Id) with { Run = o.Run }
+            : PoleRuns.At(lines, _place.Snap, o.Kind, _place.PoleOffset, x, z) is { } pole
+                ? Placed(o.Kind, pole.X, pole.Z, pole.Heading, id: o.Id) with { Run = o.Run }
+                : null,
+        PlacedKind.Signal when PlaceTool.SignalAt(lines, x, z) is { } signal =>
+            Placed(PlacedKind.Signal, signal.X, signal.Z, signal.Heading, signal.Node, id: o.Id) with { Toward = signal.Toward, Heads = o.Heads, BackHeads = o.BackHeads },
+        PlacedKind.SignalBridge when PlaceTool.SignalBridgeAt(lines, x, z) is { } bridge =>
+            Placed(PlacedKind.SignalBridge, bridge.X, bridge.Z, bridge.Heading, bridge.Node, id: o.Id) with
+            {
+                Toward = bridge.Toward, Stacks = o.Stacks, BackStacks = o.BackStacks, Style = o.Style, Opposite = o.Opposite,
+            },
+        PlacedKind.GradeCrossing when PlaceTool.CrossingAt(lines, x, z) is { } crossing =>
+            Placed(PlacedKind.GradeCrossing, crossing.X, crossing.Z, crossing.Heading, null, o.Width, o.Opposite, id: o.Id) with { Turn = o.Turn, Style = o.Style, Approach = o.Approach, Bell = o.Bell, Surface = o.Surface, Warning = o.Warning, Fill = o.Fill },
+        PlacedKind.HandThrow when PlaceTool.SwitchAt(lines, x, z) is { } turnout && _terrain!.Source.Objects.All(p => p.Node != turnout.Node) =>
+            Placed(PlacedKind.HandThrow, turnout.X, turnout.Z, 0.0, turnout.Node, opposite: o.Opposite, id: o.Id),
+        _ => null,
+    };
 
     public void PlaceTurn(PlacedObject o, double degrees) => PlacedChange(o, o with { Heading = o.Heading + degrees });
 
@@ -480,7 +486,16 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
         }
 
         var picked = source.Objects.FirstOrDefault(o => o.Id == _place.Selected);
-        if (Input.MouseDown(GlfwMouseButton.Left))
+
+        // The gizmo on what's picked has the pointer first: while it's over a handle or held, a click neither picks nor places.
+        var gizmo = picked is not null && GizmoUpdate(lines, picked, mouse);
+        if (gizmo)
+        {
+            _place.Hovered = null;
+            picked = source.Objects.FirstOrDefault(o => o.Id == _place.Selected);
+        }
+
+        if (!gizmo && Input.MouseDown(GlfwMouseButton.Left))
         {
             if (under is not null)
             {
@@ -579,7 +594,7 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
         if (chosen != style)
             PlacedChange(picked, picked with { Style = (int)styles[chosen], Surface = null });
 
-        // Which of that kind's textures (whatever's in its folder under Content/Textures).
+        // Which of that kind's textures (whatever materials are in its folder under Content/Materials).
         var textures = SurfaceTextures.Of(SurfaceKind(styles[style]));
         if (textures.Count > 1)
         {
@@ -664,7 +679,11 @@ internal sealed partial class ObjectsTool(ToolContext context, RouteInfo route) 
         if (_switchRefused is { } refused)
             ToolPanel.Problem(refused);
         if (source.Objects.FirstOrDefault(o => o.Id == _place.Selected) is { } picked)
+        {
             PlacePicked(picked);
+            TransformPanel(picked);
+            MaterialsPanel(picked);
+        }
         if (_place.Mode == PlaceMode.Pole)
             PolePanel();
         PlacePalette(source);

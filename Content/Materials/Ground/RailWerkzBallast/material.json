@@ -1,0 +1,10 @@
+{
+  "name": "RailWerkzBallast",
+  "category": "Ground",
+  "sizes": [
+    "1K",
+    "2K"
+  ],
+  "source": null,
+  "license": null
+}

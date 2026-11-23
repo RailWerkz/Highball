@@ -339,8 +339,17 @@ public sealed partial class NetworkMeshes
         {
             if (road.Rail || road.Mark || x < road.MinX - 12.0 || x > road.MaxX + 12.0 || z < road.MinZ - 12.0 || z > road.MaxZ + 12.0)
                 continue;
+            var boxes = road.RunBoxes;
             for (var i = 0; i + 1 < road.Count; i++)
             {
+                // (A run of segments nowhere near skipped whole.)
+                if (i % NetworkLine.RunLength == 0 && boxes[i / NetworkLine.RunLength] is var box &&
+                    (x < box.X0 - 12.0 || x > box.X1 + 12.0 || z < box.Z0 - 12.0 || z > box.Z1 + 12.0))
+                {
+                    i += NetworkLine.RunLength - 1;
+                    continue;
+                }
+
                 var (sx, sz) = (road.X[i + 1] - road.X[i], road.Z[i + 1] - road.Z[i]);
                 var length = Math.Max(Math.Sqrt(sx * sx + sz * sz), 1e-6);
                 var (ux, uz) = (sx / length, sz / length);
@@ -365,8 +374,16 @@ public sealed partial class NetworkMeshes
         {
             if (!line.Rail || line.Disused || x < line.MinX - CrossingSearch || x > line.MaxX + CrossingSearch || z < line.MinZ - CrossingSearch || z > line.MaxZ + CrossingSearch)
                 continue;
+            var boxes = line.RunBoxes;
             for (var i = 0; i + 1 < line.Count; i++)
             {
+                if (i % NetworkLine.RunLength == 0 && boxes[i / NetworkLine.RunLength] is var box &&
+                    (x < box.X0 - CrossingSearch || x > box.X1 + CrossingSearch || z < box.Z0 - CrossingSearch || z > box.Z1 + CrossingSearch))
+                {
+                    i += NetworkLine.RunLength - 1;
+                    continue;
+                }
+
                 var (sx, sz) = (line.X[i + 1] - line.X[i], line.Z[i + 1] - line.Z[i]);
                 var denominator = dx * sz - dz * sx;
                 if (Math.Abs(denominator) < 1e-9)

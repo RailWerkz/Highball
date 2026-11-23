@@ -1,0 +1,59 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (18,597 kg); loaded, the gross rail load its trucks are rated for.
+{
+  "id": "open_hopper_ps3_2bay",
+  "name": "PS-3 two-bay hopper",
+  "kind": "OpenHopper",
+  "type": "Pullman-Standard PS-3 two-bay open hopper, 70-ton trucks",
+  "lengthM": 11.32,
+  "truckCentresM": 7.925,
+  "frontOverhangM": 1.731,
+  "axles": 4,
+  "wheelDiameterM": 0.8381,
+  "massEmptyKg": 18597,
+  "massLoadedKg": 99790,
+  "maxSpeedKmh": 89,
+  "liveries": [
+    {
+      "id": "crr_0",
+      "name": "CRR",
+      "model": "Vehicles/Freight/OpenHoppers/PS3_2Bay/LOD0/open_hopper_ps3_2bay_crr_0.glb"
+    },
+    {
+      "id": "crr_1",
+      "name": "CRR (1)",
+      "model": "Vehicles/Freight/OpenHoppers/PS3_2Bay/LOD0/open_hopper_ps3_2bay_crr_1.glb"
+    },
+    {
+      "id": "ga_0",
+      "name": "GA",
+      "model": "Vehicles/Freight/OpenHoppers/PS3_2Bay/LOD0/open_hopper_ps3_2bay_ga_0.glb"
+    },
+    {
+      "id": "ga_1",
+      "name": "GA (1)",
+      "model": "Vehicles/Freight/OpenHoppers/PS3_2Bay/LOD0/open_hopper_ps3_2bay_ga_1.glb"
+    },
+    {
+      "id": "ln_0",
+      "name": "L&N",
+      "model": "Vehicles/Freight/OpenHoppers/PS3_2Bay/LOD0/open_hopper_ps3_2bay_ln_0.glb"
+    },
+    {
+      "id": "ln_1",
+      "name": "L&N (1)",
+      "model": "Vehicles/Freight/OpenHoppers/PS3_2Bay/LOD0/open_hopper_ps3_2bay_ln_1.glb"
+    },
+    {
+      "id": "tc_1",
+      "name": "TC (1)",
+      "model": "Vehicles/Freight/OpenHoppers/PS3_2Bay/LOD0/open_hopper_ps3_2bay_tc_1.glb"
+    },
+    {
+      "id": "tc_2",
+      "name": "TC (2)",
+      "model": "Vehicles/Freight/OpenHoppers/PS3_2Bay/LOD0/open_hopper_ps3_2bay_tc_2.glb"
+    }
+  ]
+}

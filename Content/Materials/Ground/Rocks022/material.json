@@ -1,0 +1,10 @@
+{
+  "name": "Rocks022",
+  "category": "Ground",
+  "sizes": [
+    "1K",
+    "2K"
+  ],
+  "source": "ambientCG",
+  "license": "CC0"
+}

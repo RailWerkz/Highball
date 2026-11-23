@@ -187,6 +187,16 @@ public sealed partial class NetworkMeshes : IDisposable
     private readonly Dictionary<long, PlacedObject> _handThrows = [];
     private readonly Dictionary<PlacedKind, Dictionary<string, Model.Part>> _objectModels = [];
 
+    /// Each placed kind's model, under Content/Meshes: what its paints are looked up by (LinesidePaints).
+    private static string ModelFile(PlacedKind kind) => kind switch
+    {
+        PlacedKind.HandThrow => HandThrowFile,
+        PlacedKind.GradeCrossing => "Lineside/Crossings/crossing_mast.glb",
+        _ => $"Lineside/{(kind.IsTie() ? "Ties" : "Poles")}/{kind.PoleModel()}.glb",
+    };
+
+    private const string HandThrowFile = "Lineside/HandThrows/hand_throw.glb";
+
     /// A placed object where it is: its height's found on the main thread, where the ground's safe to read.
     /// The stretches of each road (by line) that crossings' decks take the place of, along it.
     private Dictionary<int, List<(float From, float To)>> _crossingGaps = [];
@@ -444,8 +454,8 @@ public sealed partial class NetworkMeshes : IDisposable
         {
             _kits[1] = Model.LoadParts("Track/switch_kit_r.glb");
             _kits[-1] = Model.LoadParts("Track/switch_kit_l.glb");
-            _objectModels[PlacedKind.HandThrow] = Model.LoadParts("Track/hand_throw.glb");
-            _objectModels[PlacedKind.GradeCrossing] = Model.LoadParts("Track/crossing_mast.glb");
+            _objectModels[PlacedKind.HandThrow] = Model.LoadParts(ModelFile(PlacedKind.HandThrow));
+            _objectModels[PlacedKind.GradeCrossing] = Model.LoadParts(ModelFile(PlacedKind.GradeCrossing));
             if (File.Exists(RailWerkz.Core.IO.ContentPath.Model("Track/bridge_kit.glb")))
                 _bridgeKit = Model.LoadParts("Track/bridge_kit.glb");
         }
@@ -459,7 +469,7 @@ public sealed partial class NetworkMeshes : IDisposable
         try
         {
             foreach (var kind in Enum.GetValues<PlacedKind>().Where(k => k.IsPole()))
-                _objectModels[kind] = Model.LoadParts($"Poles/{kind.PoleModel()}.glb");
+                _objectModels[kind] = Model.LoadParts(ModelFile(kind));
         }
         catch (Exception e)
         {
@@ -507,7 +517,9 @@ public sealed partial class NetworkMeshes : IDisposable
             _switches.Remove(node);
         }
 
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         FindCrossovers();
+        var crossovers = watch.ElapsedMilliseconds;
 
         _runs.Clear();
         foreach (var line in _lines.Lines)
@@ -533,17 +545,27 @@ public sealed partial class NetworkMeshes : IDisposable
                 AddRun(runKey, last);
         }
 
+        var runs = watch.ElapsedMilliseconds;
         FindBridges();
+        if (Environment.GetEnvironmentVariable("HB_PROFILELAPS") == "1")
+            RailWerkz.Core.Logging.Log.Info($"Mesh runs, ms: crossovers {crossovers}, runs {runs - crossovers}, bridges {watch.ElapsedMilliseconds - runs}");
     }
 
     /// Takes rebuilt lines in: the chunks over the given areas (world metres) are built again, the rest kept, and
     /// chunks no line crosses any more let go.
     public void Replace(NetworkLines lines, IEnumerable<(double X0, double Z0, double X1, double Z1)> areas)
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        areas = areas as IReadOnlyCollection<(double X0, double Z0, double X1, double Z1)> ?? areas.ToList();
+        var kept = DecksToKeep(lines, (IReadOnlyCollection<(double X0, double Z0, double X1, double Z1)>)areas);
         _lines = lines;
         FindRuns();
+        var found = watch.ElapsedMilliseconds;
         if (_objectProjection is { } projection)
-            SetObjects(_objects, [], projection);
+            SetObjects(_objects, [], projection, kept);
+        if (Environment.GetEnvironmentVariable("HB_PROFILELAPS") == "1")
+            RailWerkz.Core.Logging.Log.Info($"Mesh replace, ms: runs {found}, objects {watch.ElapsedMilliseconds - found} ({_objects.Count}; decks {_deckTicks * 1000 / System.Diagnostics.Stopwatch.Frequency}, heights {_heightTicks * 1000 / System.Diagnostics.Stopwatch.Frequency}, spans {_spanTicks * 1000 / System.Diagnostics.Stopwatch.Frequency}; kinds {string.Join(" ", _objects.GroupBy(o => o.Kind).Select(g => $"{g.Key} {g.Count()}"))})");
+        (_deckTicks, _heightTicks, _spanTicks) = (0, 0, 0);
 
         foreach (var (x0, z0, x1, z1) in areas)
         {
@@ -567,13 +589,108 @@ public sealed partial class NetworkMeshes : IDisposable
         }
     }
 
+    /// How far from what a rebuild changed a crossing's deck is built again, metres: past it, the track, road and ground it's built
+    /// from are as they were (the ground's shaped again ReshapeReach round what changed).
+    private const double DeckKeptPast = 300.0;
+
+    private static readonly bool DeckDebug = Environment.GetEnvironmentVariable("HB_PROFILELAPS") == "1";
+
+    /// The lines the decks placed now were built against.
+    private NetworkLines? _decksOf;
+
+    /// The decks of the crossings placed now that the lines next leave as they were, to be kept rather than built again (a deck
+    /// takes tens of milliseconds, looking along every line it might meet): those past DeckKeptPast from every area changed, with
+    /// the same pad, whose lines next has kept (their indices moved to the kept lines'). Null if they weren't built against the
+    /// lines shown.
+    private Dictionary<PlacedObject, CrossingDeck>? DecksToKeep(NetworkLines next, IReadOnlyCollection<(double X0, double Z0, double X1, double Z1)> areas)
+    {
+        if (_decksOf is null || !ReferenceEquals(_decksOf, _lines))
+        {
+            if (DeckDebug)
+                RailWerkz.Core.Logging.Log.Info($"Decks kept: none, {(_decksOf is null ? "none built" : "built against other lines")}");
+            return null;
+        }
+
+        var (pads, near, unmapped) = (0, 0, 0);
+        var moved = new Dictionary<int, int>();
+        foreach (var line in next.Lines)
+            if (line.Frozen && line.Origin is { } origin)
+                moved[origin.Index] = line.Index;
+        var kept = new Dictionary<PlacedObject, CrossingDeck>();
+        foreach (var list in _objectsByChunk.Values)
+            foreach (var placed in list)
+            {
+                if (placed.Deck is not { } deck)
+                    continue;
+                if (next.PadOf(placed.Object.Id) != _lines.PadOf(placed.Object.Id))
+                {
+                    pads++;
+                    continue;
+                }
+
+                var (x, z) = (placed.X, placed.Z);
+                if (areas.Any(a => x >= a.X0 - DeckKeptPast && x <= a.X1 + DeckKeptPast && z >= a.Z0 - DeckKeptPast && z <= a.Z1 + DeckKeptPast))
+                {
+                    near++;
+                    continue;
+                }
+
+                unmapped++;
+                (int Line, float From, float To)? gap = null;
+                if (deck.Gap is { } g)
+                {
+                    if (!moved.TryGetValue(g.Line, out var line))
+                        continue;
+                    gap = (line, g.From, g.To);
+                }
+
+                List<(int Line, float From, float To)>? covered = null;
+                if (deck.Covered is { } c)
+                {
+                    covered = new(c.Count);
+                    foreach (var (line, from, to) in c)
+                        if (moved.TryGetValue(line, out var now))
+                            covered.Add((now, from, to));
+                    if (covered.Count != c.Count)
+                        continue;
+                }
+
+                kept[placed.Object] = deck with { Gap = gap, Covered = covered };
+                unmapped--;
+            }
+
+        if (DeckDebug)
+            RailWerkz.Core.Logging.Log.Info($"Decks kept: {kept.Count}; built again: {pads} pads changed, {near} near what changed, {unmapped} on lines laid again");
+        return kept;
+    }
+
     /// Takes the route's placed objects in, and builds again the chunks of those in changed (world metres).
-    public void SetObjects(IReadOnlyList<PlacedObject> objects, IEnumerable<(double X, double Z)> changed, RouteProjection projection)
+    public void SetObjects(IReadOnlyList<PlacedObject> objects, IEnumerable<(double X, double Z)> changed, RouteProjection projection) =>
+        SetObjects(objects, changed, projection, DecksUnchanged());
+
+    /// The decks placed now, when they were built against the lines shown: placing the objects again keeps each one whose crossing
+    /// is the same object (an edit to a crossing makes a new one), since it's built from the lines and the ground alone.
+    private Dictionary<PlacedObject, CrossingDeck>? DecksUnchanged()
+    {
+        if (_decksOf is null || !ReferenceEquals(_decksOf, _lines))
+            return null;
+        var kept = new Dictionary<PlacedObject, CrossingDeck>();
+        foreach (var list in _objectsByChunk.Values)
+            foreach (var placed in list)
+                if (placed.Deck is { } deck)
+                    kept[placed.Object] = deck;
+        return kept;
+    }
+
+    private void SetObjects(IReadOnlyList<PlacedObject> objects, IEnumerable<(double X, double Z)> changed, RouteProjection projection,
+        Dictionary<PlacedObject, CrossingDeck>? keptDecks)
     {
         var gaps = new Dictionary<int, List<(float From, float To)>>();
         var covers = new Dictionary<int, List<(float From, float To)>>();
         (_objects, _objectProjection) = (objects, projection);
         _objectsByChunk.Clear();
+        // (A deck kept that was built on the coarse ground is still to be built again once the ground's in at full detail.)
+        var stillGroundless = keptDecks is null ? null : _groundless.ToHashSet();
         _groundless.Clear();
         _handThrows.Clear();
         foreach (var gate in _gates.Values)
@@ -592,10 +709,17 @@ public sealed partial class NetworkMeshes : IDisposable
             var key = KeyAt(x, z);
             if (!_objectsByChunk.TryGetValue(key, out var list))
                 _objectsByChunk[key] = list = [];
-            var deck = o.Kind == PlacedKind.GradeCrossing ? Deck(o, x, z) : null;
-            var placedAt = new PlacedAt(o, x, z, _source.HeightAt(x, z), deck, o.Kind == PlacedKind.SignalBridge ? Span(o, x, z) : null);
+            var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+            var deck = o.Kind == PlacedKind.GradeCrossing ? (keptDecks?.GetValueOrDefault(o) ?? Deck(o, x, z)) : null;
+            var t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+            var height = _source.HeightAt(x, z);
+            var t2 = System.Diagnostics.Stopwatch.GetTimestamp();
+            var span = o.Kind == PlacedKind.SignalBridge ? Span(o, x, z) : null;
+            var t3 = System.Diagnostics.Stopwatch.GetTimestamp();
+            (_deckTicks, _heightTicks, _spanTicks) = (_deckTicks + t1 - t0, _heightTicks + t2 - t1, _spanTicks + t3 - t2);
+            var placedAt = new PlacedAt(o, x, z, height, deck, span);
             list.Add(placedAt);
-            if (deck is not null && !GroundReady(x, z))
+            if (deck is not null && (!GroundReady(x, z) || (stillGroundless?.Contains(o.Id) == true && keptDecks!.ContainsKey(o))))
                 _groundless.Add(o.Id);
             if (deck is { Masts.Length: > 0 } && HasArms(o))
                 _gates[o.Id] = new Gate { Placed = placedAt, Key = key };
@@ -617,6 +741,7 @@ public sealed partial class NetworkMeshes : IDisposable
 
         _crossingGaps = gaps;
         _crossingCovers = covers;
+        _decksOf = _lines;
         foreach (var sw in _switches.Values)
             sw.BuiltAt = -1f;
         foreach (var (x, z) in changed)
@@ -630,6 +755,66 @@ public sealed partial class NetworkMeshes : IDisposable
                     _stale.Add((new ChunkKey(kx, kz), true));
                 }
         }
+    }
+
+    private long _deckTicks, _heightTicks, _spanTicks;
+
+    /// The placed object left out of the meshes (one being dragged, drawn on its own meanwhile), if any.
+    public long? HiddenObject { get; private set; }
+
+    /// Leaves a placed object out of the meshes (null: none), standing at (x, z), and builds its chunk again without it
+    /// (or with it, shown again).
+    public void HideObject(long? id, double x, double z)
+    {
+        if (HiddenObject == id)
+            return;
+        HiddenObject = id;
+        var a = KeyAt(x - 4.0, z - 4.0);
+        var b = KeyAt(x + 4.0, z + 4.0);
+        for (var kz = a.Z; kz <= b.Z; kz++)
+            for (var kx = a.X; kx <= b.X; kx++)
+            {
+                _stale.Add((new ChunkKey(kx, kz), false));
+                _stale.Add((new ChunkKey(kx, kz), true));
+            }
+    }
+
+    /// The object being dragged, drawn on its own (a mesh of its own, as switch blades are) where it's going, and what it was
+    /// made for and where its origin is.
+    private Mesh? _dragged;
+    private PlacedObject? _draggedFor;
+    private double3 _draggedOrigin;
+
+    /// Draws a placed object on its own, as given (null: none), till it's given again: one being dragged, left out of the
+    /// meshes meanwhile (HideObject), so nothing else is built again as it goes. A grade crossing or a hand throw isn't
+    /// (one's built with its road, the other with its switch).
+    public void ShowDragged(PlacedObject? o)
+    {
+        if (o == _draggedFor)
+            return;
+        _dragged?.Dispose();
+        (_dragged, _draggedFor) = (null, o);
+        if (o is null || o.Kind is PlacedKind.GradeCrossing or PlacedKind.HandThrow || _objectProjection is not { } projection)
+            return;
+        var p = projection.Forward(new GeoPoint(o.Lat, o.Lon));
+        var (x, z) = (p.East, -p.North);
+        var origin = new double3(Math.Floor(x), 0.0, Math.Floor(z));
+        var builder = new Builder { Origin = new float3((float)origin.X, 0f, (float)origin.Z) };
+        var placed = new PlacedAt(o, x, z, _source.HeightAt(x, z), null, o.Kind == PlacedKind.SignalBridge ? Span(o, x, z) : null);
+        PlacedModel(builder, placed, shownAnyway: true);
+        if (builder.Indices.Count == 0)
+            return;
+        _dragged = Mesh.Create<LineVertex>([.. builder.Vertices], LineVertex.Layout, [.. builder.Indices], later: true);
+        SetBounds(_dragged, builder.Vertices);
+        _draggedOrigin = origin;
+    }
+
+    private void DrawDragged(CommandBuffer cmd, double cx, double cy, double cz, Action<float3> push)
+    {
+        if (_dragged is null)
+            return;
+        push(new float3((float)(_draggedOrigin.X - cx), (float)-cy, (float)(_draggedOrigin.Z - cz)));
+        _dragged.Draw(cmd);
     }
 
     private void AddRun(ChunkKey key, Run run)
@@ -2283,7 +2468,7 @@ public sealed partial class NetworkMeshes : IDisposable
         {
             var (at, face) = HandThrowAt(t, handThrow, builder.Origin);
             foreach (var (name, part) in handModel.Where(p => p.Key.StartsWith("Fixed_")))
-                Upright(builder, part, at, face, PaintOf(name), 0f);
+                Upright(builder, part, at, face, PaintOf(HandThrowFile, name), 0f);
         }
         else if (parts.TryGetValue("Machine", out var machine))
             Stand(builder, t, machine, Code(LineMaterial.Concrete));
@@ -2300,7 +2485,7 @@ public sealed partial class NetworkMeshes : IDisposable
         {
             var (at, face) = HandThrowAt(t, handThrow, builder.Origin);
             foreach (var (name, part) in handModel.Where(p => p.Key.StartsWith("Moving_")))
-                Upright(builder, part, at, face, PaintOf(name), position * MathF.PI * 0.5f);
+                Upright(builder, part, at, face, PaintOf(HandThrowFile, name), position * MathF.PI * 0.5f);
         }
 
         var rail = Code(LineMaterial.Rail);
@@ -2331,6 +2516,19 @@ public sealed partial class NetworkMeshes : IDisposable
         return Code(LineMaterial.Painted, Math.Max(at, 0));
     }
 
+    /// A lineside model's own paint slots' codes start here (line.frag: AssetPaint), one for every slot (LinesidePaints).
+    private const int AssetPaint = 32;
+
+    /// A lineside model's part's paint: its model's own slot for the paint it's named for, if its asset.json has one (LinesidePaints),
+    /// so it's drawn as that asset says; else the shared paint. model is its path under Content/Meshes.
+    private static float PaintOf(string model, string name)
+    {
+        var paint = name[(name.IndexOf('_') + 1)..];
+        return LinesidePaints.Find(model, paint) is { } slot
+            ? Code(LineMaterial.Painted, AssetPaint + slot.Index - TrackMaterials.Paints.Length)
+            : PaintOf(name);
+    }
+
     /// A placed model's part stood upright at a place, its +z along face, turned about its own origin by spin.
     private static void Upright(Builder builder, Model.Part part, float3 at, float3 face, float code, float spin)
     {
@@ -2349,9 +2547,12 @@ public sealed partial class NetworkMeshes : IDisposable
             builder.Indices.Add(start + index);
     }
 
-    private void PlacedModel(Builder builder, PlacedAt placed)
+    /// shownAnyway: built though it's the hidden one (it's the one being dragged, ShowDragged).
+    private void PlacedModel(Builder builder, PlacedAt placed, bool shownAnyway = false)
     {
         var o = placed.Object;
+        if (o.Id == HiddenObject && !shownAnyway)
+            return;
         var angle = o.Heading * Math.PI / 180.0;
         var face = new float3((float)Math.Cos(angle), 0f, (float)Math.Sin(angle));
         var at = new float3((float)(placed.X - builder.Origin.X), placed.Y, (float)(placed.Z - builder.Origin.Z));
@@ -2365,8 +2566,9 @@ public sealed partial class NetworkMeshes : IDisposable
             return;
         if (o.Kind != PlacedKind.GradeCrossing)
         {
+            var file = ModelFile(o.Kind);
             foreach (var (name, part) in parts)
-                Upright(builder, part, at, face, PaintOf(name), 0f);
+                Upright(builder, part, at, face, PaintOf(file, name), 0f);
             return;
         }
 
@@ -2745,6 +2947,8 @@ public sealed partial class NetworkMeshes : IDisposable
             push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
             gate.Arms.Draw(cmd);
         }
+
+        DrawDragged(cmd, cx, cy, cz, push);
     }
 
     /// Where a mesh's vertices reach, for leaving it out of the shadow cascades it can't touch.
@@ -2845,6 +3049,8 @@ public sealed partial class NetworkMeshes : IDisposable
             push(new float3((float)(origin.X - cx), (float)-cy, (float)(origin.Z - cz)));
             gate.Arms.Draw(cmd);
         }
+
+        DrawDragged(cmd, cx, cy, cz, push);
     }
 
     /// Draws the ties and, close by, the plates into a shadow cascade, cell by cell, with the part caster pipeline bound.
@@ -2933,7 +3139,7 @@ public sealed partial class NetworkMeshes : IDisposable
         foreach (var list in _objectsByChunk.Values)
             foreach (var placed in list)
             {
-                if (!placed.Object.Kind.IsLightPole() || LampOffset(placed.Object.Kind) is not { } lamp)
+                if (!placed.Object.Kind.IsLightPole() || placed.Object.Id == HiddenObject || LampOffset(placed.Object.Kind) is not { } lamp)
                     continue;
                 var angle = placed.Object.Heading * Math.PI / 180.0;
                 var (fx, fz) = (Math.Cos(angle), Math.Sin(angle));
@@ -3058,6 +3264,7 @@ public sealed partial class NetworkMeshes : IDisposable
             sw.Blades?.Dispose();
         foreach (var gate in _gates.Values)
             gate.Arms?.Dispose();
+        _dragged?.Dispose();
         foreach (var chunk in _chunks.Values)
         {
             chunk.Far?.Dispose();

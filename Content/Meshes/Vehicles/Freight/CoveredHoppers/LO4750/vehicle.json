@@ -1,0 +1,64 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: about 64,400 lb empty (the Trainz asset's 29,211 kg) and 286,000 lb loaded (286k gross rail load).
+// Consists saved with the old RollingStock car (open_hopper_witx, covered_hopper_witx) get this one.
+{
+  "id": "covered_hopper_csx_4750",
+  "replaces": [
+    "open_hopper_witx",
+    "covered_hopper_witx"
+  ],
+  "name": "4750 cu ft covered hopper",
+  "kind": "CoveredHopper",
+  "type": "Three-bay 4750 cu ft covered hopper, 100-ton trucks",
+  "lengthM": 18.54,
+  "truckCentresM": 13.945,
+  "frontOverhangM": 2.298,
+  "axles": 4,
+  "wheelDiameterM": 0.889,
+  "massEmptyKg": 29211,
+  "massLoadedKg": 129700,
+  "maxSpeedKmh": 113,
+  "liveries": [
+    {
+      "id": "csx",
+      "name": "CSX",
+      "model": "Vehicles/Freight/CoveredHoppers/LO4750/LOD0/covered_hopper_csx_4750_csx.glb"
+    },
+    {
+      "id": "csx_1",
+      "name": "CSX (car 2)",
+      "model": "Vehicles/Freight/CoveredHoppers/LO4750/LOD0/covered_hopper_csx_4750_csx_1.glb"
+    },
+    {
+      "id": "csx_2",
+      "name": "CSX (car 3)",
+      "model": "Vehicles/Freight/CoveredHoppers/LO4750/LOD0/covered_hopper_csx_4750_csx_2.glb"
+    },
+    {
+      "id": "csx_3",
+      "name": "CSX (car 4)",
+      "model": "Vehicles/Freight/CoveredHoppers/LO4750/LOD0/covered_hopper_csx_4750_csx_3.glb"
+    },
+    {
+      "id": "csx_4",
+      "name": "CSX (car 5)",
+      "model": "Vehicles/Freight/CoveredHoppers/LO4750/LOD0/covered_hopper_csx_4750_csx_4.glb"
+    },
+    {
+      "id": "csx_5",
+      "name": "CSX (car 6)",
+      "model": "Vehicles/Freight/CoveredHoppers/LO4750/LOD0/covered_hopper_csx_4750_csx_5.glb"
+    },
+    {
+      "id": "milw",
+      "name": "MILW",
+      "model": "Vehicles/Freight/CoveredHoppers/LO4750/LOD0/covered_hopper_csx_4750_milw.glb"
+    },
+    {
+      "id": "rock",
+      "name": "ROCK",
+      "model": "Vehicles/Freight/CoveredHoppers/LO4750/LOD0/covered_hopper_csx_4750_rock.glb"
+    }
+  ]
+}

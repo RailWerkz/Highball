@@ -11,7 +11,7 @@ using RailWerkz.Vulkan;
 namespace Highball.World;
 
 /// The sky every world shader sees (atmosphere.glsl, set 1): either the analytic one, with the sun and moon drawn from
-/// Content/Textures/Planets, or a skybox from Content/Textures/Skyboxes (a horizontal-cross cube map, 4 x 3 faces).
+/// Content/Sky/Planets, or a skybox from Content/Sky/Skyboxes (a horizontal-cross cube map, 4 x 3 faces).
 /// A skybox also sets the light: the sun comes from its brightest spot, as strong as the spot stands out, and the
 /// ambient and haze colours are its zenith, horizon and ground averaged.
 public sealed unsafe class Sky : IDisposable
@@ -74,8 +74,8 @@ public sealed unsafe class Sky : IDisposable
     public static IReadOnlyList<string> Available { get; } =
     [
         Procedural,
-        .. Directory.Exists(ContentPath.Texture("Skyboxes"))
-            ? Directory.GetFiles(ContentPath.Texture("Skyboxes"), "*.png").Select(Path.GetFileNameWithoutExtension).OfType<string>().Order().ToArray()
+        .. Directory.Exists(ContentPath.Sky("Skyboxes"))
+            ? Directory.GetFiles(ContentPath.Sky("Skyboxes"), "*.png").Select(Path.GetFileNameWithoutExtension).OfType<string>().Order().ToArray()
             : Array.Empty<string>(),
     ];
 
@@ -111,8 +111,8 @@ public sealed unsafe class Sky : IDisposable
 
     public Sky(string name)
     {
-        _sun = Texture2D.LoadOr("Planets/2k_sun.jpg", new byte4(255, 220, 160, 255));
-        _moon = Texture2D.LoadOr("Planets/2k_moon.jpg", new byte4(150, 150, 150, 255));
+        _sun = Texture2D.LoadOr("Sky/Planets/2k_sun.jpg", new byte4(255, 220, 160, 255));
+        _moon = Texture2D.LoadOr("Sky/Planets/2k_moon.jpg", new byte4(150, 150, 150, 255));
         Use(name);
     }
 
@@ -133,7 +133,7 @@ public sealed unsafe class Sky : IDisposable
         {
             try
             {
-                map = LoadSkybox(ContentPath.Texture($"Skyboxes/{name}.png"), ref uniforms);
+                map = LoadSkybox(ContentPath.Sky($"Skyboxes/{name}.png"), ref uniforms);
             }
             catch (Exception e)
             {

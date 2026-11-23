@@ -122,6 +122,8 @@ public sealed unsafe class WorldRenderer : IDisposable
     private VkPipeline _modelSeeThrough;
     private VkPipeline _plant;
     private VkPipeline _plantDepth;
+    private VkPipeline _impostor;
+    private VkPipeline _impostorDepth;
     private VkSampleCountFlags _pipelineSamples;
 
     /// Unit vector towards the sun.
@@ -169,6 +171,9 @@ public sealed unsafe class WorldRenderer : IDisposable
         using var plantVert = Shader.Load("plant.vert");
         using var plantFrag = Shader.Load("plant.frag");
         using var plantDepthFrag = Shader.Load("plant_depth.frag");
+        using var impostorVert = Shader.Load("impostor.vert");
+        using var impostorFrag = Shader.Load("impostor.frag");
+        using var impostorDepthFrag = Shader.Load("impostor_depth.frag");
         using var glowVert = Shader.Load("glow.vert");
         using var glowFrag = Shader.Load("glow.frag");
 
@@ -234,6 +239,20 @@ public sealed unsafe class WorldRenderer : IDisposable
             InstanceAttributes = PlantInstance.Layout, InstanceStride = Marshal.SizeOf<PlantInstance>(), Cull = VkCullModeFlags.None, AlphaToCoverage = true,
             DepthWrite = false, DepthCompare = VkCompareOp.Equal,
         });
+        // Far trees as their impostors (Vegetation's), drawn as the plants are: depth, then shaded where it's theirs.
+        _impostorDepth = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = impostorVert, Fragment = impostorDepthFrag, Layout = _modelLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(),
+            InstanceAttributes = PlantInstance.Layout, InstanceStride = Marshal.SizeOf<PlantInstance>(), Cull = VkCullModeFlags.None, AlphaToCoverage = true, NoColor = true,
+        });
+        _impostor = Pipelines.Create(new PipelineDesc
+        {
+            Vertex = impostorVert, Fragment = impostorFrag, Layout = _modelLayout, Attributes = Mesh.VertexLayout, Stride = Marshal.SizeOf<Vertex>(),
+            InstanceAttributes = PlantInstance.Layout, InstanceStride = Marshal.SizeOf<PlantInstance>(), Cull = VkCullModeFlags.None, AlphaToCoverage = true,
+            DepthWrite = false, DepthCompare = VkCompareOp.Equal,
+        });
+        _vegetation.ImpostorDepthPipeline = _impostorDepth;
+        _vegetation.ImpostorPipeline = _impostor;
     }
 
     private void DestroyWorldPipelines()
@@ -251,6 +270,8 @@ public sealed unsafe class WorldRenderer : IDisposable
         Pipelines.Destroy(_modelSeeThrough, default);
         Pipelines.Destroy(_plant, default);
         Pipelines.Destroy(_plantDepth, default);
+        Pipelines.Destroy(_impostor, default);
+        Pipelines.Destroy(_impostorDepth, default);
         Pipelines.Destroy(_glow, default);
     }
 

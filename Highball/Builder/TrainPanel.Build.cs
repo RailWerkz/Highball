@@ -20,6 +20,9 @@ public sealed partial class TrainPanel
 
     /// The paint the catalog's picked vehicle goes on in, by livery id; its first when it's not been chosen.
     private readonly Dictionary<string, string> _catalogLivery = [];
+
+    /// Whether each vehicle added goes in either way round, at random.
+    private bool _catalogRandomTurn;
     private ImInputString _buildName = new(48, "New consist"u8);
     private string _buildNameFor = "";
 
@@ -198,31 +201,48 @@ public sealed partial class TrainPanel
         ImGui.PopStyleColor();
 
         var picked = _catalogPick >= 0 && _catalogPick < vehicles.Count ? vehicles[_catalogPick] : null;
-        // Its paint: a button each (up to four across), dimmed when it comes in only the one.
+        // Its paint: a button each (up to four across), dimmed when it comes in only the one. Freight leads with Random: each
+        // car added then gets any of its paints, empty or loaded, carrying any of its cargoes.
+        var random = picked is not null && ConsistCar.CanRandomize(picked);
+        var isRandom = random && _catalogLivery.GetValueOrDefault(picked!.Id) == ConsistCar.RandomPaint;
         var livery = picked is null ? null : picked.FindLivery(_catalogLivery.GetValueOrDefault(picked.Id)) ?? picked.Liveries.FirstOrDefault();
         ImGui.Dummy(new float2(1f, S(4f)));
         Kit.Caption("Paint");
         var liveries = picked?.Liveries ?? [];
-        var names = liveries.Count > 0 ? liveries.Select(l => l.Name).ToArray() : ["-"];
-        var at = Math.Max(0, liveries.ToList().FindIndex(l => l.Id == livery?.Id));
-        var chosen = ToolPanel.Mode("build.livery", names, at, Math.Clamp(names.Length, 1, 4), liveries.Count > 1);
-        if (picked is not null && chosen >= 0 && chosen != at && chosen < liveries.Count)
+        var lead = random ? 1 : 0;
+        var names = liveries.Count > 0 ? (random ? ["Random load & paint"] : Array.Empty<string>()).Concat(liveries.Select(l => l.Name)).ToArray() : ["-"];
+        var at = isRandom ? 0 : lead + Math.Max(0, liveries.ToList().FindIndex(l => l.Id == livery?.Id));
+        var chosen = ToolPanel.Mode("build.livery", names, at, Math.Clamp(names.Length, 1, 4), names.Length > 1);
+        if (picked is not null && chosen >= 0 && chosen != at && chosen < names.Length)
         {
-            livery = liveries[chosen];
-            _catalogLivery[picked.Id] = livery.Id;
+            if (random && chosen == 0)
+                _catalogLivery[picked.Id] = ConsistCar.RandomPaint;
+            else
+            {
+                livery = liveries[chosen - lead];
+                _catalogLivery[picked.Id] = livery.Id;
+            }
+            isRandom = random && chosen == 0;
         }
 
+        Kit.Toggle("build.randomturn", "Random direction (each one turned or not)", ref _catalogRandomTurn, picked is not null);
+
         ImGui.Dummy(new float2(1f, S(4f)));
+        ConsistCar Make(VehicleDef def)
+        {
+            var car = isRandom ? ConsistCar.Random(def) : new ConsistCar(def.Id, livery?.Id);
+            return _catalogRandomTurn ? car with { Reversed = System.Random.Shared.Next(2) == 1 } : car;
+        }
         var add = Kit.Buttons("build.add", ["Add to consist", "Place just this one"], [picked is not null, picked is not null && CanPlace]);
         if (add == 0 && picked is not null)
         {
             var into = _buildRow >= 0 ? _buildRow + 1 : _build.Cars.Count;
-            _build.Cars.Insert(into, new ConsistCar(picked.Id, livery?.Id));
+            _build.Cars.Insert(into, Make(picked));
             PickBuildRow(into);
             _buildChanged = true;
         }
         else if (add == 1 && picked is not null)
-            StartPlacing(new Consist { Name = picked.Name, Cars = [new ConsistCar(picked.Id, livery?.Id)] });
+            StartPlacing(new Consist { Name = picked.Name, Cars = [Make(picked)] });
 
         Kit.EndCard();
     }

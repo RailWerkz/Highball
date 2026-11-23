@@ -154,6 +154,37 @@ public sealed class NetworkLine
     /// Marks a line laid again as part of a local rebuild's halo, to be put back as previous is once the passes are done.
     public void HaloOf(NetworkLine previous) => (_origin, _halo) = (previous, true);
 
+    /// How many segments each of RunBoxes covers.
+    public const int RunLength = 32;
+
+    private (double X0, double Z0, double X1, double Z1)[]? _runBoxes;
+
+    /// The bounds of each RunLength segments in turn (run r: points r * RunLength to (r + 1) * RunLength): what's looked for near a
+    /// place skips the runs nowhere near it, not every segment of a line whose bounds reach it. Made when first asked for.
+    public (double X0, double Z0, double X1, double Z1)[] RunBoxes => _runBoxes ??= MakeRunBoxes();
+
+    private (double X0, double Z0, double X1, double Z1)[] MakeRunBoxes()
+    {
+        var runs = new (double, double, double, double)[Math.Max(0, (Count - 2) / RunLength + 1)];
+        for (var r = 0; r < runs.Length; r++)
+        {
+            var (x0, z0, x1, z1) = (double.MaxValue, double.MaxValue, double.MinValue, double.MinValue);
+            for (var p = r * RunLength; p <= Math.Min((r + 1) * RunLength, Count - 1); p++)
+                (x0, z0, x1, z1) = (Math.Min(x0, X[p]), Math.Min(z0, Z[p]), Math.Max(x1, X[p]), Math.Max(z1, Z[p]));
+            runs[r] = (x0, z0, x1, z1);
+        }
+
+        return runs;
+    }
+
+    /// Kept exactly as previous is, heights and all (frozen, see Frozen): a rail line a local rebuild laid lying just as it did,
+    /// all of it too far from the edit for its grade to change.
+    public void KeepAs(NetworkLine previous)
+    {
+        _origin = previous;
+        Restore();
+    }
+
     /// The last rebuild's line this one's a frozen copy of.
     private NetworkLine? _origin;
 
@@ -372,7 +403,17 @@ public sealed partial class NetworkLines
         network = network as IReadOnlyCollection<NetworkWay> ?? network.ToList();
         (lines.Ways, lines.Shapes, lines.BuiltTiles, lines.Sizes, lines.Curves) = (network.ToDictionary(w => w.Id), shapes, built, chosen, curves);
         if (local is not null && !local.Previous.SameInputs(shapes, built, chosen, curves))
+        {
+            var p = local.Previous;
+            RailWerkz.Core.Logging.Log.Info("Local rebuild: not this time (" + string.Join(", ", new[]
+            {
+                p.Shapes is { } s && s.Count == shapes.Count && shapes.All(x => s.TryGetValue(x.Key, out var a) && ReferenceEquals(a, x.Value)) ? null : "track shaped by hand changed",
+                p.BuiltTiles is { } t && t.SetEquals(built) ? null : "built tiles changed",
+                p.Sizes is { } z && z.Count == chosen.Count && chosen.All(x => z.TryGetValue(x.Key, out var v) && v == x.Value) ? null : "switch sizes changed",
+                p.Curves is { } c && c.Count == curves.Count && curves.All(x => c.TryGetValue(x.Key, out var v) && v == x.Value) ? null : "switch curves changed",
+            }.OfType<string>()) + "), laying it all");
             local = null;
+        }
         if (local is not null)
         {
             Solve(lines, network, route, built, chosen, curves, local);
@@ -386,16 +427,27 @@ public sealed partial class NetworkLines
                 RailWerkz.Core.Logging.Log.Info($"Track: {lines._lines.Count} lines loaded as saved in {watch.ElapsedMilliseconds} ms");
             else
             {
+                ExplainUnsolved(route, network, built, chosen, curves, grid.Spacing);
                 Solve(lines, network, route, built, chosen, curves, null);
                 RailWerkz.Core.Logging.Log.Info($"Track: {lines._lines.Count} lines solved in {watch.ElapsedMilliseconds} ms");
                 lines.SaveSolved(route, stamp);
+                SaveStampParts(route, network, built, chosen, curves, grid.Spacing);
             }
         }
 
+        lines.Lap("ShapeRoads");
         lines.ShapeRoads();
+        lines.Lap("LayShapes");
         lines.LayShapes(shapes);
+        lines.Lap("EaseJoins");
         lines.EaseJoins();
+        lines.Lap("FreezeFarRail");
+        // (Rail's taken as it was only once it's finished laying: a line eased at a join, or shaped by hand, then lies as it did.)
+        if (local is not null)
+            RailWerkz.Core.Logging.Log.Info($"Track: {lines.FreezeFarRail(local)} rail lines far from the edit kept as they were, heights and all");
+        lines.Lap("IndexLines");
         lines.IndexLines(built);
+        lines.Lap(null);
         return lines;
     }
 
@@ -405,6 +457,14 @@ public sealed partial class NetworkLines
     {
         var projection = route.Projection!;
         var tileSize = route.Grid!.TileSize;
+        var solveWatch = System.Diagnostics.Stopwatch.StartNew();
+        var solveStages = new List<string>();
+        void SolveStage(string name)
+        {
+            solveStages.Add($"{name} {solveWatch.ElapsedMilliseconds}");
+            solveWatch.Restart();
+        }
+
 
         // Mapped track isn't built: it's only a guide to lay track along, marked on the ground where the track would go. The marks are
         // lines like any road, so no switch, signal or train ever sees them.
@@ -419,7 +479,9 @@ public sealed partial class NetworkLines
         network = FanFitting.Apply(network, route);
 
         // Crossovers laid out to a real design first, on the ways (their switch points slide along the tracks).
+        SolveStage("fans");
         var crossovers = CrossoverFitting.Apply(network, route, chosen);
+        SolveStage("crossovers");
 
         // (Marks don't join anything: each keeps to its own mapped line, at the height of the ground under it.)
         foreach (var chain in Chains(marks))
@@ -484,6 +546,7 @@ public sealed partial class NetworkLines
             return best;
         }
 
+        SolveStage("marks and chains");
         var laid = new List<Laid>();
         foreach (var chain in chains)
         {
@@ -511,6 +574,7 @@ public sealed partial class NetworkLines
             laid.Add(new Laid(chain, xs, zs, structures, nodes));
         }
 
+        SolveStage("resample and even out");
         foreach (var (chain, xs, zs, structures, nodes, _) in JoinThrough(laid, seen))
         {
             // Cut into runs over built tiles.
@@ -529,17 +593,23 @@ public sealed partial class NetworkLines
             }
         }
 
+        SolveStage("join and cut");
         // Switches laid out to a real design before anything is built on the track.
         foreach (var line in lines._lines.Where(l => l.Rail))
             (line.MappedX, line.MappedZ) = ((double[])line.X.Clone(), (double[])line.Z.Clone());
 
         // (Two tracks crossing each keep their own line through it: neither is bent to carry the other.)
+        SolveStage("mapped copies");
         var crossings = TrackAlignment.Apply(lines._lines, pinned);
+        SolveStage("alignment");
         var joined = pinned.Except(crossings).ToHashSet();
         TrackFairing.Prepare(lines._lines, joined);
         var held = new Dictionary<NetworkLine, List<(float From, float To)>>();
+        SolveStage("fairing prepared");
         lines.Fitted = TurnoutFitting.Fit(lines._lines, chosen, lines.SwitchOptions, crossovers.Forced, held, curves);
+        SolveStage("turnouts");
         TrackFairing.Fair(lines._lines, held, joined);
+        SolveStage("fairing");
 
         // The track is its alignment, whatever's been done to the points.
         var (fittedLength, totalLength, stray) = (0.0, 0.0, 0.0);
@@ -556,6 +626,8 @@ public sealed partial class NetworkLines
 
         RailWerkz.Core.Logging.Log.Info(string.Create(System.Globalization.CultureInfo.InvariantCulture,
             $"Alignment: {fittedLength / Math.Max(totalLength, 1.0):P1} of the track is true straights and arcs; points were {stray:0.000} m off it at most"));
+        SolveStage("sampled");
+        RailWerkz.Core.Logging.Log.Info($"Track solve, ms: {string.Join(", ", solveStages)}");
         foreach (var (node, options) in crossovers.Options)
             lines.SwitchOptions[node] = options;
         lines.CrossoverProblems = crossovers.Problems;
@@ -1357,6 +1429,242 @@ public sealed partial class NetworkLines
                 line.HaloOf(was);
     }
 
+    /// How far from where an edit changed track a rail line's heights can change, metres: within RailInner they're worked out as
+    /// any rebuild would, past RailOuter they're kept exactly as they were, and between the two they're eased from one to the other.
+    /// (A grade's worked out along the whole of a line, and smoothed with the track beside it: without this, laying a siding moved
+    /// heights by millimetres along every line it reached, and the ground was shaped again under all of them.)
+    private const double RailInner = 600.0, RailOuter = 1000.0;
+
+    /// The size of the cells HoldFarRail looks up how far the edit is in, metres.
+    private const double HoldCell = 100.0;
+
+    /// How far from the edit's places each cell within RailOuter of one is (to its centre, so within HoldCell of the truth).
+    private static Dictionary<(int, int), double> EditCells(List<(double X, double Z)> places)
+    {
+        var cells = new Dictionary<(int, int), double>();
+        foreach (var (x, z) in places)
+            foreach (var c in new GridCells(x - RailOuter - HoldCell, z - RailOuter - HoldCell, x + RailOuter + HoldCell, z + RailOuter + HoldCell, HoldCell))
+            {
+                var (cx, cz) = ((c.Item1 + 0.5) * HoldCell, (c.Item2 + 0.5) * HoldCell);
+                var d = Math.Sqrt((cx - x) * (cx - x) + (cz - z) * (cz - z));
+                if (!cells.TryGetValue(c, out var had) || d < had)
+                    cells[c] = d;
+            }
+
+        return cells;
+    }
+
+    /// How much of a point's last height it keeps: 0 within RailInner of the edit, 1 past RailOuter, eased between.
+    private static double HoldAt(Dictionary<(int, int), double> cells, List<(double X, double Z)> places, double x, double z)
+    {
+        if (!cells.TryGetValue(((int)Math.Floor(x / HoldCell), (int)Math.Floor(z / HoldCell)), out var rough) || rough > RailOuter + HoldCell)
+            return 1.0;
+        if (rough < RailInner - HoldCell)
+            return 0.0;
+        var d2 = double.MaxValue;
+        foreach (var (px, pz) in places)
+            d2 = Math.Min(d2, (px - x) * (px - x) + (pz - z) * (pz - z));
+        var t = Math.Clamp((Math.Sqrt(d2) - RailInner) / (RailOuter - RailInner), 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+    }
+
+    /// The last lines' rail line this one lies exactly as (same key, same points), if any.
+    private static NetworkLine? LyingAs(Dictionary<long, List<NetworkLine>> before, NetworkLine line)
+    {
+        if (!before.TryGetValue(line.Key, out var was))
+            return null;
+        foreach (var w in was)
+            if (w.Count == line.Count && w.X.AsSpan().SequenceEqual(line.X) && w.Z.AsSpan().SequenceEqual(line.Z))
+                return w;
+        return null;
+    }
+
+    private static Dictionary<long, List<NetworkLine>> RailByKey(NetworkLines lines) =>
+        lines._lines.Where(l => l.Rail).GroupBy(l => l.Key).ToDictionary(g => g.Key, g => g.ToList());
+
+    /// A local rebuild, once the track's laid and before any heights are worked out: every rail line lying just as one of the last
+    /// lines did, all of it past RailOuter from the edit, is kept as that one is, heights and all. Returns how many were.
+    internal int FreezeFarRail(LocalRebuild local)
+    {
+        var cells = EditCells(local.Places);
+        var before = RailByKey(local.Previous);
+        var kept = 0;
+        foreach (var line in _lines)
+        {
+            if (!line.Rail || line.Origin is not null || LyingAs(before, line) is not { } same)
+                continue;
+            var far = true;
+            for (var p = 0; p < line.Count && far; p++)
+                far = !cells.TryGetValue(((int)Math.Floor(line.X[p] / HoldCell), (int)Math.Floor(line.Z[p] / HoldCell)), out var d) || d > RailOuter + HoldCell;
+            if (!far)
+                continue;
+            line.KeepAs(same);
+            kept++;
+        }
+
+        return kept;
+    }
+
+    /// A local rebuild, once the heights are worked out: every rail point not kept (FreezeFarRail) that lies where the last lines had
+    /// rail (within a centimetre, in plan) keeps that height past RailOuter, and is eased onto it between RailInner and RailOuter.
+    /// By where it lies, not by line: a line split by a new switch, or joined, is new lines over the same track far from it.
+    /// Returns how many points it held.
+    public int HoldFarRail(LocalRebuild local)
+    {
+        var cells = EditCells(local.Places);
+        const double cell = 20.0;
+        var index = new Dictionary<(int, int), List<(NetworkLine Line, int Segment)>>();
+        foreach (var line in local.Previous._lines)
+        {
+            if (!line.Rail)
+                continue;
+            for (var p = 0; p + 1 < line.Count; p++)
+            {
+                // (Only what's near enough the edit to be held other than whole: a line wholly past it is kept as it was.)
+                var (x0, z0, x1, z1) = (Math.Min(line.X[p], line.X[p + 1]), Math.Min(line.Z[p], line.Z[p + 1]), Math.Max(line.X[p], line.X[p + 1]), Math.Max(line.Z[p], line.Z[p + 1]));
+                foreach (var c in new GridCells(x0, z0, x1, z1, cell))
+                {
+                    if (!index.TryGetValue(c, out var list))
+                        index[c] = list = [];
+                    list.Add((line, p));
+                }
+            }
+        }
+
+        // The last lines' rail under a point: the line, segment and how far along it, preferring a line of the same key, then the nearest.
+        (NetworkLine Line, int Q, float T)? Under(NetworkLine line, int p)
+        {
+            var (x, z) = (line.X[p], line.Z[p]);
+            if (!index.TryGetValue(((int)Math.Floor(x / cell), (int)Math.Floor(z / cell)), out var near))
+                return null;
+            (NetworkLine Line, int Q, float T)? best = null;
+            var (bestKey, bestD) = (false, double.MaxValue);
+            foreach (var (other, q) in near)
+            {
+                var (ax, az, dx, dz) = (other.X[q], other.Z[q], other.X[q + 1] - other.X[q], other.Z[q + 1] - other.Z[q]);
+                var length2 = dx * dx + dz * dz;
+                var t = length2 > 0 ? Math.Clamp(((x - ax) * dx + (z - az) * dz) / length2, 0.0, 1.0) : 0.0;
+                var (ex, ez) = (ax + dx * t - x, az + dz * t - z);
+                var d = ex * ex + ez * ez;
+                if (d > 0.01 * 0.01)
+                    continue;
+                var key = other.Key == line.Key;
+                if (best is null || (key && !bestKey) || (key == bestKey && d < bestD))
+                    (best, bestKey, bestD) = ((other, q, (float)t), key, d);
+            }
+
+            return best;
+        }
+
+        if (Environment.GetEnvironmentVariable("HB_HOLDDEBUG") == "1")
+            foreach (var line in _lines.Where(l => l.Rail && !l.Frozen))
+            {
+                var (far, matched, worst) = (0, 0, 0.0);
+                for (var p = 0; p < line.Count; p++)
+                {
+                    if (HoldAt(cells, local.Places, line.X[p], line.Z[p]) <= 0.0)
+                        continue;
+                    far++;
+                    if (Under(line, p) is not null)
+                        matched++;
+                    else
+                    {
+                        var best = double.MaxValue;
+                        foreach (var o in local.Previous._lines)
+                            if (o.Rail && o.MinX - 50 <= line.X[p] && line.X[p] <= o.MaxX + 50 && o.MinZ - 50 <= line.Z[p] && line.Z[p] <= o.MaxZ + 50)
+                                for (var q = 0; q < o.Count; q++)
+                                    best = Math.Min(best, Math.Sqrt((o.X[q] - line.X[p]) * (o.X[q] - line.X[p]) + (o.Z[q] - line.Z[p]) * (o.Z[q] - line.Z[p])));
+                        worst = Math.Max(worst, best);
+                    }
+                }
+
+                if (far > 0)
+                    RailWerkz.Core.Logging.Log.Info($"Hold debug: line {line.Key} ({line.Count} points, {line.S[^1]:0} m): {far} far, {matched} lying on old rail, unmatched up to {worst:0.000} m off the nearest old point");
+            }
+
+        var held = 0;
+        Parallel.ForEach(_lines.Where(l => l.Rail && !l.Frozen), line =>
+        {
+            var mine = 0;
+            for (var p = 0; p < line.Count; p++)
+            {
+                var w = HoldAt(cells, local.Places, line.X[p], line.Z[p]);
+                if (w <= 0.0 || Under(line, p) is not { } under)
+                    continue;
+                var (o, q, t) = under;
+                var y = o.Y[q] + (o.Y[q + 1] - o.Y[q]) * t;
+                if (w < 1.0)
+                {
+                    line.Y[p] += (y - line.Y[p]) * (float)w;
+                    mine++;
+                    continue;
+                }
+
+                line.Y[p] = y;
+                var at = t < 0.5f ? q : q + 1;
+                if (line.Sink.Length == line.Count && o.Sink.Length == o.Count)
+                    line.Sink[p] = o.Sink[q] + (o.Sink[q + 1] - o.Sink[q]) * t;
+                if (line.Shift.Length == line.Count && o.Shift.Length == o.Count)
+                    line.Shift[p] = o.Shift[at];
+                if (line.Junction.Length == line.Count && o.Junction.Length == o.Count)
+                    line.Junction[p] = o.Junction[at];
+                mine++;
+            }
+
+            Interlocked.Add(ref held, mine);
+        });
+
+        return held;
+    }
+
+    /// A local rebuild, once every line far from the edit is back as it was: a crossing's pad far from it is the last lines' pad,
+    /// as the track and road it's laid over are. (The passes nudge kept lines before they're put back, so a pad made from them
+    /// comes out a few millimetres off, and the ground round every crossing on the route was shaped again.) Returns how many.
+    public int KeepFarPads(LocalRebuild local)
+    {
+        var cells = EditCells(local.Places);
+        var before = local.Previous._pads.GroupBy(p => p.Id).ToDictionary(g => g.Key, g => g.First());
+        var kept = 0;
+        for (var i = 0; i < _pads.Count; i++)
+        {
+            var pad = _pads[i];
+            if (cells.TryGetValue(((int)Math.Floor(pad.X / HoldCell), (int)Math.Floor(pad.Z / HoldCell)), out var d) && d <= RailOuter + HoldCell)
+                continue;
+            if (!before.TryGetValue(pad.Id, out var was) || was == pad)
+                continue;
+            _pads[i] = was;
+            kept++;
+        }
+
+        return kept;
+    }
+
+    /// The most two rail lines differ in height by at a node they share, metres: a step at a junction.
+    public float WorstRailStep()
+    {
+        var at = new Dictionary<long, (float Y, NetworkLine Line)>();
+        var worst = 0f;
+        var steps = new List<string>();
+        foreach (var line in _lines.Where(l => l.Rail))
+            foreach (var (node, point) in line.Nodes)
+            {
+                if (at.TryGetValue(node, out var first))
+                {
+                    var step = MathF.Abs(first.Y - line.Y[point]);
+                    worst = MathF.Max(worst, step);
+                    if (step > 0.002f)
+                        steps.Add($"node {node} at ({line.X[point]:0}, {line.Z[point]:0}) {step:0.000} m between {Kind(first.Line)} {first.Line.Key} and {Kind(line)} {line.Key}");
+                }
+                else
+                    at[node] = (line.Y[point], line);
+            }
+
+        static string Kind(NetworkLine l) => l.Frozen ? "kept" : l.Origin is not null ? "halo" : "laid";
+        if (steps.Count > 0 && Environment.GetEnvironmentVariable("HB_HOLDDEBUG") == "1")
+            RailWerkz.Core.Logging.Log.Info($"Rail steps: {string.Join("; ", steps.Take(20))}");
+        return worst;
+    }
+
     /// The size of the cells ChainsNear marks what's near in, metres.
     private const double LocalCell = 100.0;
 
@@ -1458,16 +1766,42 @@ public sealed partial class NetworkLines
         RailWerkz.Core.Logging.Log.Info($"Watch {index} {stage}: max {l.Y.Max():0.0}, y at mid {l.Y[l.Count / 2]:0.0}");
     }
 
+    /// HB_PROFILELAPS=1: how long each step of FinishProfiles takes, logged at its end.
+    private static readonly bool ProfileLaps = Environment.GetEnvironmentVariable("HB_PROFILELAPS") == "1";
+    private System.Diagnostics.Stopwatch? _lapWatch;
+    private string? _lapName;
+    private List<string>? _laps;
+
+    private void Lap(string? next)
+    {
+        if (!ProfileLaps)
+            return;
+        if (_lapWatch is { } w && _lapName is { } name)
+            (_laps ??= []).Add($"{name} {w.ElapsedMilliseconds}");
+        if (next is null)
+        {
+            RailWerkz.Core.Logging.Log.Info($"Profile laps, ms: {string.Join(" | ", _laps ?? [])}");
+            (_laps, _lapWatch, _lapName) = (null, null, null);
+            return;
+        }
+
+        _lapName = next;
+        _lapWatch = System.Diagnostics.Stopwatch.StartNew();
+    }
+
     public void FinishProfiles()
     {
         // (Bridges lengthened by hand first: the profiles carry each deck straight between its ends.)
+        Lap("ExtendBridges();");
         ExtendBridges();
         _liftCells = null;
         _junctionRounds.Clear();
+        Lap("FindPins();");
         FindPins();
 
         // (Kept lines, in a local rebuild, are finished: every pass leaves them be, and reads them as the lines round them are
         // worked out.)
+        Lap("Parallel.ForEach(_lines.Where(l => !l.Fr");
         Parallel.ForEach(_lines.Where(l => !l.Frozen), line =>
         {
             Array.Copy(line.Ground, line.Y, line.Count);
@@ -1499,19 +1833,24 @@ public sealed partial class NetworkLines
             }
         });
 
+        Lap("LiftBridges();");
         LiftBridges();
         Watch("lift");
+        Lap("SpreadForks();");
         SpreadForks();
         _liftCells = null; // (SpreadForks moves lines: LiftBridges' cells are made again.)
+        Lap("ShiftSurfaces();");
         ShiftSurfaces();
 
+        Lap("var surfaceWatch = System.Diagnostics.St");
         var surfaceWatch = System.Diagnostics.Stopwatch.StartNew();
         // Each pass draws tracks close in height closer still; a few make tracks side by side agree to millimetres.
         var wide = new RailPoints(_lines, SurfaceReach);
         for (var pass = 0; pass < 3; pass++)
             wide.Smooth(SurfaceSpread, SurfaceStep);
 
-        Parallel.ForEach(_lines.Where(l => l.Rail), line =>
+        Lap("Parallel.ForEach(_lines.Where(l => l.Rai");
+        Parallel.ForEach(_lines.Where(l => l.Rail && !l.Frozen), line =>
         {
             Bridge(line);
             LimitGrade(line, SteepestGrade(line));
@@ -1522,11 +1861,13 @@ public sealed partial class NetworkLines
 
         // Last, tracks right beside each other (and close in height) are made to agree exactly, so one's ballast never
         // stands over the other's ties.
+        Lap("var close = new RailPoints(_lines, 6.0);");
         var close = new RailPoints(_lines, 6.0);
         for (var pass = 0; pass < 4; pass++)
             close.Smooth(1000.0, 0.15f);
         RailWerkz.Core.Logging.Log.Info($"Profiles: fitted in {surfaceWatch.ElapsedMilliseconds} ms");
-        Parallel.ForEach(_lines.Where(l => l.Rail), line =>
+        Lap("Parallel.ForEach(_lines.Where(l => l.Rai");
+        Parallel.ForEach(_lines.Where(l => l.Rail && !l.Frozen), line =>
         {
             // The deck straight between its ends again, then the grade eased onto and off it over a short curve (and a pinned
             // grade's ends rounded the same way).
@@ -1538,6 +1879,7 @@ public sealed partial class NetworkLines
         Watch("surface");
         // Where lines meet, they're brought to one height, which pulls a deck towards the roads it meets; it's lifted to clear what's
         // under it again, and the meeting heights worked out again round that, until they agree.
+        Lap("for (var round = 0; round < 3; round++)");
         for (var round = 0; round < 3; round++)
         {
             Junctions();
@@ -1546,42 +1888,66 @@ public sealed partial class NetworkLines
             Watch($"lifted {round}");
         }
 
+        Lap("Junctions();");
         Junctions();
+        Lap("SmoothJoins();");
         SmoothJoins();
         // (After the joins and junctions have shaped the lines they leave: a siding takes its line's height as it's finished, and
         // meets it at its switches exactly.)
+        Lap("FollowBeside();");
         FollowBeside();
         // (Pinned track as it was pinned again, after sidings were drawn to their lines, before the junctions are read.)
+        Lap("foreach (var line in _linePins.Keys)");
         foreach (var line in _linePins.Keys)
             ApplyPins(line, ease: false);
+        // (The whole network's heights eased together, before the bridges are lifted clear a last time: the kinks the lines'
+        // fitting one by one leaves at their joins smoothed out.)
+        Lap("SmoothRailNetwork();");
+        SmoothRailNetwork();
         // The last word goes to headroom: a deck lifted clear of what's under it, its junctions already all but agreed.
+        Lap("LiftBridges();");
         LiftBridges();
         Watch("junctions");
+        Lap("FindJunctions();");
         FindJunctions();
+        Lap("LetDownBeds();");
         LetDownBeds();
+        Lap("LevelRoadsAtRails();");
         LevelRoadsAtRails();
+        Lap("MakePads();");
         MakePads();
+        Lap("SnapRoadsToPads();");
         SnapRoadsToPads();
+        Lap("LevelRoadsAtPads();");
         LevelRoadsAtPads();
         Watch("pads");
+        Lap("CrestDecks();");
         CrestDecks();
         // Cresting a bridge smooths its whole road, which can pull a road's end on a pad back down off the pad's level (leaving a
         // step where it meets the crossing's deck): they're brought back up to it.
+        Lap("LevelRoadsAtPads();");
         LevelRoadsAtPads();
         // (Once the decks' heights are known: an end that nearly has room for a slope under it is given it.)
+        Lap("ExtendBridges(toFitSlopes: true);");
         ExtendBridges(toFitSlopes: true);
 
+        Lap("_widestAt.Clear();");
         _widestAt.Clear();
         foreach (var road in _lines.Where(l => !l.Rail && !l.Mark))
             foreach (var (node, _) in road.Nodes)
                 _widestAt[node] = MathF.Max(_widestAt.GetValueOrDefault(node), road.Width * 0.5f);
+        Lap("Parallel.ForEach(_lines.Where(l => !l.Fr");
         Parallel.ForEach(_lines.Where(l => !l.Frozen), line => line.Junction = JunctionDistances(line));
         Watch("crest");
+        Lap("Layer();");
         Layer();
+        Lap("Turnouts = Turnout.Find(_lines, Fitted);");
         Turnouts = Turnout.Find(_lines, Fitted);
+        Lap("LevelRoutes();");
         LevelRoutes();
         Before = null;
 
+        Lap(null);
     }
 
     /// How far either side of a join between two rail lines their heights are fitted together, metres.
@@ -2024,10 +2390,19 @@ public sealed partial class NetworkLines
             var held = line.Nodes.Where(n => at.TryGetValue(n.Node, out var meeting) &&
                     meeting.Any(m => m.Line != line && !partners.Contains(m.Line) && !(follows.TryGetValue(m.Line, out var theirs) && theirs.Contains(line))))
                 .Select(n => line.S[n.Point]).ToArray();
+            // How far each point is drawn to the track it follows, worked out point by point, then smoothed along the line before it's
+            // applied: taken straight, it steps wherever the nearest track changes, and where a pinned span or a bridge (held as they
+            // are) meets track that follows, a few centimetres in one segment.
+            var pull = new float[line.Count];
+            var still = new bool[line.Count];
             for (var p = 0; p < line.Count; p++)
             {
                 if (!OnGround(line, p) || Pinned(line, p))
+                {
+                    still[p] = true;
                     continue;
+                }
+
                 var (x, z) = (line.X[p], line.Z[p]);
                 (double Away, float Y)? best = null;
                 foreach (var other in partners)
@@ -2051,8 +2426,53 @@ public sealed partial class NetworkLines
                 var weight = 1f - Math.Clamp(((float)found.Away - BesideReach) / BesideEase, 0f, 1f);
                 foreach (var s in held)
                     weight *= Ease(Math.Clamp(MathF.Abs(line.S[p] - s) / FollowHold, 0f, 1f));
-                line.Y[p] += (found.Y - line.Y[p]) * weight;
+                pull[p] = (found.Y - line.Y[p]) * weight;
             }
+
+            SmoothPull(line, pull, still);
+            for (var p = 0; p < line.Count; p++)
+                line.Y[p] += pull[p];
+        }
+    }
+
+    /// How far either side FollowBeside's pull is averaged along a line, metres (twice over: a vertical curve, not a corner).
+    private const float PullEase = 12f;
+
+    /// A pull along a line averaged over PullEase either side, twice, with the points that are held kept at none. The window
+    /// narrows to nothing at the line's ends, so it still meets the track it follows at their switch exactly.
+    private static void SmoothPull(NetworkLine line, float[] pull, bool[] still)
+    {
+        var s = line.S;
+        var count = line.Count;
+        var sum = new double[count + 1];
+        var result = new float[count];
+        for (var pass = 0; pass < 2; pass++)
+        {
+            for (var i = 0; i < count; i++)
+                sum[i + 1] = sum[i] + pull[i];
+            int lo = 0, hi = 0;
+            for (var i = 0; i < count; i++)
+            {
+                if (still[i])
+                {
+                    result[i] = 0f;
+                    continue;
+                }
+
+                var window = MathF.Min(PullEase, MathF.Min(s[i] - s[0], s[^1] - s[i]));
+                while (lo < i && s[lo] < s[i] - window)
+                    lo++;
+                while (lo > 0 && s[lo - 1] >= s[i] - window)
+                    lo--;
+                hi = Math.Max(hi, i + 1);
+                while (hi < count && s[hi] <= s[i] + window)
+                    hi++;
+                while (hi > i + 1 && s[hi - 1] > s[i] + window)
+                    hi--;
+                result[i] = (float)((sum[hi] - sum[lo]) / (hi - lo));
+            }
+
+            Array.Copy(result, pull, count);
         }
     }
 

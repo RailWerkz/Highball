@@ -1,0 +1,190 @@
+{
+  "roadAsphalt": null,
+  "roadDirt": "Ground/Ground085",
+  "roadAsphaltTexture": "Asphalt/Road012C",
+  "roadDirtTexture": "Ground/Ground085",
+  "textures": {
+    "Ballast": "Ground/rocks_ground_09",
+    "RailTop": "Metal/Metal053B",
+    "RailSide": "Metal/Rust004",
+    "Ties": "Wood/Wood062",
+    "Plates": "Metal/Rust006",
+    "PoleWood": "Wood/Wood062",
+    "BridgeSteel": "Metal/Metal024"
+  },
+  "paintSettings": {
+    "Black": {
+      "texture": "Metal/Metal046B",
+      "color": [
+        0.0017999865,
+        0.0017999865,
+        0.0017999865
+      ],
+      "strength": 0.5,
+      "metal": true,
+      "roughness": 0.45
+    },
+    "White": {
+      "texture": "Metal/Metal024",
+      "color": [
+        0.62,
+        0.62,
+        0.6
+      ],
+      "strength": 0.3,
+      "metal": false,
+      "roughness": 0.45
+    },
+    "Galv": {
+      "texture": "Metal/Metal054C",
+      "color": [
+        0.26,
+        0.27,
+        0.28
+      ],
+      "strength": 0.8,
+      "metal": true,
+      "roughness": 0.5
+    },
+    "Yellow": {
+      "texture": "Metal/Metal024",
+      "color": [
+        0.6,
+        0.42,
+        0.05
+      ],
+      "strength": 0.3,
+      "metal": false,
+      "roughness": 0.45
+    },
+    "Red": {
+      "texture": "Metal/Metal024",
+      "color": [
+        0.5,
+        0.02,
+        0.015
+      ],
+      "strength": 0.3,
+      "metal": false,
+      "roughness": 0.45
+    },
+    "Green": {
+      "texture": "Metal/Metal024",
+      "color": [
+        0.02,
+        0.32,
+        0.12
+      ],
+      "strength": 0.3,
+      "metal": false,
+      "roughness": 0.45
+    },
+    "Concrete": {
+      "texture": "Concrete/Concrete042C",
+      "color": [
+        0.3,
+        0.29,
+        0.26
+      ],
+      "strength": 1,
+      "metal": false,
+      "roughness": 0.45
+    },
+    "CrossingWhite": {
+      "texture": "Metal/Metal024",
+      "color": [
+        0.62,
+        0.62,
+        0.6
+      ],
+      "strength": 0.3,
+      "metal": false,
+      "roughness": 0.45
+    },
+    "CrossingBlack": {
+      "texture": "Metal/Metal046B",
+      "color": [
+        0.0017999865,
+        0.0017999865,
+        0.0017999865
+      ],
+      "strength": 0.5,
+      "metal": true,
+      "roughness": 0.45
+    },
+    "CrossingPole": {
+      "texture": "Metal/Metal054C",
+      "color": [
+        0.26,
+        0.27,
+        0.28
+      ],
+      "strength": 0.8,
+      "metal": true,
+      "roughness": 0.5
+    },
+    "GateRed": {
+      "texture": "Metal/Metal024",
+      "color": [
+        0.5,
+        0.02,
+        0.015
+      ],
+      "strength": 0.3,
+      "metal": false,
+      "roughness": 0.45
+    },
+    "GateWhite": {
+      "texture": "Metal/Metal024",
+      "color": [
+        0.62,
+        0.62,
+        0.6
+      ],
+      "strength": 0.3,
+      "metal": false,
+      "roughness": 0.45
+    }
+  },
+  "lampSettings": {
+    "Red": {
+      "color": [
+        1,
+        0.015591104,
+        0.0015428468
+      ],
+      "lensBrightness": 9,
+      "intensity": 3,
+      "range": 14,
+      "beam": 81,
+      "glowSize": 0.05,
+      "glowBrightness": 20
+    },
+    "Yellow": {
+      "color": [
+        1,
+        0.3693252,
+        0
+      ],
+      "lensBrightness": 9,
+      "intensity": 3,
+      "range": 14,
+      "beam": 81,
+      "glowSize": 0.05,
+      "glowBrightness": 20
+    },
+    "Green": {
+      "color": [
+        0.0139558,
+        1,
+        0.024396313
+      ],
+      "lensBrightness": 7,
+      "intensity": 2.3,
+      "range": 14,
+      "beam": 81,
+      "glowSize": 0.05,
+      "glowBrightness": 20
+    }
+  }
+}

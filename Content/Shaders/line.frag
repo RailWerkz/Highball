@@ -44,8 +44,9 @@ layout(set = 4, binding = 11) uniform sampler2D paintedPacked;
 layout(set = 4, binding = 12) uniform sampler2D woodColor;
 layout(set = 4, binding = 13) uniform sampler2D woodNormal;
 layout(set = 4, binding = 14) uniform sampler2D woodPacked;
-// Each paint's own maps (TrackMaterials.Paints: black, white, galv, yellow, red, green, concrete), then their palette: per paint, its
-// colour square-rooted and how strongly its texture shows through on the top row; metal and roughness on the bottom row.
+// The paints' textures (TrackTextures.MapsOf: each distinct one a paint uses, sixteen at most), the first seven here and the rest
+// after the surfaces' lookup; then the paints' palette: per paint, its colour square-rooted and how strongly its texture shows
+// through on the top row; metal, roughness and which of the textures it takes on the bottom row.
 layout(set = 4, binding = 15) uniform sampler2D paint0Color;
 layout(set = 4, binding = 16) uniform sampler2D paint0Normal;
 layout(set = 4, binding = 17) uniform sampler2D paint0Packed;
@@ -119,8 +120,7 @@ layout(set = 4, binding = 82) uniform sampler2D surface15Color;
 layout(set = 4, binding = 83) uniform sampler2D surface15Normal;
 layout(set = 4, binding = 84) uniform sampler2D surface15Packed;
 layout(set = 4, binding = 85) uniform sampler2D surfaceLookup;
-// A grade crossing's own paints' maps (TrackMaterials.Paints after the shared seven: crossbuck white, crossing black, its post,
-// gate red, gate white), after the lookup; their palette entries are 7 to 11.
+// The rest of the paints' textures (7 to 15).
 layout(set = 4, binding = 86) uniform sampler2D paint7Color;
 layout(set = 4, binding = 87) uniform sampler2D paint7Normal;
 layout(set = 4, binding = 88) uniform sampler2D paint7Packed;
@@ -136,6 +136,18 @@ layout(set = 4, binding = 97) uniform sampler2D paint10Packed;
 layout(set = 4, binding = 98) uniform sampler2D paint11Color;
 layout(set = 4, binding = 99) uniform sampler2D paint11Normal;
 layout(set = 4, binding = 100) uniform sampler2D paint11Packed;
+layout(set = 4, binding = 101) uniform sampler2D paint12Color;
+layout(set = 4, binding = 102) uniform sampler2D paint12Normal;
+layout(set = 4, binding = 103) uniform sampler2D paint12Packed;
+layout(set = 4, binding = 104) uniform sampler2D paint13Color;
+layout(set = 4, binding = 105) uniform sampler2D paint13Normal;
+layout(set = 4, binding = 106) uniform sampler2D paint13Packed;
+layout(set = 4, binding = 107) uniform sampler2D paint14Color;
+layout(set = 4, binding = 108) uniform sampler2D paint14Normal;
+layout(set = 4, binding = 109) uniform sampler2D paint14Packed;
+layout(set = 4, binding = 110) uniform sampler2D paint15Color;
+layout(set = 4, binding = 111) uniform sampler2D paint15Normal;
+layout(set = 4, binding = 112) uniform sampler2D paint15Packed;
 
 // A surface texture's three maps, by slot. (With the derivatives worked out beforehand, outside the branches.)
 void surfaceMaps(int slot, vec2 uv, vec2 gx, vec2 gy, out vec3 color, out vec3 normal, out vec4 packed)
@@ -173,7 +185,11 @@ void paintMaps(int slot, vec2 uv, out vec3 color, out float rough, out vec3 bump
     else if (slot == 8) { color = texture(paint8Color, uv).rgb; rough = texture(paint8Packed, uv).g; bump = texture(paint8Normal, uv).xyz; }
     else if (slot == 9) { color = texture(paint9Color, uv).rgb; rough = texture(paint9Packed, uv).g; bump = texture(paint9Normal, uv).xyz; }
     else if (slot == 10) { color = texture(paint10Color, uv).rgb; rough = texture(paint10Packed, uv).g; bump = texture(paint10Normal, uv).xyz; }
-    else { color = texture(paint11Color, uv).rgb; rough = texture(paint11Packed, uv).g; bump = texture(paint11Normal, uv).xyz; }
+    else if (slot == 11) { color = texture(paint11Color, uv).rgb; rough = texture(paint11Packed, uv).g; bump = texture(paint11Normal, uv).xyz; }
+    else if (slot == 12) { color = texture(paint12Color, uv).rgb; rough = texture(paint12Packed, uv).g; bump = texture(paint12Normal, uv).xyz; }
+    else if (slot == 13) { color = texture(paint13Color, uv).rgb; rough = texture(paint13Packed, uv).g; bump = texture(paint13Normal, uv).xyz; }
+    else if (slot == 14) { color = texture(paint14Color, uv).rgb; rough = texture(paint14Packed, uv).g; bump = texture(paint14Normal, uv).xyz; }
+    else { color = texture(paint15Color, uv).rgb; rough = texture(paint15Packed, uv).g; bump = texture(paint15Normal, uv).xyz; }
 }
 
 // LineMaterial, and what each packs into vData (see LineVertex).
@@ -202,6 +218,9 @@ const int CrossingPaint = 17;
 // fourth lamp's colour (TrackMaterials.Lamps: White).
 const int WhiteLensPaint = 22;
 const int WhiteLitPaint = 25;
+// A lineside model's own paint slots (LinesidePaints, NetworkMeshes.AssetPaint), from here: palette entries 12 on.
+const int AssetPaint = 32;
+const int FixedPaints = 12;
 const float FlashRate = 0.9;
 
 // NetworkMeshes: how far the tie models reach (TieReach), how far apart they lie (TieSpacing, 19.5 in), and half a tie's width.
@@ -626,13 +645,13 @@ void main()
     else if (material == Painted)
     {
         // Galvanised steel, or paint, each weathered by its own texture (TrackMaterials: Metal024 unless changed).
-        int slot = style >= CrossingPaint ? clamp(style - CrossingPaint + 7, 7, 11) : clamp(style, 0, 6);
-        vec4 tint = texelFetch(paintPalette, ivec2(slot, 0), 0);
-        vec4 finish = texelFetch(paintPalette, ivec2(slot, 1), 0);
+        int entry = style >= AssetPaint ? FixedPaints + style - AssetPaint : style >= CrossingPaint ? clamp(style - CrossingPaint + 7, 7, 11) : clamp(style, 0, 6);
+        vec4 tint = texelFetch(paintPalette, ivec2(entry, 0), 0);
+        vec4 finish = texelFetch(paintPalette, ivec2(entry, 1), 0);
         vec2 worn = boxUv(local, n) / 0.8;
         vec3 grime, bump;
         float rough;
-        paintMaps(slot, worn, grime, rough, bump);
+        paintMaps(int(finish.b * 255.0 + 0.5), worn, grime, rough, bump);
         albedo = tint.rgb * tint.rgb * mix(vec3(1.0), grime * 2.0, tint.a);
         metallic = finish.r;
         roughness = mix(finish.g, rough, 0.6);

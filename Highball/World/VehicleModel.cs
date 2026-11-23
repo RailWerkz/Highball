@@ -6,7 +6,7 @@ namespace Highball.World;
 /// One truck of a vehicle's model, with the place on the plan it swivels about (its middle, in the model's axes).
 public sealed record TruckPart(RenderModel Model, float3 Pivot);
 
-/// One coupler of a vehicle's model (Coupler_Front, Coupler_Rear: Meshes/Couplers/coupler.glb put in place), with its draft pivot
+/// One coupler of a vehicle's model (Coupler_Front, Coupler_Rear: Meshes/Vehicles/Couplers/coupler.glb put in place), with its draft pivot
 /// (the node's origin, in the model's axes), about which it swings to meet the coupler it's coupled to (TrainVisuals.Couplers).
 public sealed record CouplerPart(RenderModel Model, float3 Pivot);
 

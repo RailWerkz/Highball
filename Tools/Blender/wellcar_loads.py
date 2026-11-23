@@ -2,7 +2,7 @@
 
     blender -b --factory-startup --python Tools/Blender/wellcar_loads.py -- <Content folder>
 
-Run on its own after wellcar_doublestack.py has made the parts (Meshes/RollingStock/WellCar/TTX/Source/Parts and
+Run on its own after wellcar_doublestack.py has made the parts (Meshes/Vehicles/Legacy/WellCar/TTX/Source/Parts and
 assembly.json), or by it at its end. Writes LOD0/wellcar_ttx.glb (empty) and LOD0/wellcar_ttx_<load>.glb for each of LOADS,
 and the loads into assembly.json. No LOD1 or LOD2 is made for them: the game's mesh optimizer makes its own.
 
@@ -36,9 +36,9 @@ MODEL = f"wellcar_{LIVERY}"
 
 
 def build(content, save_blend=False):
-    out = os.path.join(content, "Meshes", "RollingStock", "WellCar", "TTX")
+    out = os.path.join(content, "Meshes", "Vehicles", "Legacy", "WellCar", "TTX")
     parts = os.path.join(out, "Source", "Parts")
-    couplers = os.path.join(content, "Meshes", "Couplers")
+    couplers = os.path.join(content, "Meshes", "Vehicles", "Couplers")
     with open(os.path.join(out, "assembly.json")) as f:
         assembly = json.load(f)
 
@@ -112,7 +112,7 @@ def build(content, save_blend=False):
 
     assembly["models"] = (f"The game loads LOD0/{MODEL}.glb empty, and LOD0/{MODEL}_<load>.glb for each load below (no hand-made "
                           "LOD1 or LOD2: the game's mesh optimizer makes its own), made by Tools/Blender/wellcar_loads.py. The parts below are "
-                          "Source/Parts/<model>.glb, put together into them, except the couplers: Meshes/Couplers/coupler.glb, the "
+                          "Source/Parts/<model>.glb, put together into them, except the couplers: Meshes/Vehicles/Couplers/coupler.glb, the "
                           "same on every engine and car")
     assembly["loads"] = {load_id: {"model": f"LOD0/{MODEL}_{load_id}.glb", "containers": list(stack),
                                    "positions": [list(p) for p in stacked(stack)]}

@@ -216,19 +216,8 @@ public static class Style
             io.FontDefault = Regular;
         _deckFonts = (Regular, Medium, Bold, Heavy);
 
-        // The editor's face: the system's sans (Segoe UI on Windows), else the deck's.
-        ImFontPtr System(string file, ImFontPtr fallback)
-        {
-            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), file);
-            if (!File.Exists(path))
-                return fallback;
-            var font = io.Fonts.AddFontFromFileTTF(path, 18f);
-            return font.IsNull() ? fallback : font;
-        }
-
-        var sans = System("segoeui.ttf", Regular);
-        var semibold = System("seguisb.ttf", sans);
-        _editorFonts = (sans, sans, semibold, System("segoeuib.ttf", semibold));
+        // The editor's face: JetBrains Mono, at its regular weight for text (the deck's light is too thin at panel sizes).
+        _editorFonts = Mono.IsNull() ? _deckFonts : (Mono, Mono, MonoBold, monoHeavy);
     }
 
     /// The interface scale: 1 at 1080 lines, so the menus read the same on any screen.

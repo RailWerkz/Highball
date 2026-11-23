@@ -1,3 +1,4 @@
+using Brutal.ImGuiApi;
 using Brutal.StbApi;
 using Highball.Screens;
 using RailWerkz.Core.Logging;
@@ -11,7 +12,8 @@ namespace Highball.App;
 ///   --menu SCREEN                                   open a menu after the splash: single, multi, builder, consists, settings,
 ///                                                   credits, lighting (the lighting test scene)
 ///   --lighting PRESET [MODEL]                       with --menu lighting, start at noon, golden or night, with the model
-///                                                   ac4400cw, ac4400cw_bnsf or autorack_csx
+///                                                   ac4400cw, ac4400cw_bnsf, or any car's vehicle.json id (boxcar_60_hc,
+///                                                   tank_23000_funnelflow, ...)
 ///   --orbit YAW PITCH DISTANCE                      with --menu lighting, where the camera starts (degrees, metres)
 ///   --skytime YYYY-MM-DD HOUR                       the procedural sky's date and time, in hours on the route's clock
 ///   --clouds COVERAGE                               how much of the procedural sky is cloud, 0 to 1
@@ -37,7 +39,7 @@ namespace Highball.App;
 ///                                                   frame times and the terrain left waiting every second
 ///   --panels                                        with --view, open the Frame Statistics, Profiler, Threading and Camera windows
 ///   --audioeditor [TAB]                             with --view, open the Audio Editor (on mix, locomotive or gear)
-///   --skybox NAME                                   with --view, show that sky (a file name in Textures/Skyboxes, or Procedural)
+///   --skybox NAME                                   with --view, show that sky (a file name in Sky/Skyboxes, or Procedural)
 ///   --throw LAT LON                                 with --view or --view2d, once loaded, throw the switch nearest there
 ///   --train CONSIST LAT LON NOTCH                   with --view, once loaded, put that saved consist on the track there
 ///                                                   (facing away from the camera), throttle at NOTCH, camera following,
@@ -73,6 +75,10 @@ public static class DevTools
 {
     private static readonly List<(double At, string Path)> Shots = [];
     private static double _quitAt = double.MaxValue;
+
+    /// --click T X Y [T X Y ...]: a left click put into ImGui at each time, at that place on the display (to try the interface
+    /// in a test run without the real pointer).
+    private static readonly List<(double At, float X, float Y)> Clicks = [];
     private static string? _menu;
 
     /// The lighting test scene's first time of day and model (--lighting), read once by it.
@@ -202,6 +208,9 @@ public static class DevTools
 
     /// The editors' first tool (--tool), read once by them.
     public static int? Tool { get; set; }
+
+    /// --pickobject KIND: the first placed object of that kind picked (with its gizmo) once the editor's open, as the Outliner picks it.
+    public static string? PickObject { get; set; }
 
     /// A scripted selection and operation on it in the editors (--trackop), read once by them.
     public static (double Lat, double Lon, double Radius, string Op)? TrackOp { get; set; }
@@ -411,6 +420,9 @@ public static class DevTools
                 case "--clean":
                     Clean = true;
                     break;
+                case "--pickobject" when i + 1 < args.Length:
+                    PickObject = args[++i];
+                    break;
                 case "--tool" when i + 1 < args.Length:
                     Tool = int.Parse(args[++i]);
                     break;
@@ -467,6 +479,14 @@ public static class DevTools
                     break;
                 case "--quit" when i + 1 < args.Length:
                     _quitAt = double.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
+                    break;
+                case "--click":
+                    while (i + 3 < args.Length && double.TryParse(args[i + 1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var clickAt))
+                    {
+                        Clicks.Add((clickAt, float.Parse(args[i + 2], System.Globalization.CultureInfo.InvariantCulture), float.Parse(args[i + 3], System.Globalization.CultureInfo.InvariantCulture)));
+                        i += 3;
+                    }
+
                     break;
                 case "--shot":
                     while (i + 2 < args.Length && double.TryParse(args[i + 1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var at))
@@ -590,6 +610,18 @@ public static class DevTools
                 Log.Info($"Screenshot: {path}");
             });
             break;
+        }
+
+        for (var i = Clicks.Count - 1; i >= 0; i--)
+        {
+            if (Clicks[i].At > now)
+                continue;
+            var io = Brutal.ImGuiApi.ImGui.GetIO();
+            io.AddMousePosEvent(Clicks[i].X, Clicks[i].Y);
+            io.AddMouseButtonEvent(0, true);
+            io.AddMouseButtonEvent(0, false);
+            Log.Info($"Click: {Clicks[i].X}, {Clicks[i].Y}");
+            Clicks.RemoveAt(i);
         }
 
         if (now > _quitAt)

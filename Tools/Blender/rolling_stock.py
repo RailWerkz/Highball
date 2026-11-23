@@ -8,7 +8,7 @@
     --lod N          build a lower level of detail (1, 2) of the cars that have it, into <folder>/LODs/LOD<N>
     --list           print the cars and stop
 
-Each car goes under Meshes/RollingStock/<folder>: its body in each livery, its moving parts, truck, wheelset, coupler and
+Each car goes under Meshes/Vehicles/Legacy/<folder>: its body in each livery, its moving parts, truck, wheelset, coupler and
 assembly.json. The car types live in Tools/Blender/rollingstock; catalog.py lists them.
 """
 import os

@@ -16,12 +16,53 @@ namespace Highball.World;
 /// Bound as the world's set 4 while track is drawn.
 public sealed class TrackTextures : IDisposable
 {
-    /// Rocks, rail top, rail side, bridge steel and pole wood, three maps each; then each paint's three maps (TrackMaterials.Paints,
-    /// in order); then the paints' palette. A tie's or plate's first three maps are in the same places, with the rest repeated so
-    /// every binding fits the one layout.
-    public static readonly int PaintCount = TrackMaterials.Paints.Length;
-    /// (A crossing's own paints' maps come last, after the surfaces' lookup, so the bindings before them stay where they were.)
-    public static readonly int SetSize = 15 + PaintCount * 3 + 1 + SurfaceTextures.Slots * 3 + 1;
+    /// Rocks, rail top, rail side, bridge steel and pole wood, three maps each; then the paints' textures' first seven, three maps each;
+    /// then the paints' palette; the paved surfaces' textures and their lookup; then the rest of the paints' textures. A tie's or plate's
+    /// first three maps are in the same places, with the rest repeated so every binding fits the one layout.
+    ///
+    /// The paints (TrackMaterials.Paints, then every lineside model's own, LinesidePaints) share their textures: each distinct one is
+    /// in one of MapSlots places, and each paint's palette entry says which (MapsOf).
+    public const int MapSlots = 16;
+    private const int MapsBeforePalette = 7;
+
+    /// How many paints the palette has: TrackMaterials.Paints, then LinesidePaints.All.
+    public static int PaintCount => TrackMaterials.Paints.Length + LinesidePaints.All.Count;
+
+    public static readonly int SetSize = 15 + MapsBeforePalette * 3 + 1 + SurfaceTextures.Slots * 3 + 1 + (MapSlots - MapsBeforePalette) * 3;
+
+    /// A paint by its palette entry.
+    private static TrackMaterials.Paint PaintAt(TrackMaterials materials, int index) =>
+        index < TrackMaterials.Paints.Length ? materials.PaintOf(index) : LinesidePaints.PaintOf(LinesidePaints.All[index - TrackMaterials.Paints.Length]);
+
+    /// The paints' distinct textures, in the order they're first used (MapSlots at most), and which each paint takes.
+    private static List<string> MapsOf(TrackMaterials materials, out int[] slotOf)
+    {
+        var textures = new List<string>();
+        slotOf = new int[PaintCount];
+        for (var i = 0; i < slotOf.Length; i++)
+        {
+            var texture = PaintAt(materials, i).Texture;
+            var at = textures.IndexOf(texture);
+            if (at < 0 && textures.Count < MapSlots)
+            {
+                at = textures.Count;
+                textures.Add(texture);
+            }
+            else if (at < 0)
+            {
+                at = 0;
+                if (!_warnedSlots)
+                    Log.Warn($"Track textures: the paints use more than {MapSlots} textures; the rest are drawn with {textures[0]}");
+                _warnedSlots = true;
+            }
+
+            slotOf[i] = at;
+        }
+
+        return textures;
+    }
+
+    private static bool _warnedSlots;
 
     /// What's to be loaded has changed: a texture in the Track Materials window, or another surface texture come into use.
     private static int WantedVersion => TrackMaterials.TextureVersion * 65536 + SurfaceTextures.Version;
@@ -111,8 +152,8 @@ public sealed class TrackTextures : IDisposable
         var needed = new List<(string, string)>();
         foreach (var (slot, _, _, _) in TrackMaterials.Slots)
             needed.Add((materials.TextureOf(slot), SizeOf(slot, size)));
-        for (var i = 0; i < PaintCount; i++)
-            needed.Add((materials.PaintOf(i).Texture, label));
+        foreach (var texture in MapsOf(materials, out _))
+            needed.Add((texture, label));
         foreach (var id in SurfaceTextures.Bound(out _))
             if (id.Length > 0)
                 needed.Add((id, label));
@@ -222,12 +263,14 @@ public sealed class TrackTextures : IDisposable
         var label = Label(_size);
         Texture2D[] Of(TrackMaterials.Slot slot) => Maps(materials.TextureOf(slot), SizeOf(slot, _size));
 
-        var palette = MakePalette(materials);
+        var maps = MapsOf(materials, out var slotOf);
+        Texture2D[] MapAt(int slot) => slot < maps.Count ? Maps(maps[slot], label) : [_neutral, _neutral, _neutral];
+        var palette = MakePalette(materials, slotOf);
         var lines = new List<Texture2D>();
         foreach (var slot in LineSlots)
             lines.AddRange(Of(slot));
-        for (var i = 0; i < TrackMaterials.SharedPaints; i++)
-            lines.AddRange(Maps(materials.PaintOf(i).Texture, label));
+        for (var i = 0; i < MapsBeforePalette; i++)
+            lines.AddRange(MapAt(i));
         lines.Add(palette);
         // The paved surfaces' textures in use (SurfaceTextures), after it, then which slot each texture's in.
         var bound = SurfaceTextures.Bound(out var lookup);
@@ -241,8 +284,8 @@ public sealed class TrackTextures : IDisposable
         }
         var surfaceLookup = Texture2D.FromPixels(SurfaceTextures.Max, 1, lookupPixels, repeat: false, mipmaps: false, linear: false, name: "surfaces");
         lines.Add(surfaceLookup);
-        for (var i = TrackMaterials.SharedPaints; i < PaintCount; i++)
-            lines.AddRange(Maps(materials.PaintOf(i).Texture, label));
+        for (var i = MapsBeforePalette; i < MapSlots; i++)
+            lines.AddRange(MapAt(i));
 
         Texture2D[] Alone(Texture2D[] three) => [.. Enumerable.Range(0, SetSize - 1).Select(i => three[i % 3]), _neutral];
 
@@ -262,7 +305,7 @@ public sealed class TrackTextures : IDisposable
         var inUse = new Dictionary<string, string>();
         foreach (var (slot, _, _, _) in TrackMaterials.Slots)
             inUse[slot.ToString()] = Of(slot)[0] == _neutral ? "" : materials.TextureOf(slot);
-        for (var i = 0; i < PaintCount; i++)
+        for (var i = 0; i < TrackMaterials.Paints.Length; i++)
             inUse[TrackMaterials.Paints[i].Name] = Maps(materials.PaintOf(i).Texture, label)[0] == _neutral ? "" : materials.PaintOf(i).Texture;
         _inUse = inUse;
     }
@@ -272,36 +315,38 @@ public sealed class TrackTextures : IDisposable
     /// its brightness over LensScale.
     public const float LensScale = 32f;
 
-    private static Texture2D MakePalette(TrackMaterials materials)
+    private static Texture2D MakePalette(TrackMaterials materials, int[] slotOf)
     {
-        var pixels = new byte[PaintCount * 3 * 4];
+        var count = PaintCount;
+        var pixels = new byte[count * 3 * 4];
         static byte Unit(float v) => (byte)Math.Clamp((int)MathF.Round(v * 255f), 0, 255);
-        for (var i = 0; i < PaintCount; i++)
+        for (var i = 0; i < count; i++)
         {
-            var paint = materials.PaintOf(i);
+            var paint = PaintAt(materials, i);
             var top = i * 4;
             pixels[top] = Unit(MathF.Sqrt(Math.Max(paint.Color[0], 0f)));
             pixels[top + 1] = Unit(MathF.Sqrt(Math.Max(paint.Color[1], 0f)));
             pixels[top + 2] = Unit(MathF.Sqrt(Math.Max(paint.Color[2], 0f)));
             pixels[top + 3] = Unit(paint.Strength);
-            var bottom = (PaintCount + i) * 4;
+            var bottom = (count + i) * 4;
             pixels[bottom] = paint.Metal ? (byte)255 : (byte)0;
             pixels[bottom + 1] = Unit(paint.Roughness);
-            pixels[bottom + 2] = 0;
+            // (Which of the paints' textures: line.frag reads it as a whole number.)
+            pixels[bottom + 2] = (byte)slotOf[i];
             pixels[bottom + 3] = 255;
         }
 
-        for (var i = 0; i < Math.Min(TrackMaterials.Lamps.Length, PaintCount); i++)
+        for (var i = 0; i < Math.Min(TrackMaterials.Lamps.Length, count); i++)
         {
             var lamp = materials.LampOf(i);
-            var at = (PaintCount * 2 + i) * 4;
+            var at = (count * 2 + i) * 4;
             pixels[at] = Unit(MathF.Sqrt(Math.Max(lamp.Color[0], 0f)));
             pixels[at + 1] = Unit(MathF.Sqrt(Math.Max(lamp.Color[1], 0f)));
             pixels[at + 2] = Unit(MathF.Sqrt(Math.Max(lamp.Color[2], 0f)));
             pixels[at + 3] = Unit(lamp.LensBrightness / LensScale);
         }
 
-        return Texture2D.FromPixels(PaintCount, 3, pixels, repeat: false, mipmaps: false, linear: false, name: "paints");
+        return Texture2D.FromPixels(count, 3, pixels, repeat: false, mipmaps: false, linear: false, name: "paints");
     }
 
     public void BindLines(CommandBuffer cmd, VkPipelineLayout layout) => _lines!.BindAt(cmd, layout, SetIndex);

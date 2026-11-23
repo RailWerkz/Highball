@@ -7,13 +7,14 @@ using RailWerkz.Core.Logging;
 
 namespace Highball.World;
 
-/// Which textures the track and everything beside it is drawn with, read from Content/Materials/Track.json and changed live by
+/// Which textures the track and everything beside it is drawn with, read from Content/Presets/Track.json and changed live by
 /// the Track Materials window (MaterialsWindow). TrackTextures loads what this says whenever Version moves on.
 ///
-/// A texture is named by where it is: a path under Content/Textures without the size ("Metal/Metal021", for ambientCG's
-/// Metal021_1K-JPG.zip and Metal021_2K-JPG.zip), a zip of its own, or a folder of loose maps, either under Content/Textures or
-/// anywhere on disk. Maps are found by name: Color (or Albedo, BaseColor, Diffuse), NormalGL (or Normal, NormalDX, flipped),
-/// Roughness, Metalness, AmbientOcclusion (or AO) and Displacement (or Height).
+/// A texture is a material, named by where it is under Content/Materials: "Metal/Metal021" is the folder
+/// Content/Materials/Metal/Metal021, which has a material.json and a folder of maps for each size it comes in (1K/, 2K/). A folder
+/// of loose maps or a zip anywhere on disk works too. Maps are found by name: albedo (or Color, BaseColor, Diffuse), normal (OpenGL's
+/// way up; NormalDX is flipped), roughness, metalness, ao (or AmbientOcclusion) and height (or Displacement). Names from before the
+/// materials had their own folders still work (Canonical).
 ///
 /// The parts placed beside the track (signals, hand throws, crossing masts, poles) are made in Blender with their meshes named
 /// after a paint (Fixed_Black, Moving_Red): each paint has a texture, a colour it tints it with, how strongly the texture shows
@@ -25,7 +26,7 @@ public sealed class TrackMaterials
 
     public static readonly (Slot Slot, string Label, string Help, string Default)[] Slots =
     [
-        (Slot.Ballast, "Ballast", "Track bed and shoulders", "Terrain/Rocks/Rocks022"),
+        (Slot.Ballast, "Ballast", "Track bed and shoulders", "Ground/Rocks022"),
         (Slot.RailTop, "Rail top", "Rail head running surface", "Metal/Metal021"),
         (Slot.RailSide, "Rail sides", "Web, foot and head sides", "Metal/Metal025"),
         (Slot.Ties, "Ties (sleepers)", "Ties and turnout timbers", "Wood/Wood062"),
@@ -56,10 +57,10 @@ public sealed class TrackMaterials
     /// How many of the paints are the shared ones (signals, hand throws, poles); the rest are a crossing's own.
     public const int SharedPaints = 7;
 
-    /// What roads are laid with: paved roads' asphalt (a texture under Content/Textures/Asphalt), and unpaved roads' dirt (any texture,
+    /// What roads are laid with: paved roads' asphalt (a material under Content/Materials/Asphalt), and unpaved roads' dirt (any texture,
     /// as the track's are named).
     public const string DefaultRoadAsphalt = "Asphalt/Road012C";
-    public const string DefaultRoadDirt = "Terrain/Rocks/Ground079S";
+    public const string DefaultRoadDirt = "Ground/Ground079S";
     public string? RoadAsphalt { get; set; }
     public string? RoadDirt { get; set; }
 
@@ -128,7 +129,14 @@ public sealed class TrackMaterials
     /// Whether what's in use differs from what's saved.
     [JsonIgnore] public static bool Unsaved { get; private set; }
 
-    public static string FilePath => Path.Combine(ContentPath.SourceRoot, "Materials", "Track.json");
+    public static string FilePath => Path.Combine(ContentPath.SourceRoot, "Presets", "Track.json");
+
+    /// A material's id as it's named now: the ground textures were under Textures/Terrain/Rocks before they were materials.
+    public static string Canonical(string id)
+    {
+        id = id.Trim().Replace('\\', '/');
+        return id.StartsWith("Terrain/Rocks/", StringComparison.OrdinalIgnoreCase) ? "Ground/" + id["Terrain/Rocks/".Length..] : id;
+    }
 
     public string TextureOf(Slot slot) =>
         Textures.TryGetValue(slot, out var id) && !string.IsNullOrWhiteSpace(id) ? id : Slots.First(s => s.Slot == slot).Default;
@@ -161,7 +169,7 @@ public sealed class TrackMaterials
     private static TrackMaterials Load()
     {
         // The repository's copy first: that's the one the window saves to.
-        foreach (var path in new[] { FilePath, Path.Combine(ContentPath.Root, "Materials", "Track.json") })
+        foreach (var path in new[] { FilePath, ContentPath.Preset("Track.json") })
         {
             if (!File.Exists(path))
                 continue;
@@ -208,6 +216,14 @@ public sealed class TrackMaterials
             return;
         PaintSettings[Paints[index].Name] = paint;
         Changed(texture: before.Texture != paint.Texture);
+    }
+
+    /// Something else drawn with the paints has changed (LinesidePaints, saved apart from these): draw again, loading textures if asked.
+    public static void Touch(bool texture)
+    {
+        Version++;
+        if (texture)
+            TextureVersion++;
     }
 
     private static void Changed(bool texture)
@@ -276,12 +292,23 @@ public sealed class TrackMaterials
     // (4K at most: larger than that isn't used, see TrackTextures.Qualities.)
     private static readonly string[] SizeLabels = ["1K", "2K", "4K"];
 
-    /// Every texture under Content/Textures (the repository's and the build's), sorted by folder and name.
+    /// Every material under Content/Materials (the repository's and the build's), sorted by category and name.
     public static List<Choice> Find()
     {
         var found = new Dictionary<string, (string Group, SortedSet<string> Sizes, bool Sized)>(StringComparer.OrdinalIgnoreCase);
         foreach (var root in Roots().Distinct(StringComparer.OrdinalIgnoreCase).Where(Directory.Exists))
         {
+            // Materials: a folder with a material.json, its sizes the folders in it.
+            foreach (var json in Directory.EnumerateFiles(root, "material.json", SearchOption.AllDirectories))
+            {
+                var dir = Path.GetDirectoryName(json)!;
+                var relative = Path.GetRelativePath(root, dir).Replace('\\', '/');
+                if (!found.TryGetValue(relative, out var entry))
+                    found[relative] = entry = (Path.GetDirectoryName(relative)?.Replace('\\', '/') ?? "", new SortedSet<string>(), true);
+                foreach (var size in SizeLabels.Where(s => Directory.Exists(Path.Combine(dir, s))))
+                    entry.Sizes.Add(size);
+            }
+
             foreach (var zip in Directory.EnumerateFiles(root, "*.zip", SearchOption.AllDirectories))
             {
                 var relative = Path.GetRelativePath(root, zip).Replace('\\', '/');
@@ -303,10 +330,10 @@ public sealed class TrackMaterials
                     found.TryAdd(relative, (folder, [], false));
             }
 
-            // Folders of loose maps.
+            // Folders of loose maps (not a material, nor one of its size folders).
             foreach (var dir in Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories))
             {
-                if (MapFiles(dir).ContainsKey("color"))
+                if (!SizeLabels.Contains(Path.GetFileName(dir)) && !File.Exists(Path.Combine(dir, "material.json")) && MapFiles(dir).ContainsKey("color"))
                 {
                     var relative = Path.GetRelativePath(root, dir).Replace('\\', '/');
                     found.TryAdd(relative, (Path.GetDirectoryName(relative)?.Replace('\\', '/') ?? "", [], false));
@@ -315,7 +342,7 @@ public sealed class TrackMaterials
         }
 
         return found
-            .Select(f => new Choice(f.Key, Path.GetFileName(f.Key.TrimEnd('/')), f.Value.Group.Length > 0 ? f.Value.Group : "Textures", [.. f.Value.Sizes]))
+            .Select(f => new Choice(f.Key, Path.GetFileName(f.Key.TrimEnd('/')), f.Value.Group.Length > 0 ? f.Value.Group : "Materials", [.. f.Value.Sizes]))
             .OrderBy(c => c.Group, StringComparer.OrdinalIgnoreCase)
             .ThenBy(c => c.Label, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -323,8 +350,8 @@ public sealed class TrackMaterials
 
     private static IEnumerable<string> Roots()
     {
-        yield return Path.Combine(ContentPath.SourceRoot, "Textures");
-        yield return Path.Combine(ContentPath.Root, "Textures");
+        yield return Path.Combine(ContentPath.SourceRoot, "Materials");
+        yield return Path.Combine(ContentPath.Root, "Materials");
     }
 
     /// Decoded maps, ready to upload: colour (sRGB), normal (OpenGL's way up), and ambient occlusion, roughness, metalness
@@ -336,7 +363,7 @@ public sealed class TrackMaterials
     {
         try
         {
-            var (files, source) = Open(id, size) ?? throw new FileNotFoundException("not found under Content/Textures or on disk");
+            var (files, source) = Open(id, size) ?? throw new FileNotFoundException("not found under Content/Materials or on disk");
             using (files)
             {
                 var color = files.Read("color") ?? throw new InvalidDataException("no colour map (a file named ..._Color)");
@@ -403,18 +430,24 @@ public sealed class TrackMaterials
     /// Where a texture's files are: the zip for the size (or the nearest), a zip given by name, or a folder.
     private static (MapSource Files, string Source)? Open(string id, string size)
     {
-        id = id.Trim().Replace('\\', '/');
+        id = Canonical(id);
         var candidates = Path.IsPathRooted(id) ? [id] : Roots().Select(r => Path.Combine(r, id)).ToArray();
+        var at = Array.IndexOf(SizeLabels, size);
+        var order = SizeLabels.Take(at + 1).Reverse().Concat(SizeLabels.Skip(at + 1)).ToArray();
         foreach (var path in candidates)
         {
             if (Directory.Exists(path))
+            {
+                // A material: the size asked for, then smaller, then larger. A folder of loose maps as it is.
+                foreach (var label in order)
+                    if (Directory.Exists(Path.Combine(path, label)))
+                        return (new FolderSource(Path.Combine(path, label)), Path.Combine(path, label));
                 return (new FolderSource(path), path);
+            }
             if (File.Exists(path) && path.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                 return (new ZipSource(path), path);
 
-            // ambientCG's sizes: the one asked for, then smaller, then larger.
-            var at = Array.IndexOf(SizeLabels, size);
-            var order = SizeLabels.Take(at + 1).Reverse().Concat(SizeLabels.Skip(at + 1));
+            // ambientCG's zips, one a size: the one asked for, then smaller, then larger.
             foreach (var label in order)
             {
                 foreach (var kind in (string[])["JPG", "PNG"])
@@ -577,12 +610,12 @@ public sealed class TrackMaterials
     {
         var users = Paints.ToDictionary(p => p.Name, _ => new List<string>(), StringComparer.OrdinalIgnoreCase);
         users["Wood"] = [];
-        foreach (var folder in (string[])["Track", "Poles"])
+        foreach (var folder in (string[])["Track", "Lineside"])
         {
             var dir = ContentPath.Model(folder);
             if (!Directory.Exists(dir))
                 continue;
-            foreach (var file in Directory.EnumerateFiles(dir, "*.glb"))
+            foreach (var file in Directory.EnumerateFiles(dir, "*.glb", SearchOption.AllDirectories))
             {
                 try
                 {

@@ -1,0 +1,89 @@
+{
+  "source": "Enclosed bi-level autorack, CSX (ETTX 710524), author and licence to be filled in: see CREDITS.txt",
+  "scale": 1.9171,
+  "lengthOverCouplers": 28.504,
+  "truckCentres": 19.508,
+  "wheelDiameter": 0.8472,
+  "lods": [
+    "LOD0",
+    "LOD1",
+    "LOD2"
+  ],
+  "trianglesWholeCar": {
+    "LOD0": 275604
+  },
+  "models": "The game loads LOD0/autorack_csx.glb (LOD1 and LOD2 beside it, from Tools/Blender/lods.py). The parts below are Source/Parts/<model>.glb, put together into it, except the couplers: Meshes/Vehicles/Couplers/coupler.glb, the same on every engine and car",
+  "bodies": [
+    "body_csx"
+  ],
+  "trucks": [
+    {
+      "model": "truck_front",
+      "position": [
+        0,
+        -9.754,
+        0
+      ],
+      "yaw": 0,
+      "wheelsets": [
+        [
+          0,
+          0.8425,
+          0.4236
+        ],
+        [
+          0,
+          -0.8425,
+          0.4236
+        ]
+      ]
+    },
+    {
+      "model": "truck_rear",
+      "position": [
+        0,
+        9.754,
+        0
+      ],
+      "yaw": 0,
+      "wheelsets": [
+        [
+          0,
+          0.8425,
+          0.4236
+        ],
+        [
+          0,
+          -0.8425,
+          0.4236
+        ]
+      ]
+    }
+  ],
+  "wheelsets": {
+    "model": "wheelset",
+    "onTruck": "each truck's own, in its entry above",
+    "radius": 0.4236
+  },
+  "couplers": [
+    {
+      "model": "Vehicles/Couplers/coupler.glb",
+      "position": [
+        0,
+        -13.7699,
+        0.8134
+      ],
+      "yaw": 0
+    },
+    {
+      "model": "Vehicles/Couplers/coupler.glb",
+      "position": [
+        0,
+        13.6972,
+        0.8134
+      ],
+      "yaw": 180
+    }
+  ],
+  "axes": "Blender Z-up metres, front (the A end) towards -Y; in the files, glTF Y-up: (x, y, z) here is (x, z, -y) there"
+}

@@ -1,0 +1,34 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (28,123 kg); loaded, the gross rail load its trucks are rated for.
+{
+  "id": "boxcar_fmc_50",
+  "name": "50 ft FMC boxcar (GVSR)",
+  "kind": "Boxcar",
+  "type": "FMC 50 ft 5258 cu ft boxcar",
+  "lengthM": 17.726,
+  "truckCentresM": 12.395,
+  "frontOverhangM": 2.666,
+  "axles": 4,
+  "wheelDiameterM": 0.8509,
+  "massEmptyKg": 28123,
+  "massLoadedKg": 99790,
+  "maxSpeedKmh": 113,
+  "liveries": [
+    {
+      "id": "gvsr",
+      "name": "GVSR",
+      "model": "Vehicles/Freight/BoxCars/FMC50/LOD0/boxcar_fmc_50_gvsr.glb"
+    },
+    {
+      "id": "gvsr_a",
+      "name": "GVSR (a)",
+      "model": "Vehicles/Freight/BoxCars/FMC50/LOD0/boxcar_fmc_50_gvsr_a.glb"
+    },
+    {
+      "id": "gvsr_b",
+      "name": "GVSR (b)",
+      "model": "Vehicles/Freight/BoxCars/FMC50/LOD0/boxcar_fmc_50_gvsr_b.glb"
+    }
+  ]
+}

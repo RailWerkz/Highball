@@ -1,0 +1,6 @@
+The trees (various_forest_assets_pack_1k.glb, _2k.glb) are from "Various Forest Assets Pack" by Dari
+https://sketchfab.com/3d-models/various-forest-assets-pack-cf138b8eb2d340cda643ed59f824989c
+Licensed under Creative Commons Attribution 4.0: http://creativecommons.org/licenses/by/4.0/
+
+various_forest_assets_pack_1k_reduced.glb is the same pack with its bark decimated to a fifth by Tools/Blender/tree_lods.py, for
+the trees' middle distance. In game, each tree is also baked into an impostor image for the far distance (ImpostorBaker).

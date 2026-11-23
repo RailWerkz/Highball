@@ -1,13 +1,16 @@
-"""Tidies downloaded PBR textures in Content/Textures into the layout the game reads, and audits what's there.
+"""Turns downloaded PBR textures into materials in Content/Materials, the layout the game reads, and audits what's there.
 
     python Tools/Textures/tidy.py [--dry-run] [--force] [--content DIR] [--sources DIR] [--blender PATH] [zip ...]
 
-Drop texture downloads (zips from Poly Haven, ambientCG, or anywhere else) anywhere under Content/Textures and run this. Each
-zip that isn't already in the game's layout is repacked as <Name>_<Size>-JPG.zip beside it (Size: 1K, 2K or 4K), holding
-<Name>_<Size>-JPG_Color, _NormalGL, _Roughness, _AmbientOcclusion, _Displacement (and _Metalness if it has any metal), which is
-what the Track Materials window lists and TrackMaterials.Decode reads. The original zip is moved to the sources folder
-(default: TextureSources beside the Highball folder, same subfolders), so nothing's lost and it doesn't show up as a broken
-entry. Then every texture in the game's layout is audited: missing maps, and which sizes it comes in.
+Drop texture downloads (zips from Poly Haven, ambientCG, or anywhere else) into a category's folder under Content/Materials
+(Content/Materials/Wood/oak_planks_2k.zip) and run this. Each zip becomes, or adds a size to, a material:
+
+    Content/Materials/<Category>/<Name>/material.json      its name, category, sizes, and where it came from
+    Content/Materials/<Category>/<Name>/<Size>/albedo, normal, roughness, ao, height (and metalness if it has any metal)
+
+which is what the Track Materials window lists and TrackMaterials.Decode reads. The original zip is moved to the sources folder
+(default: TextureSources beside the Highball folder, same subfolders), so nothing's lost. Then every material is audited: missing
+maps, and which sizes it comes in.
 
 What it handles:
   - maps named by any of the usual words (diff/col/albedo/basecolor/color, nor_gl/normal/nrm, nor_dx, rough, ao, disp/height,
@@ -15,17 +18,18 @@ What it handles:
   - EXR maps (Poly Haven's normal and roughness): read through Blender and written as 8-bit PNG. A normal map's encoding is
     worked out from the map itself: whichever reading leaves the normals pointing straight up on average, as a tiling map's do;
   - packed ARM maps (ambient occlusion, roughness, metalness in red, green, blue) for any of those three that's missing;
-  - DirectX normal maps (green flipped) when there's no OpenGL one: the game flips them itself;
-  - the size taken from the name, or else from the colour map's width. The game goes to 4K at most (Ultra): an 8K download is
-    scaled down to 4K (its normal map renormalised), and an 8K zip already in the layout is flagged as unused.
+  - DirectX normal maps (green flipped) when there's no OpenGL one, kept as normal_dx: the game flips them itself;
+  - the size taken from the name, or else from the colour map's width. Materials come in 1K and 2K: anything larger is scaled
+    down to 2K (its normal map renormalised).
 
-Given zips, only those are tidied (the audit still covers everything). Skyboxes and Planets are left alone, as are loose files (the ground's own DDS maps). --dry-run says what it would do and changes
-nothing; --force replaces a <Name>_<Size>-JPG.zip that's already there.
+Given zips, only those are tidied (the audit still covers everything). --dry-run says what it would do and changes nothing;
+--force replaces a size a material already has.
 
 Needs numpy and Pillow, and Blender for EXR maps (found under Program Files\\Blender Foundation, or --blender, or $BLENDER).
 """
 import glob
 import io
+import json
 import os
 import re
 import shutil
@@ -39,11 +43,8 @@ from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HIGHBALL = os.path.dirname(os.path.dirname(HERE))
-SIZES = ["1K", "2K", "4K"]  # the game's largest is 4K (TrackTextures.Qualities)
-LARGEST = 4096
-SKIP_FOLDERS = ("skyboxes", "planets")
-GOOD_ZIP = re.compile(r"^(?P<name>.+)_(?P<size>[124]K)-(JPG|PNG)\.zip$", re.IGNORECASE)
-TOO_BIG_ZIP = re.compile(r"^(?P<name>.+)_(?P<size>(?:8|16)K)-(JPG|PNG)\.zip$", re.IGNORECASE)
+SIZES = ["1K", "2K"]  # what a material keeps (Content/Materials/<Category>/<Name>/<Size>/)
+LARGEST = 2048
 SIZE_TOKEN = re.compile(r"(?<![a-z0-9])(1|2|4|8|16)k(?:-(?:jpg|png|exr))?(?![a-z0-9])", re.IGNORECASE)
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".tga", ".bmp", ".exr", ".tif", ".tiff")
 
@@ -60,8 +61,8 @@ WORDS = [
     (("metal",), "metalness"), (("metallic",), "metalness"), (("metalness",), "metalness"),
     (("arm",), "arm"),
 ]
-OUT_NAMES = {"color": "Color", "normalgl": "NormalGL", "normaldx": "NormalDX", "roughness": "Roughness", "ao": "AmbientOcclusion",
-             "height": "Displacement", "metalness": "Metalness"}
+OUT_NAMES = {"color": "albedo", "normalgl": "normal", "normaldx": "normal_dx", "roughness": "roughness", "ao": "ao",
+             "height": "height", "metalness": "metalness"}
 
 
 def args_of(argv):
@@ -170,7 +171,7 @@ def shrunk(data, suffix):
     if img.size[0] <= LARGEST:
         return data
     img = img.resize((LARGEST, round(img.size[1] * LARGEST / img.size[0])), Image.LANCZOS)
-    if suffix.startswith("Normal"):
+    if suffix.startswith("normal"):
         n = np.asarray(img.convert("RGB")).astype(np.float64) / 255.0 * 2.0 - 1.0
         n /= np.maximum(np.sqrt((n ** 2).sum(-1, keepdims=True)), 1e-6)
         img = Image.fromarray(((n + 1.0) * 0.5 * 255.0 + 0.5).clip(0, 255).astype(np.uint8), "RGB")
@@ -184,6 +185,9 @@ def shrunk(data, suffix):
 
 def tidy_zip(path, content_textures, opts, blender, report):
     rel_folder = os.path.relpath(os.path.dirname(path), content_textures)
+    if rel_folder in (".", ""):
+        report.append(f"  SKIPPED  {os.path.basename(path)}: put it in a category's folder (Content/Materials/Wood/...) first")
+        return
     z = zipfile.ZipFile(path)
     maps = {}
     for info in z.infolist():
@@ -197,14 +201,14 @@ def tidy_zip(path, content_textures, opts, blender, report):
         return
     color_width = Image.open(io.BytesIO(z.read(maps["color"]))).size[0] if not maps["color"].lower().endswith(".exr") else None
     pixels = size_of(path, color_width) or LARGEST
-    # Larger than the game uses: scaled down to its largest.
+    # Larger than a material keeps: scaled down to its largest.
     shrink = pixels > LARGEST
-    size = "4K" if shrink else min(SIZES, key=lambda s: abs(int(s[0]) * 1024 - pixels))
+    size = SIZES[-1] if shrink else min(SIZES, key=lambda s: abs(int(s[0]) * 1024 - pixels))
     name = base_name(path)
-    out = os.path.join(os.path.dirname(path), f"{name}_{size}-JPG.zip")
-    prefix = f"{name}_{size}-JPG"
-    if os.path.exists(out) and not opts["force"]:
-        report.append(f"  SKIPPED  {os.path.relpath(path, content_textures)}: {os.path.basename(out)} is already there (--force replaces it)")
+    material = os.path.join(os.path.dirname(path), name)
+    out = os.path.join(material, size)
+    if os.path.isdir(out) and not opts["force"]:
+        report.append(f"  SKIPPED  {os.path.relpath(path, content_textures)}: {name} already has {size} (--force replaces it)")
         return
 
     notes = []
@@ -237,7 +241,7 @@ def tidy_zip(path, content_textures, opts, blender, report):
                     files[OUT_NAMES[key] + ".png"] = png_bytes(rgb, "RGB")
                     notes.append(f"{key} from EXR ({how})")
                 elif key == "color":
-                    files["Color.png"] = png_bytes(linear_to_srgb(a[..., :3]), "RGB")
+                    files["albedo.png"] = png_bytes(linear_to_srgb(a[..., :3]), "RGB")
                     notes.append("color from EXR (linear, to sRGB)")
                 else:
                     files[OUT_NAMES[key] + ".png"] = png_bytes(a[..., 0], "L")
@@ -255,26 +259,26 @@ def tidy_zip(path, content_textures, opts, blender, report):
             arm = np.asarray(Image.open(io.BytesIO(z.read(maps["arm"]))).convert("RGB")).astype(np.float64) / 255.0
             have = {k for k in maps}
             if "ao" not in have:
-                files["AmbientOcclusion.png"] = png_bytes(arm[..., 0], "L")
+                files["ao.png"] = png_bytes(arm[..., 0], "L")
                 notes.append("ao from ARM")
             if "roughness" not in have:
-                files["Roughness.png"] = png_bytes(arm[..., 1], "L")
+                files["roughness.png"] = png_bytes(arm[..., 1], "L")
                 notes.append("roughness from ARM")
             # (Only where there's metal: a JPEG's noise leaves the odd speck in the blue of one that has none.)
             if "metalness" not in have and arm[..., 2].mean() > 0.05:
-                files["Metalness.png"] = png_bytes(arm[..., 2], "L")
+                files["metalness.png"] = png_bytes(arm[..., 2], "L")
                 notes.append("metalness from ARM")
 
         if shrink:
-            notes.append(f"{pixels // 1024}K scaled down to 4K")
+            notes.append(f"{pixels // 1024}K scaled down to {SIZES[-1]}")
             if not opts["dry"]:
                 for suffix in list(files):
                     files[suffix] = shrunk(files[suffix], suffix)
 
-        missing = [m for m in ("NormalGL", "Roughness", "AmbientOcclusion", "Displacement")
-                   if not any(f.startswith(m) for f in files) and not (m == "NormalGL" and any(f.startswith("NormalDX") for f in files))]
+        missing = [m for m in ("normal", "roughness", "ao", "height")
+                   if not any(f.split(".")[0] == m for f in files) and not (m == "normal" and any(f.startswith("normal_dx") for f in files))]
         verb = "WOULD MAKE" if opts["dry"] else "MADE"
-        line = f"  {verb}  {os.path.join(rel_folder, os.path.basename(out))}  from {os.path.basename(path)}"
+        line = f"  {verb}  {os.path.join(rel_folder, name, size)}  from {os.path.basename(path)}"
         if notes:
             line += f"  [{'; '.join(notes)}]"
         if missing:
@@ -283,9 +287,13 @@ def tidy_zip(path, content_textures, opts, blender, report):
         if opts["dry"]:
             return
 
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as o:
-            for suffix, data in files.items():
-                o.writestr(f"{prefix}_{suffix}", data)
+        if os.path.isdir(out):
+            shutil.rmtree(out)
+        os.makedirs(out)
+        for file, data in files.items():
+            with open(os.path.join(out, file), "wb") as o:
+                o.write(data)
+        write_material(material, name, rel_folder.replace(os.sep, "/"), size, os.path.basename(path))
     z.close()
 
     keep = os.path.join(opts["sources"], rel_folder)
@@ -293,37 +301,40 @@ def tidy_zip(path, content_textures, opts, blender, report):
     shutil.move(path, os.path.join(keep, os.path.basename(path)))
 
 
-def audit(content_textures, report):
-    textures = {}
-    for root, dirs, files in os.walk(content_textures):
-        rel = os.path.relpath(root, content_textures)
-        if rel.split(os.sep)[0].lower() in SKIP_FOLDERS:
-            continue
-        for f in files:
-            big = TOO_BIG_ZIP.match(f)
-            if big:
-                report.append(f"  !! {os.path.join(rel, f)}: {big.group('size').upper()} isn't used (4K at most): delete it, or tidy its original")
-            m = GOOD_ZIP.match(f)
-            if m:
-                textures.setdefault(os.path.join(rel, m.group("name")), []).append((m.group("size").upper(), os.path.join(root, f)))
+def write_material(folder, name, category, size, source):
+    """Adds a size to a material's material.json (making it if it's new)."""
+    path = os.path.join(folder, "material.json")
+    info = {"name": name, "category": category, "sizes": [], "source": None, "license": None}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            info.update(json.load(f))
+    info["sizes"] = sorted(set(info.get("sizes") or []) | {size}, key=SIZES.index)
+    info.setdefault("from", source)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(info, f, indent=2)
+        f.write("\n")
+
+
+def audit(content_materials, report):
+    materials = []
+    for root, dirs, files in os.walk(content_materials):
+        if "material.json" in files:
+            materials.append(root)
+            dirs[:] = []
     report.append("")
-    report.append(f"Textures in the game's layout: {len(textures)}")
-    for name in sorted(textures, key=str.lower):
-        sizes = sorted({s for s, _ in textures[name]}, key=SIZES.index)
+    report.append(f"Materials: {len(materials)}")
+    for root in sorted(materials, key=str.lower):
+        rel = os.path.relpath(root, content_materials).replace(os.sep, "/")
+        sizes = [s for s in SIZES if os.path.isdir(os.path.join(root, s))]
         problems = []
-        for _, zpath in textures[name]:
-            try:
-                keys = {key_of(n) for n in zipfile.ZipFile(zpath).namelist()}
-            except zipfile.BadZipFile:
-                problems.append(f"{os.path.basename(zpath)} won't open")
-                continue
-            for need, label in (("color", "colour"), ("normalgl", "normal"), ("roughness", "roughness")):
-                if need not in keys and not (need == "normalgl" and ("normaldx" in keys or "normal" in keys)):
-                    problems.append(f"{os.path.basename(zpath)} has no {label} map")
-            exr = [n for n in zipfile.ZipFile(zpath).namelist() if n.lower().endswith(".exr")]
-            if exr:
-                problems.append(f"{os.path.basename(zpath)} has EXR maps the game can't read (--force on its original)")
-        line = f"  {name.replace(os.sep, '/'):<40} {' '.join(sizes)}"
+        if not sizes:
+            problems.append("no size folders (1K/, 2K/)")
+        for size in sizes:
+            keys = {os.path.splitext(f)[0] for f in os.listdir(os.path.join(root, size))}
+            for need in ("albedo", "normal", "roughness"):
+                if need not in keys and not (need == "normal" and "normal_dx" in keys):
+                    problems.append(f"{size} has no {need} map")
+        line = f"  {rel:<40} {' '.join(sizes)}"
         if problems:
             line += "   !! " + "; ".join(problems)
         report.append(line)
@@ -331,19 +342,16 @@ def audit(content_textures, report):
 
 def main():
     opts = args_of(sys.argv[1:])
-    content_textures = os.path.join(opts["content"], "Textures")
+    content_textures = os.path.join(opts["content"], "Materials")
     if not os.path.isdir(content_textures):
-        sys.exit(f"No Textures folder under {opts['content']}")
+        sys.exit(f"No Materials folder under {opts['content']}")
     blender = find_blender(opts["blender"])
-    report = [f"Texture tidy{' (dry run)' if opts['dry'] else ''}: {content_textures}"]
+    report = [f"Material tidy{' (dry run)' if opts['dry'] else ''}: {content_textures}"]
     todo = []
     for root, dirs, files in os.walk(content_textures):
-        rel = os.path.relpath(root, content_textures)
-        if rel.split(os.sep)[0].lower() in SKIP_FOLDERS:
-            continue
         for f in files:
             path = os.path.join(root, f)
-            if f.lower().endswith(".zip") and not GOOD_ZIP.match(f) and (not opts["only"] or os.path.normcase(os.path.abspath(path)) in opts["only"]):
+            if f.lower().endswith(".zip") and (not opts["only"] or os.path.normcase(os.path.abspath(path)) in opts["only"]):
                 todo.append(path)
     report.append(f"To tidy: {len(todo)}")
     for path in sorted(todo):

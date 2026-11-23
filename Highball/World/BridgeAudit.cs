@@ -69,7 +69,7 @@ public static class BridgeAudit
                 }
 
             foreach (var side in (float[])[-1f, 1f])
-                for (var a = BridgeEndShape.WallFrom; a <= shape.Toe(side); a += Step)
+                for (var a = BridgeEndShape.WallFrom; a <= shape.WallEnd(side); a += Step)
                 {
                     var top = shape.WallTop(a, side);
                     var outside = Ground(a, side * (shape.DeckHalf + BridgeEndShape.WallThick + 0.2f));

@@ -220,7 +220,7 @@ public sealed class VehicleDef
     /// neighbours'. vehicle.json gives it over the knuckles' noses, as the model's drawn; this is less by both noses.
     public required double Length { get; init; }
 
-    /// How far each knuckle's nose stands past its pulling face (Couplers/coupler.json): half of how far two coupled heads
+    /// How far each knuckle's nose stands past its pulling face (Vehicles/Couplers/coupler.json): half of how far two coupled heads
     /// overlap.
     public double KnuckleNose { get; init; }
 
@@ -499,12 +499,12 @@ public static class VehicleCatalog
         const double measured = 0.098;
         try
         {
-            using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "Couplers", "coupler.json")));
+            using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "Vehicles", "Couplers", "coupler.json")));
             return doc.RootElement.TryGetProperty("knuckleNose", out var value) ? value.GetDouble() : measured;
         }
         catch (Exception e)
         {
-            Log.Warn($"Vehicles: Couplers/coupler.json unreadable ({e.Message}), knuckles taken as {measured} m");
+            Log.Warn($"Vehicles: Vehicles/Couplers/coupler.json unreadable ({e.Message}), knuckles taken as {measured} m");
             return measured;
         }
     }

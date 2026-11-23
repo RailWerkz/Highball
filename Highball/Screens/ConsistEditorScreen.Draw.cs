@@ -33,23 +33,26 @@ public sealed partial class ConsistEditorScreen
 
     /// Where each of a vehicle's paint chips goes on its card: in rows from the card's left, a new row whenever the next won't
     /// fit before the ADD button, so a vehicle with many paints gets a taller card rather than losing some.
-    private static List<(Livery Livery, float2 Min, float2 Max)> ChipLayout(VehicleDef def, float2 cardMin, float cardRight)
+    private static List<(string Id, string Label, float2 Min, float2 Max)> ChipLayout(VehicleDef def, float2 cardMin, float cardRight)
     {
-        var chips = new List<(Livery, float2, float2)>();
+        var chips = new List<(string, string, float2, float2)>();
         var left = cardMin.X + S(14f);
         var limit = cardRight - S(60f);
         var x = left;
         var y = cardMin.Y + S(66f);
-        foreach (var livery in def.Liveries)
+        // Freight leads with Random: each car added gets any of its paints, empty or loaded, carrying any of its cargoes.
+        var options = (ConsistCar.CanRandomize(def) ? [(ConsistCar.RandomPaint, "RANDOM LOAD & PAINT")] : Array.Empty<(string, string)>())
+            .Concat(def.Liveries.Select(l => (l.Id, l.Name.ToUpperInvariant())));
+        foreach (var (id, label) in options)
         {
-            var w = Canvas.SpacedWidth(Medium, S(10f), livery.Name.ToUpperInvariant(), 0.12f) + S(14f);
+            var w = Canvas.SpacedWidth(Medium, S(10f), label, 0.12f) + S(14f);
             if (x > left && x + w > limit)
             {
                 x = left;
                 y += ChipRowStep;
             }
 
-            chips.Add((livery, new float2(x, y), new float2(x + w, y + ChipHeight)));
+            chips.Add((id, label, new float2(x, y), new float2(x + w, y + ChipHeight)));
             x += w + S(6f);
         }
 
@@ -206,6 +209,36 @@ public sealed partial class ConsistEditorScreen
         draw.AddLine(new float2(min.X, y + S(3f)), new float2(max.X, y + S(3f)), Stroke, 1f);
         y += S(14f);
         Canvas.Spaced(draw, Bold, S(11f), new float2(left + S(12f), y), Style.Text, _kind.Plural().ToUpperInvariant(), 0.2f);
+
+        // On the right: a tick to put each car added in either way round, at random.
+        {
+            const string label = "RANDOM DIRECTION";
+            var labelW = Canvas.SpacedWidth(Medium, S(10f), label, 0.12f);
+            var box = S(12f);
+            var tickMin = new float2(right - S(10f) - labelW - S(8f) - box, y);
+            var tickMax = new float2(right - S(10f), y + box);
+            var tickHover = !Keyboard.PointerBlocked && _drag is null && Inside(mouse, tickMin - new float2(S(4f), S(4f)), tickMax + new float2(S(4f), S(4f)));
+            var boxMax = tickMin + new float2(box, box);
+            draw.AddRectFilled(tickMin, boxMax, _randomTurn ? Accent : tickHover ? RaisedHover : Surface);
+            draw.AddRect(tickMin, boxMax, _randomTurn ? Accent : StrokeStrong, 0f, ImDrawFlags.None, 1f);
+            if (_randomTurn)
+            {
+                draw.AddLine(tickMin + new float2(box * 0.2f, box * 0.5f), tickMin + new float2(box * 0.42f, box * 0.75f), OnAccent, S(2f));
+                draw.AddLine(tickMin + new float2(box * 0.42f, box * 0.75f), tickMin + new float2(box * 0.8f, box * 0.25f), OnAccent, S(2f));
+            }
+
+            Canvas.Spaced(draw, Medium, S(10f), new float2(boxMax.X + S(8f), y + S(1f)), _randomTurn || tickHover ? Style.Text : TextDim, label, 0.12f);
+            if (tickHover)
+            {
+                ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+                if (pressed)
+                {
+                    _randomTurn = !_randomTurn;
+                    Sfx.Tick();
+                }
+            }
+        }
+
         y += S(24f);
 
         // The vehicles, scrolling if there are more than fit.
@@ -265,17 +298,16 @@ public sealed partial class ConsistEditorScreen
         // The paint schemes, as chips in as many rows as they take; the one chosen is what ADD puts in.
         var chosen = LiveryFor(def);
         var chipClicked = false;
-        foreach (var (livery, chipMin, chipMax) in ChipLayout(def, min, max.X))
+        foreach (var (chipId, label, chipMin, chipMax) in ChipLayout(def, min, max.X))
         {
-            var label = livery.Name.ToUpperInvariant();
-            var on = livery.Id == chosen;
+            var on = chipId == chosen;
             var chipHover = hovered && Inside(mouse, chipMin, chipMax);
             draw.AddRectFilled(chipMin, chipMax, on ? Accent.WithAlpha(0.85f) : chipHover ? RaisedHover : Surface);
             draw.AddRect(chipMin, chipMax, on ? Accent : StrokeStrong, 0f, ImDrawFlags.None, 1f);
             Canvas.Spaced(draw, Medium, S(10f), chipMin + new float2(S(7f), S(3f)), on ? OnAccent : TextDim, label, 0.12f);
             if (chipHover && pressed)
             {
-                _liveryOf[def.Id] = livery.Id;
+                _liveryOf[def.Id] = chipId;
                 Pick(def);
                 chipClicked = true;
                 Sfx.Tick();

@@ -1,4 +1,4 @@
-"""The one coupler every engine and car uses: the SD40's, written to Meshes/Couplers by Tools/Blender/sd40.py.
+"""The one coupler every engine and car uses: the SD40's, written to Meshes/Vehicles/Couplers by Tools/Blender/sd40.py.
 
 Its origin is the draft pivot, swinging about Z, pulling face towards -Y. coupler.json gives its height above the railhead,
 which is every car's coupler height, and its reach from the pivot to the pulling face.
@@ -7,7 +7,7 @@ import json
 import os
 from dataclasses import dataclass
 
-MODEL = "Couplers/coupler.glb"  # under Content/Meshes, as the assemblies name it
+MODEL = "Vehicles/Couplers/coupler.glb"  # under Content/Meshes, as the assemblies name it
 
 
 @dataclass(frozen=True)
@@ -18,7 +18,7 @@ class Coupler:
 
 
 def load(content):
-    folder = os.path.join(content, "Meshes", "Couplers")
+    folder = os.path.join(content, "Meshes", "Vehicles", "Couplers")
     try:
         with open(os.path.join(folder, "coupler.json")) as f:
             info = json.load(f)

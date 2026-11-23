@@ -1,0 +1,63 @@
+{
+  "id": "poles",
+  "kind": "lineside",
+  "name": "Pole",
+  "about": "Utility and light poles.",
+  "models": [
+    {
+      "file": "light_cobra.glb",
+      "materials": {
+        "Black": "Black",
+        "Concrete": "Concrete",
+        "Galv": "Galv",
+        "White": "White"
+      }
+    },
+    {
+      "file": "light_platform.glb",
+      "materials": {
+        "Black": "Black",
+        "White": "White"
+      }
+    },
+    {
+      "file": "light_yard_mast.glb",
+      "materials": {
+        "Black": "Black",
+        "Concrete": "Concrete",
+        "Galv": "Galv",
+        "White": "White",
+        "Yellow": "Yellow"
+      }
+    },
+    {
+      "file": "pole_distribution.glb",
+      "materials": {
+        "Black": "Black",
+        "Galv": "Galv",
+        "White": "White",
+        "Wood": "Wood"
+      }
+    },
+    {
+      "file": "pole_telecom.glb",
+      "materials": {
+        "Black": "Black",
+        "Galv": "Galv",
+        "White": "White",
+        "Wood": "Wood",
+        "Yellow": "Yellow"
+      }
+    },
+    {
+      "file": "pole_telegraph.glb",
+      "materials": {
+        "Black": "Black",
+        "Galv": "Galv",
+        "Green": "Green",
+        "White": "White",
+        "Wood": "Wood"
+      }
+    }
+  ]
+}

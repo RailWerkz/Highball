@@ -1,0 +1,64 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (25,492 kg); loaded, the gross rail load its trucks are rated for.
+{
+  "id": "covered_hopper_acf_2971",
+  "name": "2971 cu ft two-bay covered hopper",
+  "kind": "CoveredHopper",
+  "type": "ACF two-bay 2971 cu ft covered hopper, 70-ton trucks",
+  "lengthM": 12.332,
+  "truckCentresM": 8.001,
+  "frontOverhangM": 2.165,
+  "axles": 4,
+  "wheelDiameterM": 0.8509,
+  "massEmptyKg": 25492,
+  "massLoadedKg": 99790,
+  "maxSpeedKmh": 113,
+  "liveries": [
+    {
+      "id": "csxt",
+      "name": "CSXT",
+      "model": "Vehicles/Freight/CoveredHoppers/ACF2971/LOD0/covered_hopper_acf_2971_csxt.glb"
+    },
+    {
+      "id": "csxt_a",
+      "name": "CSXT (a)",
+      "model": "Vehicles/Freight/CoveredHoppers/ACF2971/LOD0/covered_hopper_acf_2971_csxt_a.glb"
+    },
+    {
+      "id": "csxt_b",
+      "name": "CSXT (b)",
+      "model": "Vehicles/Freight/CoveredHoppers/ACF2971/LOD0/covered_hopper_acf_2971_csxt_b.glb"
+    },
+    {
+      "id": "bn_green_a",
+      "name": "BN green (a)",
+      "model": "Vehicles/Freight/CoveredHoppers/ACF2971/LOD0/covered_hopper_acf_2971_bn_green_a.glb"
+    },
+    {
+      "id": "bn_green_b",
+      "name": "BN green (b)",
+      "model": "Vehicles/Freight/CoveredHoppers/ACF2971/LOD0/covered_hopper_acf_2971_bn_green_b.glb"
+    },
+    {
+      "id": "bn_green_2_a",
+      "name": "BN green (2) (a)",
+      "model": "Vehicles/Freight/CoveredHoppers/ACF2971/LOD0/covered_hopper_acf_2971_bn_green_2_a.glb"
+    },
+    {
+      "id": "bn_green_2_b",
+      "name": "BN green (2) (b)",
+      "model": "Vehicles/Freight/CoveredHoppers/ACF2971/LOD0/covered_hopper_acf_2971_bn_green_2_b.glb"
+    },
+    {
+      "id": "bn_grey_a",
+      "name": "BN grey (a)",
+      "model": "Vehicles/Freight/CoveredHoppers/ACF2971/LOD0/covered_hopper_acf_2971_bn_grey_a.glb"
+    },
+    {
+      "id": "bn_grey_b",
+      "name": "BN grey (b)",
+      "model": "Vehicles/Freight/CoveredHoppers/ACF2971/LOD0/covered_hopper_acf_2971_bn_grey_b.glb"
+    }
+  ]
+}

@@ -6,6 +6,8 @@
 #include "shadows.glsl"
 #include "local_lights.glsl"
 #include "weather.glsl"
+#include "plant_fade.glsl"
+#include "plant_alpha.glsl"
 
 layout(location = 0) in vec3 vRelative;
 layout(location = 1) in vec3 vNormal;
@@ -17,6 +19,7 @@ layout(location = 4) in float vHeight;
 layout(early_fragment_tests) in;
 
 layout(location = 5) in vec3 vBack;
+layout(location = 6) flat in vec2 vFade;
 layout(location = 0) out vec4 outColor;
 
 // MotionVectors' image: the wind's sway, for the temporal pass. w is minus this depth, so it's used only where the plant is
@@ -36,9 +39,11 @@ layout(push_constant) uniform Push
 
 void main()
 {
+    // (As plant_depth.frag, exactly: this pass tests for its depth. The maps are read before anything's discarded: after a discard
+    // the pixels beside one may be gone, and the mip they'd pick with them, which could then differ between the two passes.)
     vec4 map = texture(albedoMap, vUv);
-    float alpha = pc.shape.w > 1.5 ? 1.0 : pc.shape.w > 0.5 ? texture(opacityMap, vUv).r : map.a;
-    if (alpha < 0.3)
+    float alpha = plantAlpha(albedoMap, opacityMap, vUv, map.a, pc.shape.w);
+    if (fadedOut(vFade, gl_FragCoord.xy, pc.globals.y) || alpha < 0.3)
         discard;
 
     if (pc.shape.x > 0.0)

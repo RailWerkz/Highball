@@ -3,8 +3,8 @@
 
     blender -b --factory-startup --python Tools/Blender/open_hopper.py -- <Content folder>
 
-The source is Meshes/RollingStock/OpenHopper/WITX/Source/Hopper-1.obj (unpacked, with its .mtl, Hopp.jpg and
-Reflection.hdr, from Meshes/RollingStock/closed_hopper/Hopper-1-obj.rar, which stays where it is): 330 loose objects and
+The source is Meshes/Vehicles/Legacy/OpenHopper/WITX/Source/Hopper-1.obj (unpacked, with its .mtl, Hopp.jpg and
+Reflection.hdr, from Meshes/Vehicles/Legacy/closed_hopper/Hopper-1-obj.rar, which stays where it is): 330 loose objects and
 565,000 triangles, built in centimetre-ish units at about a twenty-fifth of full size. It's a four-bay open
 hopper lettered WITX 5861 for carbon black ("DO NOT LOAD CARBON BLACK OVER 225 F"). Everything but the running gear is
 baked into one body; the trucks and wheelsets are kept apart so they can swivel. Under OpenHopper/WITX this writes
@@ -30,7 +30,7 @@ What's done to the source:
   - The running gear's built about 6% wide of standard gauge once scaled: the trucks and wheelsets are squeezed across
     (only them) so the treads come over the game's rails, and centred under the body.
   - Its own couplers (head, knuckle, pins and shank at each end: COUPLER_PARTS) are taken off and the shared one from
-    Meshes/Couplers goes on at the standard height, its knuckle's nose where the source's was but where its shank
+    Meshes/Vehicles/Couplers goes on at the standard height, its knuckle's nose where the source's was but where its shank
     wouldn't reach the end sill: the A end's is pulled in 0.16 m (and the B end's 0.01 m) so the shank goes into the
     sill (SHANK_INTO). The draft-gear blocks inside the end sills (Box4338, Box4339) stay: they're hidden.
   - The lettering on the body's sides and ends is mapped afresh (reletter_sides): the source's UVs there are pieced
@@ -63,8 +63,8 @@ from mathutils import Matrix, Vector
 
 args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 CONTENT = os.path.abspath(args[0] if args else "Content")
-OUT = os.path.join(CONTENT, "Meshes", "RollingStock", "OpenHopper", "WITX")
-COUPLERS = os.path.join(CONTENT, "Meshes", "Couplers")
+OUT = os.path.join(CONTENT, "Meshes", "Vehicles", "Legacy", "OpenHopper", "WITX")
+COUPLERS = os.path.join(CONTENT, "Meshes", "Vehicles", "Couplers")
 PARTS = os.path.join(OUT, "Source", "Parts")
 SOURCE = os.path.join(OUT, "Source", "Hopper-1.obj")
 TEXTURES = os.path.join(OUT, "Source")
@@ -491,7 +491,7 @@ rear_face = -(nose_rear - MIDDLE)
 
 
 def shank():
-    """How far the shared coupler's shank reaches back from its pivot (Meshes/Couplers/coupler.glb, pulling face
+    """How far the shared coupler's shank reaches back from its pivot (Meshes/Vehicles/Couplers/coupler.glb, pulling face
     towards -Y)."""
     before = set(bpy.data.objects)
     bpy.ops.import_scene.gltf(filepath=os.path.join(COUPLERS, "coupler.glb"))
@@ -533,7 +533,7 @@ def on_truck(axles, pivot):
     return [[0, round(-(a - pivot), 4), round(TREAD_R, 4)] for a in axles]
 
 
-COUPLER_MODEL = "Couplers/coupler.glb"
+COUPLER_MODEL = "Vehicles/Couplers/coupler.glb"
 assembly = {
     "source": SOURCE_NAME,
     "scale": round(SCALE, 4),
@@ -542,7 +542,7 @@ assembly = {
     "wheelDiameter": round(2 * TREAD_R, 4),
     "lods": ["LOD0"],
     "trianglesWholeCar": {"LOD0": whole},
-    "models": f"The game loads LOD0/{MODEL}.glb (no hand-made LOD1 or LOD2: the game's mesh optimizer makes its own). The parts below are Source/Parts/<model>.glb, put together into it, except the couplers: Meshes/Couplers/coupler.glb, the same on every engine and car",
+    "models": f"The game loads LOD0/{MODEL}.glb (no hand-made LOD1 or LOD2: the game's mesh optimizer makes its own). The parts below are Source/Parts/<model>.glb, put together into it, except the couplers: Meshes/Vehicles/Couplers/coupler.glb, the same on every engine and car",
     "bodies": [f"body_{LIVERY}"],
     "trucks": [
         {"model": "truck_front", "position": [0, -round(TRUCK_Y, 4), 0], "yaw": 0, "wheelsets": on_truck(front_axles, FRONT_PIVOT)},

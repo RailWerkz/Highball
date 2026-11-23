@@ -1,0 +1,59 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (28,940 kg); loaded, the gross rail load its trucks are rated for.
+{
+  "id": "gondola_greenville_52",
+  "name": "52 ft Greenville gondola",
+  "kind": "Gondola",
+  "type": "Greenville 52 ft mill gondola",
+  "lengthM": 17.563,
+  "truckCentresM": 13.411,
+  "frontOverhangM": 2.076,
+  "axles": 4,
+  "wheelDiameterM": 0.8382,
+  "massEmptyKg": 28940,
+  "massLoadedKg": 99790,
+  "maxSpeedKmh": 89,
+  "liveries": [
+    {
+      "id": "dti",
+      "name": "DT&I",
+      "model": "Vehicles/Freight/Gondolas/Greenville52/LOD0/gondola_greenville_52_dti.glb"
+    },
+    {
+      "id": "el",
+      "name": "EL",
+      "model": "Vehicles/Freight/Gondolas/Greenville52/LOD0/gondola_greenville_52_el.glb"
+    },
+    {
+      "id": "erie",
+      "name": "Erie",
+      "model": "Vehicles/Freight/Gondolas/Greenville52/LOD0/gondola_greenville_52_erie.glb"
+    },
+    {
+      "id": "nkp",
+      "name": "NKP",
+      "model": "Vehicles/Freight/Gondolas/Greenville52/LOD0/gondola_greenville_52_nkp.glb"
+    },
+    {
+      "id": "nyc",
+      "name": "NYC",
+      "model": "Vehicles/Freight/Gondolas/Greenville52/LOD0/gondola_greenville_52_nyc.glb"
+    },
+    {
+      "id": "ple",
+      "name": "P&LE",
+      "model": "Vehicles/Freight/Gondolas/Greenville52/LOD0/gondola_greenville_52_ple.glb"
+    },
+    {
+      "id": "ri",
+      "name": "RI",
+      "model": "Vehicles/Freight/Gondolas/Greenville52/LOD0/gondola_greenville_52_ri.glb"
+    },
+    {
+      "id": "wp",
+      "name": "WP",
+      "model": "Vehicles/Freight/Gondolas/Greenville52/LOD0/gondola_greenville_52_wp.glb"
+    }
+  ]
+}

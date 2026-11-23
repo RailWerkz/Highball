@@ -2,8 +2,8 @@
 
     blender -b --factory-startup --python Tools/Blender/wellcar_doublestack.py -- <Content folder>
 
-The source is Meshes/RollingStock/wellcar_doublestack/Green-obj.rar (left where it is), unpacked into
-Meshes/RollingStock/WellCar/TTX/Source/Green-obj (done here with Windows' tar.exe if it isn't there yet): Green.obj and
+The source is Meshes/Vehicles/Legacy/wellcar_doublestack/Green-obj.rar (left where it is), unpacked into
+Meshes/Vehicles/Legacy/WellCar/TTX/Source/Green-obj (done here with Windows' tar.exe if it isn't there yet): Green.obj and
 Green.mtl, the car's lettering map Car.jpg (DDTX 785369, "IL 53' 1-3/4"") and the two containers' maps, Yang.jpg (a 40 ft
 Yang Ming box, 42G1) and Green.jpg (a 40 ft Evergreen high cube, 45G1); Reflection.hdr isn't used. The OBJ is some 1,000
 groups and 1.28 million triangles in inch-like units, already running along Y with the A end towards -Y (the hand brake's on
@@ -41,7 +41,7 @@ What's done to the source:
     width of the side frames; everything else is the body.
   - The running gear's built about 1.61 m between tread centres once scaled: the trucks and wheelsets are squeezed across
     (only them) so the treads come over the game's rails, and centred under the body.
-  - Its own couplers are taken off (COUPLER_PARTS) and the shared one from Meshes/Couplers goes on at the standard height,
+  - Its own couplers are taken off (COUPLER_PARTS) and the shared one from Meshes/Vehicles/Couplers goes on at the standard height,
     its knuckle's nose where the source's was; the air hoses, glad hands and uncoupling levers stay.
   - The containers are lifted out into parts of their own. At the car's scale the source's boxes are 42 ft long and about
     8 ft 2 in square in section, both alike, so each is stretched to its ISO size: 40 ft by 8 ft by 8 ft 6 in for the Yang Ming
@@ -68,10 +68,10 @@ from mathutils import Matrix, Vector
 
 args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 CONTENT = os.path.abspath(args[0] if args else "Content")
-OUT = os.path.join(CONTENT, "Meshes", "RollingStock", "WellCar", "TTX")
-COUPLERS = os.path.join(CONTENT, "Meshes", "Couplers")
+OUT = os.path.join(CONTENT, "Meshes", "Vehicles", "Legacy", "WellCar", "TTX")
+COUPLERS = os.path.join(CONTENT, "Meshes", "Vehicles", "Couplers")
 PARTS = os.path.join(OUT, "Source", "Parts")
-ARCHIVE = os.path.join(CONTENT, "Meshes", "RollingStock", "wellcar_doublestack", "Green-obj.rar")
+ARCHIVE = os.path.join(CONTENT, "Meshes", "Vehicles", "Legacy", "wellcar_doublestack", "Green-obj.rar")
 UNPACKED = os.path.join(OUT, "Source", "Green-obj")
 SOURCE = os.path.join(UNPACKED, "Green.obj")
 LIVERY = "ttx"
@@ -172,13 +172,27 @@ def scaled(image):
 
 
 METALLIC = {TREAD_MATERIAL: (0.9, 0.35)}  # (metallic, roughness)
+# The flat materials painted the body colour: source material -> the texture whose main colour they take (the car's
+# frame is Main, the Evergreen box's frame Green, the Yang Ming box's frame Grays).
+BODY_COLOUR = {"Main": "Car", "Green": "Green", "Grays": "Yang"}
+
+
+def body_colour(image):
+    """The colour most of the image is, as a linear base colour: what a flat material beside it needs to match it (the
+    sources' flat colours are sRGB values put in as linear ones, so they come out far paler than the textured body)."""
+    px = np.round(pixels(image)[..., :3] * 255).astype(np.int32).reshape(-1, 3)
+    most = int(np.argmax(np.bincount((px[:, 0] << 16) | (px[:, 1] << 8) | px[:, 2])))
+    s = np.array([most >> 16, (most >> 8) & 255, most & 255]) / 255.0
+    lin = np.where(s <= 0.04045, s / 12.92, ((s + 0.055) / 1.055) ** 2.4)
+    return (*map(float, lin), 1.0)
 
 
 def game_materials():
-    made = {}
+    made, stems, flat = {}, {}, {}
     for mat in bpy.data.materials:
         if not mat.use_nodes:
             continue
+        source_name = mat.name
         nodes, links = mat.node_tree.nodes, mat.node_tree.links
         bsdf = next((n for n in nodes if n.type == "BSDF_PRINCIPLED"), None)
         if bsdf is None:
@@ -197,11 +211,21 @@ def game_materials():
         if base is not None:
             if base.name not in made:
                 made[base.name] = scaled(base)
+            stems[os.path.splitext(os.path.basename(base.filepath.replace("\\", "/")))[0]] = made[base.name]
             tex = nodes.new("ShaderNodeTexImage")
             tex.image = made[base.name]
             links.new(tex.outputs["Color"], p.inputs["Base Color"])
         mat.name = f"WellCar_{mat.name.replace(' ', '').strip('_')}"
+        flat.setdefault(source_name, mat)  # (the loop meets a renamed material again, its nodes made anew)
         print("material", mat.name, "colour map" if base else "flat", f"metallic {metallic} roughness {roughness:.2f}")
+    for name, stem in BODY_COLOUR.items():
+        if name in flat and stem in stems:
+            mat = flat[name]
+            p = next(n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+            p.inputs["Base Color"].default_value = colour = body_colour(stems[stem])
+            print("material", mat.name, "takes", stem, "body colour", tuple(round(c, 6) for c in colour[:3]))
+        else:
+            print("material", name, "or texture", stem, "not found: its flat colour is left as the source has it")
 
 
 # ---- triangles --------------------------------------------------------------------------------------------------------
@@ -621,7 +645,7 @@ def model_file(cargo=None):
     return f"{MODEL}.glb" if cargo is None else f"{MODEL}_{cargo}.glb"
 
 
-COUPLER_MODEL = "Couplers/coupler.glb"
+COUPLER_MODEL = "Vehicles/Couplers/coupler.glb"
 assembly = {
     "source": SOURCE_NAME,
     "scale": round(SCALE, 5),
@@ -631,7 +655,7 @@ assembly = {
     "wheelDiameter": round(2 * TREAD_R, 4),
     "lods": ["LOD0"],
     "trianglesWholeCar": {"LOD0": whole},
-    "models": f"The game loads LOD0/{model_file()} empty, and LOD0/{model_file('single')} and LOD0/{model_file('double')} loaded (LOD1 and LOD2 beside them, from Tools/Blender/lods.py). The parts below are Source/Parts/<model>.glb, put together into them, except the couplers: Meshes/Couplers/coupler.glb, the same on every engine and car",
+    "models": f"The game loads LOD0/{model_file()} empty, and LOD0/{model_file('single')} and LOD0/{model_file('double')} loaded (LOD1 and LOD2 beside them, from Tools/Blender/lods.py). The parts below are Source/Parts/<model>.glb, put together into them, except the couplers: Meshes/Vehicles/Couplers/coupler.glb, the same on every engine and car",
     "bodies": [f"body_{LIVERY}"],
     "trucks": [
         {"model": "truck_front", "position": [0, -round(TRUCK_Y, 4), 0], "yaw": 0, "wheelsets": on_truck(front_axles, FRONT_PIVOT)},

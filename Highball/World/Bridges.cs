@@ -93,6 +93,10 @@ public sealed class BridgeGroup
     public bool StartJoined { get; set; }
     public bool EndJoined { get; set; }
 
+    /// One carriageway's deck of a bridge carrying several, built on its own (NetworkMeshes.BuildParts): no room added to it.
+    public BridgeGroup? Whole { get; init; }
+    public bool Part => Whole is not null;
+
     /// How far in from each end no pier may stand (metres along it): over a paved slope, which the seat at its top carries the deck
     /// across, or before a wall.
     public float StartClear { get; set; }

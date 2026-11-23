@@ -594,6 +594,9 @@ public sealed class Model : IDisposable
             var pbr = material?.PbrMetallicRoughness;
             float4 factor = pbr?.BaseColorFactor ?? new float4(1f);
             var texture = pbr?.BaseColorTexture is { } color ? Image(color.Index, true) : null;
+            // Older exports (Sketchfab's, among them) give their colour map as KHR_materials_pbrSpecularGlossiness's diffuse instead.
+            if (texture is null && SpecularGlossDiffuse(material) is { } diffuse)
+                texture = Image(diffuse, true);
             var metallicRoughness = pbr?.MetallicRoughnessTexture is { } map ? Image(map.Index, false) : null;
             var normal = material?.NormalTexture is { } bumps ? Image(bumps.Index, false) : null;
             // How much of the sky reaches each place (glTF's occlusion, red).
@@ -606,6 +609,16 @@ public sealed class Model : IDisposable
         }
 
         return surfaces;
+    }
+
+    /// The texture index of a material's KHR_materials_pbrSpecularGlossiness diffuse map, if it has one.
+    private static int? SpecularGlossDiffuse(Material? material)
+    {
+        if (material?.Extensions is not { } extensions || !extensions.TryGetValue("KHR_materials_pbrSpecularGlossiness", out var extension))
+            return null;
+        var json = extension is System.Text.Json.JsonElement element ? element : System.Text.Json.JsonSerializer.SerializeToElement(extension);
+        return json.ValueKind == System.Text.Json.JsonValueKind.Object && json.TryGetProperty("diffuseTexture", out var diffuse)
+            && diffuse.TryGetProperty("index", out var index) ? index.GetInt32() : null;
     }
 
     // Every texture loaded, by its image's bytes and colour space, with how many models use it: a vehicle's body, trucks

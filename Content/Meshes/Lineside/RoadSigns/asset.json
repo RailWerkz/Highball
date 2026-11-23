@@ -1,0 +1,24 @@
+{
+  "id": "road_signs",
+  "kind": "lineside",
+  "name": "Road signs",
+  "about": "Road sign packs (not placed by the game yet).",
+  "models": [
+    {
+      "file": "road_signs_asset_pack__australian_american_1k.glb",
+      "materials": {}
+    },
+    {
+      "file": "road_signs_asset_pack__australian_american_4k.glb",
+      "materials": {}
+    },
+    {
+      "file": "road_signs_pack_revamped_1k.glb",
+      "materials": {}
+    },
+    {
+      "file": "road_signs_pack_revamped_2k.glb",
+      "materials": {}
+    }
+  ]
+}

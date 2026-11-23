@@ -8,7 +8,7 @@ using RailWerkz.Vulkan;
 namespace Highball.Builder;
 
 /// The Material Editor: every part of the track, the roads and what's placed beside them (signals, poles, crossings), the texture
-/// each is drawn with now, and a list of every texture under Content/Textures (or any path) to swap it for. A change shows on the next frame or two;
+/// each is drawn with now, and a list of every material under Content/Materials (or any path) to swap it for. A change shows on the next frame or two;
 /// Save writes it to Content/Materials/Track.json for good (TrackMaterials).
 public sealed class MaterialsWindow : IDisposable
 {
@@ -43,11 +43,12 @@ public sealed class MaterialsWindow : IDisposable
 
     public void Draw()
     {
+        // (The Inspector shows paints too: their thumbnails go up whether the window's open or not.)
+        UploadThumbnails();
         if (!Open)
             return;
 
         _choices ??= TrackMaterials.Find();
-        UploadThumbnails();
 
         ImGui.SetNextWindowPos(new float2(ImGui.GetIO().DisplaySize.X - 500f, 60f), ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowSize(new float2(480f, 720f), ImGuiCond.FirstUseEver);
@@ -72,7 +73,7 @@ public sealed class MaterialsWindow : IDisposable
 
                 if (ImGui.CollapsingHeader("Roads"u8, ImGuiTreeNodeFlags.DefaultOpen))
                 {
-                    TextureRow("roadasphalt", "Asphalt", "Paved roads (Content/Textures/Asphalt)", materials.RoadAsphaltTexture, TrackMaterials.DefaultRoadAsphalt, materials.SetRoadAsphalt,
+                    TextureRow("roadasphalt", "Asphalt", "Paved roads (Content/Materials/Asphalt)", materials.RoadAsphaltTexture, TrackMaterials.DefaultRoadAsphalt, materials.SetRoadAsphalt,
                         id => id.StartsWith("Asphalt/", StringComparison.OrdinalIgnoreCase));
                     TextureRow("roaddirt", "Dirt", "Unpaved roads", materials.RoadDirtTexture, TrackMaterials.DefaultRoadDirt, materials.SetRoadDirt);
                 }
@@ -142,7 +143,7 @@ public sealed class MaterialsWindow : IDisposable
             _status = $"{_choices.Count} textures found";
         }
 
-        ImGui.SetItemTooltip("Content/Textures"u8);
+        ImGui.SetItemTooltip("Content/Materials"u8);
 
         if (TrackTextures.Loading)
             ImGui.TextColored(new float4(0.95f, 0.75f, 0.3f, 1f), "Loading textures..."u8);
@@ -181,7 +182,7 @@ public sealed class MaterialsWindow : IDisposable
             if (allowed is null || allowed(picked))
                 set(picked);
             else
-                _status = $"{label}: pick one under Content/Textures/Asphalt";
+                _status = $"{label}: pick one under Content/Materials/Asphalt";
         }
 
         ImGui.EndGroup();
@@ -192,37 +193,45 @@ public sealed class MaterialsWindow : IDisposable
     private void PaintRow(TrackMaterials materials, int index)
     {
         var (name, fallback) = TrackMaterials.Paints[index];
-        var paint = materials.PaintOf(index);
         var users = TrackMaterials.PaintUsers.TryGetValue(name, out var list) && list.Count > 0 ? "Used by " + string.Join(", ", list) : "Not used by any model";
-        ImGui.PushID(name);
-        Header(paint.Texture, name, users, paint == fallback || Same(paint, fallback), TrackTextures.InUse.TryGetValue(name, out var used) && used.Length == 0);
+        PaintEditor(name, name, users, materials.PaintOf(index), fallback, TrackTextures.InUse.TryGetValue(name, out var used) && used.Length == 0,
+            paint => materials.SetPaint(index, paint));
+    }
+
+    /// A paint's controls: its texture (a thumbnail and the list to pick from), colour, how much of the texture shows, roughness and
+    /// whether it's metal, each change handed to set. Used here and by the Inspector (a lineside model's own paints).
+    public void PaintEditor(string id, string label, string help, TrackMaterials.Paint paint, TrackMaterials.Paint fallback, bool missing, Action<TrackMaterials.Paint> set)
+    {
+        _choices ??= TrackMaterials.Find();
+        ImGui.PushID(id);
+        Header(paint.Texture, label, help, Same(paint, fallback), missing);
         if (Picker(paint.Texture, fallback.Texture) is { } picked)
-            materials.SetPaint(index, paint with { Texture = picked });
+            set(paint with { Texture = picked });
 
         // The colour's linear in the file and the shader; the picker shows it as it looks.
         var shown = new float3(ToSrgb(paint.Color[0]), ToSrgb(paint.Color[1]), ToSrgb(paint.Color[2]));
         ImGui.SetNextItemWidth(-90f);
         if (ImGui.ColorEdit3("Colour"u8, ref shown, ImGuiColorEditFlags.Float))
-            materials.SetPaint(index, paint with { Color = [ToLinear(shown.X), ToLinear(shown.Y), ToLinear(shown.Z)] });
+            set(paint with { Color = [ToLinear(shown.X), ToLinear(shown.Y), ToLinear(shown.Z)] });
 
         var strength = paint.Strength;
         ImGui.SetNextItemWidth(-90f);
         if (ImGui.SliderFloat("Texture"u8, ref strength, 0f, 1f, "%.2f"u8, ImGuiSliderFlags.None))
-            materials.SetPaint(index, paint with { Strength = strength });
+            set(paint with { Strength = strength });
         ImGui.SetItemTooltip("0 flat paint, 1 full texture"u8);
 
         var roughness = paint.Roughness;
         ImGui.SetNextItemWidth(-160f);
         if (ImGui.SliderFloat("Roughness"u8, ref roughness, 0f, 1f, "%.2f"u8, ImGuiSliderFlags.None))
-            materials.SetPaint(index, paint with { Roughness = roughness });
+            set(paint with { Roughness = roughness });
         ImGui.SetItemTooltip("Before the roughness map (60%)"u8);
         ImGui.SameLine();
         var metal = paint.Metal;
         if (ImGui.Checkbox("Metal"u8, ref metal))
-            materials.SetPaint(index, paint with { Metal = metal });
+            set(paint with { Metal = metal });
         ImGui.SameLine();
         if (ImGui.SmallButton("Texture's colour"u8))
-            materials.SetPaint(index, paint with { Color = [0.5f, 0.5f, 0.5f], Strength = 1f });
+            set(paint with { Color = [0.5f, 0.5f, 0.5f], Strength = 1f });
 
         ImGui.EndGroup();
         ImGui.PopID();
@@ -353,7 +362,7 @@ public sealed class MaterialsWindow : IDisposable
             }
 
             ImGui.SeparatorText("Anywhere else"u8);
-            ImGui.TextDisabled("Folder, .zip or Content/Textures path"u8);
+            ImGui.TextDisabled("Folder, .zip or Content/Materials path"u8);
             ImGui.SetNextItemWidth(-60f);
             var entered = ImGui.InputTextWithHint("##path"u8, "D:/Textures/MyRock"u8, _path, ImGuiInputTextFlags.EnterReturnsTrue, null, IntPtr.Zero);
             ImGui.SameLine();

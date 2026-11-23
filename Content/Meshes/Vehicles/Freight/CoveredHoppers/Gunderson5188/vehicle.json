@@ -1,0 +1,24 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (28,032 kg); loaded, the gross rail load its trucks are rated for.
+{
+  "id": "covered_hopper_5188",
+  "name": "5188 cu ft covered hopper",
+  "kind": "CoveredHopper",
+  "type": "Gunderson/Greenbrier three-bay 5188 cu ft covered hopper",
+  "lengthM": 17.827,
+  "truckCentresM": 13.856,
+  "frontOverhangM": 1.986,
+  "axles": 4,
+  "wheelDiameterM": 0.8934,
+  "massEmptyKg": 28032,
+  "massLoadedKg": 119290,
+  "maxSpeedKmh": 113,
+  "liveries": [
+    {
+      "id": "bnsf",
+      "name": "BNSF",
+      "model": "Vehicles/Freight/CoveredHoppers/Gunderson5188/LOD0/covered_hopper_5188_bnsf.glb"
+    }
+  ]
+}

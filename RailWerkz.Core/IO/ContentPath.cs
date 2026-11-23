@@ -45,7 +45,14 @@ public static class ContentPath
     public static string Font(string name) => Path.Combine(Root, "Fonts", name);
     public static string Model(string name) => Path.Combine(Root, "Meshes", name);
     public static string Shader(string name) => Path.Combine(Root, "Shaders", name);
-    public static string Texture(string name) => Path.Combine(Root, "Textures", name);
+    /// A PBR surface material's folder, by its id ("Metal/Metal021"): Content/Materials/<Category>/<Name>/.
+    public static string Material(string id) => Path.Combine(Root, "Materials", id);
+    /// Terrain layers, ground clutter and the terrain's modifiers: Content/Terrain/.
+    public static string Terrain(string name) => Path.Combine(Root, "Terrain", name);
+    /// Skyboxes and the sun and moon: Content/Sky/.
+    public static string Sky(string name) => Path.Combine(Root, "Sky", name);
+    /// Saved settings for content (which materials the track's drawn with): Content/Presets/.
+    public static string Preset(string name) => Path.Combine(Root, "Presets", name);
     public static string Route(string name) => Path.Combine(Root, "Routes", name);
 
     /// Where settings and saves live: %APPDATA%/AppName (or the platform's equivalent).

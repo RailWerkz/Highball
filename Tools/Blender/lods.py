@@ -2,7 +2,7 @@
 
     blender -b --factory-startup --python Tools/Blender/lods.py -- <Content folder> [model.glb ...]
 
-With no models named, every LOD0/*.glb under Meshes/Locomotives and Meshes/RollingStock. Each gets LOD1 (a quarter of
+With no models named, every LOD0/*.glb under Meshes/Vehicles/Locomotives and Meshes/Vehicles/Legacy. Each gets LOD1 (a quarter of
 its triangles) and LOD2 (a fifteenth) in the LOD1 and LOD2 folders beside its LOD0 folder, with the same name, nodes and
 materials, so VehicleModel splits them into trucks and body just as it does the full model. The game uses them when they're
 there (RenderModel.ForDistance) and the full model when they're not.
@@ -55,7 +55,7 @@ def main():
     content = args[0]
     models = [os.path.join(content, "Meshes", m) if not os.path.isabs(m) else m for m in args[1:]]
     if not models:
-        for kind in ("Locomotives", "RollingStock"):
+        for kind in ("Vehicles/Locomotives", "Vehicles/Freight", "Vehicles/Legacy"):
             models += glob.glob(os.path.join(content, "Meshes", kind, "*", "LOD0", "*.glb"))
             models += glob.glob(os.path.join(content, "Meshes", kind, "*", "*", "LOD0", "*.glb"))
     for model in sorted(set(models)):

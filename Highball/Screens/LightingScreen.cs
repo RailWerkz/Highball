@@ -15,11 +15,15 @@ namespace Highball.Screens;
 public sealed class LightingScreen : Screen, IWorldScreen
 {
     private const float GroundY = DisplayTrack.GroundY;
+    /// The two locomotives, then every car in the catalog in its first livery, and that livery carrying each of its loads
+    /// (id "car:load", as --lighting takes it).
     private static readonly (string Id, string Label, string Model)[] Engines =
     [
-        ("ac4400cw", "AC4400CW (CSX), as the game has it", "Locomotives/AC4400CW/CSX/LOD0/ac4400cw_csx.glb"),
-        ("ac4400cw_bnsf", "AC4400CW (BNSF)", "Locomotives/AC4400CW/BNSF/LOD0/ac4400cw_bnsf.glb"),
-        ("autorack_csx", "89 ft autorack (CSX)", "RollingStock/Autorack/CSX/LOD0/autorack_csx.glb"),
+        ("ac4400cw", "AC4400CW (CSX), as the game has it", "Vehicles/Locomotives/AC4400CW/CSX/LOD0/ac4400cw_csx.glb"),
+        ("ac4400cw_bnsf", "AC4400CW (BNSF)", "Vehicles/Locomotives/AC4400CW/BNSF/LOD0/ac4400cw_bnsf.glb"),
+        .. Trains.VehicleCatalog.All.Where(v => v.Kind != Trains.VehicleKind.Locomotive && v.Liveries.Count > 0)
+            .SelectMany(v => v.Liveries[0].Loads.Select(l => ($"{v.Id}:{l.Key}", $"   carrying {l.Key}", l.Value))
+                .Prepend((v.Id, $"{v.Name} ({v.Liveries[0].Name})", v.Liveries[0].Model))),
     ];
 
     private readonly WorldDisplay _world = new();

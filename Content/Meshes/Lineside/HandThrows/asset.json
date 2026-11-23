@@ -1,0 +1,17 @@
+{
+  "id": "hand_throw",
+  "kind": "lineside",
+  "name": "Hand throw",
+  "about": "A switch stand worked by hand, in place of a power machine.",
+  "models": [
+    {
+      "file": "hand_throw.glb",
+      "materials": {
+        "Black": "Black",
+        "Green": "Green",
+        "Red": "Red",
+        "Yellow": "Yellow"
+      }
+    }
+  ]
+}

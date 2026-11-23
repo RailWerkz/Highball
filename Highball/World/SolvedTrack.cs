@@ -62,23 +62,7 @@ public sealed partial class NetworkLines
         var hash = new StableHash();
         hash.Add(spacing);
         foreach (var way in network.OrderBy(w => w.Id))
-        {
-            hash.Add(way.Id);
-            hash.Add(way.Rail ? 1L : 0L);
-            hash.Add(way.Class);
-            foreach (var node in way.Nodes)
-                hash.Add(node);
-            foreach (var lat in way.Lat)
-                hash.Add(lat);
-            foreach (var lon in way.Lon)
-                hash.Add(lon);
-            // (Pinned heights only change the profiles, worked out every time: track saved before a pin's still the same track.)
-            foreach (var (key, value) in way.Tags.Where(t => t.Key != RouteNetwork.HeightsTag).OrderBy(t => t.Key, StringComparer.Ordinal))
-            {
-                hash.Add(key);
-                hash.Add(value);
-            }
-        }
+            AddWay(ref hash, way);
 
         foreach (var (node, size) in chosen.OrderBy(c => c.Key))
         {
@@ -99,6 +83,143 @@ public sealed partial class NetworkLines
         }
 
         return hash.Value;
+    }
+
+    private static void AddWay(ref StableHash hash, NetworkWay way)
+    {
+        hash.Add(way.Id);
+        hash.Add(way.Rail ? 1L : 0L);
+        hash.Add(way.Class);
+        foreach (var node in way.Nodes)
+            hash.Add(node);
+        foreach (var lat in way.Lat)
+            hash.Add(lat);
+        foreach (var lon in way.Lon)
+            hash.Add(lon);
+        // (Pinned heights only change the profiles, worked out every time: track saved before a pin's still the same track.)
+        foreach (var (key, value) in way.Tags.Where(t => t.Key != RouteNetwork.HeightsTag).OrderBy(t => t.Key, StringComparer.Ordinal))
+        {
+            hash.Add(key);
+            hash.Add(value);
+        }
+    }
+
+    /// What the saved track's stamp was made of, part by part (Track.stamp.bin), so a route that solves its track again on
+    /// opening can say what had changed since it was saved.
+    private static string StampPartsPath(RouteInfo route) => Path.Combine(route.Folder, "Track.stamp.bin");
+
+    private static (Dictionary<long, ulong> Ways, ulong Sizes, ulong Curves, ulong Built, double Spacing) StampParts(IEnumerable<NetworkWay> network,
+        HashSet<TileId> built, IReadOnlyDictionary<long, int> chosen, IReadOnlyDictionary<long, float> curves, double spacing)
+    {
+        var ways = new Dictionary<long, ulong>();
+        foreach (var way in network)
+        {
+            var hash = new StableHash();
+            AddWay(ref hash, way);
+            ways[way.Id] = hash.Value;
+        }
+
+        var (sizes, bends, tiles) = (new StableHash(), new StableHash(), new StableHash());
+        foreach (var (node, size) in chosen.OrderBy(c => c.Key))
+        {
+            sizes.Add(node);
+            sizes.Add(size);
+        }
+
+        foreach (var (node, reach) in curves.OrderBy(c => c.Key))
+        {
+            bends.Add(node);
+            bends.Add((double)reach);
+        }
+
+        foreach (var id in built.OrderBy(t => t.I).ThenBy(t => t.J))
+        {
+            tiles.Add(id.I);
+            tiles.Add(id.J);
+        }
+
+        return (ways, sizes.Value, bends.Value, tiles.Value, spacing);
+    }
+
+    private static void SaveStampParts(RouteInfo route, IEnumerable<NetworkWay> network, HashSet<TileId> built, IReadOnlyDictionary<long, int> chosen,
+        IReadOnlyDictionary<long, float> curves, double spacing)
+    {
+        try
+        {
+            var parts = StampParts(network, built, chosen, curves, spacing);
+            using var w = new BinaryWriter(File.Create(StampPartsPath(route)));
+            w.Write(SolvedVersion);
+            w.Write(parts.Spacing);
+            w.Write(parts.Sizes);
+            w.Write(parts.Curves);
+            w.Write(parts.Built);
+            w.Write(parts.Ways.Count);
+            foreach (var (id, hash) in parts.Ways)
+            {
+                w.Write(id);
+                w.Write(hash);
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Log.Warn($"Track: couldn't save what the track was solved from: {e.Message}");
+        }
+    }
+
+    /// Logs why the saved track wasn't used: what's changed since it was saved.
+    private static void ExplainUnsolved(RouteInfo route, IEnumerable<NetworkWay> network, HashSet<TileId> built, IReadOnlyDictionary<long, int> chosen,
+        IReadOnlyDictionary<long, float> curves, double spacing)
+    {
+        if (!File.Exists(SolvedPath(route)))
+        {
+            Log.Info("Track: no saved track, solving it");
+            return;
+        }
+
+        if (!File.Exists(StampPartsPath(route)))
+        {
+            Log.Info("Track: the saved track was solved from something else (no record of what), solving it again");
+            return;
+        }
+
+        try
+        {
+            using var r = new BinaryReader(File.OpenRead(StampPartsPath(route)));
+            if (r.ReadInt32() != SolvedVersion)
+            {
+                Log.Info($"Track: the saved track is an older layout (not version {SolvedVersion}), solving it again");
+                return;
+            }
+
+            var (was, sizes, bends, tiles) = (r.ReadDouble(), r.ReadUInt64(), r.ReadUInt64(), r.ReadUInt64());
+            var before = new Dictionary<long, ulong>();
+            for (var n = r.ReadInt32(); n > 0; n--)
+                before[r.ReadInt64()] = r.ReadUInt64();
+
+            var now = StampParts(network, built, chosen, curves, spacing);
+            var why = new List<string>();
+            if (was != now.Spacing)
+                why.Add($"ground spacing {was} m to {now.Spacing} m");
+            if (sizes != now.Sizes)
+                why.Add($"switch sizes changed ({chosen.Count} set)");
+            if (bends != now.Curves)
+                why.Add($"switch curves changed ({curves.Count} set)");
+            if (tiles != now.Built)
+                why.Add($"built tiles changed ({built.Count} now)");
+            var changed = now.Ways.Where(w => before.TryGetValue(w.Key, out var h) && h != w.Value).Select(w => w.Key).ToList();
+            var added = now.Ways.Keys.Where(id => !before.ContainsKey(id)).ToList();
+            var gone = before.Keys.Where(id => !now.Ways.ContainsKey(id)).ToList();
+            static string Some(List<long> ids) => ids.Count == 0 ? "" : $" (e.g. {string.Join(", ", ids.Take(5))})";
+            if (changed.Count + added.Count + gone.Count > 0)
+                why.Add($"ways: {changed.Count} changed{Some(changed)}, {added.Count} new{Some(added)}, {gone.Count} gone{Some(gone)}");
+            Log.Info(why.Count > 0
+                ? $"Track: solving again, since it was saved: {string.Join("; ", why)}"
+                : "Track: solving again, though nothing it was solved from has changed (the saved file's unreadable or stamped otherwise)");
+        }
+        catch (Exception e) when (e is IOException or EndOfStreamException)
+        {
+            Log.Info($"Track: solving again (couldn't read what it was solved from: {e.Message})");
+        }
     }
 
     private void SaveSolved(RouteInfo route, ulong stamp)

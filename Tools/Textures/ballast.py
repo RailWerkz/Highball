@@ -1,9 +1,9 @@
-"""Makes Highball's own track ballast: crushed rock as a seamlessly tiling PBR texture, in ambientCG's layout.
+"""Makes Highball's own track ballast: crushed rock as a seamlessly tiling PBR texture, as a material.
 
     python Tools/Textures/ballast.py [Content folder] [--seed N] [--preview file.png]
 
-Writes Textures/Terrain/Rocks/RailWerkzBallast_1K-JPG.zip and _2K-JPG.zip under the Content folder, each with
-_Color, _NormalGL, _Roughness, _AmbientOcclusion and _Displacement maps. The game's ballast repeats every 1.5 m
+Writes Materials/Ground/RailWerkzBallast/ under the Content folder: a material.json, and 1K/ and 2K/ each with albedo,
+normal, roughness, ao and height maps. The game's ballast repeats every 1.5 m
 (line.frag), so one tile is 1.5 m across: at 2K, 0.73 mm a pixel.
 
 The stones are Voronoi cells on a torus (so the edges meet), which come out as the angular, flat-faced pieces crushed rock is:
@@ -14,9 +14,9 @@ breaks up the tiling as well, so the repeat doesn't show.
 Needs numpy and Pillow.
 """
 import io
+import json
 import os
 import sys
-import zipfile
 
 import numpy as np
 from PIL import Image
@@ -186,26 +186,26 @@ def main():
     normal /= np.linalg.norm(normal, axis=-1, keepdims=True)
 
     maps = {
-        "Color": to_srgb(np.clip(color, 0.0, 1.0)),
-        "NormalGL": normal * 0.5 + 0.5,
-        "Roughness": roughness,
-        "AmbientOcclusion": occlusion,
-        "Displacement": height,
+        "albedo": to_srgb(np.clip(color, 0.0, 1.0)),
+        "normal": normal * 0.5 + 0.5,
+        "roughness": roughness,
+        "ao": occlusion,
+        "height": height,
     }
-    out = os.path.join(CONTENT, "Textures", "Terrain", "Rocks")
-    os.makedirs(out, exist_ok=True)
+    out = os.path.join(CONTENT, "Materials", "Ground", "RailWerkzBallast")
     for label, size in (("2K", 2048), ("1K", 1024)):
-        name = f"RailWerkzBallast_{label}-JPG"
-        path = os.path.join(out, name + ".zip")
-        with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
-            for key, data in maps.items():
-                image = Image.fromarray((np.clip(data, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
-                if size != N:
-                    image = image.resize((size, size), Image.LANCZOS)
-                buffer = io.BytesIO()
-                image.save(buffer, "JPEG", quality=94)
-                z.writestr(f"{name}_{key}.jpg", buffer.getvalue())
-        print("wrote", path)
+        folder = os.path.join(out, label)
+        os.makedirs(folder, exist_ok=True)
+        for key, data in maps.items():
+            image = Image.fromarray((np.clip(data, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
+            if size != N:
+                image = image.resize((size, size), Image.LANCZOS)
+            image.save(os.path.join(folder, key + ".jpg"), "JPEG", quality=94)
+        print("wrote", folder)
+    with open(os.path.join(out, "material.json"), "w", encoding="utf-8", newline="\n") as f:
+        json.dump({"name": "RailWerkzBallast", "category": "Ground", "sizes": ["1K", "2K"], "source": "Tools/Textures/ballast.py",
+                   "license": None}, f, indent=2)
+        f.write("\n")
 
     if PREVIEW:
         # Lit by a low sun from the upper left, three tiles by two, to judge the stones and the seams.

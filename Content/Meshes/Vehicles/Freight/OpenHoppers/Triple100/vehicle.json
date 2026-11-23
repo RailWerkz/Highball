@@ -1,0 +1,74 @@
+// Built by Tools/RollingStock/build_game.py from the Trainz assets in ContentSource: rerun it rather than edit by hand.
+// Sizes are measured off the model (knuckle nose to knuckle nose; front overhang to the front truck centre).
+// Masses: the Trainz asset's empty mass (24,350 kg); loaded, the gross rail load its trucks are rated for.
+{
+  "id": "open_hopper_100_3bay",
+  "name": "100-ton three-bay open hopper",
+  "kind": "OpenHopper",
+  "type": "100-ton three-bay open coal hopper",
+  "lengthM": 14.976,
+  "truckCentresM": 10.973,
+  "frontOverhangM": 2.002,
+  "axles": 4,
+  "wheelDiameterM": 0.889,
+  "massEmptyKg": 24350,
+  "massLoadedKg": 119290,
+  "maxSpeedKmh": 113,
+  "liveries": [
+    {
+      "id": "cr",
+      "name": "CR",
+      "model": "Vehicles/Freight/OpenHoppers/Triple100/LOD0/open_hopper_100_3bay_cr.glb"
+    },
+    {
+      "id": "cr_a",
+      "name": "CR (a)",
+      "model": "Vehicles/Freight/OpenHoppers/Triple100/LOD0/open_hopper_100_3bay_cr_a.glb"
+    },
+    {
+      "id": "cr_b",
+      "name": "CR (b)",
+      "model": "Vehicles/Freight/OpenHoppers/Triple100/LOD0/open_hopper_100_3bay_cr_b.glb"
+    },
+    {
+      "id": "ns",
+      "name": "NS",
+      "model": "Vehicles/Freight/OpenHoppers/Triple100/LOD0/open_hopper_100_3bay_ns.glb"
+    },
+    {
+      "id": "ns_a",
+      "name": "NS (a)",
+      "model": "Vehicles/Freight/OpenHoppers/Triple100/LOD0/open_hopper_100_3bay_ns_a.glb"
+    },
+    {
+      "id": "ns_b",
+      "name": "NS (b)",
+      "model": "Vehicles/Freight/OpenHoppers/Triple100/LOD0/open_hopper_100_3bay_ns_b.glb"
+    },
+    {
+      "id": "pc",
+      "name": "PC",
+      "model": "Vehicles/Freight/OpenHoppers/Triple100/LOD0/open_hopper_100_3bay_pc.glb"
+    },
+    {
+      "id": "pc_a",
+      "name": "PC (a)",
+      "model": "Vehicles/Freight/OpenHoppers/Triple100/LOD0/open_hopper_100_3bay_pc_a.glb"
+    },
+    {
+      "id": "prr",
+      "name": "PRR",
+      "model": "Vehicles/Freight/OpenHoppers/Triple100/LOD0/open_hopper_100_3bay_prr.glb"
+    },
+    {
+      "id": "prr_a",
+      "name": "PRR (a)",
+      "model": "Vehicles/Freight/OpenHoppers/Triple100/LOD0/open_hopper_100_3bay_prr_a.glb"
+    },
+    {
+      "id": "prr_b",
+      "name": "PRR (b)",
+      "model": "Vehicles/Freight/OpenHoppers/Triple100/LOD0/open_hopper_100_3bay_prr_b.glb"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "loose_ties",
+  "kind": "lineside",
+  "name": "Loose ties",
+  "about": "Ties and tie sections laid beside the track.",
+  "models": [
+    {
+      "file": "tie_section.glb",
+      "materials": {
+        "Black": "Black",
+        "Wood": "Wood"
+      }
+    },
+    {
+      "file": "tie_section_ballast.glb",
+      "materials": {
+        "Ballast": "Ballast",
+        "Black": "Black",
+        "Wood": "Wood"
+      }
+    },
+    {
+      "file": "tie_single.glb",
+      "materials": {
+        "Wood": "Wood"
+      }
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 
 Each is a ContainerSpec (its size and where its corner castings are) in a ContainerPaint (the owner's colours and marks). A
 container's model has its origin on the middle of its underside, between its bottom corner castings, its length along Y and
-its doors at +Y; the build writes them once to Meshes/RollingStock/Containers/container_<size>_<owner>.glb, and a car's
+its doors at +Y; the build writes them once to Meshes/Vehicles/Legacy/Containers/container_<size>_<owner>.glb, and a car's
 assembly.json places them for each load.
 
 Steel boxes: corrugated sides and front, a roof with shallow ribs, corner posts and castings, and the doors at the back with

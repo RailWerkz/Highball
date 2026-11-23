@@ -43,6 +43,9 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
     private VehicleDef? _vehicle;
     private readonly Dictionary<string, string> _liveryOf = [];
 
+    /// Whether each vehicle added goes in either way round, at random (the RANDOM DIRECTION tick).
+    private bool _randomTurn;
+
     /// Whether the preview shows the consist's row (true) or the catalog's vehicle.
     private bool _previewRow;
 
@@ -176,7 +179,10 @@ public sealed partial class ConsistEditorScreen : Screen, IWorldScreen
     private void Insert(VehicleDef def, int? index = null)
     {
         var at = Math.Clamp(index ?? (_selected >= 0 ? _selected + 1 : _consist.Cars.Count), 0, _consist.Cars.Count);
-        Change(cars => cars.Insert(at, new ConsistCar(def.Id, LiveryFor(def))));
+        var car = LiveryFor(def) == ConsistCar.RandomPaint ? ConsistCar.Random(def) : new ConsistCar(def.Id, LiveryFor(def));
+        if (_randomTurn)
+            car = car with { Reversed = System.Random.Shared.Next(2) == 1 };
+        Change(cars => cars.Insert(at, car));
         Select(at);
         _reveal = true;
         Sfx.Select();

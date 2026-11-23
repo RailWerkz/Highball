@@ -99,6 +99,11 @@ public sealed partial class EditorView : IDisposable, IToolHost
     private PenTool.Measure? _penMeasure => _penTrack.Measure;
     private Task<NetworkChange>? _rebuild;
     private bool _rebuildAgain;
+    /// Saved since the route was last compiled (CompiledRoute): compiled once the track's caught up with every edit.
+    private bool _compileDue;
+    private int _saves;
+    private Task? _compiling;
+    private bool _rebuildFailed;
 
     // The menu bar along the top and the controls footer along the bottom: the pointer over either isn't the world's.
     private float _headerBottom;
@@ -377,6 +382,17 @@ public sealed partial class EditorView : IDisposable, IToolHost
                 PickSize(chosen, pick.Size < 0 ? null : pick.Size);
         }
 
+        if (DevTools.PickObject is { } kindName && Enum.TryParse<PlacedKind>(kindName, true, out var pickKind))
+        {
+            DevTools.PickObject = null;
+            if (_terrain.Source.Objects.FirstOrDefault(o => o.Kind == pickKind) is { } first)
+            {
+                GoToObject(first);
+                // Close over it, to see it and its gizmo.
+                _camera.Y = _terrain.Source.HeightAt(_camera.X, _camera.Z) + 40.0;
+            }
+        }
+
         _routeWorld.ThrowScripted();
     }
 
@@ -631,6 +647,8 @@ public sealed partial class EditorView : IDisposable, IToolHost
     {
         _circuitEditor?.Save();
         _session.SaveStock();
+        _compileDue = true;
+        Interlocked.Increment(ref _saves);
         if (source.Unsaved)
             source.SaveEdits();
         if (!source.Network.Unsaved)
@@ -991,10 +1009,21 @@ public sealed partial class EditorView : IDisposable, IToolHost
 
     private void PollRebuild()
     {
+        // The route compiled as it's saved, once no rebuild's under way and nothing's been edited since the save: the lines are
+        // then what's on disk, worked out, so the next open reads them rather than working them out again.
+        // (Not after a rebuild that failed: the lines are then still the ones from before the edit, and the saved network isn't them.)
+        if (_rebuild is null && !_rebuildAgain && !_rebuildFailed && _compileDue && _compiling is not { IsCompleted: false } && _terrain?.Source is { } saved && !saved.Unsaved && !saved.Network.Unsaved)
+        {
+            _compileDue = false;
+            var at = Volatile.Read(ref _saves);
+            _compiling = saved.Compile(() => Volatile.Read(ref _saves) == at);
+        }
+
         if (_rebuild is not { IsCompleted: true } done)
             return;
 
         _rebuild = null;
+        _rebuildFailed = !done.IsCompletedSuccessfully;
         if (done.IsCompletedSuccessfully)
         {
             var clock = System.Diagnostics.Stopwatch.StartNew();
@@ -1266,9 +1295,6 @@ public sealed partial class EditorView : IDisposable, IToolHost
                 ImGui.SliderFloat("Opacity", ref _backgroundOpacity, 0.1f, 1f, "%.1f");
             ImGui.EndMenu();
         }
-        ImGui.Separator();
-        if (ImGui.MenuItem("Audio Editor", "", _audioEditor.Open, true))
-            _audioEditor.Open = !_audioEditor.Open;
     }
 
     /// Solve Track Again was picked: asked about before it's done, since it throws the fitted track away.
@@ -1491,21 +1517,19 @@ public sealed partial class EditorView : IDisposable, IToolHost
     /// Saves a switch's size (SwitchesTool.PickSize).
     private void PickSize(long node, int? size) => _switchTool.PickSize(node, size);
 
-    /// The editor's floating windows: the air graphs, the audit, the audio editor, and the Solve Again question.
+    /// The editor's floating windows: the drive window, the consist builder, the air graphs, the audit, the audio editor, and
+    /// the Solve Again question.
     public void Windows()
     {
         _trains.Windows();
+        _trains.DriveWindow();
+        _trains.ConsistBuilderWindow();
         AuditWindow();
         _audioEditor.Window(_trains);
         _audioEditor.Gizmos(_trains, Project, _camera, _screen.Y, Blocked);
         ConfirmSolve();
         ConfirmClassify();
     }
-
-    /// The drive strip along the bottom, while a train's driven.
-    public bool HasDock => _trains.HasDock;
-
-    public void Dock() => _trains.DriveStrip();
 
     /// The editor's lines in Frame Statistics.
     public void DebugStats()

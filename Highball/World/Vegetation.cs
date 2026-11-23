@@ -25,9 +25,10 @@ public struct PlantInstance(float4 placeAndScale, float4 tintAndRandom)
 /// to, bushes, boulders and trees further out, in cells built on background threads. All of it is the same wherever it's seen from,
 /// since each cell is seeded by its place. It keeps off track and roads.
 ///
-/// The plants are two models: Grass.glb's clump of blades and EarthTrees.glb's fifteen trees and bushes, each with its levels of
-/// detail (full and reduced trunk and leaves, then a few crossed cards of the whole tree for the far distance), all textured from
-/// Terrain/GroundClutter. Every level of a plant draws the same instances; plant.vert collapses each outside its level's distances.
+/// The plants: grass and flowers cut out of grass_1k.glb's sample layout (GrassTypes), the forest pack's twelve trees (ForestFile), with
+/// full and reduced bark, and its seven bushes and saplings in the shrub slots; past their meshes, each tree is an octahedral
+/// impostor baked from its full model at load (ImpostorBaker). Every level of a plant draws the same instances; plant.vert
+/// collapses each outside its level's distances, dithering one into the next across the change (plant_fade.glsl).
 public sealed unsafe class Vegetation : IDisposable
 {
     private const float NearCell = 32f;
@@ -36,43 +37,78 @@ public sealed unsafe class Vegetation : IDisposable
     private const float FarReach = 1500f;
     private const int UploadsPerFrame = 6;
 
-    private const string GrassFile = "Vegetation/Grass.glb";
-    private const string TreeFile = "Vegetation/EarthTrees.glb";
-    private const string Clutter = "Terrain/GroundClutter/";
+    /// The grass and flowers: Georgeous's "grass" (Sketchfab, under Sketchfab's Standard licence, so kept out of git), whose GrassBase
+    /// node is a sample layout of eight kinds of grass and flower, some placed several times. GrassPieces cuts it apart: each of
+    /// GrassTypes is the group of its pieces whose middle is nearest its X, Z in the layout (glTF metres).
+    private const string GrassFile = "Vegetation/grass_1k.glb";
+    private const string GrassNode = "Grass_Reeds_LOD0_GrassBase_0";
+
+    /// One kind of grass or flower: where it stands in the layout, how much of its own size it's drawn at, and how many of it to try
+    /// for in a near cell (32 m square). Flowers keep their own colours; the grasses take the land cover's (GrassTint).
+    private readonly record struct GrassType(string Name, float X, float Z, float Scale, int Attempts, bool Flower);
+
+    /// Tussocks, tall grass, wispy grass and short cover (the layout's A, F, G and E), then three flowers, sparse (B, D and H).
+    /// Not its C (fine and pale) or its reeds.
+    private static readonly GrassType[] GrassTypes =
+    [
+        new("Tussocks", -4.53f, 0.40f, 0.65f, 520, false), new("Tall grass", -4.34f, -4.13f, 0.55f, 170, false),
+        new("Wispy grass", -4.10f, 3.99f, 0.65f, 260, false), new("Short cover", 3.79f, -0.02f, 0.7f, 320, false),
+        new("Orange and purple flowers", -0.52f, 0.39f, 0.6f, 22, true), new("Flowering grass", 5.12f, 5.35f, 0.6f, 55, true),
+        new("Yellow flowers", 0.26f, -4.36f, 0.6f, 22, true),
+    ];
+
+    /// The slot GrassTypes[i] is drawn in: the first in Grass, the rest after the trees.
+    private static int GrassSlot(int i) => i == 0 ? Grass : FirstMoreGrass + i - 1;
+    /// The trees: Dari's Various Forest Assets Pack (Sketchfab, CC BY 4.0), each tree a bark mesh and a leaf-card mesh, with no
+    /// levels of detail of its own. ForestReducedFile is the same with its bark cut to a fifth (Tools/Blender/tree_lods.py), for the
+    /// middle distance; without it the full trees are drawn there too.
+    private const string ForestFile = "Vegetation/various_forest_assets_pack_1k.glb";
+    private const string ForestReducedFile = "Vegetation/various_forest_assets_pack_1k_reduced.glb";
+
+    /// The tree slots' trees in ForestFile, by their nodes (bark, leaves): the three commonest first, the three that also stray out of
+    /// the woods last (TreeAttempts, Build's small). Not its plum (purple leaves), its orange birches, its dead trees and logs, or
+    /// its boulders; its shrubs and saplings are the bushes (ForestShrubs).
+    private static readonly (string Name, string Bark, string Leaves)[] ForestTrees =
+    [
+        ("Oak", "Object_70", "Object_71"), ("Maple", "Object_67", "Object_68"), ("Pine", "Object_52", "Object_53"),
+        ("Ash", "Object_7", "Object_8"), ("Birch", "Object_55", "Object_56"), ("Tall birch", "Object_58", "Object_59"),
+        ("Common birch", "Object_73", "Object_74"), ("Fir", "Object_46", "Object_47"), ("Deciduous", "Object_86", "Object_87"),
+        ("Apple", "Object_4", "Object_5"), ("Cherry", "Object_10", "Object_11"), ("Noble fir", "Object_49", "Object_50"),
+    ];
 
     // What a cell's instances are of: each slot is one plant or stone, every level of detail of it drawing the same instances.
     private const int Grass = 0;
     private const int Pebble = 1;
     private const int Boulder = 2;
 
-    /// EarthTrees' last three (TreeType13 to 15): knee-high bushes.
+    /// The shrub slots (ForestShrubs).
     private const int FirstShrub = 3;
-    private const int ShrubCount = 3;
+    private const int ShrubCount = 7;
 
-    /// EarthTrees' TreeType1 to 12: three forest giants of 30 m, six of 10 to 18 m and three of about 4 m.
+    /// The tree slots (ForestTrees): 7 to 20 m.
     private const int FirstTree = FirstShrub + ShrubCount;
 
-    /// Which of EarthTrees' TreeTypes a tree slot is drawn with: its 4 m trees (10 to 12) aren't used, each taking one of the next size
-    /// up (the 10 to 12 m trees, 7 to 9). Its knee-high bushes (13 to 15) aren't used either: the shrub slots are ferns (FernFile).
-    private static int UsedModel(int type) => type <= 9 ? type : 7 + (type - 10) % 3;
-
-    /// The shrub slots: three trees of a low-poly pack (7 to 10 m, a bark mesh and a leaf mesh each, 1100 to 2600 triangles), scattered
-    /// out over open ground and along the woods' edges, among EarthTrees' own. Each part's colour map has its cut-out in its alpha.
-    private const string LowPolyFile = "Vegetation/low_poly_vegetation_for_games_1k.glb";
-    private static readonly (string Bark, string Leaves)[] LowPolyTrees =
+    /// The shrub slots' bushes and saplings in ForestFile (2.5 to 8 m), by their nodes (bark, leaves), with how many of each to try
+    /// for in a far cell: scattered over open ground and thickening at the woods' edges.
+    private static readonly (string Name, string Bark, string Leaves, int Attempts)[] ForestShrubs =
     [
-        ("1_bark-1_0", "1_pngaaa.com-3905963_0"),
-        ("2_bark-1.001_0", "2_pngaaa.com-3905963.001_0"),
-        ("5_bark-2_0", "5_pngaaa.com-2004453_0"),
+        ("Holly", "Object_16", "Object_17", 4), ("Raspberry", "Object_19", "Object_20", 4), ("Deciduous shrub", "Object_76", "Object_77", 4),
+        ("Coniferous shrub", "Object_43", "Object_44", 3), ("Coniferous sapling", "Object_40", "Object_41", 3),
+        ("Deciduous sapling", "Object_89", "Object_90", 2), ("Deciduous sapling 2", "Object_92", "Object_93", 2),
     ];
-    private const int TreeCount = 12;
-    private const int SlotCount = FirstTree + TreeCount;
 
-    /// How many of each tree to try for in a far cell (128 m square, where forest is thick): the giants rarest.
-    private static readonly int[] TreeAttempts = [2, 2, 2, 5, 5, 5, 5, 5, 5, 5, 5, 5];
+    /// How far the bushes reach: too small to need an impostor, they thin out to nothing by here instead.
+    private const float ShrubFade = 450f;
+
+    private const int TreeCount = 12;
+    private const int FirstMoreGrass = FirstTree + TreeCount;
+    private const int SlotCount = FirstMoreGrass + 6;
+
+    /// How many of each tree to try for in a far cell (128 m square, where forest is thick): oak, maple and pine the commonest.
+    private static readonly int[] TreeAttempts = [6, 6, 5, 5, 5, 4, 4, 4, 3, 3, 3, 3];
 
     /// Where a plant's detail changes, in metres from the camera (each instance's own up to a tenth either way): from its full model
-    /// to its reduced one, then to its cards (the grass, its fewest-bladed clump).
+    /// to its reduced one, then to its impostor (the grass, its fewest-bladed clump).
     private static readonly (float Reduced, float Far) TreeLevels = (55f, 300f);
     private static readonly (float Reduced, float Far) GrassLevels = (10f, 35f);
 
@@ -102,6 +138,12 @@ public sealed unsafe class Vegetation : IDisposable
 
         /// Left out of the far cascades, its partner's FarCaster standing for it (a tree's bark, inside its canopy's).
         public bool NoFarCaster;
+
+        /// Drawn as an octahedral impostor (ImpostorBaker, impostor.vert): Mesh is a quad, Textures its atlases, and its shadow is always
+        /// its FarCaster's. Its bounding sphere's centre height and radius, model space at a size of 1, go to the shader in Band's zw.
+        public bool Impostor;
+        public float ImpostorCentre;
+        public float ImpostorRadius;
 
         public int Count => IndexCount < 0 ? Mesh.IndexCount : IndexCount;
     }
@@ -194,6 +236,11 @@ public sealed unsafe class Vegetation : IDisposable
     private bool _plantsLoaded;
 
     public bool Enabled { get; set; } = true;
+
+    /// What the impostors are drawn with in the camera's view (impostor.vert, impostor_depth.frag and impostor.frag), made by the
+    /// world renderer for its target as the plants' own pipelines are: their depth, then shaded.
+    public VkPipeline ImpostorDepthPipeline { get; set; }
+    public VkPipeline ImpostorPipeline { get; set; }
     public int Instances { get; private set; }
     public int DrawnInstances { get; private set; }
 
@@ -692,20 +739,44 @@ public sealed unsafe class Vegetation : IDisposable
             }
         }
 
-        // Drier and yellower than the ground it grows from: the grass's map is pale, so its colour comes mostly from here.
+        // Drier and yellower than the ground it grows from.
         static float3 Dry(float4 cover, float pick) =>
             new float3(cover.X * 2.4f + 0.13f, cover.Y * 2.2f + 0.12f, cover.Z * 2.0f + 0.07f) * (0.75f + 0.5f * pick);
+
+        // The grasses' maps are green of their own: half the way to the land cover's dried colour (as bright as they are), so the grass
+        // still yellows where the cover says it's dry.
+        static float3 GrassTint(float4 cover, float pick)
+        {
+            var dry = Dry(cover, pick);
+            var hue = dry / MathF.Max((dry.X + dry.Y + dry.Z) / 3f, 0.01f);
+            return (new float3(1f) + hue) * 0.5f * (0.85f + 0.3f * pick);
+        }
 
         // The trees' and bushes' maps have their own colours: only a little variety from one to the next.
         static float3 Leafy(float pick) => new float3(0.85f + 0.3f * pick, 0.85f + 0.25f * pick, 0.8f + 0.2f * pick);
 
         if (!key.Far)
         {
-            // Clumps a metre and a half to two and a half across, overlapping into a sward where the cover's grassy. (Each covers a
-            // few times what the old cards did: many more than this and the overlapping blades cost far more to draw than they add.)
-            Place(Grass, 1u, 1600,
-                (_, ground, patches, clear, _) => (ground.X * 0.8f + ground.Y * 0.25f) * MathEx.SmoothStep(0.15f, 0.55f, patches) * MathEx.SmoothStep(0f, 1.5f, clear),
-                (pick, cover, _, _) => (0.4f + 0.35f * pick, Dry(cover, pick)), 0.2f, 0f, 0.8f);
+            // The grasses overlapping into a sward where the cover's grassy, each in its own part of the soft patches (tall grass in
+            // their thick middles, wispy grass round their thin edges, tussocks between), the short cover thickest beside the line, and
+            // the flowers sparse through the middling grass.
+            for (var g = 0; g < GrassTypes.Length; g++)
+            {
+                var type = GrassTypes[g];
+                Func<float, float, float> where = g switch
+                {
+                    0 => (patches, _) => MathEx.SmoothStep(0.15f, 0.45f, patches),
+                    1 => (patches, _) => MathEx.SmoothStep(0.55f, 0.8f, patches),
+                    2 => (patches, _) => MathEx.SmoothStep(0.05f, 0.25f, patches) * (1f - MathEx.SmoothStep(0.45f, 0.65f, patches)),
+                    3 => (_, clear) => 0.15f + 0.85f * (1f - MathEx.SmoothStep(0.5f, 5f, clear)),
+                    4 => (patches, _) => MathEx.SmoothStep(0.35f, 0.5f, patches) * (1f - MathEx.SmoothStep(0.6f, 0.75f, patches)),
+                    5 => (patches, _) => MathEx.SmoothStep(0.25f, 0.4f, patches) * (1f - MathEx.SmoothStep(0.55f, 0.7f, patches)),
+                    _ => (patches, _) => MathEx.SmoothStep(0.45f, 0.6f, patches) * (1f - MathEx.SmoothStep(0.7f, 0.85f, patches)),
+                };
+                Place(GrassSlot(g), 1u + (uint)g * 977u, type.Attempts,
+                    (_, ground, patches, clear, _) => (ground.X * 0.8f + ground.Y * 0.25f) * where(patches, clear) * MathEx.SmoothStep(0f, 1.5f, clear),
+                    (pick, cover, _, _) => (type.Scale * (0.8f + 0.4f * pick), type.Flower ? Leafy(pick) : GrassTint(cover, pick)), 0.2f, 0f, 0.8f);
+            }
 
             // Stones, thickest beside the line where the ground's been worked and ballast has strayed.
             Place(Pebble, 2u, 260,
@@ -719,11 +790,11 @@ public sealed unsafe class Vegetation : IDisposable
         }
         else
         {
-            // The low-poly trees: scattered trees standing out in the open and thickening at the woods' edges (where EarthTrees' own
-            // take over), kept off the track as the trees are; thickest along the railway too.
+            // The bushes: scattered over open ground and thickening at the woods' edges (where the trees take over), kept off the
+            // track as the trees are; thickest along the railway too.
             for (var b = 0; b < ShrubCount; b++)
             {
-                Place(FirstShrub + b, 3u + (uint)b * 101u, 6,
+                Place(FirstShrub + b, 3u + (uint)b * 101u, ForestShrubs[b].Attempts,
                     (cover, ground, patches, clear, _) => (0.25f * ground.X + MathEx.SmoothStep(0.1f, 0.5f, cover.W)) * (0.3f + patches) * MathEx.SmoothStep(TreeClearance, TreeClearanceSoft, clear),
                     (pick, _, _, _) => (0.7f + 0.5f * pick, Leafy(pick)), TreeClearance, 0f, 0.7f, trackside: true);
             }
@@ -767,13 +838,14 @@ public sealed unsafe class Vegetation : IDisposable
     // --- The plants' models and textures. ---
 
     /// Loads the grass and trees: every level of each into one mesh, each piece moved to stand on its own node's origin, and their
-    /// textures from Terrain/GroundClutter.
+    /// textures from the models' own maps.
     private void LoadPlants()
     {
         _plantsLoaded = true;
         var watch = System.Diagnostics.Stopwatch.StartNew();
-        var grassParts = Model.LoadParts(GrassFile);
-        var treeParts = Model.LoadParts(TreeFile);
+        var grassPieces = GrassPieces(Model.LoadParts(GrassFile)[GrassNode]);
+        var forestParts = Model.LoadParts(ForestFile);
+        var reducedParts = File.Exists(RailWerkz.Core.IO.ContentPath.Model(ForestReducedFile)) ? Model.LoadParts(ForestReducedFile) : null;
 
         var vertices = new List<Vertex>();
         var indices = new List<uint>();
@@ -797,88 +869,117 @@ public sealed unsafe class Vegetation : IDisposable
             return (first, part.Indices.Length, min, max);
         }
 
-        Texture2D Map(string name, bool srgb) => Own(Texture2D.LoadKtx2(Clutter + name, srgb));
-        TextureBinding Bind(Texture2D albedo, Texture2D opacity) => Own(new TextureBinding(albedo, opacity, opacity, opacity));
 
-        // The bark has no cut-out: a white map stands in for one.
         var solid = Own(Texture2D.Solid(new byte4(255, 255, 255, 255)));
-        var bark = Bind(Map("Trunk_Diffuse.ktx2", true), solid);
-        var leaves = Bind(Map("Leaves_Diffuse.ktx2", true), Map("Leaves_Opacity.ktx2", false));
-        var grassAlbedo = Own(Texture2D.LoadDds(Clutter + "Grass_Diffuse.dds", srgb: true));
-        var grass = Bind(grassAlbedo, Own(Texture2D.LoadDds(Clutter + "Grass_Opacity.dds", srgb: false)));
+
+        // A model's part's colour map (its cut-out in its alpha), by its node.
+        TextureBinding MapOf(string file, string node)
+        {
+            var model = Own(Model.Load(file, nodeName: node));
+            var map = model.Surfaces[model.SubMeshes[0].Material].Texture ?? solid;
+            return Own(new TextureBinding(map, map, map, map));
+        }
 
         var pending = new List<(Kind Kind, int First, int Count)>();
 
-        // The grass: its full clump close to, then fewer and fewer blades. It casts no shadow (its material says so, and it's
-        // too fine for the shadow map anyway).
-        var grassLevels = new[] { ("Grass_Lod0", 0f, GrassLevels.Reduced), ("Grass_Lod2", GrassLevels.Reduced, GrassLevels.Far), ("Grass_Lod3", GrassLevels.Far, float.PositiveInfinity) };
-        foreach (var (name, near, far) in grassLevels)
+        // The impostors to bake once the mesh is made: each model once (several tree slots share one), with the pieces of its full
+        // model, and its kinds (one a slot) that draw it.
+        var bakes = new Dictionary<string, (List<ImpostorBaker.Part> Parts, float3 Min, float3 Max, List<Kind> Kinds)>();
+
+        // How far from (0, y, 0) the furthest of a range's vertices is.
+        float Reach(int first, int count, float y)
         {
-            var piece = Add(grassParts, name);
-            _heights[Grass] = MathF.Max(_heights[Grass], piece.Max.Y);
-            pending.Add((new Kind
+            var most = 0f;
+            for (var i = first; i < first + count; i++)
             {
-                Mesh = null!, Textures = grass, Slot = Grass, Near = near, Far = far, Wind = 0.07f, SoftNormal = 0.8f, Fade = NearReach * 0.75f, LastCascade = -1,
-            }, piece.First, piece.Count));
+                var p = vertices[(int)indices[i]].Position;
+                most = MathF.Max(most, MathF.Sqrt(p.X * p.X + (p.Y - y) * (p.Y - y) + p.Z * p.Z));
+            }
+            return most;
         }
 
-        // TreeType1 to 12 are the trees, 13 to 15 the bushes; each has its own cards' maps, Tree0Cards for TreeType1 and so on.
-        var canopies = new List<(Kind Kind, float3 Min, float3 Max)>();
-        for (var type = 1; type <= TreeCount; type++)
+        Kind ImpostorOf(string model, int slot, float near, float fade, IEnumerable<ImpostorBaker.Part> parts, float3 min, float3 max)
         {
-            var slot = FirstTree + type - 1;
-            // (The 4 m trees, TreeType10 to 12, are drawn as the 10 to 12 m ones: UsedModel.)
-            var model = UsedModel(type);
+            var kind = new Kind { Mesh = null!, Textures = null!, Slot = slot, Near = near, SoftNormal = 0.35f, Fade = fade, LastCascade = 3, Impostor = true };
+            if (!bakes.TryGetValue(model, out var bake))
+                bakes[model] = bake = (parts.ToList(), min, max, []);
+            bake.Kinds.Add(kind);
+            return kind;
+        }
+
+        // The grass and flowers: each its every blade close to, then half of them, then a quarter (GrassLevel). They cast no shadow:
+        // too fine for the shadow map. One map for all, its cut-out in its alpha.
+        var grassMap = MapOf(GrassFile, GrassNode);
+        for (var g = 0; g < GrassTypes.Length; g++)
+        {
+            var slot = GrassSlot(g);
+            foreach (var (keep, near, far) in new[] { (1f, 0f, GrassLevels.Reduced), (0.5f, GrassLevels.Reduced, GrassLevels.Far), (0.25f, GrassLevels.Far, float.PositiveInfinity) })
+            {
+                var name = $"{GrassTypes[g].Name} {keep}";
+                var piece = Add(new Dictionary<string, Model.Part> { [name] = GrassLevel(name, grassPieces[g], keep) }, name);
+                _heights[slot] = MathF.Max(_heights[slot], piece.Max.Y);
+                pending.Add((new Kind
+                {
+                    Mesh = null!, Textures = grassMap, Slot = slot, Near = near, Far = far, Wind = 0.07f, SoftNormal = 0.8f, Fade = NearReach * 0.75f, Cutout = 0f,
+                    LastCascade = -1,
+                }, piece.First, piece.Count));
+            }
+        }
+
+        // The trees: each its full bark and leaves close to, its reduced bark (and the same leaves) further off, then its impostor,
+        // baked from the full tree. Their maps' cut-outs are in the colour maps' alpha.
+        var canopies = new List<(Kind Kind, float3 Min, float3 Max)>();
+        for (var t = 0; t < TreeCount; t++)
+        {
+            var slot = FirstTree + t;
+            var (name, barkNode, leafNode) = ForestTrees[t];
             var (reduced, far) = TreeLevels;
-            var cards = Bind(Map($"Tree{model - 1}Cards_Diffuse.ktx2", true), Map($"Tree{model - 1}Cards_Opacity.ktx2", false));
-            var full = Add(treeParts, $"TreeType{model}_Lod0_Leaves");
-            var height = MathF.Max(full.Max.Y, 1f);
+            var trunk = Add(forestParts, barkNode);
+            var crown = Add(forestParts, leafNode);
+            var lesser = reducedParts is not null && reducedParts.ContainsKey(barkNode) ? Add(reducedParts, barkNode) : trunk;
+            var height = MathF.Max(MathF.Max(trunk.Max.Y, crown.Max.Y), 1f);
             _heights[slot] = height;
 
             // A hundredth of its height at the top in the strongest gust, every level of it alike.
             var wind = 0.01f / height;
             var fade = FarReach * 0.95f;
+            var (barkMap, leafMap) = (MapOf(ForestFile, barkNode), MapOf(ForestFile, leafNode));
 
-            foreach (var (level, near, to) in new[] { (0, 0f, reduced), (2, reduced, far) })
+            foreach (var (bark, near, to) in new[] { (trunk, 0f, reduced), (lesser, reduced, far) })
             {
-                var trunk = Add(treeParts, $"TreeType{model}_Lod{level}_Trunk");
-                var crown = level == 0 ? full : Add(treeParts, $"TreeType{model}_Lod{level}_Leaves");
                 var bole = new Kind
                 {
-                    Mesh = null!, Textures = bark, Slot = slot, Near = near, Far = to, Wind = wind, Fade = fade, LastCascade = 3, NoFarCaster = true,
+                    Mesh = null!, Textures = barkMap, Slot = slot, Near = near, Far = to, Wind = wind, Fade = fade, Cutout = 0f, LastCascade = 3, NoFarCaster = true,
                 };
-                var canopy = new Kind { Mesh = null!, Textures = leaves, Slot = slot, Near = near, Far = to, Wind = wind, SoftNormal = 0.35f, Fade = fade, LastCascade = 3 };
-                pending.Add((bole, trunk.First, trunk.Count));
+                var canopy = new Kind { Mesh = null!, Textures = leafMap, Slot = slot, Near = near, Far = to, Wind = wind, SoftNormal = 0.35f, Fade = fade, Cutout = 0f, LastCascade = 3 };
+                pending.Add((bole, bark.First, bark.Count));
                 pending.Add((canopy, crown.First, crown.Count));
                 canopies.Add((canopy, crown.Min, crown.Max));
             }
 
-            var card = Add(treeParts, $"TreeType{model}_Lod3_Cards");
-            pending.Add((new Kind { Mesh = null!, Textures = cards, Slot = slot, Near = far, Wind = wind, SoftNormal = 0.5f, Fade = fade, LastCascade = 3 }, card.First, card.Count));
+            ImpostorOf(name, slot, far, fade, [new(trunk.First, trunk.Count, barkMap, 0f), new(crown.First, crown.Count, leafMap, 0f)],
+                float3.Min(trunk.Min, crown.Min), float3.Max(trunk.Max, crown.Max));
         }
 
-        // The low-poly trees in the shrub slots: one level each (there's little to take away), as far as EarthTrees' and casting as
-        // they do; their own maps, each part's (bark, leaves) from the file.
-        var lowParts = Model.LoadParts(LowPolyFile);
-        TextureBinding MapOf(string node)
-        {
-            var model = Own(Model.Load(LowPolyFile, nodeName: node));
-            var map = model.Surfaces[model.SubMeshes[0].Material].Texture ?? solid;
-            return Own(new TextureBinding(map, map, map, map));
-        }
-
+        // The bushes: full bark close to, reduced further off, as the trees; no impostor (ShrubFade).
         for (var b = 0; b < ShrubCount; b++)
         {
-            var (barkNode, leafNode) = LowPolyTrees[b % LowPolyTrees.Length];
+            var (_, barkNode, leafNode, _) = ForestShrubs[b];
             var slot = FirstShrub + b;
-            var trunk = Add(lowParts, barkNode);
-            var crown = Add(lowParts, leafNode);
+            var trunk = Add(forestParts, barkNode);
+            var crown = Add(forestParts, leafNode);
+            var lesser = reducedParts is not null && reducedParts.ContainsKey(barkNode) ? Add(reducedParts, barkNode) : trunk;
             _heights[slot] = MathF.Max(MathF.Max(trunk.Max.Y, crown.Max.Y), 1f);
             var wind = 0.01f / _heights[slot];
-            const float fade = FarReach * 0.95f;
-            pending.Add((new Kind { Mesh = null!, Textures = MapOf(barkNode), Slot = slot, Wind = wind, Fade = fade, Cutout = 0f, LastCascade = 3 }, trunk.First, trunk.Count));
-            pending.Add((new Kind { Mesh = null!, Textures = MapOf(leafNode), Slot = slot, Wind = wind, SoftNormal = 0.35f, Fade = fade, Cutout = 0f, LastCascade = 3 },
-                crown.First, crown.Count));
+            var (barkMap, leafMap) = (MapOf(ForestFile, barkNode), MapOf(ForestFile, leafNode));
+            foreach (var (bark, near, to) in new[] { (trunk, 0f, TreeLevels.Reduced), (lesser, TreeLevels.Reduced, float.PositiveInfinity) })
+            {
+                pending.Add((new Kind { Mesh = null!, Textures = barkMap, Slot = slot, Near = near, Far = to, Wind = wind, Fade = ShrubFade, Cutout = 0f, LastCascade = 3, NoFarCaster = true },
+                    bark.First, bark.Count));
+                var canopy = new Kind { Mesh = null!, Textures = leafMap, Slot = slot, Near = near, Far = to, Wind = wind, SoftNormal = 0.35f, Fade = ShrubFade, Cutout = 0f, LastCascade = 3 };
+                pending.Add((canopy, crown.First, crown.Count));
+                canopies.Add((canopy, crown.Min, crown.Max));
+            }
         }
 
         var mesh = Own(Mesh.Create(CollectionsMarshal.AsSpan(vertices), CollectionsMarshal.AsSpan(indices)));
@@ -892,7 +993,128 @@ public sealed unsafe class Vegetation : IDisposable
         foreach (var (kind, min, max) in canopies)
             kind.FarCaster = Own(CanopyMesh(new float3(min.X, MathF.Max(min.Y, max.Y * 0.25f), min.Z), max));
 
-        RailWerkz.Core.Logging.Log.Info($"Vegetation: grass, {TreeCount} trees (the 4 m ones drawn as the next size up) and {ShrubCount} low-poly trees, {_kinds.Count} draws, {indices.Count / 3} triangles, loaded in {watch.ElapsedMilliseconds} ms");
+        // The impostors, baked from the full models, each drawn as one quad; their shadows always their canopy's stand-in.
+        var bakeWatch = System.Diagnostics.Stopwatch.StartNew();
+        var quad = Own(Mesh.Create(
+            [
+                new Vertex(new float3(-1f, -1f, 0f), new float3(0f, 0f, 1f), new float2(0f, 1f)), new Vertex(new float3(1f, -1f, 0f), new float3(0f, 0f, 1f), new float2(1f, 1f)),
+                new Vertex(new float3(1f, 1f, 0f), new float3(0f, 0f, 1f), new float2(1f, 0f)), new Vertex(new float3(-1f, 1f, 0f), new float3(0f, 0f, 1f), new float2(0f, 0f)),
+            ],
+            [0u, 1u, 2u, 0u, 2u, 3u]));
+        using (var baker = new ImpostorBaker())
+        {
+            foreach (var (model, (parts, min, max, kinds)) in bakes)
+            {
+                var centreY = (min.Y + max.Y) * 0.5f;
+                var radius = parts.Max(p => Reach(p.FirstIndex, p.IndexCount, centreY)) * 1.02f;
+                var (albedo, normal) = baker.Bake(mesh, parts, new float3(0f, centreY, 0f), radius, model);
+                var textures = Own(new TextureBinding(Own(albedo), Own(normal), normal, normal));
+                var caster = Own(CanopyMesh(new float3(min.X, MathF.Max(min.Y, max.Y * 0.25f), min.Z), max));
+                foreach (var kind in kinds)
+                {
+                    (kind.Mesh, kind.FirstIndex, kind.IndexCount, kind.Textures, kind.FarCaster) = (quad, 0, 6, textures, caster);
+                    (kind.ImpostorCentre, kind.ImpostorRadius) = (centreY, radius);
+                    _kinds.Add(kind);
+                }
+            }
+        }
+
+        RailWerkz.Core.Logging.Log.Info($"Vegetation: {bakes.Count} impostors baked in {bakeWatch.ElapsedMilliseconds} ms");
+
+        RailWerkz.Core.Logging.Log.Info($"Vegetation: {GrassTypes.Length} grasses and flowers, {TreeCount} forest-pack trees and {ShrubCount} bushes{(reducedParts is null ? " (no reduced bark: " + ForestReducedFile + " missing)" : "")}, {_kinds.Count} draws, {indices.Count / 3} triangles, loaded in {watch.ElapsedMilliseconds} ms");
+    }
+
+    /// GrassBase cut into GrassTypes: its triangles into the pieces they join up into (a blade, a card), the pieces into the groups
+    /// that stand together (a clump: pieces within 0.9 m of one another), and for each type the group whose middle is nearest its
+    /// place, each piece's triangles moved to stand on the group's middle at its lowest point.
+    private static List<Vertex[]>[] GrassPieces(Model.Part layout)
+    {
+        var (vertices, indices) = (layout.Vertices, layout.Indices);
+        var parent = Enumerable.Range(0, vertices.Length).ToArray();
+        int Find(int x)
+        {
+            while (parent[x] != x)
+                x = parent[x] = parent[parent[x]];
+            return x;
+        }
+
+        for (var t = 0; t < indices.Length; t += 3)
+        {
+            var a = Find((int)indices[t]);
+            parent[Find((int)indices[t + 1])] = a;
+            parent[Find((int)indices[t + 2])] = a;
+        }
+
+        var byRoot = new Dictionary<int, List<Vertex>>();
+        for (var t = 0; t < indices.Length; t += 3)
+        {
+            var root = Find((int)indices[t]);
+            if (!byRoot.TryGetValue(root, out var tris))
+                byRoot[root] = tris = [];
+            tris.Add(vertices[indices[t]]);
+            tris.Add(vertices[indices[t + 1]]);
+            tris.Add(vertices[indices[t + 2]]);
+        }
+
+        var pieces = byRoot.Values.Select(v => v.ToArray()).ToList();
+        var middles = pieces.Select(p => new float2(p.Average(v => v.Position.X), p.Average(v => v.Position.Z))).ToArray();
+        var group = Enumerable.Repeat(-1, pieces.Count).ToArray();
+        var groups = 0;
+        for (var i = 0; i < pieces.Count; i++)
+        {
+            if (group[i] >= 0)
+                continue;
+            var stack = new Stack<int>([i]);
+            group[i] = groups;
+            while (stack.TryPop(out var q))
+            {
+                for (var m = 0; m < pieces.Count; m++)
+                {
+                    var d = middles[m] - middles[q];
+                    if (group[m] < 0 && d.X * d.X + d.Y * d.Y < 0.81f)
+                    {
+                        group[m] = groups;
+                        stack.Push(m);
+                    }
+                }
+            }
+
+            groups++;
+        }
+
+        var result = new List<Vertex[]>[GrassTypes.Length];
+        for (var g = 0; g < GrassTypes.Length; g++)
+        {
+            var (best, bestDistance, bestMiddle) = (-1, float.MaxValue, default(float3));
+            for (var k = 0; k < groups; k++)
+            {
+                var (min, max) = (new float3(float.MaxValue), new float3(float.MinValue));
+                for (var i = 0; i < pieces.Count; i++)
+                    if (group[i] == k)
+                        foreach (var v in pieces[i])
+                            (min, max) = (float3.Min(min, v.Position), float3.Max(max, v.Position));
+                var (cx, cz) = ((min.X + max.X) * 0.5f, (min.Z + max.Z) * 0.5f);
+                var (dx, dz) = (cx - GrassTypes[g].X, cz - GrassTypes[g].Z);
+                if (dx * dx + dz * dz < bestDistance)
+                    (best, bestDistance, bestMiddle) = (k, dx * dx + dz * dz, new float3(cx, min.Y, cz));
+            }
+
+            if (best < 0 || bestDistance > 1f)
+                throw new InvalidDataException($"{GrassFile} has no {GrassTypes[g].Name} near ({GrassTypes[g].X}, {GrassTypes[g].Z})");
+            result[g] = Enumerable.Range(0, pieces.Count).Where(i => group[i] == best)
+                .Select(i => pieces[i].Select(v => v with { Position = v.Position - bestMiddle }).ToArray()).ToList();
+        }
+
+        return result;
+    }
+
+    /// A share of a grass type's pieces, as a part to add: every piece close to, fewer further off, the same ones each time (spread
+    /// evenly through the clump by the golden ratio). A clump of a few pieces keeps them all.
+    private static Model.Part GrassLevel(string name, List<Vertex[]> pieces, float keep)
+    {
+        var kept = pieces.Count <= 4 ? pieces : pieces.Where((_, i) => i * 0.618034f % 1f < keep).ToList();
+        var vertices = kept.SelectMany(p => p).ToArray();
+        return new Model.Part(name, vertices, [.. Enumerable.Range(0, vertices.Length).Select(i => (uint)i)], default);
     }
 
     // --- Drawing. ---
@@ -922,16 +1144,10 @@ public sealed unsafe class Vegetation : IDisposable
         {
             var gpuPush = new Push { Matrix = camera.JitteredViewProjection(aspect), Globals = Globals(camera), Delta = _phasesDelta };
             if (pass != PlantPass.Color)
-            {
-                cmd.BindPipeline(VkPipelineBindPoint.Graphics, depthPipeline);
-                DrawCulled(cmd, layout, ref gpuPush, culled, -1);
-            }
+                DrawCulled(cmd, layout, ref gpuPush, culled, -1, (depthPipeline, ImpostorDepthPipeline));
 
             if (pass != PlantPass.Depth)
-            {
-                cmd.BindPipeline(VkPipelineBindPoint.Graphics, colorPipeline);
-                DrawCulled(cmd, layout, ref gpuPush, culled, -1);
-            }
+                DrawCulled(cmd, layout, ref gpuPush, culled, -1, (colorPipeline, ImpostorPipeline));
 
             return;
         }
@@ -941,8 +1157,15 @@ public sealed unsafe class Vegetation : IDisposable
         while (_gathered.Count < _kinds.Count)
             _gathered.Add([]);
 
-        if (pass != PlantPass.Color)
-            cmd.BindPipeline(VkPipelineBindPoint.Graphics, depthPipeline);
+        bool? impostorBound = null;
+        void Use(Kind kind, VkPipeline plain, VkPipeline impostor)
+        {
+            if (impostorBound == kind.Impostor)
+                return;
+            impostorBound = kind.Impostor;
+            cmd.BindPipeline(VkPipelineBindPoint.Graphics, kind.Impostor ? impostor : plain);
+        }
+
         for (var k = 0; pass != PlantPass.Color && k < _kinds.Count; k++)
         {
             var kind = _kinds[k];
@@ -950,6 +1173,7 @@ public sealed unsafe class Vegetation : IDisposable
             if (!Gather(camera, kind, (centre, radius, _) => view.Sees(centre, radius)))
                 continue;
 
+            Use(kind, depthPipeline, ImpostorDepthPipeline);
             _gathered[k].AddRange(_visible);
             push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, kind.Cutout);
             push.Band = Band(kind);
@@ -962,13 +1186,14 @@ public sealed unsafe class Vegetation : IDisposable
 
         if (pass == PlantPass.Depth)
             return;
-        cmd.BindPipeline(VkPipelineBindPoint.Graphics, colorPipeline);
+        impostorBound = null;
         for (var k = 0; k < _kinds.Count; k++)
         {
             if (_gathered[k].Count == 0)
                 continue;
 
             var kind = _kinds[k];
+            Use(kind, colorPipeline, ImpostorPipeline);
             _visible.Clear();
             _visible.AddRange(_gathered[k]);
             push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, kind.Cutout);
@@ -1004,7 +1229,7 @@ public sealed unsafe class Vegetation : IDisposable
             if (cascade > kind.LastCascade || (last && kind.NoFarCaster) || !Gather(camera, kind, reaches))
                 continue;
 
-            var standIn = last && kind.FarCaster is not null;
+            var standIn = (last || kind.Impostor) && kind.FarCaster is not null;
             push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, standIn ? 2f : kind.Cutout);
             push.Band = Band(kind);
             kind.Textures.Bind(cmd, layout);
@@ -1016,7 +1241,8 @@ public sealed unsafe class Vegetation : IDisposable
     }
 
     /// The distances a kind's drawn between, for plant.vert (which can't take an infinity).
-    private static float4 Band(Kind kind) => new(kind.Near, float.IsPositiveInfinity(kind.Far) ? 1e9f : kind.Far, 0f, 0f);
+    private static float4 Band(Kind kind) =>
+        new(kind.Near, float.IsPositiveInfinity(kind.Far) ? 1e9f : kind.Far, kind.Impostor ? kind.ImpostorCentre : 0f, kind.Impostor ? kind.ImpostorRadius : 0f);
 
     /// What every cell drawn this frame shares: the ground below the camera and the wind's phases.
     /// The wind's phases are taken once a frame: the plants' depth and their shaded pass (drawn apart, PlantPass) and every shadow
@@ -1053,18 +1279,19 @@ public sealed unsafe class Vegetation : IDisposable
             var size = cell.Key.Far ? FarCell : NearCell;
             var (ox, oz) = (cell.Key.X * (double)size - camera.X, cell.Key.Z * (double)size - camera.Z);
 
-            // Its nearest and furthest from the camera, against the kind's distances (which each instance moves by up to a tenth).
+            // Its nearest and furthest from the camera, against the kind's distances (which each instance moves by up to a tenth, and
+            // hands over to the next level across another 6% either side: plant_fade.glsl).
             var (lowY, highY) = (cell.Low - (float)camera.Y, cell.High - (float)camera.Y);
             var nx = MathF.Max(MathF.Max((float)-ox - size, (float)ox), 0f);
             var nz = MathF.Max(MathF.Max((float)-oz - size, (float)oz), 0f);
             var ny = MathF.Max(MathF.Max(lowY, -highY), 0f);
             var nearest = MathF.Sqrt(nx * nx + ny * ny + nz * nz);
-            if (nearest >= kind.Far * 1.1f)
+            if (nearest >= kind.Far * 1.2f)
                 continue;
             var fx = MathF.Max(MathF.Abs((float)ox), MathF.Abs((float)ox + size));
             var fz = MathF.Max(MathF.Abs((float)oz), MathF.Abs((float)oz + size));
             var fy = MathF.Max(MathF.Abs(lowY), MathF.Abs(highY));
-            if (MathF.Sqrt(fx * fx + fy * fy + fz * fz) < kind.Near * 0.9f)
+            if (MathF.Sqrt(fx * fx + fy * fy + fz * fz) < kind.Near * 0.8f)
                 continue;
 
             var centre = new float3((float)ox + size * 0.5f, (lowY + highY) * 0.5f, (float)oz + size * 0.5f);
@@ -1130,7 +1357,7 @@ public sealed unsafe class Vegetation : IDisposable
     // --- Culling on the GPU. ---
 
     /// How many slot starts plant_cull.comp's CellData holds (its Slots): must be SlotCount + 1.
-    private const int CullSlotStarts = 19;
+    private const int CullSlotStarts = 29;
 
     /// A buffer's address on the GPU as a plain number, to offset and push.
     private static ulong Raw(VkDeviceAddress address) => System.Runtime.CompilerServices.Unsafe.As<VkDeviceAddress, ulong>(ref address);
@@ -1336,7 +1563,7 @@ public sealed unsafe class Vegetation : IDisposable
             {
                 var kind = _kinds[i];
                 var on = cascade < 0 || !(cascade > kind.LastCascade || (last && kind.NoFarCaster));
-                var stand = cascade >= 0 && last && kind.FarCaster is not null;
+                var stand = cascade >= 0 && (last || kind.Impostor) && kind.FarCaster is not null;
                 (enabled[p][i], standIn[p][i]) = (on, stand);
                 _kindData[p * k + i] = new KindData
                 {
@@ -1390,9 +1617,12 @@ public sealed unsafe class Vegetation : IDisposable
         return firstIndex;
     }
 
-    /// Draws a culled pass's kinds, with the pipeline bound: each kind one call of as many commands as the GPU kept.
-    private void DrawCulled(CommandBuffer cmd, VkPipelineLayout layout, ref Push push, int index, int cascade)
+    /// Draws a culled pass's kinds: each kind one call of as many commands as the GPU kept. With the pipeline bound (a shadow
+    /// cascade's, whose impostors are drawn as their stand-ins), or for the camera's view, binding pipelines' plain one or their
+    /// impostors' as each kind needs.
+    private void DrawCulled(CommandBuffer cmd, VkPipelineLayout layout, ref Push push, int index, int cascade, (VkPipeline Plain, VkPipeline Impostor)? pipelines = null)
     {
+        bool? impostorBound = null;
         var culled = _culled[index];
         var n = culled.CellCount;
         const int commandSize = 20;
@@ -1403,6 +1633,12 @@ public sealed unsafe class Vegetation : IDisposable
                 continue;
             var kind = _kinds[k];
             var standIn = culled.StandIn[k];
+            if (pipelines is var (plain, impostor) && impostorBound != kind.Impostor)
+            {
+                impostorBound = kind.Impostor;
+                cmd.BindPipeline(VkPipelineBindPoint.Graphics, kind.Impostor ? impostor : plain);
+            }
+
             push.Shape = new float4(kind.Wind, kind.SoftNormal, kind.Fade * Quality.PlantReach, standIn ? 2f : kind.Cutout);
             push.Band = Band(kind);
             push.Base = (uint)(k * n);
