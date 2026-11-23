@@ -52,7 +52,8 @@ public sealed class RouteWorld : IDisposable
     public RouteWorld(RouteInfo route)
     {
         Route = route;
-        _opening = TerrainSource.Open(route);
+        // (A pack's track is read from its cells, never laid out: TerrainSource.OpenPack.)
+        _opening = route.Pack is { } pack ? TerrainSource.OpenPack(pack) : TerrainSource.Open(route);
         Railway.Switches = Switches;
     }
 

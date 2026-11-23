@@ -66,6 +66,10 @@ public sealed class NetPlay : IDisposable
     /// Something to tell the player.
     public event Action<string>? Notice;
 
+    /// The pack this player plays (set by DriveScreen), for the track to check against the server's as its server track has it
+    /// (PackTrack: a region's keeps only its own edges).
+    public Routes.PackSource? Pack { get; set; }
+
     private NetPlay(string name) => _name = name;
 
     public static NetPlay Join(string host, int port, string name)
@@ -114,10 +118,10 @@ public sealed class NetPlay : IDisposable
             _switches.Changed += SwitchChanged;
         }
 
-        var mine = graph.Checksum();
+        var mine = Pack is { } pack ? Routes.PackTrack.Checksum(graph, pack) : graph.Checksum();
         if (mine != _serverChecksum)
         {
-            Fail("Track differs from the server's pack");
+            Fail($"Track differs from the server's pack (checksum {mine:X8}, the server's {_serverChecksum:X8})");
             _session.Close();
             return;
         }
@@ -126,7 +130,7 @@ public sealed class NetPlay : IDisposable
         {
             _session.SendToHost(_writer.Begin(Protocol.Id(Protocol.Ready)).I32(mine).Span, Delivery.Reliable);
             State = Stage.Playing;
-            Log.Info($"Multiplayer: playing {World}/{Region} as player {Number}");
+            Log.Info($"Multiplayer: playing {World}/{Region} as player {Number}, track checksum {mine:X8} as the server's");
         }
     }
 

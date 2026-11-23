@@ -43,7 +43,10 @@ public sealed class DriveScreen : Screen, IWorldScreen
             : null;
         _view = new DrivingView(route, middle, net) { View = DriveView.Orbit };
         if (net is not null)
+        {
             net.Notice += Notify;
+            net.Pack = pack;
+        }
         if (DevTools.DriveView is { } start && Enum.TryParse<DriveView>(start, true, out var view))
         {
             DevTools.DriveView = null;
