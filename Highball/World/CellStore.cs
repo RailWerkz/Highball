@@ -202,7 +202,6 @@ internal static partial class CellStore
         ["_padsHash"] = new(Place.Route),
         ["Sizes"] = new(Place.Route),
         ["Curves"] = new(Place.Route),
-        ["_liftCells"] = new(Place.Route),
         ["_bridgeEndsLock"] = new(Place.Route),
         ["_detailLock"] = new(Place.Route),
         ["_endShapesLock"] = new(Place.Route),
@@ -215,6 +214,9 @@ internal static partial class CellStore
         ["Before"] = new(Place.Restored),
         [Auto(nameof(NetworkLines.BridgeEdits))] = new(Place.Restored),
         [Auto(nameof(NetworkLines.DetailCache))] = new(Place.Restored),
+
+        // LiftBridges' grid of the lines' segments: only ever used inside FinishProfiles, which lets it go first.
+        ["_liftCells"] = new(Place.Dropped),
 
         // Timing a build (HB_PROFILELAPS), null once it's done.
         ["_lapWatch"] = new(Place.Dropped),
@@ -257,7 +259,7 @@ internal static partial class CellStore
     /// Whether a spread field's items are objects others refer to (a turnout zone to its turnout): made before any cell's read, so a
     /// reference to one in another cell finds it.
     private static bool Registered(FieldInfo f) =>
-        f.FieldType.IsGenericType && f.FieldType.GetGenericTypeDefinition() == typeof(List<>) && f.FieldType.GetGenericArguments()[0] is { IsValueType: false } item && item != typeof(string);
+        !RuleOf(f).Nested && f.FieldType.IsGenericType && f.FieldType.GetGenericTypeDefinition() == typeof(List<>) && f.FieldType.GetGenericArguments()[0] is { IsValueType: false } item && item != typeof(string);
 
     // --- Where things are. ---
 

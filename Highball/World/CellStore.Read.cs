@@ -313,6 +313,8 @@ internal static partial class CellStore
                         {
                             if (list[at].Ordinal != (((long)o << 32) | (uint)n))
                                 throw new InvalidDataException($"{f.Name}: out of order");
+                            if (list[at].Value is null)
+                                throw new InvalidDataException($"{f.Name}[{o}][{n}]: no value for {list[at].Key} ({list.Count(e => e.Value is null)} of {list.Count} without)");
                             inner.Add(list[at].Key!, list[at].Value);
                         }
 
@@ -355,7 +357,7 @@ internal static partial class CellStore
                                       or AggregateException)
         {
             var inner = e is AggregateException a ? a.Flatten().InnerExceptions[0] : e;
-            Log.Warn($"Cells: unreadable ({inner.GetType().Name}: {(inner as TargetInvocationException)?.InnerException?.Message ?? inner.Message}), working the lines out");
+            Log.Warn($"Cells: unreadable ({inner.GetType().Name}: {(inner as TargetInvocationException)?.InnerException?.Message ?? inner.Message}), working the lines out " + inner.StackTrace);
             return null;
         }
     }
