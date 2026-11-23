@@ -230,7 +230,7 @@ public sealed class RouteNetwork
     private static string NodesIn(RouteInfo route) => Path.Combine(route.Folder, WholeNodesName);
 
     /// The files the network is stored in, relative to the route's folder, those that exist: what anything stamped with the
-    /// network hashes (CompiledRoute) and what a pack carries of it (WorldExport). Only this class knows how it's stored.
+    /// network hashes (CellStore.StampOf) and what a pack carries of it (WorldExport). Only this class knows how it's stored.
     /// Per cell: the index, then every cell's file in name order; else the whole-route files of before.
     public static IReadOnlyList<string> Files(RouteInfo route)
     {
