@@ -95,8 +95,9 @@ public sealed class RouteInfo
         if (!Directory.Exists(root))
             return tiles;
 
-        foreach (var folder in Directory.GetDirectories(root))
-            if (TileId.TryParse(Path.GetFileName(folder), out var id) && File.Exists(Path.Combine(folder, "Tile.json")))
+        // (One listing of every tile's Tile.json, not a file asked after per folder: a route of 50,000 tiles.)
+        foreach (var file in Directory.EnumerateFiles(root, "Tile.json", new EnumerationOptions { RecurseSubdirectories = true, MaxRecursionDepth = 1 }))
+            if (TileId.TryParse(Path.GetFileName(Path.GetDirectoryName(file)), out var id))
                 tiles.Add(id);
         return tiles;
     }

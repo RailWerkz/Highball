@@ -138,7 +138,9 @@ internal static partial class CellStore
         if (window is not null)
             only ??= window.Complete.Where(c => !window.Tainted.Contains(c)).ToHashSet();
         var old = only is null ? null : ReadIndex(route);
-        if (old is not null && (old.Rules != RulesHash || old.BuildVersion != BuildVersion || old.Cells.Keys.Any(id => !File.Exists(CellPath(route, id)))))
+        // (The cells on disk listed once: a file asked for at a time is a second's work at 50,000 cells.)
+        var onDisk = old is null || !Directory.Exists(FolderOf(route)) ? [] : Directory.EnumerateFiles(FolderOf(route), "*.cell").Select(Path.GetFileName).ToHashSet();
+        if (old is not null && (old.Rules != RulesHash || old.BuildVersion != BuildVersion || old.Cells.Keys.Any(id => !onDisk.Contains($"{id}.cell"))))
             old = null;
         if (old is null)
             only = null;
@@ -172,8 +174,13 @@ internal static partial class CellStore
 
             var cells = new Dictionary<TileId, CellData>();
             var rest = new CellData();
-            CellData At(TileId? id)
+            // (The chains seen that gave no line: apart, after the rest, read only for the whole route.)
+            var chains = new CellData();
+            var seenField = Array.FindIndex(SpreadFields, f => f.Name == "_seenChains");
+            CellData At(TileId? id, int field = -1)
             {
+                if (id is null && field == seenField)
+                    return chains;
                 if (id is not { } cell)
                     return rest;
                 if (!cells.TryGetValue(cell, out var data))
@@ -278,7 +285,7 @@ internal static partial class CellStore
                     if (cell is null)
                         unplaced[fi]++;
                     if (only is null || cell is null || only.Contains(cell.Value))
-                        At(cell).Elements.Add(new Element(fi, ordinal, key, v, own));
+                        At(cell, fi).Elements.Add(new Element(fi, ordinal, key, v, own));
                     count++;
                 }
 
@@ -345,14 +352,25 @@ internal static partial class CellStore
                 written.Add((ids[k], results[k].Temporary, results[k].Size, results[k].Hash));
 
             var (restA, restB, restTypes, restObjects) = Encode(rest, lines, External, DefaultShuffle, true, bytesBy);
-            var restFile = Pack(new TileId(int.MinValue, int.MinValue), restA, restB, DefaultCodec, DefaultShuffle);
+            var restFile = Pack(RestId, restA, restB, DefaultCodec, DefaultShuffle);
+            // (A window hasn't read them: they're kept as they were.)
+            byte[] chainsFile;
+            Type[] chainsTypes = [];
+            if (window is not null)
+                chainsFile = old!.ReadChains();
+            else
+            {
+                var (chainsA, chainsB, types, _) = Encode(chains, lines, External, DefaultShuffle, false, bytesBy);
+                chainsFile = Pack(ChainsId, chainsA, chainsB, DefaultCodec, DefaultShuffle);
+                chainsTypes = types;
+            }
             var encoded = watch.ElapsedMilliseconds;
 
             if (Check)
                 FindShared(results.Select((r, k) => (ids[k].ToString(), r.Objects!)).Append(("index", restObjects)));
 
             // The index: what the cells are, what they're built from, and what they hold.
-            var schema = FixedTypes().Concat(results.SelectMany(r => r.Types)).Concat(restTypes)
+            var schema = FixedTypes().Concat(results.SelectMany(r => r.Types)).Concat(restTypes).Concat(chainsTypes)
                 .Concat(old?.Schema.Select(s => Type.GetType(s.Type)).OfType<Type>() ?? []).Distinct().Where(t => !t.ContainsGenericParameters)
                 .OrderBy(GraphSnapshot.NameOf, StringComparer.Ordinal).ToList();
             // (The cells not written, as they are on disk; those written empty now gone.)
@@ -416,6 +434,9 @@ internal static partial class CellStore
 
                 w.Write(restFile.Length);
                 w.Write(restFile);
+                w.Write(chainsFile.Length == 0 ? 0UL : HashOf(chainsFile));
+                w.Write(chainsFile.Length);
+                w.Write(chainsFile);
             }
 
             written.Add((new TileId(int.MinValue, int.MinValue), index, new FileInfo(index).Length, 0));
@@ -451,7 +472,7 @@ internal static partial class CellStore
             Log.Info($"Cells: {ids.Length} cells written{(old is null ? "" : $" of {ids.Length + keptCells.Count} ({only!.Count} asked for, {keptCells.Count} left as they were)")} ({sizes.Sum() / (1 << 20)} MB, from {results.Sum(r => r.RawA + r.RawB) / (1 << 20)} MB; " +
                      $"biggest {(sizes.Length > 0 ? sizes[^1] / 1024 : 0)} KB at {biggest}, median {(sizes.Length > 0 ? sizes[sizes.Length / 2] / 1024 : 0)} KB; " +
                      $"index {new FileInfo(IndexPath(route)).Length / 1024} KB, {schema.Count} types), {all.Count} lines in " +
-                     $"{cells.Values.Sum(d => d.Pieces.Count)} pieces, {cells.Values.Sum(d => d.Elements.Count) + rest.Elements.Count} things spread ({string.Join(", ", unplaced.Select((n, fi) => (n, fi)).Where(x => x.n > 0).Select(x => $"{x.n} of {SpreadFields[x.fi].Name}"))} without a cell, in the index), " +
+                     $"{cells.Values.Sum(d => d.Pieces.Count)} pieces, {cells.Values.Sum(d => d.Elements.Count) + rest.Elements.Count + chains.Elements.Count} things spread ({string.Join(", ", unplaced.Select((n, fi) => (n, fi)).Where(x => x.n > 0).Select(x => $"{x.n} of {SpreadFields[x.fi].Name}"))} without a cell, in the index), " +
                      $"{stale} stale removed; ms: spread {distributed}, encode {encoded - distributed}, written {watch.ElapsedMilliseconds - encoded}");
             Log.Info($"Cells: raw bytes by what: {string.Join(", ", bytesBy.OrderByDescending(x => x.Value).Select(x => $"{x.Key} {x.Value / 1024} KB"))}");
             measures?.Log();

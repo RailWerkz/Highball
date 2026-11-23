@@ -32,7 +32,11 @@ public sealed class PlannerView : IDisposable
 
     private readonly RouteInfo _route;
     private readonly Action<string> _notify;
-    private RouteNetwork _network;
+    /// The route's network, read whole only when something needs its ways (a build, the tiles track runs through, the map's lines
+    /// once it's changed): the map draws from the network in brief (NetworkOverview) till then, so opening the route doesn't read
+    /// every way (docs/cell-routes.md, Streaming everything).
+    private RouteNetwork? _loaded;
+    private RouteNetwork _network => _loaded ??= RouteNetwork.Load(_route);
     private readonly RouteGenerator _generator = new();
     private readonly MapView _map = new();
     private readonly HashSet<TileId> _selected = [];
@@ -104,7 +108,6 @@ public sealed class PlannerView : IDisposable
     {
         _route = route;
         _notify = notify;
-        _network = RouteNetwork.Load(route);
         _built = route.BuiltTiles();
         _regions = RouteRegions.Load(route);
         ReadBuiltSources(_built);
@@ -276,7 +279,7 @@ public sealed class PlannerView : IDisposable
     /// copy from before.
     public void ReloadNetwork()
     {
-        _network = RouteNetwork.Load(_route);
+        _loaded = null;
         _linesVersion = -1;
     }
 
@@ -913,13 +916,13 @@ public sealed class PlannerView : IDisposable
 
     private void RebuildLines()
     {
-        _linesVersion = _network.Version;
+        _linesVersion = _loaded?.Version ?? 0;
         _lines = [];
         _lengths.Clear();
 
         // (From the network in brief, NetworkOverview, while the network's as saved: the map's thinned lines and each kind's length, not
         // every way's every point.)
-        if (!_network.Unsaved && Routes.NetworkOverview.Read(_route) is { } overview)
+        if (_loaded is not { Unsaved: true } && Routes.NetworkOverview.Read(_route) is { } overview)
         {
             foreach (var cell in overview.Cells.Values)
             {
@@ -1062,7 +1065,7 @@ public sealed class PlannerView : IDisposable
 
     private void DrawNetwork(ImDrawListPtr draw, float2 size)
     {
-        if (_network.Version != _linesVersion)
+        if ((_loaded?.Version ?? 0) != _linesVersion)
             RebuildLines();
 
         var a = _map.ToGeo(new float2(0f, 0f));

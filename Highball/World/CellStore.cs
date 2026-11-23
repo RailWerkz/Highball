@@ -32,7 +32,11 @@ namespace Highball.World;
 internal static partial class CellStore
 {
     /// The layout of the files. Bumped when it changes; cells of another are never read.
-    public const int FormatVersion = 5;
+    public const int FormatVersion = 6;
+
+    /// The index's own part (what has no cell, and the route-wide fields) and the chains seen that gave no line, read as cells.
+    private static readonly TileId RestId = new(int.MinValue, int.MinValue);
+    private static readonly TileId ChainsId = new(int.MinValue, int.MinValue + 1);
 
     /// The passes' build (laying, grading, shaping): bumped by hand when a change to them should show in cells already built. Cells of
     /// another are built again.
@@ -88,13 +92,24 @@ internal static partial class CellStore
                 hash.Add((int)bytes[i]);
         }
 
+        // (Every tile's heights' size and time from one listing of the tiles' folders, not a file asked after at a time: 50,000 tiles.)
+        var listed = new Dictionary<string, (long Length, long Ticks)>(StringComparer.OrdinalIgnoreCase);
+        var tiles = Path.Combine(route.Folder, "Tiles");
+        if (route.Pack is null && Directory.Exists(tiles))
+            foreach (var file in new DirectoryInfo(tiles).EnumerateFiles("Heights.bin.gz", new EnumerationOptions { RecurseSubdirectories = true, MaxRecursionDepth = 1 }))
+                listed[file.Directory!.Name] = (file.Length, file.LastWriteTimeUtc.Ticks);
         foreach (var id in built.OrderBy(t => t.I).ThenBy(t => t.J))
         {
             hash.Add(id.I);
             hash.Add(id.J);
-            var heights = new FileInfo(Path.Combine(route.TileFolder(id), "Heights.bin.gz"));
-            hash.Add(heights.Exists ? heights.Length : -1);
-            hash.Add(heights.Exists ? heights.LastWriteTimeUtc.Ticks : 0);
+            if (!listed.TryGetValue(id.ToString(), out var heights))
+            {
+                var info = new FileInfo(Path.Combine(route.TileFolder(id), "Heights.bin.gz"));
+                heights = info.Exists ? (info.Length, info.LastWriteTimeUtc.Ticks) : (-1, 0);
+            }
+
+            hash.Add(heights.Length);
+            hash.Add(heights.Ticks);
         }
 
         foreach (var o in objects.Where(o => o.Kind == PlacedKind.GradeCrossing).OrderBy(o => o.Id))

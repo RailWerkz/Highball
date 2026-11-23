@@ -38,6 +38,27 @@ internal static partial class CellStore
         public required Dictionary<TileId, TileId[]> Reach { get; init; }
         /// The index's own part, laid out as a cell: what has no cell, and the route-wide fields.
         public required byte[] Rest { get; init; }
+        /// The chains seen that gave no line (_seenChains with no cell), laid out as a cell after the rest in the index's file, read only
+        /// for the whole route (a window never asks what a chain far off was laid from: NetworkLines.Keep): where in the file, how long,
+        /// its hash.
+        public long ChainsAt { get; init; }
+        public int ChainsLength { get; init; }
+        public ulong ChainsHash { get; init; }
+        public required string Path { get; init; }
+
+        /// The chains' bytes, if they're still what the index was read with.
+        public byte[] ReadChains()
+        {
+            if (ChainsLength == 0)
+                return [];
+            using var file = new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            file.Position = ChainsAt;
+            var bytes = new byte[ChainsLength];
+            file.ReadExactly(bytes);
+            if (HashOf(bytes) != ChainsHash)
+                throw new InvalidDataException("the index's chains aren't the ones it was read with");
+            return bytes;
+        }
 
         /// Why the cells can't be read as they are (null: they can): a build version or inputs not theirs, or a type they hold laid
         /// out differently in this build.
@@ -62,7 +83,11 @@ internal static partial class CellStore
         }
     }
 
-    /// The index, if there's one this build can read (of this format).
+    /// The index last read, and its file's length and time: a window read as the camera moves reads it once, not at every step.
+    private static (string Path, long Length, DateTime Time, Index Index)? _lastIndex;
+    private static readonly Lock IndexLock = new();
+
+    /// The index, if there's one this build can read (of this format). As last read, while its file is as it was.
     public static Index? ReadIndex(RouteInfo route)
     {
         if (Off || route.Pack is not null)
@@ -74,6 +99,22 @@ internal static partial class CellStore
             return null;
         }
 
+        var info = new FileInfo(path);
+        lock (IndexLock)
+            if (_lastIndex is { } last && last.Path == path && last.Length == info.Length && last.Time == info.LastWriteTimeUtc)
+                return last.Index;
+        var watch = Stopwatch.StartNew();
+        var read = ReadIndexFile(path);
+        if (read is not null)
+            Log.Info($"Cells: index read, {info.Length / 1024} KB ({read.Cells.Count} cells, {read.Rest.Length / 1024} KB of its own, {read.ChainsLength / 1024} KB of chains with no line not read), {watch.ElapsedMilliseconds} ms");
+        if (read is not null)
+            lock (IndexLock)
+                _lastIndex = (path, info.Length, info.LastWriteTimeUtc, read);
+        return read;
+    }
+
+    private static Index? ReadIndexFile(string path)
+    {
         try
         {
             using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16);
@@ -116,7 +157,12 @@ internal static partial class CellStore
             }
 
             var rest = r.ReadBytes(r.ReadInt32());
-            return new Index { BuildVersion = build, Stamp = stamp, Rules = rules, LineCount = lineCount, Schema = schema, Spread = spread, Cells = cells, Reach = reach, Rest = rest };
+            var (chainsHash, chainsLength) = (r.ReadUInt64(), r.ReadInt32());
+            return new Index
+            {
+                BuildVersion = build, Stamp = stamp, Rules = rules, LineCount = lineCount, Schema = schema, Spread = spread, Cells = cells, Reach = reach, Rest = rest,
+                ChainsAt = file.Position, ChainsLength = chainsLength, ChainsHash = chainsHash, Path = path,
+            };
         }
         catch (Exception e) when (e is IOException or EndOfStreamException or InvalidDataException or UnauthorizedAccessException)
         {
@@ -221,7 +267,10 @@ internal static partial class CellStore
     /// their lines reach (ReadFor). A window's lines keep their places in the route's set, the places of lines not loaded holding
     /// NetworkLine.Absent. What's read naming a line or thing not loaded: dropped where it's an item of a list or set, or a dictionary's
     /// key, or anywhere in a cell not complete; else the name read as null (its cell is then Tainted: not written from the window).
-    public static NetworkLines? Read(RouteInfo route, Index index, IEnumerable<TileId> cells)
+    /// reuse: the lines shown, read from these cells before (a window moving or growing): a line of theirs read again (the same place,
+    /// key and count) takes their per-point arrays as they are rather than decoding and making them again, its head and what it's in
+    /// read as ever (a copy of the line, so the lines shown aren't touched). What a window step allocates is then the lines it adds.
+    public static NetworkLines? Read(RouteInfo route, Index index, IEnumerable<TileId> cells, NetworkLines? reuse = null)
     {
         var watch = Stopwatch.StartNew();
         var times = new List<string>();
@@ -231,6 +280,7 @@ internal static partial class CellStore
             watch.Restart();
         }
 
+        var rented = new System.Collections.Concurrent.ConcurrentBag<byte[]>();
         try
         {
             // (A cell with nothing in it, not in the index, is complete in any window that asks for it: there's nothing more to load.)
@@ -238,20 +288,34 @@ internal static partial class CellStore
             var toRead = ReadFor(index, complete);
             var whole = toRead.Count == index.Cells.Count && index.Cells.Keys.All(complete.Contains);
             var ids = toRead.ToArray();
-            var files = new CellFile[ids.Length + 1];
+            // (The rest, and for the whole route the chains that gave no line.)
+            var extra = whole && index.ChainsLength > 0 ? 2 : 1;
+            var files = new CellFile[ids.Length + extra];
             long bytes = 0;
-            Parallel.For(0, ids.Length + 1, k =>
+            Parallel.For(0, ids.Length + extra, k =>
             {
                 if (k == ids.Length)
                 {
-                    files[k] = Open(new TileId(int.MinValue, int.MinValue), index.Rest);
+                    files[k] = Open(RestId, index.Rest);
                     return;
                 }
 
-                var data = File.ReadAllBytes(CellPath(route, ids[k]));
-                if (!index.Cells.TryGetValue(ids[k], out var expected) || expected.Size != data.Length || expected.Hash != HashOf(data))
+                if (k == ids.Length + 1)
+                {
+                    files[k] = Open(ChainsId, index.ReadChains());
+                    return;
+                }
+
+                // (Into a pooled buffer, given back once read: a window step reads tens of megabytes of files, each one on the large
+                // object heap if it were its own.)
+                using var stream = new FileStream(CellPath(route, ids[k]), FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.SequentialScan);
+                var length = (int)stream.Length;
+                var data = System.Buffers.ArrayPool<byte>.Shared.Rent(length);
+                rented.Add(data);
+                stream.ReadExactly(data, 0, length);
+                if (!index.Cells.TryGetValue(ids[k], out var expected) || expected.Size != length || expected.Hash != HashOf(data.AsSpan(0, length)))
                     throw new InvalidDataException($"cell {ids[k]} isn't the one the index was written with");
-                Interlocked.Add(ref bytes, data.Length);
+                Interlocked.Add(ref bytes, length);
                 files[k] = Open(ids[k], data);
             });
             Time("files");
@@ -285,10 +349,23 @@ internal static partial class CellStore
                 throw new InvalidDataException($"{pieces.Count} lines in the cells read, {loaded} wanted");
             if (whole && loaded != lines.Length && index.Spread.Length > 0)
                 Log.Info($"Cells: {lines.Length - loaded} places of {lines.Length} hold no line");
+            var reused = 0;
+            var shownLines = reuse is not null && reuse.Lines.Count == lines.Length ? reuse.Lines : null;
             Parallel.ForEach(pieces, entry =>
             {
                 var (i, list) = (entry.Key, entry.Value);
                 var head = list[0];
+                if (shownLines?[i] is { IsAbsent: false } was && was.Key == head.Key && was.Count == head.LineCount && SlicesFit(was, head))
+                {
+                    var copy = was.ShallowCopy();
+                    foreach (var f in LineFields)
+                        if (LineDropped.Contains(f.Name))
+                            f.SetValue(copy, null);
+                    lines[i] = copy;
+                    Interlocked.Increment(ref reused);
+                    return;
+                }
+
                 var at = 0;
                 foreach (var p in list)
                 {
@@ -479,11 +556,19 @@ internal static partial class CellStore
                     }
                 }
 
-                if (isRest)
+                if (file.Id == RestId)
                     foreach (var f in RootFields.Where(f => RuleOf(f).Place == Place.Route))
                         f.SetValue(root, g.Read(f.FieldType));
             });
             Time("read");
+
+            // (A chain kept with no line that's since given one, in a cell a window wrote: the cell's is the one.)
+            if (files[^1].Id == ChainsId)
+            {
+                var seen = Array.FindIndex(SpreadFields, f => f.Name == "_seenChains");
+                var inCells = files[..^1].SelectMany(f => f.Elements).Where(e => e.Field == seen).Select(e => e.Ordinal).ToHashSet();
+                files[^1].Elements.RemoveAll(e => e.Field == seen && inCells.Contains(e.Ordinal));
+            }
 
             // The route-wide lists, sets and dictionaries, put together in the order they were in.
             var elements = files.SelectMany(f => f.Elements).GroupBy(e => e.Field).ToDictionary(g => g.Key, g => g.OrderBy(e => e.Ordinal).ToList());
@@ -561,6 +646,7 @@ internal static partial class CellStore
 
             Time("put together");
             Log.Info($"Cells: {ids.Length} cells read ({bytes / (1 << 20)} MB){(whole ? "" : $", a window complete in {complete.Count}")}, {loaded} lines" +
+                     (reuse is null ? "" : $" ({reused} as shown, their arrays kept)") +
                      $"{(whole ? "" : $" of {lines.Length} places")}, {elements.Values.Sum(l => l.Count)} things; ms: {string.Join(", ", times)}" +
                      (missing.IsEmpty ? "" : $"; not loaded, named by: {string.Join(", ", missing.OrderByDescending(m => m.Value).Select(m => $"{m.Value} {m.Key}"))}" +
                                               $"{(tainted.IsEmpty ? "" : $" ({tainted.Count} complete cells naming them, not written from the window)")}"));
@@ -574,6 +660,26 @@ internal static partial class CellStore
             Log.Warn($"Cells: unreadable ({inner.GetType().Name}: {(inner as TargetInvocationException)?.InnerException?.Message ?? inner.Message}), working the lines out " + inner.StackTrace);
             return null;
         }
+        finally
+        {
+            foreach (var buffer in rented)
+                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    /// Whether a line shown has every array a line's pieces cut, as long as they cut it.
+    private static bool SlicesFit(NetworkLine line, Piece head)
+    {
+        foreach (var slice in head.Slices)
+        {
+            if (LineFields[slice.Field].GetValue(line) is not Array array)
+                return false;
+            var length = slice.Cut == Cut.Points ? head.LineCount * slice.Stride : Math.Max(head.LineCount - 1, 0);
+            if (array.Length != length)
+                return false;
+        }
+
+        return true;
     }
 
     /// Whether every line an entry of a field of line places (ints) names is loaded.
