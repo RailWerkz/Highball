@@ -99,7 +99,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
     private PenTool.Measure? _penMeasure => _penTrack.Measure;
     private Task<NetworkChange>? _rebuild;
     private bool _rebuildAgain;
-    /// Saved since the route was last compiled (CompiledRoute): compiled once the track's caught up with every edit.
+    /// Saved since the route's cells were last written (CellStore): written once the track's caught up with every edit.
     private bool _compileDue;
     private int _saves;
     private Task? _compiling;
@@ -1009,14 +1009,14 @@ public sealed partial class EditorView : IDisposable, IToolHost
 
     private void PollRebuild()
     {
-        // The route compiled as it's saved, once no rebuild's under way and nothing's been edited since the save: the lines are
+        // The route's cells written as it's saved, once no rebuild's under way and nothing's been edited since the save: the lines are
         // then what's on disk, worked out, so the next open reads them rather than working them out again.
         // (Not after a rebuild that failed: the lines are then still the ones from before the edit, and the saved network isn't them.)
         if (_rebuild is null && !_rebuildAgain && !_rebuildFailed && _compileDue && _compiling is not { IsCompleted: false } && _terrain?.Source is { } saved && !saved.Unsaved && !saved.Network.Unsaved)
         {
             _compileDue = false;
             var at = Volatile.Read(ref _saves);
-            _compiling = saved.Compile(() => Volatile.Read(ref _saves) == at);
+            _compiling = saved.SaveCells(() => Volatile.Read(ref _saves) == at);
         }
 
         if (_rebuild is not { IsCompleted: true } done)

@@ -14,16 +14,71 @@ namespace Highball.World;
 /// outside (a stream, a thread) isn't written: it throws, naming where.
 internal static class GraphSnapshot
 {
-    private const byte Null = 0, Seen = 1, New = 2, Boxed = 3;
+    private const byte Null = 0, Seen = 1, New = 2, Boxed = 3, External = 4;
 
     private static readonly ConcurrentDictionary<Type, FieldInfo[]> Fields = new();
     private static readonly ConcurrentDictionary<Type, bool> Blittable = new();
     private static readonly ConcurrentDictionary<(Type, string), MethodInfo> Generic = new();
 
-    private static bool IsBlittable(Type type) => Blittable.GetOrAdd(type, static t =>
+    internal static bool IsBlittable(Type type) => Blittable.GetOrAdd(type, static t =>
         t.IsValueType && !(bool)typeof(RuntimeHelpers).GetMethod(nameof(RuntimeHelpers.IsReferenceOrContainsReferences))!.MakeGenericMethod(t).Invoke(null, null)!);
 
-    private static FieldInfo[] FieldsOf(Type type) => Fields.GetOrAdd(type, static t =>
+    /// A type's layout as this build has it: its name and every instance field's name and type, all the way down through the value
+    /// types it holds (which are copied as their bytes are laid out). Two builds that agree on this for every type in a snapshot read
+    /// each other's snapshots; a build that doesn't would read garbage, so a snapshot kept across builds (CellStore) checks it first.
+    internal static ulong LayoutOf(Type type)
+    {
+        var hash = new WordHash();
+        void Add(string s)
+        {
+            hash.Add(s.Length);
+            foreach (var c in s)
+                hash.Add((int)c);
+        }
+
+        void Walk(Type t, int depth)
+        {
+            Add(NameOf(t));
+            if (t.IsArray)
+            {
+                Walk(t.GetElementType()!, depth + 1);
+                return;
+            }
+
+            if (depth > 8 || (t.Namespace?.StartsWith("System", StringComparison.Ordinal) == true && t.Assembly != typeof(GraphSnapshot).Assembly && !t.IsGenericType))
+                return;
+            if (t.IsGenericType && t.Assembly != typeof(GraphSnapshot).Assembly)
+            {
+                // (A framework collection or tuple: written as its items, or its fields, whose types are what matter.)
+                foreach (var arg in t.GetGenericArguments())
+                    if (arg.IsValueType)
+                        Walk(arg, depth + 1);
+                if (!t.IsValueType)
+                    return;
+            }
+
+            foreach (var f in FieldsOf(t))
+            {
+                Add(f.Name);
+                Add(NameOf(f.FieldType));
+                if (f.FieldType.IsValueType && !f.FieldType.IsPrimitive && !f.FieldType.IsEnum)
+                    Walk(f.FieldType, depth + 1);
+                else if (f.FieldType.IsEnum)
+                    Add(Enum.GetUnderlyingType(f.FieldType).Name);
+            }
+        }
+
+        Walk(type, 0);
+        return hash.Value;
+    }
+
+    /// A type's name without its assemblies' versions (which a version bump changes for no reason that matters here).
+    internal static string NameOf(Type t) =>
+        t.IsArray ? NameOf(t.GetElementType()!) + "[]" :
+        t.IsGenericType && !t.IsGenericTypeDefinition ? NameOf(t.GetGenericTypeDefinition()) + "[" + string.Join(",", t.GetGenericArguments().Select(NameOf)) + "]" :
+        t.FullName ?? t.Name;
+
+    internal static FieldInfo[] FieldsOf(Type type) => Fields.GetOrAdd(type, static t =>
     {
         var all = new List<FieldInfo>();
         for (var at = t; at is not null && at != typeof(object) && at != typeof(ValueType); at = at.BaseType)
@@ -44,15 +99,30 @@ internal static class GraphSnapshot
 
     // --- Writing. ---
 
-    public sealed class Writer(BinaryWriter w, Func<FieldInfo, bool>? skip = null)
+    /// external: objects written elsewhere (another cell's, see CellStore), written as a reference only, (kind, index), for the reader's
+    /// resolve to find again.
+    public sealed class Writer(BinaryWriter w, Func<FieldInfo, bool>? skip = null, Func<object, (int Kind, int Index)?>? external = null)
     {
         private readonly Dictionary<object, int> _ids = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<Type, int> _types = [];
         private readonly Stack<string> _path = new();
         public BinaryWriter Out => w;
         public int Objects => _ids.Count;
+        /// Every object written whole, and every type named.
+        public IEnumerable<object> Written => _ids.Keys;
+        public IEnumerable<Type> Types => _types.Keys;
 
         public void WriteRoot(object root) => WriteRef(root);
+
+        /// A value of the declared type, as a field of it would be written.
+        public void Write(Type declared, object? value) => WriteValue(declared, value);
+
+        /// An object's fields, without the object itself (the reader has it made already: ReadInto).
+        public void WriteFields(object value)
+        {
+            foreach (var f in FieldsOf(value.GetType()))
+                WriteField(f, value);
+        }
 
         private void WriteType(Type type)
         {
@@ -125,6 +195,14 @@ internal static class GraphSnapshot
             {
                 w.Write(Seen);
                 w.Write(id);
+                return;
+            }
+
+            if (external?.Invoke(value) is { } far)
+            {
+                w.Write(External);
+                w.Write(far.Kind);
+                w.Write(far.Index);
                 return;
             }
 
@@ -282,13 +360,23 @@ internal static class GraphSnapshot
 
     // --- Reading. ---
 
-    public sealed class Reader(BinaryReader r, Func<FieldInfo, bool>? skip = null)
+    /// resolve: an object written as external, found by its (kind, index).
+    public sealed class Reader(BinaryReader r, Func<FieldInfo, bool>? skip = null, Func<int, int, object>? resolve = null)
     {
         private readonly List<object> _objects = [];
         private readonly List<Type> _types = [];
         public BinaryReader In => r;
 
         public object ReadRoot() => ReadRef()!;
+
+        public object? Read(Type declared) => ReadValue(declared);
+
+        /// Fills in an object made already (WriteFields).
+        public void ReadInto(object obj)
+        {
+            foreach (var f in FieldsOf(obj.GetType()))
+                ReadField(f, obj);
+        }
 
         private Type ReadType()
         {
@@ -337,6 +425,11 @@ internal static class GraphSnapshot
                     return _objects[r.ReadInt32()];
                 case Boxed:
                     return ReadValue(ReadType());
+                case External:
+                {
+                    var (kind, index) = (r.ReadInt32(), r.ReadInt32());
+                    return (resolve ?? throw new InvalidDataException("Graph snapshot: a reference to elsewhere, with nowhere to find it"))(kind, index);
+                }
                 case New:
                     break;
                 default:

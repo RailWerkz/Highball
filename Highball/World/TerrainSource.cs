@@ -103,7 +103,7 @@ public sealed partial class TerrainSource
         // (The bridges' hand settings before the ground's shaped: an end set to a wall or a slope shapes it.)
         var bridgeEdits = RouteBridges.Load(route);
         var objects = RouteObjects.Load(route);
-        var stamp = CompiledRoute.StampOf(route, built, objects);
+        var stamp = CellStore.StampOf(route, built, objects);
         Stage("stamp");
 
         // The lines worked out from the map data and edits: solved (or read as saved), the ground under them sampled, their
@@ -139,11 +139,20 @@ public sealed partial class TerrainSource
             return laid;
         }
 
-        var lines = App.DevTools.Refit ? null : CompiledRoute.TryLoad(route, stamp);
+        // The lines as built and kept in the route's cells, if they were built from what's there now (CellStore).
+        NetworkLines? lines = null;
+        if (!App.DevTools.Refit && CellStore.ReadIndex(route) is { } index)
+        {
+            if (index.Stale(stamp) is { } why)
+                Log.Info($"Cells: out of date ({why}), working the lines out");
+            else
+                lines = CellStore.Read(route, index, index.Cells.Keys);
+        }
+
         if (lines is not null)
         {
-            CompiledRoute.Restore(lines, network, edits.Snapshot(), built, bridgeEdits, objects, route.Projection!);
-            Stage("compiled");
+            CellStore.Restore(lines, network, edits.Snapshot(), built, bridgeEdits, objects);
+            Stage("cells");
             Parallel.For(0, ids.Length, i =>
             {
                 if (lines.LinesIn(ids[i]).Count > 0)
@@ -159,14 +168,14 @@ public sealed partial class TerrainSource
                 }
             });
             Stage("bare tiles");
-            if (CompiledRoute.Check)
-                CompiledRoute.Compare(lines, WorkOut(false));
+            if (CellStore.Check)
+                CellStore.Compare(lines, WorkOut(false), route.Grid!.Samples);
         }
         else
         {
             lines = WorkOut(true);
-            CompiledRoute.Save(route, stamp, lines);
-            Stage("compile");
+            CellStore.Write(route, stamp, lines);
+            Stage("cells written");
         }
 
         lines.PrepareShapingKeys(ids, route.Grid!.Samples);
@@ -203,17 +212,18 @@ public sealed partial class TerrainSource
         source.Objects.AddRange(objects);
         foreach (var (key, edit) in bridgeEdits)
             source.Bridges[key] = edit;
-        Log.Info($"Terrain: {source._tiles.Count} tiles and {lines.Lines.Count} lines opened in {watch.ElapsedMilliseconds} ms");
+        Log.Info($"Terrain: {source._tiles.Count} tiles and {lines.Lines.Count} lines opened in {watch.ElapsedMilliseconds} ms " +
+                 $"(peak working set so far {System.Diagnostics.Process.GetCurrentProcess().PeakWorkingSet64 >> 20} MB, managed heap {GC.GetTotalMemory(false) >> 20} MB)");
         if (Environment.GetEnvironmentVariable("HB_BRIDGEAUDIT") == "1")
             BridgeAudit.Run(source, route);
         return source;
     });
 
-    /// The lines as they are now written as the route's compiled lines (CompiledRoute), stamped with what's on disk: for after a
-    /// save, with no rebuild under way, so the next open reads them.
-    /// Writes the compiled route off the main thread (it's hundreds of megabytes). current: whether nothing's been saved since,
-    /// asked before the stamp's taken and before the file's put in place, so the file never carries lines older than its stamp.
-    public Task Compile(Func<bool> current)
+    /// The lines as they are now written as the route's cells (CellStore), stamped with what's on disk: for after a save, with no
+    /// rebuild under way, so the next open reads them. Every cell for now (stage 2 of docs/cell-routes.md writes only an edit's).
+    /// Off the main thread (they're hundreds of megabytes). current: whether nothing's been saved since, asked before the stamp's
+    /// taken and before the files are put in place, so the cells never carry lines older than their stamp.
+    public Task SaveCells(Func<bool> current)
     {
         if (Lines is not { } lines)
             return Task.CompletedTask;
@@ -222,13 +232,13 @@ public sealed partial class TerrainSource
         {
             try
             {
-                var stamp = CompiledRoute.StampOf(_route, tiles, objects);
+                var stamp = CellStore.StampOf(_route, tiles, objects);
                 if (current())
-                    CompiledRoute.Save(_route, stamp, lines, current);
+                    CellStore.Write(_route, stamp, lines, current);
             }
             catch (Exception e)
             {
-                RailWerkz.Core.Logging.Log.Warn($"Compiled route: not written ({e.Message})");
+                RailWerkz.Core.Logging.Log.Warn($"Cells: not written ({e.Message})");
             }
         });
     }
