@@ -61,7 +61,8 @@ internal static partial class CellStore
 
     // --- The inputs stamp. ---
 
-    /// The files the lines are worked out from, read whole into the stamp (the network's too, whatever files it's in: RouteNetwork.Files).
+    /// The files the lines are worked out from, read whole into the stamp (the network's too: RouteNetwork.StampFiles, its index alone when
+    /// it's stored per cell).
     private static readonly string[] Inputs = ["Route.json", "TrackEdits.bin.gz", "Bridges.json", "Switches.json", "SwitchCurves.json"];
 
     /// What the lines are worked out from: the input files, the solved track (by size and time), each built tile's heights (by size and
@@ -69,7 +70,7 @@ internal static partial class CellStore
     public static ulong StampOf(RouteInfo route, IEnumerable<TileId> built, IEnumerable<PlacedObject> objects)
     {
         var hash = new WordHash();
-        foreach (var name in Inputs.Concat(RouteNetwork.Files(route)))
+        foreach (var name in Inputs.Concat(RouteNetwork.StampFiles(route)))
         {
             var path = Path.Combine(route.Folder, name);
             if (!File.Exists(path))

@@ -917,6 +917,33 @@ public sealed class PlannerView : IDisposable
         _lines = [];
         _lengths.Clear();
 
+        // (From the network in brief, NetworkOverview, while the network's as saved: the map's thinned lines and each kind's length, not
+        // every way's every point.)
+        if (!_network.Unsaved && Routes.NetworkOverview.Read(_route) is { } overview)
+        {
+            foreach (var cell in overview.Cells.Values)
+            {
+                foreach (var (kind, metres) in cell.Lengths)
+                    _lengths[kind] = _lengths.GetValueOrDefault(kind) + metres;
+                foreach (var line in cell.Lines)
+                {
+                    var (x, y) = (new double[line.Lat.Length], new double[line.Lat.Length]);
+                    double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+                    for (var i = 0; i < x.Length; i++)
+                    {
+                        (x[i], y[i]) = MapView.ToMercator(new GeoPoint(line.Lat[i], line.Lon[i]));
+                        (minX, minY, maxX, maxY) = (Math.Min(minX, x[i]), Math.Min(minY, y[i]), Math.Max(maxX, x[i]), Math.Max(maxY, y[i]));
+                    }
+
+                    _lines.Add(new Line(line.Rail, line.Class, x, y, minX, minY, maxX, maxY));
+                }
+            }
+
+            _lines = [.. _lines.OrderBy(l => l.Rail).ThenByDescending(l => l.Class)];
+            Log.Info($"Planner: the map's lines from the network's overview, {_lines.Count} lines, {_lines.Sum(l => l.X.Length)} points");
+            return;
+        }
+
         foreach (var way in _network.Ways.Values)
         {
             var x = new double[way.Lat.Length];

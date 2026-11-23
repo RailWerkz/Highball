@@ -259,6 +259,9 @@ internal static partial class CellStore
                 var used = new HashSet<long>();
                 void Add(long ordinal, object? key, object? v)
                 {
+                    // (A window's read from a cell it isn't complete in: that cell's, on disk, not the window's to write.)
+                    if (window is not null && window.Foreign.Contains((fi, ordinal)))
+                        return;
                     // (Its place: what it is, hashed, OrdinalOf; one alike already there takes the next.)
                     ordinal = registered || values ? (int)ordinal : ordinal;
                     while (!used.Add(ordinal))
@@ -442,7 +445,7 @@ internal static partial class CellStore
             Log.Info($"Cells: {ids.Length} cells written{(old is null ? "" : $" of {ids.Length + keptCells.Count} ({only!.Count} asked for, {keptCells.Count} left as they were)")} ({sizes.Sum() / (1 << 20)} MB, from {results.Sum(r => r.RawA + r.RawB) / (1 << 20)} MB; " +
                      $"biggest {(sizes.Length > 0 ? sizes[^1] / 1024 : 0)} KB at {biggest}, median {(sizes.Length > 0 ? sizes[sizes.Length / 2] / 1024 : 0)} KB; " +
                      $"index {new FileInfo(IndexPath(route)).Length / 1024} KB, {schema.Count} types), {all.Count} lines in " +
-                     $"{cells.Values.Sum(d => d.Pieces.Count)} pieces, {metas.Sum(m => m.Count)} things spread ({string.Join(", ", unplaced.Select((n, fi) => (n, fi)).Where(x => x.n > 0).Select(x => $"{x.n} of {SpreadFields[x.fi].Name}"))} without a cell, in the index), " +
+                     $"{cells.Values.Sum(d => d.Pieces.Count)} pieces, {cells.Values.Sum(d => d.Elements.Count) + rest.Elements.Count} things spread ({string.Join(", ", unplaced.Select((n, fi) => (n, fi)).Where(x => x.n > 0).Select(x => $"{x.n} of {SpreadFields[x.fi].Name}"))} without a cell, in the index), " +
                      $"{stale} stale removed; ms: spread {distributed}, encode {encoded - distributed}, written {watch.ElapsedMilliseconds - encoded}");
             Log.Info($"Cells: raw bytes by what: {string.Join(", ", bytesBy.OrderByDescending(x => x.Value).Select(x => $"{x.Key} {x.Value / 1024} KB"))}");
             measures?.Log();

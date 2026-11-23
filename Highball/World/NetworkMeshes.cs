@@ -1229,7 +1229,8 @@ public sealed partial class NetworkMeshes : IDisposable
             {
                 _building.Add((key, near));
                 _stale.Remove((key, near));
-                var runs = _runs[key];
+                // (A copy: taking a change in edits the chunks' runs in place, and a job builds with the lines it started with.)
+                List<Run> runs = [.. _runs[key]];
                 jobs.Add((new Job("line chunk", () => _built.Enqueue(near ? BuildNear(key, runs, lines) : BuildFar(key, runs, lines))), near ? 4 : 1));
             }
 
