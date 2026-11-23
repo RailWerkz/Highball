@@ -49,6 +49,9 @@ public sealed partial class TerrainSource
 
     private static readonly Lock MarkersLock = new();
 
+    /// The most cells a rebuild of some cells lays again: past it the whole route's handed to the passes (it costs no more).
+    private const int MostCells = 40;
+
     public void RebuildAround(double x, double z)
     {
         lock (_rebuildAround)
@@ -98,6 +101,13 @@ public sealed partial class TerrainSource
 
             // Laid again near the edit only, if it was to track alone (LocalRebuild); otherwise in full.
             var local = solveAgain ? null : LocalFor(previous, ways, crossings, around);
+            // (Too many cells to be worth it: the whole route handed to the passes, as before stage 2.)
+            if (local?.Dirty is { Count: > MostCells } many)
+            {
+                RailWerkz.Core.Logging.Log.Info($"Local rebuild path: whole route ({many.Count} dirty cells, more than {MostCells})");
+                local = local with { Dirty = null, Context = null, Seen = previous.Lines };
+            }
+
             Stage(local?.Dirty is { } d0 ? $"window ({d0.Count} cells laid again, {local.Context!.Count} held round them)" : "window");
             NetworkLines Lay(LocalRebuild? near, Action<string> stage)
             {
@@ -129,6 +139,8 @@ public sealed partial class TerrainSource
                     RailWerkz.Core.Logging.Log.Info($"Local rebuild: {touched} kept lines were changed by a pass and put back");
                 if (near is not null && laid.KeepFarPads(near) is var pads and > 0)
                     RailWerkz.Core.Logging.Log.Info($"Local rebuild: {pads} crossings' pads far from the edit kept as they were");
+                if (near?.Dirty is not null)
+                    RailWerkz.Core.Logging.Log.Info($"Local rebuild: {laid.HoldAtBorder(near)} lines laid again held as they were outside the dirty cells");
                 if (near is not null)
                     RailWerkz.Core.Logging.Log.Info($"Local rebuild: rail heights at junctions agree to {laid.WorstRailStep():0.000} m (the last lines {previous.WorstRailStep():0.000} m)");
                 return laid;
@@ -142,23 +154,29 @@ public sealed partial class TerrainSource
                 // weren't enough: they're grown to take it in, once, and laid again; then in full.
                 merged = CellStore.Merge(previous, lines, local, ways.ToDictionary(w => w.Id));
                 Stage("merged");
-                for (var grow = 0; merged?.Spill is { } spill; grow++)
+                // (An edit that changes something outside its cells: one ring more, once, if that's few enough; else the whole route.)
+                if (merged.Spill is { } spill)
                 {
-                    if (grow == 2)
+                    var grown = local with { Dirty = Grown(local.Dirty!, 1), Context = Grown(local.Dirty!, 2), Seen = Over(previous, Grown(local.Dirty!, 2)) };
+                    if (grown.Dirty!.Count <= MostCells)
                     {
-                        RailWerkz.Core.Logging.Log.Info($"Local rebuild: {spill} still; laid in full");
-                        (local, merged) = (null, null);
-                        lines = Lay(null, Stage);
-                        break;
+                        RailWerkz.Core.Logging.Log.Info($"Local rebuild path: cells grown by a ring ({spill}; {local.Dirty!.Count} cells grown to {grown.Dirty.Count})");
+                        local = grown;
+                        lines = Lay(local, Stage);
+                        merged = CellStore.Merge(previous, lines, local, ways.ToDictionary(w => w.Id));
+                        Stage("merged");
                     }
 
-                    var grown = GrownFor(local!, merged.Made);
-                    RailWerkz.Core.Logging.Log.Info($"Local rebuild: {spill}; {local!.Dirty!.Count} cells grown to {grown.Dirty!.Count} and laid again");
-                    local = grown;
-                    lines = Lay(local, Stage);
-                    merged = CellStore.Merge(previous, lines, local, ways.ToDictionary(w => w.Id));
-                    Stage("merged");
+                    if (merged.Spill is { } again)
+                    {
+                        RailWerkz.Core.Logging.Log.Info($"Local rebuild path: whole route ({again})");
+                        local = local with { Dirty = null, Context = null, Seen = previous.Lines };
+                        merged = null;
+                        lines = Lay(local, Stage);
+                    }
                 }
+                else
+                    RailWerkz.Core.Logging.Log.Info($"Local rebuild path: cells ({local.Dirty!.Count})");
 
                 if (merged is not null)
                 {
@@ -182,6 +200,7 @@ public sealed partial class TerrainSource
                     CheckCells(previous, merged, full, local);
                 else
                     CheckLocal(lines, full);
+                Stage("(the check)");
             }
 
             var old = new Dictionary<long, NetworkLine>();
@@ -658,6 +677,8 @@ public sealed partial class TerrainSource
     public List<(int X0, int Z0, int X1, int Z1)> Apply(NetworkChange change)
     {
         Lines = change.Lines;
+        foreach (var (_, to) in change.Moved ?? [])
+            change.Lines.Lines[to].MoveTo(to);
         lock (_unsavedLock)
         {
             if (change.Touched is null)

@@ -145,8 +145,26 @@ internal static partial class CellStore
         foreach (var w in made)
             if (byName.TryGetValue(w.Name, out var p) && !kept.Contains(p) && !gone.Contains(p))
                 gone.Add(p);
+        // The lines made that reach out of the dirty cells and were held there (NetworkLines.HoldAtBorder): what's anchored along them
+        // outside is previous's, pointed at them. One that wasn't held means the cells weren't enough.
+        var held = new Dictionary<NetworkLine, NetworkLine>(ReferenceEqualityComparer.Instance);
+        var unheld = new List<NetworkLine>();
+        foreach (var w in made)
+        {
+            var outsideAny = false;
+            for (var q = 0; q < w.Count && !outsideAny; q++)
+                outsideAny = !local.InDirty(w.X[q], w.Z[q]);
+            if (!outsideAny)
+                continue;
+            if (byName.TryGetValue(w.Name, out var was) && NetworkLines.HeldOutside(w, was, local))
+                held[was] = w;
+            else
+                unheld.Add(w);
+        }
+
+        var heldW = new HashSet<NetworkLine>(held.Values, ReferenceEqualityComparer.Instance);
         string? spill = null;
-        if (wThings.FirstOrDefault(t => !t.InDirty && !things.ContainsKey(t.Item) && Refers(t.Item, madeSet.Contains)) is { Item: { } stray })
+        if (wThings.FirstOrDefault(t => !t.InDirty && !things.ContainsKey(t.Item) && Refers(t.Item, l => madeSet.Contains(l) && !heldW.Contains(l))) is { Item: { } stray })
         {
             NetworkLine? named = null;
             Refers(stray, l =>
@@ -160,12 +178,8 @@ internal static partial class CellStore
                     $"({(named is null ? "" : named.Rail ? "rail" : named.Mark ? "mark" : "road")}, {named?.Count} points from {named?.X[0]:0}, {named?.Z[0]:0}, " +
                     $"{(named is not null && NetworkLines.TouchesDirty(named, local) ? "in the dirty cells" : "outside them")}, made for {(named is null ? "" : first.GetValueOrDefault(named).Why)}))";
         }
-        foreach (var w in made)
-            if (!NetworkLines.TouchesDirty(w, local))
-            {
-                spill ??= $"line {w.Name} ({(w.Rail ? "rail" : w.Mark ? "mark" : "road")}, at {w.X[0]:0}, {w.Z[0]:0}) laid differently outside the dirty cells";
-                break;
-            }
+        if (unheld.FirstOrDefault() is { } w0)
+            spill ??= $"line {w0.Name} ({(w0.Rail ? "rail" : w0.Mark ? "mark" : "road")}, at {w0.X[0]:0}, {w0.Z[0]:0}) laid differently outside the dirty cells, not held";
 
         // Places: a made line takes the place of the gone one of its name, then any gone one's, then a new one; places left over are filled
         // from the end.
@@ -221,11 +235,45 @@ internal static partial class CellStore
         // The window's things pointed at what they'll be with.
         var remap = new Remapper(map, things);
 
+        // Previous's things outside the cells naming a line held are copies naming the line laid; a turnout copied so is on lines whose
+        // zones name it, which are copied too (sharing their arrays: they're as they were), and so on.
+        var lineMap = new Dictionary<NetworkLine, NetworkLine>(held, ReferenceEqualityComparer.Instance);
+        var copiedLines = new List<NetworkLine>();
+        var copiedTurnouts = new HashSet<Turnout>(ReferenceEqualityComparer.Instance);
+        var zonesField = GraphSnapshot.FieldsOf(typeof(NetworkLine)).First(x => x.Name == Auto(nameof(NetworkLine.TurnoutZones)));
+        for (var more = true; more && held.Count > 0;)
+        {
+            more = false;
+            foreach (var t in previous.Turnouts)
+            {
+                if (copiedTurnouts.Contains(t) || (cP.Place(t) is { } at && dirty.Contains(at)))
+                    continue;
+                if (!lineMap.ContainsKey(t.Toe.Line) && !lineMap.ContainsKey(t.Normal.Line) && !lineMap.ContainsKey(t.Reverse.Line))
+                    continue;
+                copiedTurnouts.Add(t);
+                foreach (var leg in (ReadOnlySpan<NetworkLine>)[t.Toe.Line, t.Normal.Line, t.Reverse.Line])
+                {
+                    if (lineMap.ContainsKey(leg) || gone.Contains(leg) || !leg.TurnoutZones.Any(z => ReferenceEquals(z.Turnout, t)))
+                        continue;
+                    var copy = (NetworkLine)RuntimeHelpers.GetUninitializedObject(typeof(NetworkLine));
+                    foreach (var x in GraphSnapshot.FieldsOf(typeof(NetworkLine)))
+                        x.SetValue(copy, x.GetValue(leg));
+                    zonesField.SetValue(copy, new List<TurnoutZone>(leg.TurnoutZones));
+                    lineMap[leg] = copy;
+                    copiedLines.Add(copy);
+                    lines[leg.Index] = copy;
+                    more = true;
+                }
+            }
+        }
+
+        var repoint = new Repointer(lineMap);
+
         var root = (NetworkLines)RuntimeHelpers.GetUninitializedObject(typeof(NetworkLines));
         // (The spread fields side by side: previous's part of each is most of the work. The window's objects are pointed at what
         // they'll be with one field at a time, Remapper not being made for more.)
         Parallel.ForEach(RootFields.Where(f => RuleOf(f).Place == Place.Spread), f =>
-            f.SetValue(root, MergeField(f, RuleOf(f), previous, window, cP, cW, dirty, remap, FromWindow, IndexOf, goneIndex, made, gone, lines, moved)));
+            f.SetValue(root, MergeField(f, RuleOf(f), previous, window, cP, cW, dirty, remap, FromWindow, IndexOf, goneIndex, made, gone, lines, moved, repoint)));
         foreach (var f in RootFields)
         {
             var rule = RuleOf(f);
@@ -274,11 +322,15 @@ internal static partial class CellStore
             }
         }
 
-        // The window's lines made point at the turnouts they'll be with.
+        // The window's lines made point at the turnouts they'll be with (previous's, copied where they name a line held), and so do the
+        // lines copied.
         foreach (var w in made)
             for (var z = 0; z < w.TurnoutZones.Count; z++)
                 if (things.TryGetValue(w.TurnoutZones[z].Turnout, out var p))
-                    w.TurnoutZones[z] = w.TurnoutZones[z] with { Turnout = (Turnout)p };
+                    w.TurnoutZones[z] = w.TurnoutZones[z] with { Turnout = (Turnout)repoint.Map(p)! };
+        foreach (var c in copiedLines)
+            for (var z = 0; z < c.TurnoutZones.Count; z++)
+                c.TurnoutZones[z] = c.TurnoutZones[z] with { Turnout = (Turnout)repoint.Map(c.TurnoutZones[z].Turnout)! };
         RootFields.First(f => f.Name == "Ways").SetValue(root, ways);
         RootFields.First(f => f.Name == Auto(nameof(NetworkLines.DetailCache))).SetValue(root, new System.Collections.Concurrent.ConcurrentDictionary<NetworkLines.DetailRegion, Lazy<float[]>>());
 
@@ -287,15 +339,14 @@ internal static partial class CellStore
         foreach (var l in made.Concat(gone))
             touched.UnionWith(l.Tiles);
 
-        // (Lines kept as objects but moved: their place is theirs now, and what's anchored along them names it.)
+        // (Lines kept as objects but moved: what's anchored along them names their new place; the lines themselves are told it as the
+        // change is taken in, on the main thread (TerrainSource.Apply), the last lines being shown till then.)
         foreach (var (from, to) in moved)
-        {
             touched.UnionWith(lines[to].Tiles);
-            lines[to].MoveTo(to);
-        }
 
         Time("put together");
-        Log.Info($"Cells merged: {made.Count} lines laid differently or new, {gone.Count} gone, {moved.Count} moved, {things.Count} things as they were; " +
+        Log.Info($"Cells merged: {made.Count} lines laid differently or new ({held.Count} reaching out of the cells, held there; {copiedLines.Count} lines and " +
+                 $"{repoint.Copies} things outside pointed at them), {gone.Count} gone, {moved.Count} moved, {things.Count} things as they were; " +
                  $"{dirty.Count} dirty cells, {touched.Count} touched{(spill is null ? "" : $"; SPILL: {spill}")}; made for: {string.Join(", ", differ.Select(d => $"{d.Value} {d.Key}"))}; ms: {string.Join(", ", times)}");
         return new Merged(root, made, gone, moved, touched, spill);
     }
@@ -350,7 +401,7 @@ internal static partial class CellStore
     /// One spread field of the merged lines.
     private static object? MergeField(FieldInfo f, Rule rule, NetworkLines previous, NetworkLines window, Context cP, Context cW, HashSet<TileId> dirty,
         Remapper remap, Func<int, int> fromWindow, Func<NetworkLine, int> indexOf, HashSet<int> goneIndex, List<NetworkLine> made, List<NetworkLine> gone,
-        List<NetworkLine> lines, List<(int From, int To)> moved)
+        List<NetworkLine> lines, List<(int From, int To)> moved, Repointer repoint)
     {
         var p = f.GetValue(previous);
         var w = f.GetValue(window);
@@ -397,7 +448,7 @@ internal static partial class CellStore
         var (keys, values) = (KeyIndexFields.Contains(f.Name), ValueIndexFields.Contains(f.Name));
         var movedTo = moved.ToDictionary(m => m.From, m => m.To);
         object? MovedP(object? o) => movedTo.Count > 0 ? Reindex(o, i => movedTo.GetValueOrDefault(i, i)) : o;
-        object FromP(object? o) => keys ? MovedP(o)! : o!;
+        object FromP(object? o) => keys ? MovedP(o)! : repoint.Map(o)!;
         object? FromW(object? o)
         {
             if (keys)
@@ -455,7 +506,7 @@ internal static partial class CellStore
                 if (o < pr.Count)
                     foreach (DictionaryEntry e in (IDictionary)pr[o]!)
                         if (InP(e.Key, e.Value))
-                            d[FromP(e.Key)] = e.Value;
+                            d[FromP(e.Key)] = repoint.Map(e.Value);
                 if (o < wr.Count)
                     foreach (DictionaryEntry e in (IDictionary)wr[o]!)
                         if (InW(e.Key, e.Value))
@@ -473,7 +524,7 @@ internal static partial class CellStore
                 if (p is IDictionary pd)
                     foreach (DictionaryEntry e in pd)
                         if (InP(e.Key, e.Value))
-                            dictionary[FromP(e.Key)] = values ? MovedP(e.Value) : e.Value;
+                            dictionary[FromP(e.Key)] = values ? MovedP(e.Value) : repoint.Map(e.Value);
                 if (w is IDictionary wd)
                     foreach (DictionaryEntry e in wd)
                         if (InW(e.Key, e.Value))
@@ -764,6 +815,132 @@ internal static partial class CellStore
         }
 
         return Walk(thing, 0);
+    }
+
+    /// Previous's things that name a line replaced (a line held outside the dirty cells, NetworkLines.HoldAtBorder, or a line copied
+    /// because a turnout on it was): copies naming its replacement (previous's own are still shown meanwhile). Anything not naming one
+    /// comes back as it is. Thread safe (the fields are merged side by side).
+    private sealed class Repointer(Dictionary<NetworkLine, NetworkLine> lines)
+    {
+        private readonly Dictionary<object, object> _copies = new(ReferenceEqualityComparer.Instance);
+        private readonly Lock _lock = new();
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, FieldInfo[]> Holding = new();
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, bool> MayHold = new();
+
+        public int Copies => _copies.Count;
+
+        public object? Map(object? o)
+        {
+            if (lines.Count == 0 || o is null)
+                return o;
+            if (o is NetworkLine line)
+                return lines.GetValueOrDefault(line, line);
+            if (!Touches(o, 0))
+                return o;
+            lock (_lock)
+                return Copy(o, 0);
+        }
+
+        private static bool Holds(Type t) => MayHold.GetOrAdd(t, static t =>
+            !(t.IsPrimitive || t.IsEnum || t == typeof(string) || t == typeof(decimal) || t == typeof(TileId) || t == typeof(NetworkLines) ||
+              (t.IsArray && GraphSnapshot.IsBlittable(t.GetElementType()!))));
+
+        private static FieldInfo[] FieldsHolding(Type t) => Holding.GetOrAdd(t, static t =>
+            [.. GraphSnapshot.FieldsOf(t).Where(f => Holds(f.FieldType) && !f.FieldType.IsSubclassOf(typeof(Delegate)) && f.FieldType != typeof(Lock))]);
+
+        private bool Touches(object? o, int depth)
+        {
+            switch (o)
+            {
+                case null:
+                    return false;
+                case NetworkLine line:
+                    return lines.ContainsKey(line);
+                case NetworkLines:
+                    return false;
+            }
+
+            var t = o.GetType();
+            if (depth > 4 || !Holds(t))
+                return false;
+            if (o is IEnumerable items)
+            {
+                foreach (var item in items)
+                    if (item is DictionaryEntry e ? Touches(e.Key, depth + 1) || Touches(e.Value, depth + 1) : Touches(item, depth + 1))
+                        return true;
+                return false;
+            }
+
+            foreach (var f in FieldsHolding(t))
+                if (Touches(f.GetValue(o), depth + 1))
+                    return true;
+            return false;
+        }
+
+        private object? Copy(object? o, int depth)
+        {
+            switch (o)
+            {
+                case null:
+                    return null;
+                case NetworkLine line:
+                    return lines.GetValueOrDefault(line, line);
+                case NetworkLines:
+                    return o;
+            }
+
+            if (_copies.TryGetValue(o, out var done))
+                return done;
+            var t = o.GetType();
+            if (!Holds(t) || !Touches(o, depth))
+                return o;
+            switch (o)
+            {
+                case Array array:
+                {
+                    var copy = (Array)array.Clone();
+                    for (var i = 0; i < copy.Length; i++)
+                        copy.SetValue(Copy(copy.GetValue(i), depth + 1), i);
+                    return copy;
+                }
+                case IDictionary dictionary:
+                {
+                    var copy = (IDictionary)Activator.CreateInstance(t)!;
+                    foreach (DictionaryEntry e in dictionary)
+                        copy[Copy(e.Key, depth + 1)!] = Copy(e.Value, depth + 1);
+                    return copy;
+                }
+                case IList list:
+                {
+                    var copy = (IList)Activator.CreateInstance(t)!;
+                    foreach (var item in list)
+                        copy.Add(Copy(item, depth + 1));
+                    return copy;
+                }
+            }
+
+            if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(HashSet<>))
+            {
+                var copy = Activator.CreateInstance(t)!;
+                var add = t.GetMethod("Add")!;
+                foreach (var item in (IEnumerable)o)
+                    add.Invoke(copy, [Copy(item, depth + 1)]);
+                return copy;
+            }
+
+            // (A value's boxed copy is its own already; an object's copied field by field.)
+            var made = t.IsValueType ? o : RuntimeHelpers.GetUninitializedObject(t);
+            if (!t.IsValueType)
+            {
+                _copies[o] = made;
+                foreach (var f in GraphSnapshot.FieldsOf(t))
+                    f.SetValue(made, f.GetValue(o));
+            }
+
+            foreach (var f in FieldsHolding(t))
+                f.SetValue(made, Copy(f.GetValue(o), depth + 1));
+            return made;
+        }
     }
 
     /// Points the window's objects at what they'll be with: every line at the line it maps to, every registered thing taken as

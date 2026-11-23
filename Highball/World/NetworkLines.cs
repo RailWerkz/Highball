@@ -1755,6 +1755,111 @@ public sealed partial class NetworkLines
         return true;
     }
 
+    /// How far inside the dirty cells a line laid again is eased onto the last line's points held outside them, metres.
+    internal const double BorderEase = 600.0;
+
+    /// A rebuild of some cells, once every pass is done: each line laid again that reaches out of the dirty cells, and was laid before
+    /// under its name with as many points, is held there: its points outside the cells are the last line's exactly (every per-point
+    /// array, and the segments between two of them), and those inside within BorderEase of the border are eased onto them. So the line
+    /// outside the cells is what it was, by construction, and what's anchored along it there stays good (CellStore.Merge points it at
+    /// the line laid). Returns how many lines were held.
+    internal int HoldAtBorder(LocalRebuild local)
+    {
+        if (local.Dirty is null)
+            return 0;
+        var named = local.Seen.GroupBy(l => l.Name).ToDictionary(g => g.Key, g => g.First());
+        var held = 0;
+        foreach (var line in _lines)
+        {
+            if (line.Origin is not null || !named.TryGetValue(line.Name, out var was) || was.Count != line.Count)
+                continue;
+            var n = line.Count;
+            var inside = new bool[n];
+            var any = false;
+            for (var p = 0; p < n; p++)
+                any |= !(inside[p] = local.InDirty(line.X[p], line.Z[p]));
+            if (!any)
+                continue;
+
+            // How far along the line each point is from the nearest point outside.
+            var away = new double[n];
+            Array.Fill(away, double.MaxValue);
+            for (var p = 0; p < n; p++)
+                away[p] = !inside[p] ? 0 : p > 0 ? away[p - 1] + Math.Abs(line.S[p] - line.S[p - 1]) : double.MaxValue;
+            for (var p = n - 2; p >= 0; p--)
+                away[p] = Math.Min(away[p], away[p + 1] + Math.Abs(line.S[p + 1] - line.S[p]));
+
+            void Doubles(double[] mine, double[] old, int stride)
+            {
+                if (mine.Length != n * stride || old.Length != mine.Length || ReferenceEquals(mine, old))
+                    return;
+                for (var p = 0; p < n; p++)
+                {
+                    if (away[p] >= BorderEase)
+                        continue;
+                    var t = away[p] / BorderEase;
+                    var keep = 1.0 - t * t * (3.0 - 2.0 * t);
+                    for (var k = 0; k < stride; k++)
+                        mine[p * stride + k] = !inside[p] ? old[p * stride + k] : mine[p * stride + k] + (old[p * stride + k] - mine[p * stride + k]) * keep;
+                }
+            }
+
+            void Floats(float[] mine, float[] old, int stride)
+            {
+                if (mine.Length != n * stride || old.Length != mine.Length || ReferenceEquals(mine, old))
+                    return;
+                for (var p = 0; p < n; p++)
+                {
+                    if (away[p] >= BorderEase)
+                        continue;
+                    var t = (float)(away[p] / BorderEase);
+                    var keep = 1f - t * t * (3f - 2f * t);
+                    for (var k = 0; k < stride; k++)
+                        mine[p * stride + k] = !inside[p] ? old[p * stride + k] : mine[p * stride + k] + (old[p * stride + k] - mine[p * stride + k]) * keep;
+                }
+            }
+
+            Doubles(line.X, was.X, 1);
+            Doubles(line.Z, was.Z, 1);
+            Doubles(line.RawX, was.RawX, 1);
+            Doubles(line.RawZ, was.RawZ, 1);
+            Doubles(line.MappedX, was.MappedX, 1);
+            Doubles(line.MappedZ, was.MappedZ, 1);
+            Floats(line.Y, was.Y, 1);
+            Floats(line.Ground, was.Ground, 1);
+            Floats(line.S, was.S, 1);
+            Floats(line.Junction, was.Junction, 1);
+            Floats(line.Shift, was.Shift, 1);
+            Floats(line.Sink, was.Sink, 1);
+            Floats(line.Drape, was.Drape, NetworkLine.MarkPoints);
+            for (var s = 0; s + 1 < n; s++)
+                if (!inside[s] && !inside[s + 1])
+                {
+                    if (s < line.Structures.Length && s < was.Structures.Length)
+                        line.Structures[s] = was.Structures[s];
+                    if (s < line.Layers.Length && s < was.Layers.Length)
+                        line.Layers[s] = was.Layers[s];
+                }
+
+            (line.MinX, line.MinZ, line.MaxX, line.MaxZ) = (line.X.Min(), line.Z.Min(), line.X.Max(), line.Z.Max());
+            held++;
+        }
+
+        return held;
+    }
+
+    /// Whether a line's points outside a rebuild's dirty cells are another's exactly (as HoldAtBorder leaves them).
+    internal static bool HeldOutside(NetworkLine line, NetworkLine was, LocalRebuild local)
+    {
+        if (line.Count != was.Count)
+            return false;
+        for (var p = 0; p < line.Count; p++)
+            if (!local.InDirty(line.X[p], line.Z[p]) && (line.X[p] != was.X[p] || line.Z[p] != was.Z[p] || line.Y[p] != was.Y[p] ||
+                    (p < line.Sink.Length && p < was.Sink.Length && line.Sink[p] != was.Sink[p])))
+                return false;
+        return true;
+    }
+
     /// Whether any of a line's points is in a local rebuild's dirty cells.
     internal static bool TouchesDirty(NetworkLine line, LocalRebuild local)
     {
