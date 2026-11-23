@@ -259,9 +259,15 @@ internal static partial class CellStore
                 var used = new HashSet<long>();
                 void Add(long ordinal, object? key, object? v)
                 {
-                    // (A window's read from a cell it isn't complete in: that cell's, on disk, not the window's to write.)
-                    if (window is not null && window.Foreign.Contains((fi, ordinal)))
-                        return;
+                    // (A window's read from a cell it isn't complete in: that cell's, on disk, not the window's to write. And of no cell,
+                    // what wasn't read from the index's own part: with only the window's lines to go by, a thing in a cell not loaded has
+                    // none either. Places compared as written: a registered thing's in 32 bits.)
+                    if (window is not null)
+                    {
+                        var place = registered || values ? (int)ordinal : ordinal;
+                        if (window.Foreign.Contains((fi, place)) || (rule.Anchor!(c, key, v) is null && !window.Rest.Contains((fi, place))))
+                            return;
+                    }
                     // (Its place: what it is, hashed, OrdinalOf; one alike already there takes the next.)
                     ordinal = registered || values ? (int)ordinal : ordinal;
                     while (!used.Add(ordinal))

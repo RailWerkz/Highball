@@ -12,8 +12,10 @@ namespace Highball.World;
 /// it (those and the cells the lines loaded reach into, CellStore.Index.Reach), and the complete cells something read refers to a line or a
 /// thing outside the window from (Tainted: what's anchored there names something not loaded, so the cell isn't written from it), and
 /// what was read from cells it isn't complete in (Foreign, by field and place: never written from the window, wherever its anchor
-/// comes out with only the window's lines to go by, a node or a chain on lines not loaded giving none).
-public sealed record CellWindow(IReadOnlySet<TileId> Complete, IReadOnlySet<TileId> Read, IReadOnlySet<TileId> Tainted, IReadOnlySet<(int Field, long Ordinal)> Foreign)
+/// comes out with only the window's lines to go by, a node or a chain on lines not loaded giving none), and what was read from the
+/// index's own part (Rest: what has no cell; a window writes only that there, anything else of no cell may be in a cell not loaded).
+public sealed record CellWindow(IReadOnlySet<TileId> Complete, IReadOnlySet<TileId> Read, IReadOnlySet<TileId> Tainted, IReadOnlySet<(int Field, long Ordinal)> Foreign,
+    IReadOnlySet<(int Field, long Ordinal)> Rest)
 {
     /// Whether every one of these cells can be written from the window.
     public bool Writes(IEnumerable<TileId> cells) => cells.All(c => Complete.Contains(c) && !Tainted.Contains(c));
@@ -322,6 +324,7 @@ internal static partial class CellStore
             // What a window's read couldn't find (a line or thing not loaded), by field, and the complete cells that named it.
             var missing = new System.Collections.Concurrent.ConcurrentDictionary<string, int>();
             var foreign = new System.Collections.Concurrent.ConcurrentDictionary<(int, long), byte>();
+            var fromRest = new System.Collections.Concurrent.ConcurrentDictionary<(int, long), byte>();
             var tainted = new System.Collections.Concurrent.ConcurrentDictionary<TileId, byte>();
             var lineIndexed = SpreadFields.Select(f => f.Name is "_byTile" or "_pointsByTile" or "_needGround" || KeyIndexFields.Contains(f.Name) || ValueIndexFields.Contains(f.Name)).ToArray();
             // (What only a complete cell's lines can stand behind: the lines' tile indexes, and the detail regions shaped finer from them.)
@@ -470,6 +473,8 @@ internal static partial class CellStore
                             Missed(f.Name + " (kept, naming what's not loaded)");
                         if (!full)
                             foreign.TryAdd((fi, ordinal), 0);
+                        else if (isRest)
+                            fromRest.TryAdd((fi, ordinal), 0);
                         file.Elements.Add(e.Value);
                     }
                 }
@@ -551,7 +556,7 @@ internal static partial class CellStore
                 // (Worked out again when first asked for, from the lines loaded: what's read of them names lines that aren't.)
                 foreach (var name in Remade.Append("_byChain"))
                     RootFields.First(f => f.Name == name).SetValue(root, null);
-                root.Window = new CellWindow(complete, toRead, tainted.Keys.ToHashSet(), foreign.Keys.ToHashSet());
+                root.Window = new CellWindow(complete, toRead, tainted.Keys.ToHashSet(), foreign.Keys.ToHashSet(), fromRest.Keys.ToHashSet());
             }
 
             Time("put together");
