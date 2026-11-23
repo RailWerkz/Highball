@@ -2,7 +2,7 @@
 
 The plan for making the route builder's track work in small fixed cells instead of over the whole route, so that
 opening the builder and placing track cost the same whether the world is one county or the whole country. This is a
-design document: nothing here is built yet. It fills in phase 5 of `performance-plan.md` ("region streaming ... a
+design document; stage 1 is built (see Cell format). It fills in phase 5 of `performance-plan.md` ("region streaming ... a
 redesign of `NetworkLines`' solve, not a loader change") and the "visible track moves into tiles" step of `mmo.md`.
 
 ## The problem, measured
@@ -170,6 +170,129 @@ bridges are fitted, how ground is shaped to the track, the meshes, the rail grap
   and their borders.
 - The whole-route network files: replaced by per-cell network data.
 - Line keys as identities: replaced by chain and cell names.
+
+## Cell format (stage 1, built 2026-11-22)
+
+Code: `Highball/World/CellStore*.cs`. Files: `<route>/Cells/I_J.cell` for every cell with anything in it (572 for World) and
+`<route>/Cells/index.bin`. Written whole after a cold open and after Ctrl+S (`TerrainSource.SaveCells`, in the background,
+guarded by `EditorView._saves`); read whole on open (`CellStore.Read(route, index, cells)` takes a set of cells, but for now
+it must be all of them). `Cache/Lines.bin` (`CompiledRoute`) is gone; writing the cells deletes a stale one.
+
+### Inventory: every field, and where it goes
+
+`NetworkLine` (one line):
+
+| Field | Kind | Where |
+|---|---|---|
+| X, Z, Y, Ground, S, Junction, Shift, Sink, RawX, RawZ, MappedX, MappedZ (when as long as the line), Drape (5 per point) | per point | pieces |
+| Structures, Layers | per segment | pieces (segment i with point i) |
+| Index, Key, Chain, Rail, Class, Tracks, Gauge, Disused, Embedded, Exact, Mark, Width, Lanes, Oneway, Unpaved, Formation, Bed, BedHeight, MinX..MaxZ, Tiles, Nodes, Alignment, TurnoutZones (refer to turnouts), RailCuts, TieCuts, BedDrops, _halo | per line | head (the piece holding point 0) |
+| _runBoxes | derived, lazy | dropped, made again when asked for |
+| _origin | the last rebuild's line (frozen copies) | dropped (as `CompiledRoute` did: a line read is nobody's copy) |
+
+The cut is decided per array by its length (count: per point, k x count: k per point, count - 1: per segment, anything
+else whole in the head), so a field added later is kept whatever it is.
+
+`NetworkLines` (`CellStore.Rules`; a field with no rule is kept in the index and warned about):
+
+| Kind | Fields | Anchor |
+|---|---|---|
+| Lines | `_lines` | pieces |
+| Indexes by tile | `_byTile` (order lines shape a tile in), `_pointsByTile`, `_ballast`, `_preparedKeys` | the tile |
+| Anchored things | `Turnouts`, `Layouts`, `_pads`, `CrossingAssemblies`, `Bridges`, `_endShapes` (slope ends), `_detailRegions`, `_detailCells`, `_crossings`, `_railCells` (25 m grid) | their X, Z (Ex, Ez; the grid cell's middle) |
+| Per line | `_shapingHashes`, `_linePins`, `_pinnedPoints`, `_wallsBeside`, `_bridgeEnds` (at the first end's point), `_extended`, `_surfaceShifts`, `_sideBySide`, `_continuing`, `_wallSpans`, `_railsNear`, `_byChain`, `_seenChains`, `_needGround` | the line's head, or the point named |
+| By node | `Links`, `CrossoverProblems`, `SwitchOptions`, `Fitted`, `_nodePins`, `_spreadNodes`, `_forks`, `_widestAt`, `_junctionNodes`, `_roadEnds`, `_railAt`, `_junctionRounds` (junction heights, a list of rounds by node) | the node's point on a line |
+| Route-wide | `_spacing`, `_quads`, `_ballastSamples`, `_handSet`, `_padsHash`, `Sizes`, `Curves`, the three locks | the index |
+| Restored | `Ways`, `Shapes`, `BuiltTiles`, `_crossingObjects`, `Before`, `BridgeEdits`, `DetailCache` | put back from what's opened (`CellStore.Restore`) |
+| Not needed after the build | `_liftCells` (LiftBridges' grid, let go at the start of FinishProfiles), `_lapWatch`, `_lapName`, `_laps` | dropped |
+
+Things with no cell (a chain that made no line, 17,804 in World; 3 node pins on nodes on no line) go in the index.
+Derived indexes are kept rather than rebuilt: several (`_railCells`, `_detailCells`, `_roadEnds`) are read without being
+rebuilt, and keeping them is what makes the read-back exact.
+
+### Layout
+
+A cell file: a plain header (magic, format, I, J, codec, shuffle, sizes), then two compressed blocks.
+
+- **Block A**, read first for every cell: the pieces (line index, the line's point count, first point, count, key, how each
+  array is cut, and a count of tagged extension blocks, 0 for now: stage 2's border points go there), and the things
+  this cell owns that others may refer to (kind, ordinal, type).
+- **Block B**: each piece's array slices (byte planes: all first bytes, then all second bytes...), then one
+  `GraphSnapshot` per cell: the heads (line index, mask of what was cut, then every other field), then the spread
+  elements grouped by field, each with its ordinal in the route-wide list, set or dictionary.
+
+References: `GraphSnapshot` writes a line, a registered thing (an item of a spread list of objects: turnouts, layouts,
+pads, assemblies, bridges, slope ends) or the `NetworkLines` itself as `(kind, index)`: 0 the root, 1 line index,
+2 + field the thing's ordinal. Reading makes every line and registered thing empty first (from the index's line count
+and the cells' block A), then fills them cell by cell in parallel, then puts the lists, sets and dictionaries
+together in ordinal order, so their order is what it was.
+
+The index: magic, `FormatVersion`, `BuildVersion`, the inputs stamp, a hash of `Rules`, the line count, the schema (every
+type the cells hold and its layout: `GraphSnapshot.LayoutOf`, field names and types all the way down through value
+types), each spread field's count (and null or not), each cell's size and hash, then its own part laid out as a cell
+(things with no cell, and the route-wide fields).
+
+### Versions
+
+- `CellStore.FormatVersion`: the files' layout. A mismatch: not read, worked out and written again.
+- `CellStore.BuildVersion`: bumped by hand when laying, grading or shaping changes should show. Also keys the ground
+  cache (`GroundCache`), which used to be keyed by the assembly's MVID and so reshaped every tile after every build.
+- The schema: a type the cells hold laid out differently in this build (a field added to `Turnout`, say) means the
+  cells aren't read, rather than read as garbage. A change of code alone keeps them.
+- The inputs stamp: `CompiledRoute.StampOf` without the MVID (input files including `RouteNetwork.Files`, `Track.bin.gz`
+  size and time, built tiles' heights size and time, grade crossings).
+- Each cell's hash in the index: a cell from another written set isn't read.
+
+### Measured (World, 2026-11-22)
+
+| | |
+|---|---|
+| `Cells/` total | 162 MB in 572 cells + a 206 KB index (from 407 MB raw); `Lines.bin` was 453 MB |
+| Biggest, median cell | 1,553 KB (`-102_348`), 201 KB |
+| Pieces | 39,436 for 33,345 lines; 554,780 other things spread |
+| Raw bytes, biggest parts | `_pointsByTile` 48 MB; X, Z, RawX, RawZ 47–48 MB each; S, Y, Junction, Ground, Layers 24 MB each; heads 19 MB; Drape 14 MB |
+| Write (all cells, 16 threads) | 3.5–3.7 s at a cold open (spread 0.5, encode 2.2–2.6, files 0.5–0.7) |
+| Read (all cells) | 1.2–1.4 s: files and hashes 0.1, made 0.2, read 0.65, put together 0.2–0.4 (`Lines.bin`: 2.6 s) |
+| Open, warm | 5.6–6.0 s (stamp 0.3, cells 1.3, ground keys 2.0, reshape from the ground cache 1.2); and the same after a new build |
+| Open, cold | 52–57 s (unchanged: solving, ground, profiles, then writing) |
+| Peak working set, warm open | 3.3–3.6 GB (whole game) |
+
+Compression, every cell's blocks summed on one thread:
+
+| | Size | Pack | Unpack |
+|---|---|---|---|
+| zlib optimal, byte planes | 181 MB | 9.5 s | 0.88 s |
+| zlib optimal, as laid out | 242 MB | 12.3 s | 1.23 s |
+| brotli 4, byte planes | 169 MB | 8.7 s | 1.60 s |
+| **brotli 5, byte planes (chosen)** | **163 MB** | 15.7 s | 1.56 s |
+| brotli 5, as laid out | 190 MB | 26.2 s | 2.43 s |
+| brotli 9, byte planes | 162 MB | 53.7 s | 2.22 s |
+
+Byte planes win everywhere (25–30% smaller, and faster to unpack). Brotli 5 is 10% smaller than zlib for 0.7 s more
+unpacking on one thread, under 0.1 s on all of them; writes are in the background.
+
+Checked (`HB_CELLCHECK=1`): an open from the cells against the lines worked out afresh, every field of `NetworkLines` and
+everything under it, 89 million values, bit for bit: 0 differ; every line's shaping hash and every tile's shaping key: 0
+differ. After writing (at a cold open, and after an edit and a save) the cells read straight back against the lines in
+memory: 0 differ, and no object written into two cells.
+
+### For stage 2 (edits writing their cells) and stage 4 (streaming)
+
+- **A piece finds its line by line index**, and checks the line's key. Indices are only stable within one written set,
+  which is all stage 1 needs (every cell's hash is in the index). Rewriting some cells means either keeping line indices
+  stable across a rebuild or naming lines by chain (the piece header has the key; it should carry the chain id, and the
+  heads' `Chain`) and resolving by name.
+- **References are (kind, ordinal)**: a line by its index, a turnout, layout, pad, assembly, bridge, slope end or switch
+  option by its place in the route-wide list or dictionary. Order is kept by ordinal, so rewriting one cell's
+  turnouts renumbers everyone's. Stage 2 needs stable names here too (turnout by node, bridge by key, layout by node).
+- **Where things went**: per-line dictionaries with the line's head; by-node ones at the node's first point on a line;
+  by-tile ones in the tile. A thing that reaches into other cells (a bridge, a long turnout's legs) is in its anchor's cell
+  only, and nothing yet lists it in the others: a partial read has to load the anchor's cell or know to.
+- **Reading a set**: `Read` takes a set, but returns null unless every line's pieces and every referred-to thing are in
+  it. Stage 4 needs `NetworkLines` to be a window: lines held in part, and references into unloaded cells.
+- **Border points**: each piece has a count of tagged extension blocks (0 now), for its border point.
+- **Version policy**: a field added to `NetworkLines` gets a rule in `CellStore.Rules` (unruled ones are kept in the
+  index, with a warning). Changing any held type's fields, or the rules, makes the cells unreadable, so they're rebuilt.
 
 ## Stages
 
