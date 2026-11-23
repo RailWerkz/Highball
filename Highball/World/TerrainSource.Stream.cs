@@ -63,12 +63,14 @@ public sealed partial class TerrainSource
         {
             using var counted = Background.Begin("Streaming track");
             var watch = System.Diagnostics.Stopwatch.StartNew();
+            var (paused, gen2) = (GC.GetTotalPauseDuration(), GC.CollectionCount(2));
             var lines = ReadWindow(shown, wanted) ?? throw new InvalidOperationException("the window's cells couldn't be read");
             var read = watch.ElapsedMilliseconds;
             var change = ChangeTo(shown, lines);
             Log.Info($"Track streamed: window complete in {lines.Window!.Complete.Count} cells (was {window.Complete.Count}), {lines.Window.Read.Count} read; " +
                      $"{change.Made!.Count} lines loaded, {change.Gone!.Count} let go, {lines.Lines.Count(l => !l.IsAbsent)} in memory; {change.Heights.Count} tiles shaped again; " +
-                     $"ms: read {read}, change {watch.ElapsedMilliseconds - read}; at cell {CellAt(_route, x, z)}, working set {Environment.WorkingSet >> 20} MB, managed heap {GC.GetTotalMemory(false) >> 20} MB");
+                     $"ms: read {read}, change {watch.ElapsedMilliseconds - read}; at cell {CellAt(_route, x, z)}, working set {Environment.WorkingSet >> 20} MB, managed heap {GC.GetTotalMemory(false) >> 20} MB; " +
+                     $"the collector paused every thread {(GC.GetTotalPauseDuration() - paused).TotalMilliseconds:0} ms meanwhile ({GC.CollectionCount(2) - gen2} full collections)");
             return change;
         });
     }
