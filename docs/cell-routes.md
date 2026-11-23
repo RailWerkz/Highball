@@ -460,14 +460,16 @@ Background ms (`Track rebuild, ms`), main thread ms (`taken in`):
 
 | Edit | Before (whole route handed) | After: first window | After: grown window | Total after | Taken in, before / after |
 |---|---|---|---|---|---|
-| Branch off the main line (default) | 5,913 | 3,616 (25 dirty cells, no spill) | - | 3.6 s | 720 / 607 |
+| Branch off the main line (default) | 5,913 | 3,081 (25 dirty cells, no spill) | - | 3.5 s with reshape 438 | 720 / 577 |
 | Branch near a rail bridge | 6,710 | 3,033 (28 cells), spilled on a 14 km guide mark | 3,259 (71 cells) | 9.0 s with reshape 2,745 | 824 / 390 |
-| Spur in a yard | 6,903 | see the report (re-measured after a fix) | | | 552 / 198 |
+| Spur in a yard | 6,903 | 2,421 (25 cells), spilled on a crossing assembly of a new rail line | 3,285 (81 cells) | 20.9 s: reshape 15,203 (32 tiles) | 552 / 481 |
 
 The window's passes cost about half the whole route's (build 1.3 s against 2.8, profiles 0.9-1.0 against 1.5-1.7), the merge
 0.45-0.5 s. A spill doubles it. What's left (see the report): the window is still 25 cells (lines are whole objects, so a split
-main line makes its whole length dirty), the merge walks every spread field of the route (O(route), 0.2-0.4 s), and long roads
-and guide marks laid near an edit spill.
+main line makes its whole length dirty), the merge walks every spread field of the route (O(route), 0.2-0.4 s), long roads, guide
+marks and new rail laid near an edit spill (and a spill costs more than handing the whole route did), the yard edit's reshape
+shapes 32 tiles where 4 were shaped before (not found yet), and taking in is still 0.4-0.6 s on the main thread (`Mesh replace`:
+placing all 647 objects again, 0.3-0.4 s).
 
 Exactness (`HB_LOCALCHECK=1`, default edit, no spill): the 3,263 lines in the 25 dirty cells within 2 mm in plan and 4.8 mm in
 height of a full rebuild, none missing by name; outside the 25 cells touched, every line is the object it was and every spread
