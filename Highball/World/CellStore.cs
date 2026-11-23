@@ -93,16 +93,12 @@ internal static partial class CellStore
         }
 
         // (Every tile's heights' size and time from one listing of the tiles' folders, not a file asked after at a time: 50,000 tiles.)
-        var listed = new Dictionary<string, (long Length, long Ticks)>(StringComparer.OrdinalIgnoreCase);
-        var tiles = Path.Combine(route.Folder, "Tiles");
-        if (route.Pack is null && Directory.Exists(tiles))
-            foreach (var file in new DirectoryInfo(tiles).EnumerateFiles("Heights.bin.gz", new EnumerationOptions { RecurseSubdirectories = true, MaxRecursionDepth = 1 }))
-                listed[file.Directory!.Name] = (file.Length, file.LastWriteTimeUtc.Ticks);
+        var listed = route.TileList();
         foreach (var id in built.OrderBy(t => t.I).ThenBy(t => t.J))
         {
             hash.Add(id.I);
             hash.Add(id.J);
-            if (!listed.TryGetValue(id.ToString(), out var heights))
+            if (!listed.TryGetValue(id, out var heights))
             {
                 var info = new FileInfo(Path.Combine(route.TileFolder(id), "Heights.bin.gz"));
                 heights = info.Exists ? (info.Length, info.LastWriteTimeUtc.Ticks) : (-1, 0);

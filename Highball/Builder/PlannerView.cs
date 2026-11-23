@@ -46,6 +46,24 @@ public sealed class PlannerView : IDisposable
     /// Of the tiles selected, those to build with lidar; of those built, those that were; and which a drag marks next.
     private readonly HashSet<TileId> _lidar = [];
     private readonly HashSet<TileId> _builtLidar = [];
+    /// Which built tiles' heights are lidar, read from every tile's Tile.json in the background at open (a route of 50,000 tiles took
+    /// half a minute to read them before the Planner showed), taken in when it's done.
+    private Task<HashSet<TileId>>? _readingSources;
+
+    private HashSet<TileId> BuiltLidar
+    {
+        get
+        {
+            if (_readingSources is { IsCompleted: true } done)
+            {
+                _readingSources = null;
+                if (done.IsCompletedSuccessfully)
+                    _builtLidar.UnionWith(done.Result);
+            }
+
+            return _builtLidar;
+        }
+    }
     private bool _paintLidar = true;
 
     /// Asking OpenStreetMap where the track is, to mark the selection by it; and then building, for testing.
@@ -110,7 +128,8 @@ public sealed class PlannerView : IDisposable
         _notify = notify;
         _built = route.BuiltTiles();
         _regions = RouteRegions.Load(route);
-        ReadBuiltSources(_built);
+        var all = _built.ToList();
+        _readingSources = Task.Run(() => all.Where(IsLidar).ToHashSet());
         _layouts = World.TrackLayouts.LoadMarkers(route);
 
         // The detail the route was last built at.
@@ -175,19 +194,24 @@ public sealed class PlannerView : IDisposable
     /// Which of these built tiles have lidar heights, from what each says it was built from.
     private void ReadBuiltSources(IEnumerable<TileId> tiles)
     {
+        var lidar = BuiltLidar;
         foreach (var tile in tiles)
+            if (IsLidar(tile))
+                lidar.Add(tile);
+            else
+                lidar.Remove(tile);
+    }
+
+    private bool IsLidar(TileId tile)
+    {
+        try
         {
-            try
-            {
-                if (_route.LoadTileInfo(tile).HeightSource.Contains("USGS"))
-                    _builtLidar.Add(tile);
-                else
-                    _builtLidar.Remove(tile);
-            }
-            catch (Exception e)
-            {
-                Log.Warn($"Tile {tile}: {e.Message}");
-            }
+            return _route.LoadTileInfo(tile).HeightSource.Contains("USGS");
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"Tile {tile}: {e.Message}");
+            return false;
         }
     }
 
@@ -344,7 +368,7 @@ public sealed class PlannerView : IDisposable
             Route = _route,
             Network = _network,
             Tiles = [.. _built],
-            Lidar = _builtLidar.ToHashSet(),
+            Lidar = BuiltLidar.ToHashSet(),
             RoadLevel = _roadLevel,
             RailLevel = _railLevel,
             ReplaceNetwork = true,
@@ -483,8 +507,8 @@ public sealed class PlannerView : IDisposable
             _paddingLidar = Kit.Segmented("paddinglidar", ["Lidar", "Std"], _paddingLidar ? 0 : 1, true, half) == 0;
         }
 
-        HeightRow("Lidar", LidarColor, true, _lidar.Count, _builtLidar.Count);
-        HeightRow("Standard", StandardColor, false, _selected.Count - _lidar.Count, _built.Count - _builtLidar.Count);
+        HeightRow("Lidar", LidarColor, true, _lidar.Count, BuiltLidar.Count);
+        HeightRow("Standard", StandardColor, false, _selected.Count - _lidar.Count, _built.Count - BuiltLidar.Count);
         if (Kit.Button("build", _generator.Running ? "Building..." : "Build", 0f, ButtonKind.Primary, _selected.Count > 0 && !_generator.Running))
             Build();
         switch (Kit.Buttons("buildmore", ["Lidar along track", _generator.Running ? "Cancel" : "Clear"], [_selected.Count > 0 && !_generator.Running, _generator.Running || _selected.Count > 0]))
@@ -732,7 +756,7 @@ public sealed class PlannerView : IDisposable
 
         foreach (var t in _built)
         {
-            var color = _builtLidar.Contains(t) ? LidarColor : StandardColor;
+            var color = BuiltLidar.Contains(t) ? LidarColor : StandardColor;
             Quad(draw, t, color.WithAlpha(0.1f), color.WithAlpha(0.35f));
         }
 
