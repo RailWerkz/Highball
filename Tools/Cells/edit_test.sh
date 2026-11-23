@@ -24,7 +24,7 @@ HB_LOGFILE="$root/Logs/$name.log" "$root/Highball/bin/Release/net10.0/Highball.e
 
 for f in "$keep"/*; do if [ -f "$f" ]; then cp -p "$f" "$route/"; fi; done
 # (The folders saves write into put back whole: what the run added to them taken out too.)
-for d in Network Cells; do if [ -d "$keep/$d" ]; then rm -rf "$route/$d"; cp -rp "$keep/$d" "$route/$d"; fi; done
+for d in Network Cells; do rm -rf "$route/$d"; if [ -d "$keep/$d" ]; then cp -rp "$keep/$d" "$route/$d"; fi; done
 for f in "$keep"/*; do if [ -f "$f" ] && ! cmp -s "$f" "$route/$(basename "$f")"; then echo "NOT RESTORED: $f"; fi; done
 # (Files the run made that weren't there before are taken out again.)
 for f in "$route"/*; do if [ -f "$f" ] && [ ! -e "$keep/$(basename "$f")" ]; then rm -f "$f"; fi; done
