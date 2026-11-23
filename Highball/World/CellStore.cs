@@ -145,7 +145,8 @@ internal static partial class CellStore
         ["_byTile"] = new(Place.Spread, ByTile),
         ["_pointsByTile"] = new(Place.Spread, ByTile),
         ["_ballast"] = new(Place.Spread, ByTile),
-        ["_preparedKeys"] = new(Place.Spread, ByTile),
+        // (Every tile's ground key, worked out again at every open, PrepareShapingKeys: a cache, kept nowhere.)
+        ["_preparedKeys"] = new(Place.Dropped),
 
         // Things with a place of their own.
         [Auto(nameof(NetworkLines.Turnouts))] = new(Place.Spread, ByPlace),
