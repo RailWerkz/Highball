@@ -1633,7 +1633,7 @@ public sealed partial class EditorView : IDisposable, IToolHost
             return;
         var source = terrain.Source;
         DebugWindows.Heading("Route");
-        DebugWindows.Row("Tiles", $"{source.Tiles.Count}");
+        DebugWindows.Row("Tiles", $"{source.Tiles.Count} loaded of {source.Built.Count} (in {source.TileCounts.Loaded}, out {source.TileCounts.Dropped})");
         DebugWindows.Row("Lines / ways", $"{source.Lines?.Lines.Count ?? 0:#,0} / {source.Network.Ways.Count:#,0}");
         DebugWindows.Row("Switches", $"{network.Turnouts}");
         DebugWindows.Row("Edits", $"{_undo.Count} to undo, {(source.Unsaved || source.Network.Unsaved ? "unsaved" : "saved")}");

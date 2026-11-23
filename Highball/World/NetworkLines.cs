@@ -22,6 +22,9 @@ public sealed class NetworkLine
     /// Its place in the set of lines, changed only when a local rebuild moves it to fill a gap (CellStore.Merge).
     internal void MoveTo(int index) => _index = index;
 
+    /// A copy sharing its arrays (CellStore.Read's reuse: a line read again takes the arrays of the one shown).
+    internal NetworkLine ShallowCopy() => (NetworkLine)MemberwiseClone();
+
     /// What stands in a place of the set of lines with no line in it: a line not loaded (the lines are a window over some cells,
     /// CellStore.Read), or one gone and not replaced (CellStore.Merge). No points, no nodes, bounds that take in nothing; the one object
     /// stands in every such place, so a place keeps its number whatever's loaded (docs/cell-routes.md, Streaming).

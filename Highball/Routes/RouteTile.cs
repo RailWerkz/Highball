@@ -42,6 +42,9 @@ public sealed class RouteTile
     public void Save(string folder)
     {
         Directory.CreateDirectory(folder);
+        // (The route's list of built tiles and their heights' times no longer as they are: RouteInfo.TileList.)
+        if (Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(folder))) is { } route)
+            File.Delete(RouteInfo.TileListPath(route));
         var packed = new ushort[Heights.Length];
         for (var i = 0; i < packed.Length; i++)
             packed[i] = (ushort)Math.Clamp(MathF.Round((Heights[i] - Meta.MinHeight) * 10f), 0f, 65535f);
@@ -55,6 +58,9 @@ public sealed class RouteTile
         var meta = Path.Combine(folder, "Tile.json");
         File.WriteAllText(meta + ".tmp", JsonSerializer.Serialize(Meta, Options));
         File.Move(meta + ".tmp", meta, true);
+        // (And again now it's there: a list made while it was being written doesn't have it.)
+        if (Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(folder))) is { } routeFolder)
+            File.Delete(RouteInfo.TileListPath(routeFolder));
     }
 
     /// Just Tile.json: what the tile is and how it was made.

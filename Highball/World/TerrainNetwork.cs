@@ -75,7 +75,7 @@ public sealed partial class TerrainSource
         var tagged = new Dictionary<long, NetworkNode>(Network.Nodes);
         var previous = Lines!;
         var shapes = TrackEdits.Snapshot();
-        var built = _tiles.Keys.ToHashSet();
+        var built = _built.ToHashSet();
         var samples = Samples;
         var crossings = Objects.Where(o => o.Kind == PlacedKind.GradeCrossing).ToList();
 
@@ -317,7 +317,7 @@ public sealed partial class TerrainSource
                     for (var i = (int)Math.Floor(x0 / size); i <= (int)Math.Floor(x1 / size); i++)
                     {
                         var id = new TileId(i, j);
-                        if (!_tiles.ContainsKey(id))
+                        if (!_built.Contains(id))
                             continue;
                         var (tx, tz) = (i * size, -(j + 1) * size);
                         var w = (Math.Clamp((int)Math.Floor((x0 - tx) / Spacing), 0, Quads), Math.Clamp((int)Math.Floor((z0 - tz) / Spacing), 0, Quads),
@@ -365,7 +365,7 @@ public sealed partial class TerrainSource
                     _ = Task.Run(() => GroundCache.Save(_route, id, now, raw, toSave));
                 }
                 var saved = tileWatch.ElapsedMilliseconds;
-                ApplyEdits(reshaped, _tiles[id].Edits);
+                ApplyEdits(reshaped, EditsOf(id));
                 lines.DrapeMarks(id, reshaped, samples);
                 heights[id] = reshaped;
                 if (Environment.GetEnvironmentVariable("HB_HOLDDEBUG") == "1")
@@ -763,10 +763,26 @@ public sealed partial class TerrainSource
         }
 
         var rects = new List<(int, int, int, int)>();
+        // (Each tile's coarse copy and range worked out side by side: a window grown can bring tens of tiles shaped, each a million samples.)
+        var tiles = _tiles;
+        var made = new ConcurrentDictionary<TileId, Tile>();
+        Parallel.ForEach(change.Heights, pair =>
+        {
+            // (A tile not loaded: its overview as shaped now; it's shaped again from the ground kept when it's loaded.)
+            if (!tiles.TryGetValue(pair.Key, out var tile))
+                ShapedFar(pair.Key, pair.Value);
+            else
+                made[pair.Key] = MakeTile(pair.Key, pair.Value, tile.Cover, Samples, null);
+        });
+
         foreach (var (id, heights) in change.Heights)
         {
-            var tile = _tiles[id];
-            var fresh = MakeTile(id, heights, tile.Cover, Samples, null);
+            if (!tiles.TryGetValue(id, out var tile) || !made.TryGetValue(id, out var fresh))
+            {
+                rects.Add((id.I * Quads, -(id.J + 1) * Quads, (id.I + 1) * Quads, -id.J * Quads));
+                continue;
+            }
+
             Array.Copy(fresh.Coarse, tile.Coarse, tile.Coarse.Length);
             tile.MinHeight = fresh.MinHeight;
             tile.MaxHeight = fresh.MaxHeight;

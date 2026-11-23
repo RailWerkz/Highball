@@ -86,20 +86,80 @@ public sealed class RouteInfo
     public string TileFolder(TileId tile) => Path.Combine(Folder, "Tiles", tile.ToString());
 
     /// The tiles built so far.
-    public HashSet<TileId> BuiltTiles()
-    {
-        if (Pack is not null)
-            return Pack.Built();
-        var tiles = new HashSet<TileId>();
-        var root = Path.Combine(Folder, "Tiles");
-        if (!Directory.Exists(root))
-            return tiles;
+    public HashSet<TileId> BuiltTiles() => Pack is not null ? Pack.Built() : [.. TileList().Keys];
 
-        foreach (var folder in Directory.GetDirectories(root))
-            if (TileId.TryParse(Path.GetFileName(folder), out var id) && File.Exists(Path.Combine(folder, "Tile.json")))
-                tiles.Add(id);
+    /// Every built tile and its heights file's size and time (what the cells' stamp takes, CellStore.StampOf): kept in Cache/Tiles.bin
+    /// with the time of the Tiles folder, so a route of 50,000 tiles doesn't list every tile's folder at each open (seconds). A tile
+    /// added or taken out changes the folder's time; one built again over another (RouteTile.Save) deletes the list. Empty for a pack.
+    public IReadOnlyDictionary<TileId, (long Length, long Ticks)> TileList()
+    {
+        var tiles = new Dictionary<TileId, (long, long)>();
+        var root = Path.Combine(Folder, "Tiles");
+        if (Pack is not null || !Directory.Exists(root))
+            return tiles;
+        var list = TileListPath(Folder);
+        var stamp = Directory.GetLastWriteTimeUtc(root).Ticks;
+        try
+        {
+            if (File.Exists(list))
+            {
+                using var r = new BinaryReader(File.OpenRead(list));
+                if (r.ReadInt32() == TileListMagic && r.ReadInt64() == stamp)
+                {
+                    for (var n = r.ReadInt32(); n > 0; n--)
+                        tiles[new TileId(r.ReadInt32(), r.ReadInt32())] = (r.ReadInt64(), r.ReadInt64());
+                    return tiles;
+                }
+            }
+        }
+        catch (Exception e) when (e is IOException or EndOfStreamException or UnauthorizedAccessException)
+        {
+            tiles.Clear();
+        }
+
+        // (One listing of every tile's files, not a file asked after per folder.)
+        var built = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var heights = new Dictionary<string, (long, long)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in new DirectoryInfo(root).EnumerateFiles("*", new EnumerationOptions { RecurseSubdirectories = true, MaxRecursionDepth = 1 }))
+            if (file.Name == "Tile.json")
+                built.Add(file.Directory!.Name);
+            else if (file.Name == "Heights.bin.gz")
+                heights[file.Directory!.Name] = (file.Length, file.LastWriteTimeUtc.Ticks);
+        foreach (var name in built)
+            if (TileId.TryParse(name, out var id))
+                tiles[id] = heights.GetValueOrDefault(name, (-1L, 0L));
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(list)!);
+            var temporary = $"{list}.{Environment.CurrentManagedThreadId}.tmp";
+            using (var w = new BinaryWriter(File.Create(temporary)))
+            {
+                w.Write(TileListMagic);
+                w.Write(stamp);
+                w.Write(tiles.Count);
+                foreach (var (id, (length, ticks)) in tiles)
+                {
+                    w.Write(id.I);
+                    w.Write(id.J);
+                    w.Write(length);
+                    w.Write(ticks);
+                }
+            }
+
+            File.Move(temporary, list, true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Log.Warn($"Route {Name}: the tiles' list not kept ({e.Message})");
+        }
+
         return tiles;
     }
+
+    private const int TileListMagic = 0x54534C54; // "TLST"
+
+    /// Where a route's list of built tiles is kept (TileList).
+    public static string TileListPath(string routeFolder) => Path.Combine(routeFolder, "Cache", "Tiles.bin");
 
     public void Save()
     {

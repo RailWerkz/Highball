@@ -83,6 +83,11 @@ public sealed class Terrain : IDisposable
     /// rebuild started after that edit arrives.
     private readonly Dictionary<Key, int> _stale = [];
     private int _epoch;
+    /// Goes up with every edit and every tile loaded or let go (Refresh): what a patch's build started at, and its staleness, is
+    /// told by.
+    private int _version;
+    /// The root patches over any built tile.
+    private Key[]? _roots;
     private readonly ConcurrentQueue<Built> _built = new();
     private readonly Dictionary<int, (BufferEx Buffer, int Count)> _sharedIndices = [];
     private readonly Dictionary<Key, int> _leaves = [];
@@ -151,6 +156,8 @@ public sealed class Terrain : IDisposable
         _camera = (cx, cy, cz);
         var (ax, ay, az) = Ahead(cx, cy, cz);
         _source.Want(cx, cz, ax, az, DetailFactor * SpacingOf(FullLevels) * 1.6);
+        foreach (var (x0, z0, x1, z1) in _source.TakeTileChanges())
+            Refresh(x0, z0, x1, z1);
 
         var budget = Stopwatch.StartNew();
         for (var n = 0; (n < MinUploadsPerFrame || budget.Elapsed.TotalMilliseconds < UploadBudgetMs) && _built.TryDequeue(out var built); n++)
@@ -178,18 +185,13 @@ public sealed class Terrain : IDisposable
 
         _leaves.Clear();
         Waiting = 0;
-        if (_source.Tiles.Count > 0)
+        // (Only the roots over built tiles: a route of tens of thousands of tiles spread over a continent has most of its bounds empty.)
+        _roots ??= Roots();
+        foreach (var root in _roots)
         {
-            var rootSize = SamplesOf(MaxLevel);
-            for (var z = TerrainSource.FloorDiv(_source.MinGz, rootSize); z * rootSize < _source.MaxGz; z++)
-            {
-                for (var x = TerrainSource.FloorDiv(_source.MinGx, rootSize); x * rootSize < _source.MaxGx; x++)
-                {
-                    Select(new Key(MaxLevel, x, z), cx, cy, cz, false);
-                    if (ax != cx || az != cz)
-                        Select(new Key(MaxLevel, x, z), ax, ay, az, true);
-                }
-            }
+            Select(root, cx, cy, cz, false);
+            if (ax != cx || az != cz)
+                Select(root, ax, ay, az, true);
         }
 
         _waiting = _requests.Keys.Count(k => !_inFlight.Contains(k));
@@ -197,8 +199,8 @@ public sealed class Terrain : IDisposable
         {
             var batch = _requests.Where(r => !_inFlight.Contains(r.Key)).OrderBy(r => r.Value).Take(_jobs.BatchSize).Select(r => r.Key).ToList();
             _inFlight.UnionWith(batch);
-            var epoch = _epoch;
-            _jobs.TryRun(batch.Select(k => ((Brutal.Concurrency.Jobs.IJob)new Job("terrain patch", () => BuildInto(k, epoch)), 1)));
+            var version = _version;
+            _jobs.TryRun(batch.Select(k => ((Brutal.Concurrency.Jobs.IJob)new Job("terrain patch", () => BuildInto(k, version)), 1)));
         }
 
         _requests.Clear();
@@ -374,13 +376,39 @@ public sealed class Terrain : IDisposable
         if (_edits.Count == MaxEditsKept)
             _edits.RemoveAt(0);
         _edits.Add((epoch, gx0, gz0, gx1, gz1));
+        Refresh(gx0, gz0, gx1, gz1);
+    }
+
+    /// Marks every patch touching the sample rectangle (and a step round it) to be built again, the ground not edited: a tile's been
+    /// loaded or let go (TerrainSource.TakeTileChanges), so it's read from its coarse heights or its overview now. Patches either side of
+    /// a seam then read it alike.
+    private void Refresh(int x0, int z0, int x1, int z1)
+    {
+        var version = ++_version;
         foreach (var key in _patches.Keys)
         {
-            var (x0, z0, x1, z1) = Rect(key);
+            var (px0, pz0, px1, pz1) = Rect(key);
             var step = 1 << key.Level;
-            if (x1 + step >= gx0 && x0 - step <= gx1 && z1 + step >= gz0 && z0 - step <= gz1)
-                _stale[key] = epoch;
+            if (px1 + step >= x0 && px0 - step <= x1 && pz1 + step >= z0 && pz0 - step <= z1)
+                _stale[key] = version;
         }
+    }
+
+    /// The root patches over any built tile, once.
+    private Key[] Roots()
+    {
+        var rootSize = SamplesOf(MaxLevel);
+        var roots = new HashSet<Key>();
+        var quads = _source.Quads;
+        foreach (var id in _source.Built)
+        {
+            var (x0, z0) = (id.I * quads, -(id.J + 1) * quads);
+            for (var z = TerrainSource.FloorDiv(z0, rootSize); z <= TerrainSource.FloorDiv(z0 + quads - 1, rootSize); z++)
+                for (var x = TerrainSource.FloorDiv(x0, rootSize); x <= TerrainSource.FloorDiv(x0 + quads - 1, rootSize); x++)
+                    roots.Add(new Key(MaxLevel, x, z));
+        }
+
+        return [.. roots.OrderBy(k => k.Z).ThenBy(k => k.X)];
     }
 
     // --- Building a patch (worker threads). ---

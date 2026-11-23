@@ -14,6 +14,8 @@ public sealed partial class TerrainSource
     /// not matching the index).
     internal static readonly Lock CellsLock = new();
 
+    private static readonly bool StreamLatency = Environment.GetEnvironmentVariable("HB_GCLATENCY") != "0";
+
     /// The cells round a place the window should be complete in: WindowRings each way of its cell, and those it's complete in now
     /// that are within a ring more (so going back and forth over a border doesn't read the cells again and again).
     private HashSet<TileId> WindowFor(double x, double z, CellWindow window, int rings)
@@ -63,14 +65,29 @@ public sealed partial class TerrainSource
         {
             using var counted = Background.Begin("Streaming track");
             var watch = System.Diagnostics.Stopwatch.StartNew();
-            var (paused, gen2) = (GC.GetTotalPauseDuration(), GC.CollectionCount(2));
-            var lines = ReadWindow(shown, wanted) ?? throw new InvalidOperationException("the window's cells couldn't be read");
+            var (paused, gen2, gen0, allocated) = (GC.GetTotalPauseDuration(), GC.CollectionCount(2), GC.CollectionCount(0), GC.GetTotalAllocatedBytes());
+            // (No full blocking collection while the step reads: they're what stops every thread for a frame or more. HB_GCLATENCY=0: as
+            // the runtime has it.)
+            var latency = System.Runtime.GCSettings.LatencyMode;
+            if (StreamLatency)
+                System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.SustainedLowLatency;
+            NetworkLines lines;
+            try
+            {
+                lines = ReadWindow(shown, wanted) ?? throw new InvalidOperationException("the window's cells couldn't be read");
+            }
+            finally
+            {
+                if (StreamLatency)
+                    System.Runtime.GCSettings.LatencyMode = latency;
+            }
+
             var read = watch.ElapsedMilliseconds;
             var change = ChangeTo(shown, lines);
             Log.Info($"Track streamed: window complete in {lines.Window!.Complete.Count} cells (was {window.Complete.Count}), {lines.Window.Read.Count} read; " +
                      $"{change.Made!.Count} lines loaded, {change.Gone!.Count} let go, {lines.Lines.Count(l => !l.IsAbsent)} in memory; {change.Heights.Count} tiles shaped again; " +
                      $"ms: read {read}, change {watch.ElapsedMilliseconds - read}; at cell {CellAt(_route, x, z)}, working set {Environment.WorkingSet >> 20} MB, managed heap {GC.GetTotalMemory(false) >> 20} MB; " +
-                     $"the collector paused every thread {(GC.GetTotalPauseDuration() - paused).TotalMilliseconds:0} ms meanwhile ({GC.CollectionCount(2) - gen2} full collections)");
+                     $"the collector paused every thread {(GC.GetTotalPauseDuration() - paused).TotalMilliseconds:0} ms meanwhile ({GC.CollectionCount(0) - gen0} collections, {GC.CollectionCount(2) - gen2} full), {(GC.GetTotalAllocatedBytes() - allocated) >> 20} MB allocated by every thread");
             return change;
         });
     }
@@ -84,13 +101,13 @@ public sealed partial class TerrainSource
         {
             if (CellStore.ReadIndex(_route) is not { } index)
                 return null;
-            lines = CellStore.Read(_route, index, cells);
+            lines = CellStore.Read(_route, index, cells, shown);
         }
 
         if (lines is null)
             return null;
         CellStore.RestoreFrom(lines, shown);
-        lines.PrepareShapingKeys(lines.Window?.Complete.Where(_tiles.ContainsKey) ?? _tiles.Keys, Samples);
+        lines.PrepareShapingKeys(lines.Window?.Complete.Where(_built.Contains) ?? _built, Samples);
         lines.Warm();
         return lines;
     }
@@ -116,7 +133,7 @@ public sealed partial class TerrainSource
 
         var areas = made.Concat(gone).Select(l => (l.MinX, l.MinZ, l.MaxX, l.MaxZ)).ToList();
         var heights = new ConcurrentDictionary<TileId, float[]>();
-        var fresh = lines.Window is { } now2 ? now2.Complete.Where(c => _tiles.ContainsKey(c) && !shown.Complete(c) && lines.LinesIn(c).Count > 0).ToList() : [];
+        var fresh = lines.Window is { } now2 ? now2.Complete.Where(c => _built.Contains(c) && !shown.Complete(c) && lines.LinesIn(c).Count > 0).ToList() : [];
         Parallel.ForEach(fresh, id =>
         {
             var raw = _route.LoadTile(id).Heights;
@@ -125,7 +142,7 @@ public sealed partial class TerrainSource
                 return;
             var shaped = (float[])raw.Clone();
             lines.ConformKept(_route, id, shaped, Samples);
-            ApplyEdits(shaped, _tiles[id].Edits);
+            ApplyEdits(shaped, EditsOf(id));
             lines.DrapeMarks(id, shaped, Samples);
             heights[id] = shaped;
         });
@@ -149,7 +166,7 @@ public sealed partial class TerrainSource
         NetworkLines? whole;
         lock (CellsLock)
         {
-            var stamp = CellStore.StampOf(_route, _tiles.Keys, objects);
+            var stamp = CellStore.StampOf(_route, _built, objects);
             if (CellStore.ReadIndex(_route) is not { } index || index.Stale(stamp) is not null)
             {
                 if (CellStore.Write(_route, stamp, window))
