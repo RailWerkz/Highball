@@ -58,7 +58,7 @@ internal struct WordHash
 /// The ground of each tile as Conform shaped it, kept with the route (Cache/Ground), so a route opens without shaping its ground
 /// again. Each tile's file holds only the samples shaping changed, and a key: a hash of the tile's ground as it came, and of
 /// everything shaping reads there (the lines over it as their profiles came out, their bridge ends, the slope ends' shapes and
-/// the crossings' pads round it), and of the build of the game. An edit that changes a line changes the key of the tiles it's
+/// the crossings' pads round it), and of the passes' build (CellStore.BuildVersion). An edit that changes a line changes the key of the tiles it's
 /// on and no others, so only those are shaped again. HB_GROUNDCHECK=1: a tile found cached is shaped again anyway and the two
 /// compared, logged. HB_NOGROUNDCACHE=1: never read (still written).
 internal static class GroundCache
@@ -75,12 +75,12 @@ internal static class GroundCache
     public static readonly bool Check = Environment.GetEnvironmentVariable("HB_GROUNDCHECK") == "1";
     private static readonly bool Off = Environment.GetEnvironmentVariable("HB_NOGROUNDCACHE") == "1";
 
+    /// The passes' build, as the cells have it (CellStore.BuildVersion, bumped by hand when a change to shaping should show), not the
+    /// build of the game: a new build with the same shaping keeps the ground shaped already.
     private static ulong BuildStamp()
     {
         var hash = new WordHash();
-        var mvid = typeof(GroundCache).Assembly.ManifestModule.ModuleVersionId.ToByteArray();
-        hash.Add(BitConverter.ToUInt64(mvid, 0));
-        hash.Add(BitConverter.ToUInt64(mvid, 8));
+        hash.Add(CellStore.BuildVersion);
         hash.Add(Version);
         return hash.Value;
     }
