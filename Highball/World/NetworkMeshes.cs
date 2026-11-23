@@ -479,9 +479,78 @@ public sealed partial class NetworkMeshes : IDisposable
 
     private Dictionary<string, Model.Part>? KitFor(Turnout t) => _kits.GetValueOrDefault(t.Side > 0 ? 1 : -1);
 
-    /// Every segment goes to the chunk its midpoint is in; consecutive ones in the same chunk make a run. Each turnout
-    /// goes to the chunk its point of switch is in.
-    private void FindRuns()
+    /// The runs found again for what a rebuild of some cells changed only: the runs of the lines gone or moved taken out of the chunks
+    /// they crossed, and those of the lines made or moved put in; the turnouts, assemblies and bridges by chunk found again whole
+    /// (they're few).
+    private void FindRuns(NetworkChange changes)
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var old = new HashSet<int>(changes.Gone!.Select(l => l.Index));
+        var touched = new HashSet<ChunkKey>();
+        void Chunks(NetworkLine line)
+        {
+            for (var i = 0; i < line.Count - 1; i++)
+                touched.Add(KeyAt((line.X[i] + line.X[i + 1]) * 0.5, (line.Z[i] + line.Z[i + 1]) * 0.5));
+        }
+
+        foreach (var line in changes.Gone!)
+            Chunks(line);
+        foreach (var (from, to) in changes.Moved!)
+        {
+            old.Add(from);
+            Chunks(_lines.Lines[to]);
+        }
+
+        foreach (var line in changes.Made!)
+            old.Add(line.Index);
+        foreach (var key in touched)
+            if (_runs.TryGetValue(key, out var list))
+            {
+                list.RemoveAll(r => old.Contains(r.Line));
+                if (list.Count == 0)
+                    _runs.Remove(key);
+            }
+
+        foreach (var line in changes.Made!.Concat(changes.Moved!.Select(m => _lines.Lines[m.To])))
+        {
+            Run? run = null;
+            ChunkKey runKey = default;
+            for (var i = 0; i < line.Count - 1; i++)
+            {
+                var key = KeyAt((line.X[i] + line.X[i + 1]) * 0.5, (line.Z[i] + line.Z[i + 1]) * 0.5);
+                touched.Add(key);
+                if (run is { } r && key == runKey)
+                {
+                    run = r with { Last = i };
+                    continue;
+                }
+
+                if (run is { } done)
+                    AddRun(runKey, done);
+                run = new Run(line.Index, i, i);
+                runKey = key;
+            }
+
+            if (run is { } last)
+                AddRun(runKey, last);
+        }
+
+        foreach (var key in touched)
+        {
+            _stale.Add((key, false));
+            _stale.Add((key, true));
+        }
+
+        var runs = watch.ElapsedMilliseconds;
+        FindTurnoutChunks();
+        var crossovers = watch.ElapsedMilliseconds;
+        FindBridges();
+        if (Environment.GetEnvironmentVariable("HB_PROFILELAPS") == "1")
+            RailWerkz.Core.Logging.Log.Info($"Mesh runs (of {changes.Made!.Count} lines made, {changes.Gone!.Count} gone, {changes.Moved!.Count} moved), ms: runs {runs}, turnouts and crossovers {crossovers - runs}, bridges {watch.ElapsedMilliseconds - crossovers}");
+    }
+
+    /// Each turnout goes to the chunk its point of switch is in, and each crossing assembly to its own.
+    private void FindTurnoutChunks()
     {
         _turnoutsByChunk.Clear();
         _assembliesByChunk.Clear();
@@ -517,8 +586,14 @@ public sealed partial class NetworkMeshes : IDisposable
             _switches.Remove(node);
         }
 
-        var watch = System.Diagnostics.Stopwatch.StartNew();
         FindCrossovers();
+    }
+
+    /// Every segment goes to the chunk its midpoint is in; consecutive ones in the same chunk make a run.
+    private void FindRuns()
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        FindTurnoutChunks();
         var crossovers = watch.ElapsedMilliseconds;
 
         _runs.Clear();
@@ -553,13 +628,19 @@ public sealed partial class NetworkMeshes : IDisposable
 
     /// Takes rebuilt lines in: the chunks over the given areas (world metres) are built again, the rest kept, and
     /// chunks no line crosses any more let go.
-    public void Replace(NetworkLines lines, IEnumerable<(double X0, double Z0, double X1, double Z1)> areas)
+    /// changes: what a rebuild of some cells changed (the lines made and gone, and moved from one place to another), for the runs to be
+    /// found again for those only; null: for every line.
+    public void Replace(NetworkLines lines, IEnumerable<(double X0, double Z0, double X1, double Z1)> areas, NetworkChange? changes = null)
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
         areas = areas as IReadOnlyCollection<(double X0, double Z0, double X1, double Z1)> ?? areas.ToList();
-        var kept = DecksToKeep(lines, (IReadOnlyCollection<(double X0, double Z0, double X1, double Z1)>)areas);
+        var incremental = changes is { Made: not null, Gone: not null, Moved: not null } && ReferenceEquals(changes.Lines, lines);
+        var kept = DecksToKeep(lines, (IReadOnlyCollection<(double X0, double Z0, double X1, double Z1)>)areas, incremental ? changes : null);
         _lines = lines;
-        FindRuns();
+        if (incremental)
+            FindRuns(changes!);
+        else
+            FindRuns();
         var found = watch.ElapsedMilliseconds;
         if (_objectProjection is { } projection)
             SetObjects(_objects, [], projection, kept);
@@ -602,7 +683,8 @@ public sealed partial class NetworkMeshes : IDisposable
     /// takes tens of milliseconds, looking along every line it might meet): those past DeckKeptPast from every area changed, with
     /// the same pad, whose lines next has kept (their indices moved to the kept lines'). Null if they weren't built against the
     /// lines shown.
-    private Dictionary<PlacedObject, CrossingDeck>? DecksToKeep(NetworkLines next, IReadOnlyCollection<(double X0, double Z0, double X1, double Z1)> areas)
+    private Dictionary<PlacedObject, CrossingDeck>? DecksToKeep(NetworkLines next, IReadOnlyCollection<(double X0, double Z0, double X1, double Z1)> areas,
+        NetworkChange? changes = null)
     {
         if (_decksOf is null || !ReferenceEquals(_decksOf, _lines))
         {
@@ -613,9 +695,20 @@ public sealed partial class NetworkMeshes : IDisposable
 
         var (pads, near, unmapped) = (0, 0, 0);
         var moved = new Dictionary<int, int>();
-        foreach (var line in next.Lines)
-            if (line.Frozen && line.Origin is { } origin)
-                moved[origin.Index] = line.Index;
+        if (changes is not null)
+        {
+            // (A rebuild of some cells keeps every line's place but those made, gone or moved.)
+            var gone = changes.Gone!.Select(l => l.Index).Concat(changes.Moved!.Select(m => m.From)).ToHashSet();
+            for (var i = 0; i < _lines.Lines.Count; i++)
+                if (!gone.Contains(i) && i < next.Lines.Count && ReferenceEquals(next.Lines[i], _lines.Lines[i]))
+                    moved[i] = i;
+            foreach (var (from, to) in changes.Moved!)
+                moved[from] = to;
+        }
+        else
+            foreach (var line in next.Lines)
+                if (line.Frozen && line.Origin is { } origin)
+                    moved[origin.Index] = line.Index;
         var kept = new Dictionary<PlacedObject, CrossingDeck>();
         foreach (var list in _objectsByChunk.Values)
             foreach (var placed in list)

@@ -210,6 +210,8 @@ public sealed partial class TerrainSource
 
         var source = new TerrainSource(route, [.. tiles.OfType<Tile>()]) { Lines = lines, Network = network, TrackEdits = edits };
         source.Objects.AddRange(objects);
+        if (route.Pack is null)
+            source.PrepareWays([.. network.Ways.Values]);
         foreach (var (key, edit) in bridgeEdits)
             source.Bridges[key] = edit;
         Log.Info($"Terrain: {source._tiles.Count} tiles and {lines.Lines.Count} lines opened in {watch.ElapsedMilliseconds} ms " +
@@ -223,18 +225,31 @@ public sealed partial class TerrainSource
     /// rebuild under way, so the next open reads them. Every cell for now (stage 2 of docs/cell-routes.md writes only an edit's).
     /// Off the main thread (they're hundreds of megabytes). current: whether nothing's been saved since, asked before the stamp's
     /// taken and before the files are put in place, so the cells never carry lines older than their stamp.
+    /// The cells whose content changed since they were last written (null: all of them, after a rebuild in full).
+    private HashSet<TileId>? _unsavedCells = [];
+    private readonly Lock _unsavedLock = new();
+
     public Task SaveCells(Func<bool> current)
     {
         if (Lines is not { } lines)
             return Task.CompletedTask;
         var (tiles, objects) = (_tiles.Keys.ToList(), Objects.ToList());
+        HashSet<TileId>? only;
+        lock (_unsavedLock)
+            only = _unsavedCells is null ? null : [.. _unsavedCells];
         return Task.Run(() =>
         {
             try
             {
                 var stamp = CellStore.StampOf(_route, tiles, objects);
-                if (current())
-                    CellStore.Write(_route, stamp, lines, current);
+                if (current() && CellStore.Write(_route, stamp, lines, current, only))
+                    lock (_unsavedLock)
+                    {
+                        if (only is null)
+                            _unsavedCells ??= [];
+                        else
+                            _unsavedCells?.ExceptWith(only);
+                    }
             }
             catch (Exception e)
             {

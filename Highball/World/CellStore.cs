@@ -32,7 +32,7 @@ namespace Highball.World;
 internal static partial class CellStore
 {
     /// The layout of the files. Bumped when it changes; cells of another are never read.
-    public const int FormatVersion = 3;
+    public const int FormatVersion = 4;
 
     /// The passes' build (laying, grading, shaping): bumped by hand when a change to them should show in cells already built. Cells of
     /// another are built again.

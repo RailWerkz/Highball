@@ -15,7 +15,12 @@ public enum TrackBed { Mainline, Low, Sunken, Street }
 /// and through tunnels, and agreeing with every line it meets), and how wide it is.
 public sealed class NetworkLine
 {
-    public required int Index { get; init; }
+    public required int Index { get => _index; init => _index = value; }
+
+    private int _index;
+
+    /// Its place in the set of lines, changed only when a local rebuild moves it to fill a gap (CellStore.Merge).
+    internal void MoveTo(int index) => _index = index;
     public required bool Rail { get; init; }
     public required int Class { get; init; }
     public required double[] X { get; init; }
@@ -366,6 +371,9 @@ public sealed partial class NetworkLines
     public IReadOnlyList<int> LinesIn(TileId tile) => _byTile.TryGetValue(tile, out var list) ? list : [];
 
     public IEnumerable<TileId> TilesWithPoints => _pointsByTile.Keys;
+
+    /// The points (line, point) that fall in a tile.
+    internal IReadOnlyList<(int Line, int Point)>? PointsIn(TileId tile) => _pointsByTile.GetValueOrDefault(tile);
 
     private NetworkLines(float spacing, int quads)
     {
@@ -1436,6 +1444,23 @@ public sealed partial class NetworkLines
                 line.HaloOf(was);
     }
 
+    /// The lines laid from a chain (a local rebuild's, of the lines it's rebuilding from).
+    internal IReadOnlyList<NetworkLine> LinesOfChain(long chain)
+    {
+        var byChain = Volatile.Read(ref _byChain);
+        if (byChain is null)
+        {
+            byChain = _lines.GroupBy(l => l.Chain).ToDictionary(g => g.Key, g => g.ToList());
+            Volatile.Write(ref _byChain, byChain);
+        }
+
+        return byChain.GetValueOrDefault(chain) ?? [];
+    }
+
+    /// Whether a point is within RailOuter of an edit (EditCells), to a cell.
+    internal static bool NearEdit(Dictionary<(int, int), double> cells, double x, double z) =>
+        cells.TryGetValue(((int)Math.Floor(x / HoldCell), (int)Math.Floor(z / HoldCell)), out var d) && d <= RailOuter + HoldCell;
+
     /// How far from where an edit changed track a rail line's heights can change, metres: within RailInner they're worked out as
     /// any rebuild would, past RailOuter they're kept exactly as they were, and between the two they're eased from one to the other.
     /// (A grade's worked out along the whole of a line, and smoothed with the track beside it: without this, laying a siding moved
@@ -1446,7 +1471,7 @@ public sealed partial class NetworkLines
     private const double HoldCell = 100.0;
 
     /// How far from the edit's places each cell within RailOuter of one is (to its centre, so within HoldCell of the truth).
-    private static Dictionary<(int, int), double> EditCells(List<(double X, double Z)> places)
+    internal static Dictionary<(int, int), double> EditCells(List<(double X, double Z)> places)
     {
         var cells = new Dictionary<(int, int), double>();
         foreach (var (x, z) in places)
