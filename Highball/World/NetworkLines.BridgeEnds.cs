@@ -446,6 +446,18 @@ public sealed partial class NetworkLines
                 }
             }
 
+            // (A window's lines are all there is only in its complete cells: finer ground is shaped there alone.)
+            if (Window is { } window)
+            {
+                var size = _quads * (double)_spacing;
+                foreach (var key in cells.Keys.ToList())
+                {
+                    var (x, z) = ((key.Item1 + 0.5) * CellQuads * _spacing, (key.Item2 + 0.5) * CellQuads * _spacing);
+                    if (!window.Complete.Contains(new Highball.Routes.TileId((int)Math.Floor(x / size), -(int)Math.Floor(z / size) - 1)))
+                        cells.Remove(key);
+                }
+            }
+
             _detailCells = cells;
             RailWerkz.Core.Logging.Log.Info($"Terrain: {cells.Count} detail cells ({cells.Values.Count(v => v == StructureSub)} round bridge ends)");
             return [.. cells.Select(c => new DetailRegion(c.Key.Item1, c.Key.Item2, c.Value))];

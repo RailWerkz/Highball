@@ -670,6 +670,11 @@ public sealed partial class NetworkMeshes : IDisposable
         }
     }
 
+    /// The same line in one place of two sets: the one object, or (a window's cells read again as the camera moves) the same line read
+    /// twice, alike bit for bit.
+    private static bool SameLine(NetworkLine a, NetworkLine b) =>
+        ReferenceEquals(a, b) || (!a.IsAbsent && !b.IsAbsent && a.Key == b.Key && a.Name == b.Name && a.Count == b.Count);
+
     /// How far from what a rebuild changed a crossing's deck is built again, metres: past it, the track, road and ground it's built
     /// from are as they were (the ground's shaped again ReshapeReach round what changed).
     private const double DeckKeptPast = 300.0;
@@ -700,7 +705,7 @@ public sealed partial class NetworkMeshes : IDisposable
             // (A rebuild of some cells keeps every line's place but those made, gone or moved.)
             var gone = changes.Gone!.Select(l => l.Index).Concat(changes.Moved!.Select(m => m.From)).ToHashSet();
             for (var i = 0; i < _lines.Lines.Count; i++)
-                if (!gone.Contains(i) && i < next.Lines.Count && ReferenceEquals(next.Lines[i], _lines.Lines[i]))
+                if (!gone.Contains(i) && i < next.Lines.Count && SameLine(next.Lines[i], _lines.Lines[i]))
                     moved[i] = i;
             foreach (var (from, to) in changes.Moved!)
                 moved[from] = to;

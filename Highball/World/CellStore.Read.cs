@@ -7,6 +7,16 @@ using RailWerkz.Core.Logging;
 
 namespace Highball.World;
 
+/// What a window of the route's lines holds (CellStore.Read of some cells): the cells it's complete in (every line with a point there or
+/// reaching its ground is loaded, and everything anchored there: what can be shown, shaped, edited and written again), every cell read for
+/// it (those and the cells the lines loaded reach into, CellStore.Index.Reach), and the complete cells something read refers to a line or a
+/// thing outside the window from (Tainted: what's anchored there names something not loaded, so the cell isn't written from it).
+public sealed record CellWindow(IReadOnlySet<TileId> Complete, IReadOnlySet<TileId> Read, IReadOnlySet<TileId> Tainted)
+{
+    /// Whether every one of these cells can be written from the window.
+    public bool Writes(IEnumerable<TileId> cells) => cells.All(c => Complete.Contains(c) && !Tainted.Contains(c));
+}
+
 internal static partial class CellStore
 {
     /// Cells/index.bin: which cells there are, what they were built from and by what, what types they hold, and what's route-wide.
@@ -19,6 +29,9 @@ internal static partial class CellStore
         public required List<(string Type, ulong Layout)> Schema { get; init; }
         public required SpreadMeta[] Spread { get; init; }
         public required Dictionary<TileId, (long Size, ulong Hash)> Cells { get; init; }
+        /// Each cell's reach: the other cells the lines with a piece in it, or reaching its ground, have pieces in (what a window complete
+        /// in it reads too, ReadFor).
+        public required Dictionary<TileId, TileId[]> Reach { get; init; }
         /// The index's own part, laid out as a cell: what has no cell, and the route-wide fields.
         public required byte[] Rest { get; init; }
 
@@ -87,10 +100,19 @@ internal static partial class CellStore
             }
 
             var cells = new Dictionary<TileId, (long, ulong)>();
+            var reach = new Dictionary<TileId, TileId[]>();
             for (var n = r.ReadInt32(); n > 0; n--)
-                cells[new TileId(r.ReadInt32(), r.ReadInt32())] = (r.ReadInt64(), r.ReadUInt64());
+            {
+                var id = new TileId(r.ReadInt32(), r.ReadInt32());
+                cells[id] = (r.ReadInt64(), r.ReadUInt64());
+                var to = new TileId[r.ReadInt32()];
+                for (var k = 0; k < to.Length; k++)
+                    to[k] = new TileId(r.ReadInt32(), r.ReadInt32());
+                reach[id] = to;
+            }
+
             var rest = r.ReadBytes(r.ReadInt32());
-            return new Index { BuildVersion = build, Stamp = stamp, Rules = rules, LineCount = lineCount, Schema = schema, Spread = spread, Cells = cells, Rest = rest };
+            return new Index { BuildVersion = build, Stamp = stamp, Rules = rules, LineCount = lineCount, Schema = schema, Spread = spread, Cells = cells, Reach = reach, Rest = rest };
         }
         catch (Exception e) when (e is IOException or EndOfStreamException or InvalidDataException or UnauthorizedAccessException)
         {
@@ -99,7 +121,7 @@ internal static partial class CellStore
         }
     }
 
-    /// One cell's file, its block A read: its pieces, and the things it makes.
+    /// One cell's file, its block A read: its pieces, the things it makes, and the lines reaching its ground from elsewhere.
     private sealed class CellFile
     {
         public required TileId Id;
@@ -110,6 +132,7 @@ internal static partial class CellStore
         public readonly List<Piece> Pieces = [];
         public readonly List<(int Kind, int Ordinal, Type Type)> Owned = [];
         public readonly List<Element> Elements = [];
+        public readonly List<int> ReachLines = [];
     }
 
     private static CellFile Open(TileId id, byte[] bytes)
@@ -145,12 +168,55 @@ internal static partial class CellStore
             types[t] = Type.GetType(r.ReadString()) ?? throw new InvalidDataException($"cell {id}: a type this build hasn't");
         for (var n = r.ReadInt32(); n > 0; n--)
             cell.Owned.Add((r.ReadInt32(), r.ReadInt32(), types[r.ReadInt32()]));
+        for (var n = r.ReadInt32(); n > 0; n--)
+            cell.ReachLines.Add(r.ReadInt32());
         return cell;
     }
 
-    /// The lines in a set of cells, as one NetworkLines (with what Restore puts back still to put back). For now the set has to be
-    /// every cell in the index (null otherwise: a line or a thing with a piece in a cell not read can't be put together yet; streaming,
-    /// stage 4, makes a window of them).
+    /// The cells within rings of a cell (with anything in them or not).
+    public static HashSet<TileId> Around(TileId cell, int rings)
+    {
+        var around = new HashSet<TileId>();
+        for (var dj = -rings; dj <= rings; dj++)
+            for (var di = -rings; di <= rings; di++)
+                around.Add(new TileId(cell.I + di, cell.J + dj));
+        return around;
+    }
+
+    /// What a window complete in these cells reads: them, one ring round them (the lines there are loaded too, so what's anchored in
+    /// the complete cells finds the lines near it), and every cell the lines of those reach into (Index.Reach). All of them for the
+    /// whole route.
+    public static HashSet<TileId> ReadFor(Index index, IReadOnlySet<TileId> complete)
+    {
+        if (index.Cells.Keys.All(complete.Contains))
+            return [.. index.Cells.Keys];
+        var near = Ring(index, complete);
+        var read = new HashSet<TileId>(near);
+        foreach (var c in near)
+            foreach (var r in index.Reach.GetValueOrDefault(c) ?? [])
+                if (index.Cells.ContainsKey(r))
+                    read.Add(r);
+        return read;
+    }
+
+    /// These cells and the ring round them (those there are).
+    private static HashSet<TileId> Ring(Index index, IReadOnlySet<TileId> cells)
+    {
+        var near = new HashSet<TileId>();
+        foreach (var c in cells)
+            for (var dj = -1; dj <= 1; dj++)
+                for (var di = -1; di <= 1; di++)
+                    if (index.Cells.ContainsKey(new TileId(c.I + di, c.J + dj)))
+                        near.Add(new TileId(c.I + di, c.J + dj));
+        return near;
+    }
+
+    /// The lines in a set of cells, as one NetworkLines (with what Restore puts back still to put back). Every cell in the index: the
+    /// whole route, as it was written. Some of them: a window (NetworkLines.Window, docs/cell-routes.md, Streaming), complete in those
+    /// cells (cells: they're asked for; any not in the index have nothing in them), reading those, the ring round them and the cells
+    /// their lines reach (ReadFor). A window's lines keep their places in the route's set, the places of lines not loaded holding
+    /// NetworkLine.Absent. What's read naming a line or thing not loaded: dropped where it's an item of a list or set, or a dictionary's
+    /// key, or anywhere in a cell not complete; else the name read as null (its cell is then Tainted: not written from the window).
     public static NetworkLines? Read(RouteInfo route, Index index, IEnumerable<TileId> cells)
     {
         var watch = Stopwatch.StartNew();
@@ -163,7 +229,11 @@ internal static partial class CellStore
 
         try
         {
-            var ids = cells.ToArray();
+            // (A cell with nothing in it, not in the index, is complete in any window that asks for it: there's nothing more to load.)
+            var complete = cells.ToHashSet();
+            var toRead = ReadFor(index, complete);
+            var whole = toRead.Count == index.Cells.Count && index.Cells.Keys.All(complete.Contains);
+            var ids = toRead.ToArray();
             var files = new CellFile[ids.Length + 1];
             long bytes = 0;
             Parallel.For(0, ids.Length + 1, k =>
@@ -182,14 +252,35 @@ internal static partial class CellStore
             });
             Time("files");
 
+            // The lines loaded: whole, every one with a piece in the complete cells or the ring round them, or reaching the complete
+            // cells' ground. The rest of the places hold Absent.
+            var near = whole ? complete : Ring(index, complete);
+            var wanted = new bool[index.LineCount];
+            foreach (var f in files)
+            {
+                if (!whole && f.Id.I != int.MinValue && !near.Contains(f.Id))
+                    continue;
+                foreach (var p in f.Pieces)
+                    if (p.Line >= 0 && p.Line < wanted.Length)
+                        wanted[p.Line] = true;
+                if (whole || complete.Contains(f.Id))
+                    foreach (var i in f.ReachLines)
+                        if (i >= 0 && i < wanted.Length)
+                            wanted[i] = true;
+            }
+
             // Every line and every thing that's referred to, made (empty) before any's read, so a reference finds it whichever cell it's in.
             var lines = new NetworkLine[index.LineCount];
             for (var i = 0; i < lines.Length; i++)
-                lines[i] = (NetworkLine)RuntimeHelpers.GetUninitializedObject(typeof(NetworkLine));
+                lines[i] = wanted[i] ? (NetworkLine)RuntimeHelpers.GetUninitializedObject(typeof(NetworkLine)) : NetworkLine.Absent;
             var arrays = new Array[index.LineCount][];
-            var pieces = files.SelectMany(f => f.Pieces).GroupBy(p => p.Line).ToDictionary(g => g.Key, g => g.OrderBy(p => p.First).ToList());
-            if (pieces.Count != lines.Length || pieces.Keys.Any(i => i < 0 || i >= lines.Length))
-                throw new InvalidDataException($"{pieces.Count} lines in the cells read, {lines.Length} in the index");
+            var pieces = files.SelectMany(f => f.Pieces).Where(p => p.Line >= 0 && p.Line < wanted.Length && wanted[p.Line])
+                .GroupBy(p => p.Line).ToDictionary(g => g.Key, g => g.OrderBy(p => p.First).ToList());
+            var loaded = wanted.Count(w => w);
+            if (pieces.Count != loaded)
+                throw new InvalidDataException($"{pieces.Count} lines in the cells read, {loaded} wanted");
+            if (whole && loaded != lines.Length && index.Spread.Length > 0)
+                Log.Info($"Cells: {lines.Length - loaded} places of {lines.Length} hold no line");
             Parallel.ForEach(pieces, entry =>
             {
                 var (i, list) = (entry.Key, entry.Value);
@@ -224,33 +315,79 @@ internal static partial class CellStore
                 foreach (var (kind, ordinal, type) in f.Owned)
                     if (!made[kind - 2].TryAdd(ordinal, RuntimeHelpers.GetUninitializedObject(type)))
                         throw new InvalidDataException($"{SpreadFields[kind - 2].Name} {ordinal} in two cells");
-            object Resolve(int kind, int i) => kind switch
-            {
-                0 => root,
-                1 => lines[i],
-                _ => made[kind - 2].GetValueOrDefault(i) ?? throw new InvalidDataException($"{SpreadFields[kind - 2].Name} {i} isn't in the cells read"),
-            };
             Time("made");
+
+            // What a window's read couldn't find (a line or thing not loaded), by field, and the complete cells that named it.
+            var missing = new System.Collections.Concurrent.ConcurrentDictionary<string, int>();
+            var tainted = new System.Collections.Concurrent.ConcurrentDictionary<TileId, byte>();
+            var lineIndexed = SpreadFields.Select(f => f.Name is "_byTile" or "_pointsByTile" or "_needGround" || KeyIndexFields.Contains(f.Name) || ValueIndexFields.Contains(f.Name)).ToArray();
+            // (What only a complete cell's lines can stand behind: the lines' tile indexes, and the detail regions shaped finer from them.)
+            var byTileOnly = SpreadFields.Select(f => f.Name is "_byTile" or "_pointsByTile" or "_ballast" or "_detailRegions" or "_detailCells").ToArray();
 
             // Each cell's arrays, heads and things.
             Parallel.For(0, files.Length, k =>
             {
                 var file = files[k];
+                var isRest = file.Id.I == int.MinValue;
+                var full = whole || isRest || complete.Contains(file.Id);
                 using var stream = Decompress(file.Bytes, file.OffsetB, file.PackedB, file.Codec);
                 using var r = new BinaryReader(stream);
                 var buffer = Array.Empty<byte>();
                 foreach (var p in file.Pieces)
                     for (var s = 0; s < p.Slices.Length; s++)
-                        ReadSlice(stream, arrays[p.Line][s], p.Slices[s], p.First, p.Count, p.LineCount, file.Shuffle, ref buffer);
+                    {
+                        if (arrays[p.Line] is { } into)
+                            ReadSlice(stream, into[s], p.Slices[s], p.First, p.Count, p.LineCount, file.Shuffle, ref buffer);
+                        else
+                            SkipSlice(stream, p.Slices[s], p.First, p.Count, p.LineCount, ref buffer);
+                    }
 
-                var g = new GraphSnapshot.Reader(r, null, Resolve);
+                var unfound = false;
+                object? Resolve(int kind, int i)
+                {
+                    switch (kind)
+                    {
+                        case 0:
+                            return root;
+                        case 1:
+                            if (i >= 0 && i < lines.Length && !lines[i].IsAbsent)
+                                return lines[i];
+                            if (whole)
+                                throw new InvalidDataException($"line {i} isn't in the cells read");
+                            unfound = true;
+                            return null;
+                        default:
+                            if (made[kind - 2].GetValueOrDefault(i) is { } thing)
+                                return thing;
+                            if (whole)
+                                throw new InvalidDataException($"{SpreadFields[kind - 2].Name} {i} isn't in the cells read");
+                            unfound = true;
+                            return null;
+                    }
+                }
+
+                void Missed(string what)
+                {
+                    missing.AddOrUpdate(what, 1, (_, n) => n + 1);
+                    if (full && !isRest)
+                        tainted.TryAdd(file.Id, 0);
+                }
+
+                bool Loaded(int i) => i >= 0 && i < lines.Length && !lines[i].IsAbsent;
+
+                var g = new GraphSnapshot.Reader(r, null, (kind, i) => Resolve(kind, i)!);
+                var scratch = (NetworkLine)RuntimeHelpers.GetUninitializedObject(typeof(NetworkLine));
                 for (var n = r.ReadInt32(); n > 0; n--)
                 {
-                    var line = lines[r.ReadInt32()];
+                    var at = r.ReadInt32();
+                    var line = Loaded(at) ? lines[at] : scratch;
                     var mask = r.ReadUInt64();
+                    unfound = false;
                     for (var j = 0; j < LineFields.Length; j++)
                         if ((mask & (1UL << j)) == 0 && !LineDropped.Contains(LineFields[j].Name))
                             LineFields[j].SetValue(line, g.Read(LineFields[j].FieldType));
+                    if (unfound && line != scratch)
+                        Missed("line heads");
                 }
 
                 for (var groups = r.ReadInt32(); groups > 0; groups--)
@@ -262,6 +399,9 @@ internal static partial class CellStore
                     for (var n = r.ReadInt32(); n > 0; n--)
                     {
                         var ordinal = r.ReadInt64();
+                        Element? e;
+                        bool keyUnfound, valueUnfound = false;
+                        unfound = false;
                         if (registered)
                         {
                             object? item;
@@ -269,24 +409,67 @@ internal static partial class CellStore
                                 g.ReadInto(item = made[fi][(int)ordinal]);
                             else
                                 item = g.Read(itemType!);
-                            file.Elements.Add(new Element(fi, ordinal, item, null, false));
+                            keyUnfound = unfound || item is null;
+                            e = new Element(fi, ordinal, item, null, false);
                         }
                         else if (keyType is not null)
                         {
                             var key = g.Read(keyType);
+                            keyUnfound = unfound;
+                            unfound = false;
                             object? value;
                             if (RegisteredValues(f) && r.ReadBoolean())
                                 g.ReadInto(value = made[fi][(int)ordinal]);
                             else
                                 value = g.Read(valueType!);
-                            file.Elements.Add(new Element(fi, ordinal, key, value, false));
+                            valueUnfound = unfound;
+                            // (A list of lines with some not loaded: those taken out.)
+                            if (valueUnfound && value is List<NetworkLine> some)
+                            {
+                                some.RemoveAll(l => l is null);
+                                valueUnfound = false;
+                                if (full && !isRest)
+                                    Missed(f.Name + " (lines in a list)");
+                            }
+
+                            e = new Element(fi, ordinal, key, value, false);
                         }
                         else
-                            file.Elements.Add(new Element(fi, ordinal, g.Read(itemType!), null, false));
+                        {
+                            var item = g.Read(itemType!);
+                            keyUnfound = unfound;
+                            e = new Element(fi, ordinal, item, null, false);
+                        }
+
+                        if (whole)
+                        {
+                            file.Elements.Add(e.Value);
+                            continue;
+                        }
+
+                        // (A window's: only what it can stand behind. The lines' tile indexes in complete cells alone; anything naming a
+                        // line by its place, only if that line's loaded.)
+                        if (byTileOnly[fi] && !full)
+                            continue;
+                        // (Places are the route's, so a complete cell's are kept as they are, loaded or not; a cell not complete keeps
+                        // only those of lines loaded.)
+                        if (lineIndexed[fi] && !full && !IndexedLoaded(e.Value.Key, e.Value.Value, Loaded))
+                            continue;
+
+                        if (keyUnfound || (valueUnfound && !full))
+                        {
+                            if (full)
+                                Missed(f.Name);
+                            continue;
+                        }
+
+                        if (valueUnfound)
+                            Missed(f.Name + " (kept, naming what's not loaded)");
+                        file.Elements.Add(e.Value);
                     }
                 }
 
-                if (k == files.Length - 1)
+                if (isRest)
                     foreach (var f in RootFields.Where(f => RuleOf(f).Place == Place.Route))
                         f.SetValue(root, g.Read(f.FieldType));
             });
@@ -304,7 +487,7 @@ internal static partial class CellStore
                 }
 
                 var list = elements.GetValueOrDefault(fi) ?? [];
-                if (list.Count != meta.Count)
+                if (whole && meta.Count >= 0 && list.Count != meta.Count)
                     throw new InvalidDataException($"{f.Name}: {list.Count} in the cells read, {meta.Count} written");
                 var container = Activator.CreateInstance(f.FieldType)!;
                 if (rule.Nested)
@@ -316,7 +499,7 @@ internal static partial class CellStore
                     {
                         var inner = (IDictionary)Activator.CreateInstance(innerType)!;
                         var round = rounds.GetValueOrDefault(o) ?? [];
-                        if (round.Count != meta.Inner[o])
+                        if (whole && meta.Inner[o] >= 0 && round.Count != meta.Inner[o])
                             throw new InvalidDataException($"{f.Name}[{o}]: {round.Count} read, {meta.Inner[o]} written");
                         foreach (var e in round)
                         {
@@ -337,7 +520,10 @@ internal static partial class CellStore
                     {
                         case IDictionary dictionary:
                             foreach (var e in list)
-                                dictionary.Add(e.Key!, e.Value);
+                                if (whole)
+                                    dictionary.Add(e.Key!, e.Value);
+                                else
+                                    dictionary[e.Key!] = e.Value;
                             break;
                         case IList items:
                             foreach (var e in list)
@@ -355,8 +541,19 @@ internal static partial class CellStore
             }
 
             RootFields.First(f => f.Name == "_lines").SetValue(root, new List<NetworkLine>(lines));
+            if (!whole)
+            {
+                // (Worked out again when first asked for, from the lines loaded: what's read of them names lines that aren't.)
+                foreach (var name in Remade.Append("_byChain"))
+                    RootFields.First(f => f.Name == name).SetValue(root, null);
+                root.Window = new CellWindow(complete, toRead, tainted.Keys.ToHashSet());
+            }
+
             Time("put together");
-            Log.Info($"Cells: {ids.Length} cells read ({bytes / (1 << 20)} MB), {lines.Length} lines, {index.Spread.Sum(m => m.Count)} things; ms: {string.Join(", ", times)}");
+            Log.Info($"Cells: {ids.Length} cells read ({bytes / (1 << 20)} MB){(whole ? "" : $", a window complete in {complete.Count}")}, {loaded} lines" +
+                     $"{(whole ? "" : $" of {lines.Length} places")}, {elements.Values.Sum(l => l.Count)} things; ms: {string.Join(", ", times)}" +
+                     (missing.IsEmpty ? "" : $"; not loaded, named by: {string.Join(", ", missing.OrderByDescending(m => m.Value).Select(m => $"{m.Value} {m.Key}"))}" +
+                                              $"{(tainted.IsEmpty ? "" : $" ({tainted.Count} complete cells naming them, not written from the window)")}"));
             return root;
         }
         catch (Exception e) when (e is IOException or EndOfStreamException or InvalidDataException or UnauthorizedAccessException or TargetInvocationException
@@ -368,4 +565,33 @@ internal static partial class CellStore
             return null;
         }
     }
+
+    /// Whether every line an entry of a field of line places (ints) names is loaded.
+    private static bool IndexedLoaded(object? key, object? value, Func<int, bool> loaded)
+    {
+        static bool All(object? o, Func<int, bool> loaded) => o switch
+        {
+            int i => loaded(i),
+            List<int> list => list.TrueForAll(i => loaded(i)),
+            List<(int Line, int Point)> points => points.TrueForAll(q => loaded(q.Line)),
+            ValueTuple<long, int> fitted => loaded(fitted.Item2),
+            ValueTuple<int, int> at => loaded(at.Item1),
+            _ => true,
+        };
+
+        return All(key, loaded) && All(value, loaded);
+    }
+
+    /// A slice's bytes passed over (a line not loaded).
+    private static void SkipSlice(Stream r, Slice s, int first, int count, int lineCount, ref byte[] buffer)
+    {
+        var size = SlicedSize(s);
+        var (_, n) = Range(s, first, count, lineCount);
+        var length = n * size;
+        if (buffer.Length < length)
+            buffer = new byte[Math.Max(length, buffer.Length * 2)];
+        r.ReadExactly(buffer.AsSpan(0, length));
+    }
+
+    private static int SlicedSize(Slice s) => SizeOf(LineFields[s.Field].FieldType.GetElementType()!);
 }

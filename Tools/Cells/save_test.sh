@@ -20,7 +20,7 @@ for d in Network Cells; do if [ -d "$route/$d" ]; then cp -rp "$route/$d" "$keep
 # (Two edits, each saved: the first save after an open from cells written at an open may write them all, see CellStore.Write;
 # the second writes the cells it changed. Then opened again, checked.)
 # shellcheck disable=SC2086
-HB_LOGFILE="$root/Logs/$name.log" "$exe" --route World --view --lay ${lay[*]} --save --quit 200 > /dev/null 2>&1 || true
+HB_LOGFILE="$root/Logs/$name.log" "$exe" --route World --view --lay ${lay[*]} ${EXTRA:-} --save --quit 200 > /dev/null 2>&1 || true
 HB_LOGFILE="$root/Logs/$name-second.log" "$exe" --route World --view --lay ${second:-42.38085 -83.4555 42.3800 -83.4545} --save --quit 200 > /dev/null 2>&1 || true
 HB_CELLCHECK=1 HB_LOGFILE="$root/Logs/$name-reopen.log" "$exe" --route World --view --quit 200 > /dev/null 2>&1 || true
 

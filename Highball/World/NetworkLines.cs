@@ -21,6 +21,18 @@ public sealed class NetworkLine
 
     /// Its place in the set of lines, changed only when a local rebuild moves it to fill a gap (CellStore.Merge).
     internal void MoveTo(int index) => _index = index;
+
+    /// What stands in a place of the set of lines with no line in it: a line not loaded (the lines are a window over some cells,
+    /// CellStore.Read), or one gone and not replaced (CellStore.Merge). No points, no nodes, bounds that take in nothing; the one object
+    /// stands in every such place, so a place keeps its number whatever's loaded (docs/cell-routes.md, Streaming).
+    public static readonly NetworkLine Absent = new()
+    {
+        Index = -1, Rail = false, Class = 0, X = [], Z = [], Y = [], Ground = [], Key = 0, S = [], Structures = [], Nodes = [],
+        MinX = double.MaxValue, MinZ = double.MaxValue, MaxX = double.MinValue, MaxZ = double.MinValue, Chain = long.MinValue, Name = long.MinValue,
+    };
+
+    /// Whether this is the place holder (Absent), not a line.
+    public bool IsAbsent => ReferenceEquals(this, Absent);
     public required bool Rail { get; init; }
     public required int Class { get; init; }
     public required double[] X { get; init; }
@@ -308,6 +320,24 @@ public sealed partial class NetworkLines
     private readonly int _quads;
 
     public IReadOnlyList<NetworkLine> Lines => _lines;
+
+    /// The cells these lines are complete in, if they're a window over some of the route's (CellStore.Read): every line with a point in
+    /// them or reaching their ground is loaded, and everything anchored in them; elsewhere a line may be loaded (one reaching in from
+    /// them) or not (its place holds NetworkLine.Absent). Null: the whole route. See docs/cell-routes.md, Streaming.
+    internal CellWindow? Window { get; set; }
+
+    /// The indexes made when first asked for (the detail regions, the rail cells, the roads' ends, the lines by chain), made now: for a
+    /// window read in the background, so the main thread taking it in doesn't make them.
+    internal void Warm()
+    {
+        _ = DetailRegions;
+        UnderTrack(0, 0, 3.0);
+        _roadEnds ??= FindRoadEnds();
+        LinesOfChain(0);
+    }
+
+    /// Whether these lines are all there is of the route there (not a window, or a cell of its).
+    internal bool Complete(TileId cell) => Window is not { } window || window.Complete.Contains(cell);
 
     /// The switches where one rail line divides into two, found once the profiles are finished.
     public List<Turnout> Turnouts { get; private set; } = [];
@@ -1450,7 +1480,7 @@ public sealed partial class NetworkLines
         var byChain = Volatile.Read(ref _byChain);
         if (byChain is null)
         {
-            byChain = _lines.GroupBy(l => l.Chain).ToDictionary(g => g.Key, g => g.ToList());
+            byChain = _lines.Where(l => !l.IsAbsent).GroupBy(l => l.Chain).ToDictionary(g => g.Key, g => g.ToList());
             Volatile.Write(ref _byChain, byChain);
         }
 
