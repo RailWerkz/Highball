@@ -696,6 +696,177 @@ is the cheapest to fix (chains with no line anchored by their first way, or drop
 - **Window growth reads the whole window again** (0.6-1.2 s for 5-10 cells more), rather than only the cells it adds.
 - **Unsaved edits hold the window** where it is (until a save); an edit needing cells not loaded then lays the whole route.
 
+## Streaming everything (stage 6, built 2026-11-23)
+
+Code: `TerrainSource.Tiles.cs` (`FarTile`, `TerrainOverview`, `StreamTiles`, `LoadNear`), `TerrainSource.cs` (`Locate`, the open),
+`Terrain.cs` (`Refresh`, `Roots`), `CellStore.Read.cs` (`ReadIndex` kept, the chains block, `Read(reuse)`), `CellStore.Files.cs`,
+`RouteInfo.TileList`, `PlannerView` (its network and the lidar tiles read when needed). FormatVersion 6.
+
+Stage 4 left three things read whole at every open (every tile, the network, the cells' index's own part); this stage takes two and a half
+of them out, and the per-route costs the scale test then found.
+
+### The terrain's tiles
+
+- **Loaded round the camera.** Only the tiles within `TileRings` of the camera's tile (and of where it's heading) are loaded: their coarse
+  heights (16 m), cover and sculpting in memory. `HB_TILES=N` (`whole`: every tile, never let go); by default the track's window and two
+  rings more, 6: 13 x 13 tiles, 26 km, past where the terrain draws anything finer than the overview. They're read and shaped on worker
+  threads as the camera moves, four at a time, nearest first, exactly as an open shapes them (`LoadNear`: the lines loaded shape a complete
+  tile, `ConformKept`; a tile outside the window is as last shaped, `ShapeAsKept`; a pack's come shaped), and let go two rings further out
+  (16 a frame; never a tile with sculpting or paint not saved, or touched this session, which a stroke to undo may name). A tile read
+  while the lines were replaced (an edit or a window step taken in meanwhile) is thrown away and read again.
+- **Far off, the overview.** Every built tile has a `FarTile`: its ground at 9 x 9 points (250 m) and the commonest cover class of each
+  8 x 8 cell (250 m), and its range, worked out from its coarse heights as last loaded (shaped and sculpted). `TryHeight`, `HeightRange` and
+  the cover blend read it for a tile not loaded. It's kept in `Cache/Terrain/BI_BJ.bin`, a file per 32 x 32 tiles (64 km), Brotli; a block
+  is written again (in the background, at most every 20 s, and at every save) when a tile in it is loaded, let go or shaped again and its
+  overview comes out otherwise. Derived: a tile with none kept is read for it at the open (the first open after this stage reads every
+  tile once, as before). A tile shaped again by an edit or a window step while it isn't loaded has its overview worked out from the
+  heights shaped (`ShapedFar`); it's shaped again from the ground cache when it's loaded.
+- **Which tile a sample is from** (`Locate`) is decided by the tiles built, not loaded, so it never changes as tiles come and go; then the
+  loaded tile's heights or its overview. A tile loaded or let go hands its rectangle to the terrain (`TakeTileChanges`), which builds the
+  patches over it (and a step round) again (`Refresh`, a version counter apart from the edits' epoch so the horizon and plants aren't
+  redone): the patches either side of a seam always read a tile alike. Fine levels (0-2) wait for full heights as before; `FullReady` now
+  counts a tile not loaded as not ready.
+- **Roots.** The terrain walks the root patches over built tiles only (`Roots`), not every root in the route's bounds (a continent's).
+- **The built tiles' list** (`Cache/Tiles.bin`, `RouteInfo.TileList`): every built tile and its heights file's size and time, kept with
+  the Tiles folder's time; a tile added or taken out changes that, `RouteTile.Save` deletes the list. `BuiltTiles` and the stamp read it
+  rather than listing 50,000 folders (5 s and more each, three times an open, at 100 times World).
+- **The Planner** reads which tiles are lidar (every tile's `Tile.json`) in the background, and its `RouteNetwork` only when something
+  needs its ways (a build, the tiles track runs through, the map once the network's changed): the map draws from `Network/Overview.bin`.
+  At 57,400 tiles the `Tile.json` read alone held the builder's start for 36 s.
+- **Packs** open as before (every tile read: a pack carries no overview yet), then stream: tiles far from the train are let go, their
+  overview worked out from their coarse heights, and read again from the pack (`LoadShaped`) when it comes back. Seen letting go while
+  driving; a drive long enough to read one back wasn't run.
+
+### The cells' index
+
+- **The chains seen with no line** (`_seenChains` with no cell, 17,804 of the index's 17,807 things on World) are a block of their own
+  after the index's own part, read only for the whole route: a window never asks what a chain far off was laid from (`NetworkLines.Keep`
+  asks only when the last lines were whole). A window's write copies the block as it was (as stage 4 kept them: not written from a window);
+  a whole read drops one a cell has since been written with (a chain that's given a line).
+- **Read once.** `ReadIndex` keeps the index as last read while its file's length and time are as they were: a window step reads no index.
+  What's still read whole, once at the open and again after a save, is every cell's size, hash and reach: 158 KB for World's 572 cells
+  (55 ms), ~16 MB at 100 times. Splitting it by region (or putting each cell's reach in the cell's own header, read with the ring a window
+  reads anyway) is what's left; at that size it wasn't the next cost.
+
+### The network
+
+Not a window yet. The editor still loads every network cell at the open (0.19-0.31 s for World's 1,570, ~20-30 s and its memory at 100
+times). What stopped it, beyond the API (128 uses of `RouteNetwork.Ways`):
+- **Chains.** A local rebuild hands every chain through the context whole (`WayIndex.Handed`); a window of the network would truncate a
+  long chain, renaming its lines (a chain's name is its first way and node). Loading a cell, every cell whose `Reach` names it, then
+  growing until every handed chain ends inside cells so loaded, needs a node-to-cell index the network doesn't have yet.
+- **Circuits and signals** are built from every rail way (`CircuitEditor`, `TrackGraph.Build` in `EditorView.Signals`) and saved: a window
+  would drop joints outside it. They need the rail ways whole (6% of ways, but stored mixed with roads in every cell) or a graph per cell.
+- **Whole-route paths** (any road edit lays the whole route, the `MostCells` fallback, `HB_LOCALCHECK`, a cold open) and `NewId` (the lowest
+  id in use) need every way: a window needs a whole snapshot read from disk under the window's edits.
+- **Saves** must read a way's new cell before writing it, and the window's growth has to be mirrored in `NetworkLines.Ways` (else a way
+  newly loaded reads as an edit to the local rebuild).
+Done instead: the Planner's network is no longer read at the open (one of the two whole loads).
+
+### Window steps, growth and the collector
+
+- **A line read again keeps its arrays** (`CellStore.Read(reuse)`): a line of the lines shown read again (the same place, key and count, its
+  arrays as long as the pieces cut) is a copy of the shown line sharing its per-point arrays, its head and everything it's in read as ever.
+  97% of a flying step's lines (8,166 of 8,383); a grown window's too (`GrowFor` reads through `ReadWindow`). Every cell is still read and
+  unpacked: growing doesn't read only the new cells, it decodes only the new lines.
+- **Cell files into pooled buffers** (`ArrayPool`), not a large-object-heap array each; `GCLatencyMode.SustainedLowLatency` while a step
+  reads (`HB_GCLATENCY=0`: off).
+- **A change's tiles' coarse copies** are worked out side by side when it's taken in.
+
+### Measured (World and a synthetic 100 times, 2026-11-23)
+
+Same machine; `cells/base` with its own build (`Logs/base-bin`) and its own format-5 cells, on this worktree's copy of World.
+
+**Opens** (warm, the camera at the default edit; terrain open from `Terrain open, ms`; to usable: "Routes: Ok" to the first rail graph; peak
+working set as the open finishes):
+
+| | Tiles loaded | Terrain open | Stamp | Tiles | Cells | Ground keys + reshape | To usable | Peak working set |
+|---|---|---|---|---|---|---|---|---|
+| `cells/base`, World | 574 | 3,194 ms | 231 | 1,215 (519 outside the window) | 591 | 875 | 6 s | 1,644 MB |
+| stage 6, World | 94 | 2,029-2,288 ms | 70 | 141-229 (44 near) + overview 8-11 | 646-779 | 560-720 | 5 s | 1,322-1,559 MB |
+| stage 6, WorldBig (57,400 tiles) | 94 | 2,196-2,208 ms | 92-101 | 171 + overview 118-124 | 588-694 | 690-780 | 5 s | 1,333-1,340 MB |
+
+**The scale test** (`Tools/Cells/make_big.py 100`: `Content/Routes/WorldBig`, World with its tiles hard-linked 100 times over on a grid
+of offsets 200 km east and 100 km north apart, 57,400 tiles; its network and cells World's). Its first open was cold (the stamp takes the
+tiles): 105 s, 20.8 GB (every tile read, solved as World), writing 57,400 overviews (21 MB in 474 blocks). Warm, the terrain opens in the
+same 2.2 s as World's and the builder is usable in the same 5 s: what's left that grows with the tiles is the overview's read (118-124 ms
+for 57,400) and the tiles' list (in the stamp's 92-101 ms). Before the tiles' list and the Planner's background read, the same warm open
+took 11.9 s of terrain (the stamp 5.1-5.6 s listing every folder) after 9-36 s of the Planner reading every `Tile.json`. The test's
+network and cells are World's, so it doesn't measure them: those are from World's per-cell costs, below.
+
+**Flying** west at 200 m/s with the default 4 rings, 100 s (`--fly 200`, the camera at the default edit facing west): tiles loaded a few
+at a time (98 to 108 in memory) and let go 7-8 at a time off the end of the rail (down to 68); none thrown away; the ground near the camera
+whole in the screenshots (`Logs/fly70.png`; at 85-95 s both builds show only fog, off the route's built tiles). A window step's read, and
+the collector's pauses meanwhile (every thread):
+
+| | Step reads, ms | Collector pauses per step, ms | Worst frame of a step's second |
+|---|---|---|---|
+| `cells/base` | 812, 745, 494, 400, 319, 222, 230, 141 | 209, 177, 215, 135, 118, 59, 51, 42 | 46-100 |
+| stage 6, tiles streaming only | 1,020, 559, 487, 324, 289, 307, 179, 146 | 204, 171, 200, 95, 80, 88, 56, 40 | 50-100 |
+| stage 6, lines reused, pooled, low latency | 753, 651, 474, 263, 228, 220, 137, 143 | 199, 99, 195, 63, 61, 67, 32, 52 | 42-100 |
+
+The collector stops every thread for about a third less per step, but the worst frame of a step's second isn't better: between steps
+frames are 4-24 ms in all three, and a step's second still has a 40-100 ms frame. The profiler accounts for 12-17 ms of those frames; the
+rest is the take-in (line meshes 2-66 ms, the rail graph built again 14-51 ms, trains and signals caught up 18-53 ms, all on the main
+thread) and the collector, which in those seconds is collecting for every thread (200-1,300 MB allocated by every thread during a step:
+terrain patches' vertex arrays, 250 KB each, are on the large object heap too). A bigger first generation (`DOTNET_GCgen0size=0x10000000`)
+paused less (20-243 ms) but the frames were no better. What's left is the main thread's share: the rail graph and signals rebuilt from
+scratch at every step, and the meshes of the lines loaded.
+
+**Edits** (`edit_test.sh`, background ms from `Track rebuild, ms` without the check; main thread from `taken in`):
+
+| Edit | `cells/base` | stage 6 | Taken in, base / stage 6 |
+|---|---|---|---|
+| Default, the camera at it | 4,007 | 3,952 | 853 / 829 (line meshes 831 / 820: meshes still building at the time) |
+| Default, `HB_LOCALCHECK=1` | - | 4,532 | - / 171 |
+| Yard, `HB_LOCALCHECK=1` | - | 3,912 | - / 219 |
+| Bridge, `HB_LOCALCHECK=1` | - | 4,206 | - / 190 |
+| Default, the camera at the yard (16 km off) | 11,800 (grown 2,320, reshape 4,351) | 7,570 with the check on (grown 2,123, reshape 357) | 659 / 717 (the grown window's line meshes 532 / 561) |
+
+Exactness as before, all four: default 3,263 lines in the dirty cells, 0 over 1 cm (worst 2.0 mm in plan, 4.8 mm in height); yard 2,430,
+0 over 1 cm (3.8 mm); bridge 3,530, 1 over 1 cm in plan (1.6 cm) and 2 in height, worst 12.6 cm (the same road near (-201250, -697511));
+the far edit as the default. Outside the cells touched: 0 lines changed (10-76 slope-end shapes not previous's objects, as before). The far
+edit grows the window twice (30 and 21 cells) as on `cells/base`; with the lines reused the growth is 10% quicker, and the main-thread
+take-in of the grown window (its lines' meshes, ~0.55 s) is unchanged: growing still reads every cell of the window again.
+
+**Saves** (`save_test.sh`, `HB_CELLCHECK=1`): 23 and 26 cells written of 572; the read-backs as the same window: the first 2,022 values
+differ (`Bridges`' members and `Under`: "refers to another one", lines a window drops from a list), and `cells/base` on the same route copy
+the same way (2,465); the second 1 (`_seenChains`, as before). The whole reopen reads all 572 cells, the chains block with them; against a
+fresh build it differs as stage 2 says it must (places kept). Network after an edit and Ctrl+S: 2 of 1,570 network cells written, every
+other cell file byte for byte as it was; `Junctions.json` 177 markers before, 195 after, none gone; `Stock.json` 17 cuts saved (14 put
+back, 3 outside the window kept as saved), as on `cells/base`. `--networkcheck World` after the save: passed (60,954 ways, 0 differences).
+
+**Packs**: exported from a window: 33,346 lines, World.hbserver 710 edges, 188 switches, checksum 00CB4BB5; the pack's cells read back
+give the same graph. `cells/base` exports the same 00CB4BB5 from this route copy (the 47FAA460 of stage 4 was another copy of World:
+709 edges). `--pack World/World` opens in 4.0 s to the terrain (every tile read, then tiles let go as it drives). The server isn't touched
+(`--host`/`--join` not run).
+
+### At 100 times World, now
+
+| | Stage 4 | Stage 6 |
+|---|---|---|
+| Terrain at open | 130-140 s, ~6 GB of coarse copies | the window's tiles (~0.2 s) + the overview read (0.12 s, measured at 57,400 tiles), ~30 MB of overviews |
+| The tiles' list and stamp | ~1 s+ (measured: 5 s to list the folders, three times) | 0.1 s (measured) |
+| The Planner at open | (not counted) every way read, every `Tile.json` (36 s measured) | the overview; lidar read in the background |
+| Cells' index | ~10 s at every window read | ~16 MB of entries read once at open and after a save (~0.2-0.3 s), nothing at a step |
+| Network | 20 s (twice), its memory | ~20-30 s once (the editor's), its memory: still whole |
+| Track read | 0.5-0.6 s | the same; a step decodes only the lines it adds |
+
+So an open at 100 times is about **5 s plus the network's whole load (~20-30 s)**, ~25-35 s in all, against ~3 minutes at stage 4; with the
+network a window it would be the 5 s measured. Memory at open: ~1.3 GB plus the network's (World's network times 100, not measured).
+
+### Not done
+
+- **`RouteNetwork` as a window** (above): the largest cost left at open at national scale.
+- **Growing a window reads every cell of it again**: it decodes only the new lines now, but reads and unpacks every file, and the grown
+  window's line meshes are taken in on the main thread (~0.55 s).
+- **The frame hitch at a window step**: the main thread's take-in (rail graph and signals rebuilt whole, the new lines' meshes) and the
+  collector; the collector's pauses are a third less.
+- **The cells' index entries** (size, hash, reach per cell) are still one file.
+- **Packs carry no overview**: a pack's open reads every tile.
+- **The 2D map view at national scale** (every root drawn from the overview) and a cold open at 100 times beyond the one measured weren't
+  looked at.
+
 ## Stages
 
 Each stage ends with something measured and checked, and the builder working throughout.
@@ -710,7 +881,7 @@ Each stage ends with something measured and checked, and the builder working thr
 3. **The network per cell.** Ways and nodes saved and loaded per cell; Ctrl+S writes only changed cells.
 4. **Streaming in the builder.** Only cells near the camera are loaded; `NetworkLines` and `RouteNetwork` become windows;
    the Planner draws from the overview. Gains: opens in seconds and memory follows the camera, at any size. Built 2026-11-23 for
-   `NetworkLines` (see Streaming); `RouteNetwork` and the terrain's tiles still load whole.
+   `NetworkLines` (see Streaming); the terrain's tiles 2026-11-23 (see Streaming everything); `RouteNetwork` still loads whole.
 5. **Packs and servers from cells.** Packs carry cells; driving streams them; the server graph is built from them. Built 2026-11-22;
    regional packs carrying their own window's cells 2026-11-23; driving doesn't stream them yet.
 
