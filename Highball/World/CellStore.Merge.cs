@@ -81,10 +81,20 @@ internal static partial class CellStore
         var made = new List<NetworkLine>();
         var madeSet = new HashSet<NetworkLine>(ReferenceEqualityComparer.Instance);
         // (Everything but the zones compared once; the zones each round, as things are let go.)
+        // (A window's line with no point in a dirty cell is previous's, whatever the window made of it: it's context, worked out with
+        // less round it than it had, and the cells it's in aren't being laid again.)
         var first = new Dictionary<NetworkLine, (NetworkLine? P, string? Why)>(ReferenceEqualityComparer.Instance);
+        var outside = new HashSet<NetworkLine>(ReferenceEqualityComparer.Instance);
         foreach (var w in window.Lines)
         {
             var p = w.Origin ?? (byName.TryGetValue(w.Name, out var named) ? named : null);
+            if (p is not null && !NetworkLines.TouchesDirty(w, local))
+            {
+                outside.Add(w);
+                first[w] = (p, null);
+                continue;
+            }
+
             first[w] = (p, p is null ? "new" : SameLine(w, p, things, zones: false));
         }
 
@@ -96,7 +106,7 @@ internal static partial class CellStore
             foreach (var w in window.Lines)
             {
                 var (p, why) = first[w];
-                if (why is null && !SameZones(w.TurnoutZones, p!.TurnoutZones, things))
+                if (why is null && !outside.Contains(w) && !SameZones(w.TurnoutZones, p!.TurnoutZones, things))
                     why = "TurnoutZones";
                 if (why is null)
                     map[w] = p!;
@@ -370,12 +380,14 @@ internal static partial class CellStore
             case "_preparedKeys":
                 if (p is not System.Collections.Concurrent.ConcurrentDictionary<TileId, ulong> prepared)
                     return null;
+                // (Dropped for the cells touched, worked out again when asked for; kept as they are everywhere else, where the cells
+                // kept on disk have them so.)
                 var reach = new HashSet<TileId>(dirty);
                 foreach (var l in made.Concat(gone))
                     reach.UnionWith(l.Tiles);
                 var left = new System.Collections.Concurrent.ConcurrentDictionary<TileId, ulong>();
                 foreach (var (tile, key) in prepared)
-                    if (!reach.Contains(tile) && !reach.Any(r => Math.Abs(r.I - tile.I) <= 1 && Math.Abs(r.J - tile.J) <= 1))
+                    if (!reach.Contains(tile))
                         left[tile] = key;
                 return left;
         }

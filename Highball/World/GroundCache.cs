@@ -457,12 +457,13 @@ public sealed partial class NetworkLines
     /// into its key, so a crossing changed in one place doesn't change every tile's.
     private ulong PadsHash(double x0, double z0, double x1, double z1)
     {
-        var hash = new WordHash();
         var size = _quads * (double)_spacing;
         var near = _pads.Where(p => p.X + p.Half + 100.0 >= x0 && p.X - p.Half - 100.0 <= x1 && p.Z + p.Half + 100.0 >= z0 && p.Z - p.Half - 100.0 <= z1).ToList();
-        hash.Add(near.Count);
+        // (Taken in no order, as the slope ends: the cells give the pads back in their own.)
+        var each = new List<ulong>();
         foreach (var pad in near)
         {
+            var hash = new WordHash();
             hash.Add(pad.Id);
             foreach (var v in (ReadOnlySpan<double>)[pad.X, pad.Z, pad.Dx, pad.Dz])
                 hash.Add(v, GroundCache.PlaceStep);
@@ -482,9 +483,16 @@ public sealed partial class NetworkLines
                         Math.Min((l.X[p] - sx) * (l.X[p] - sx) + (l.Z[p] - sz) * (l.Z[p] - sz), (l.X[p] - ex) * (l.X[p] - ex) + (l.Z[p] - ez) * (l.Z[p] - ez)) <= PadJoin * PadJoin))
                     hash.Add(ShapingHash(l));
             }
+
+            each.Add(hash.Value);
         }
 
-        return hash.Value;
+        each.Sort();
+        var all = new WordHash();
+        all.Add(each.Count);
+        foreach (var h in each)
+            all.Add(h);
+        return all.Value;
     }
 
     private void AddEnds(ref WordHash hash, IReadOnlyList<BridgeEnd> ends)
