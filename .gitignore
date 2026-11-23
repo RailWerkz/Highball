@@ -53,3 +53,6 @@ Content/Meshes/Vegetation/grass_2k.glb
 
 # Trainz packs the freight cars are built from (Tools/RollingStock/build_game.py), if any are dropped in Content
 Content/Meshes/**/*.cdp
+
+# Logs of the cell routes test runs (Tools/Cells/edit_test.sh)
+Logs/

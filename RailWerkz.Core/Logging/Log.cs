@@ -17,7 +17,9 @@ public static class Log
     {
         try
         {
-            _file = new StreamWriter(Path.Combine(ContentPath.UserData, $"{ContentPath.AppName}.log"), false) { AutoFlush = true };
+            // (HB_LOGFILE: a log of its own, for copies of the game run side by side in tests.)
+            var path = Environment.GetEnvironmentVariable("HB_LOGFILE") is { Length: > 0 } own ? own : Path.Combine(ContentPath.UserData, $"{ContentPath.AppName}.log");
+            _file = new StreamWriter(path, false) { AutoFlush = true };
         }
         catch (IOException)
         {
