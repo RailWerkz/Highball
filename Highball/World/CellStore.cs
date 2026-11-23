@@ -32,11 +32,11 @@ namespace Highball.World;
 internal static partial class CellStore
 {
     /// The layout of the files. Bumped when it changes; cells of another are never read.
-    public const int FormatVersion = 2;
+    public const int FormatVersion = 3;
 
     /// The passes' build (laying, grading, shaping): bumped by hand when a change to them should show in cells already built. Cells of
     /// another are built again.
-    public const int BuildVersion = 1;
+    public const int BuildVersion = 2;
 
     private const int IndexMagic = 0x58444E43; // "CNDX"
     private const int CellMagic = 0x4C4C4543; // "CELL"
@@ -86,11 +86,6 @@ internal static partial class CellStore
             for (var i = words.Length * 8; i < bytes.Length; i++)
                 hash.Add((int)bytes[i]);
         }
-
-        // (The solved track by when it was written: it's 100 MB and more, and only ever written whole.)
-        var solved = new FileInfo(Path.Combine(route.Folder, "Track.bin.gz"));
-        hash.Add(solved.Exists ? solved.Length : -1);
-        hash.Add(solved.Exists ? solved.LastWriteTimeUtc.Ticks : 0);
 
         foreach (var id in built.OrderBy(t => t.I).ThenBy(t => t.J))
         {
@@ -199,7 +194,6 @@ internal static partial class CellStore
         ["_quads"] = new(Place.Route),
         ["_ballastSamples"] = new(Place.Route),
         ["_handSet"] = new(Place.Route),
-        ["_padsHash"] = new(Place.Route),
         ["Sizes"] = new(Place.Route),
         ["Curves"] = new(Place.Route),
         ["_bridgeEndsLock"] = new(Place.Route),

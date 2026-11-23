@@ -250,6 +250,7 @@ internal static partial class CellStore
             var compiled = Path.Combine(route.Folder, "Cache", "Lines.bin");
             if (File.Exists(compiled))
                 File.Delete(compiled);
+            NetworkLines.ForgetSolved(route);
 
             var sizes = results.Select(r => r.Size).Order().ToArray();
             var biggest = ids.Length == 0 ? default : ids[Array.IndexOf(results.Select(r => r.Size).ToArray(), sizes[^1])];

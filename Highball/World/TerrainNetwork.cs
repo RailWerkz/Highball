@@ -65,7 +65,7 @@ public sealed partial class TerrainSource
                 stage("build");
                 laid.SetCrossings(crossings, _route.Projection!);
                 // (Only built tiles have ground to sample: a line running off the built area keeps its points there unsampled, as on open.)
-                var sampled = laid.AdoptGround(previous).Where(built.Contains).ToList();
+                var sampled = laid.AdoptGround(near?.Seen ?? previous.Lines).Where(built.Contains).ToList();
                 Parallel.ForEach(sampled, id =>
                 {
                     var data = _route.LoadTile(id);
@@ -76,7 +76,7 @@ public sealed partial class TerrainSource
                 laid.FinishProfiles();
                 var held = near is null ? 0 : laid.HoldFarRail(near);
                 stage(near is null ? "profiles" : $"profiles ({held} rail points far from the edit held as they were)");
-                laid.AdoptDrapes(previous);
+                laid.AdoptDrapes(near?.Seen ?? previous.Lines);
                 laid.FindLayouts(tagged);
                 stage("layouts");
                 laid.Bridges = BridgePlanner.Find(laid, near?.Previous);
