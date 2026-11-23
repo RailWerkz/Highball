@@ -451,6 +451,33 @@ before):
 - A tile's ground key takes only the pads near it (it took every pad, so any crossing changed changed every tile's key).
 - `Track.bin.gz` (`SolvedTrack`) is gone: it was good only until the network's next edit, and the cells keep the lines finished.
   A full build always solves; writing cells deletes an old `Track.bin.gz` and `Track.stamp.bin`; it's no longer in the stamp.
+- Bridges are found with the lines at a full build and kept in the cells (they were found when the meshes were first built, so
+  missing from cells written at an open, and the first save after had to write every cell).
+
+### Measured (World, 2026-11-23)
+
+Background ms (`Track rebuild, ms`), main thread ms (`taken in`):
+
+| Edit | Before (whole route handed) | After: first window | After: grown window | Total after | Taken in, before / after |
+|---|---|---|---|---|---|
+| Branch off the main line (default) | 5,913 | 3,616 (25 dirty cells, no spill) | - | 3.6 s | 720 / 607 |
+| Branch near a rail bridge | 6,710 | 3,033 (28 cells), spilled on a 14 km guide mark | 3,259 (71 cells) | 9.0 s with reshape 2,745 | 824 / 390 |
+| Spur in a yard | 6,903 | see the report (re-measured after a fix) | | | 552 / 198 |
+
+The window's passes cost about half the whole route's (build 1.3 s against 2.8, profiles 0.9-1.0 against 1.5-1.7), the merge
+0.45-0.5 s. A spill doubles it. What's left (see the report): the window is still 25 cells (lines are whole objects, so a split
+main line makes its whole length dirty), the merge walks every spread field of the route (O(route), 0.2-0.4 s), and long roads
+and guide marks laid near an edit spill.
+
+Exactness (`HB_LOCALCHECK=1`, default edit, no spill): the 3,263 lines in the 25 dirty cells within 2 mm in plan and 4.8 mm in
+height of a full rebuild, none missing by name; outside the 25 cells touched, every line is the object it was and every spread
+entry previous's own (the 851 slope-end shapes are copies pointed at the merged lines; 104 `_railsNear` and `_wallSpans` entries
+are caches the shown lines filled meanwhile); nothing points at a line or thing that isn't in the merged lines; rail steps at
+junctions 0.019 m, as in the full rebuild. Things in the dirty cells differ in count from a full rebuild where the window works
+them out round frozen lines (layouts 80/71, bridges 11 unmatched, `_surfaceShifts` 42/34, `_sideBySide` 19/15).
+
+Saves: after two edits, the second save wrote 58 cells of 576 (72 asked for, 518 left as they were) in the background (spread 744
+ms over the whole route, encode 423, files 99); the open after read all 576 warm.
 
 ## Stages
 

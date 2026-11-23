@@ -362,6 +362,8 @@ internal static partial class CellStore
         {
             case "_byTile":
                 return MergeByTile((Dictionary<TileId, List<int>>)p!, (Dictionary<TileId, List<int>>)w!, dirty, fromWindow, indexOf, goneIndex, made, gone, lines, moved);
+            case "_pointsByTile":
+                return MergePoints((Dictionary<TileId, List<(int Line, int Point)>>)p!, (Dictionary<TileId, List<(int Line, int Point)>>)w!, dirty, fromWindow, goneIndex, made, gone, lines, moved, cP.Size);
             case "_byChain":
                 return MergeByChain((Dictionary<long, List<NetworkLine>>?)p, made, gone, previous);
             case "_seenChains":
@@ -417,6 +419,10 @@ internal static partial class CellStore
         HashSet<long>? wHave = null;
         bool InP(object? key, object? value)
         {
+            // (An entry naming a gone line by its place, anywhere: the place may be another line's now.)
+            if (keys && key is System.Runtime.CompilerServices.ITuple { Length: 2 } named &&
+                goneIndex.Contains(named[0] is int line ? line : named[1] is int line2 ? line2 : -1))
+                return false;
             if (rule.Anchor!(cP, key, value) is not { } at || !dirty.Contains(at))
                 return true;
             // (The things with places of their own are all found again in the window: its are those.)
@@ -526,6 +532,50 @@ internal static partial class CellStore
             list.AddRange(made.Where(l => l.Tiles.Contains(tile)).Select(l => l.Index));
             list = list.Distinct().ToList();
             list.Sort((a, b) => Priority(lines[a]).CompareTo(Priority(lines[b])));
+            if (list.Count > 0)
+                result[tile] = list;
+            else
+                result.Remove(tile);
+        }
+
+        return result;
+    }
+
+    /// The points over each tile: the window's in the dirty cells; elsewhere previous's, without the lines gone, with the points of the
+    /// lines made that fall there, and moved lines' at their new places.
+    private static Dictionary<TileId, List<(int Line, int Point)>> MergePoints(Dictionary<TileId, List<(int Line, int Point)>> p,
+        Dictionary<TileId, List<(int Line, int Point)>> w, HashSet<TileId> dirty, Func<int, int> fromWindow, HashSet<int> goneIndex,
+        List<NetworkLine> made, List<NetworkLine> gone, List<NetworkLine> lines, List<(int From, int To)> moved, double cellSize)
+    {
+        var result = new Dictionary<TileId, List<(int Line, int Point)>>(p);
+        foreach (var tile in dirty)
+        {
+            result.Remove(tile);
+            if (w.TryGetValue(tile, out var list))
+                result[tile] = list.Select(q => (fromWindow(q.Line), q.Point)).ToList();
+        }
+
+        var movedTo = moved.ToDictionary(m => m.From, m => m.To);
+        // (Which tiles the lines made and gone have points in, from the points themselves.)
+        var changed = new Dictionary<TileId, List<(int Line, int Point)>>();
+        foreach (var l in gone.Concat(moved.Select(m => lines[m.To])))
+            for (var q = 0; q < l.Count; q++)
+                changed.TryAdd(new TileId((int)Math.Floor(l.X[q] / cellSize), (int)Math.Floor(-l.Z[q] / cellSize)), []);
+        foreach (var l in made)
+            for (var q = 0; q < l.Count; q++)
+            {
+                var tile = new TileId((int)Math.Floor(l.X[q] / cellSize), (int)Math.Floor(-l.Z[q] / cellSize));
+                if (!changed.TryGetValue(tile, out var add))
+                    changed[tile] = add = [];
+                add.Add((l.Index, q));
+            }
+
+        foreach (var (tile, add) in changed)
+        {
+            if (dirty.Contains(tile))
+                continue;
+            var list = (p.GetValueOrDefault(tile) ?? []).Where(q => !goneIndex.Contains(q.Line)).Select(q => (movedTo.GetValueOrDefault(q.Line, q.Line), q.Point)).ToList();
+            list.AddRange(add);
             if (list.Count > 0)
                 result[tile] = list;
             else
