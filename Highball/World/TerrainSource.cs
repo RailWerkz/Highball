@@ -328,8 +328,16 @@ public sealed partial class TerrainSource
                     try
                     {
                         using var counted = Background.Begin("Tile loads");
-                        var heights = route.LoadTile(tile.Id).Heights;
-                        Lines?.Conform(tile.Id, heights, samples);
+                        // (A pack carries its ground shaped already, as the export shaped it: taken as it is.)
+                        float[] heights;
+                        if (route.Pack is { } pack)
+                            heights = pack.LoadShaped(tile.Id).Heights;
+                        else
+                        {
+                            heights = route.LoadTile(tile.Id).Heights;
+                            Lines?.Conform(tile.Id, heights, samples);
+                        }
+
                         ApplyEdits(heights, tile.Edits);
                         _loaded.Enqueue((tile, heights));
                     }

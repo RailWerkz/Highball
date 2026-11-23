@@ -228,6 +228,30 @@ internal static partial class CellStore
 
         Time("fields");
 
+        // Things that keep the lines they were made among (a slope end's shape) keep the merged ones: the window's in place, previous's
+        // copied (previous's own are still shown meanwhile).
+        foreach (var f in SpreadFields.Where(Registered))
+        {
+            var holds = GraphSnapshot.FieldsOf(f.FieldType.GetGenericArguments()[0]).Where(x => x.FieldType == typeof(NetworkLines)).ToArray();
+            if (holds.Length == 0 || f.GetValue(root) is not IList items)
+                continue;
+            for (var i = 0; i < items.Count; i++)
+            {
+                if (items[i] is not { } item || holds.All(x => ReferenceEquals(x.GetValue(item), root)))
+                    continue;
+                if (holds.Any(x => ReferenceEquals(x.GetValue(item), previous)))
+                {
+                    var copy = RuntimeHelpers.GetUninitializedObject(item.GetType());
+                    foreach (var x in GraphSnapshot.FieldsOf(item.GetType()))
+                        x.SetValue(copy, x.GetValue(item));
+                    items[i] = item = copy;
+                }
+
+                foreach (var x in holds)
+                    x.SetValue(item, root);
+            }
+        }
+
         // The window's lines made point at the turnouts they'll be with.
         foreach (var w in made)
             for (var z = 0; z < w.TurnoutZones.Count; z++)
@@ -362,7 +386,32 @@ internal static partial class CellStore
                 return remap.Map(o);
         }
 
-        bool InP(object? key, object? value) => rule.Anchor!(cP, key, value) is not { } at || !dirty.Contains(at);
+        // (Previous's in a dirty cell too, if it's of no line laid differently or gone, and the window has none like it: what the passes
+        // leave be on frozen lines, a bridge extended by hand on one, a fork, a shifted surface, isn't worked out again in the window.)
+        var changed = new HashSet<NetworkLine>(made.Concat(gone), ReferenceEqualityComparer.Instance);
+        bool Changed(object? o) => o is NetworkLine l ? changed.Contains(l) : o is not null && Refers(o, changed.Contains);
+        HashSet<long>? wHave = null;
+        bool InP(object? key, object? value)
+        {
+            if (rule.Anchor!(cP, key, value) is not { } at || !dirty.Contains(at))
+                return true;
+            // (The things with places of their own are all found again in the window: its are those.)
+            if (Registered(f) || Changed(key) || Changed(value))
+                return false;
+            if (w is IDictionary || rule.Nested)
+                return true; // (one of the window's under the same key replaces it)
+            if (wHave is null)
+            {
+                wHave = [];
+                if (w is IEnumerable all)
+                    foreach (var item in all)
+                        if (InW(item, null))
+                            wHave.Add(OrdinalOf(item, Registered(f)));
+            }
+
+            return !wHave.Contains(OrdinalOf(key, Registered(f)));
+        }
+
         bool InW(object? key, object? value) => rule.Anchor!(cW, key, value) is { } at && dirty.Contains(at);
 
         if (rule.Nested)

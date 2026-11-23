@@ -12,6 +12,14 @@ internal static partial class CellStore
     /// - Outside the cells it touched: every line is the object it was before the edit, and every spread entry anchored there is
     ///   previous's own (or exactly alike), so those cells are what they were, bit for bit.
     /// - Every line and registered thing anything in the merged lines points at is in them (nothing left pointing at what's gone).
+    private static List<object> EntriesOf(IDictionary d)
+    {
+        var all = new List<object>(d.Count);
+        foreach (DictionaryEntry e in d)
+            all.Add(e);
+        return all;
+    }
+
     public static void CheckMerge(NetworkLines previous, Merged merged, NetworkLines full, LocalRebuild local)
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -88,7 +96,8 @@ internal static partial class CellStore
             int InCells(IEnumerable v, Context c, Func<TileId, bool> where)
             {
                 var n = 0;
-                foreach (var item in v)
+                IEnumerable each = v is IDictionary d ? EntriesOf(d) : v;
+                foreach (var item in each)
                 {
                     var (key, value) = item is DictionaryEntry e ? (e.Key, e.Value) : (item, null);
                     if (rule.Anchor!(c, key, value) is { } at && where(at))
@@ -195,6 +204,7 @@ internal static partial class CellStore
                         registered.Add(item);
         var (strayLines, strayThings) = (0, 0);
         var strayAt = new List<string>();
+        var strayBy = new Dictionary<string, int>();
         var seen = new HashSet<object>(ReferenceEqualityComparer.Instance);
         void Walk(object? o, string from, int depth)
         {
@@ -207,12 +217,19 @@ internal static partial class CellStore
                     if (line.Index < 0 || line.Index >= r.Lines.Count || !ReferenceEquals(r.Lines[line.Index], line))
                     {
                         strayLines++;
-                        if (strayAt.Count < 8)
-                            strayAt.Add($"{from}: line {line.Name} at {line.X[0]:0}, {line.Z[0]:0}");
+                        var kind = line.Origin is not null ? "a window's copy" : merged.Gone.Contains(line) ? "gone" : "other";
+                        strayBy[$"{from} ({kind})"] = strayBy.GetValueOrDefault($"{from} ({kind})") + 1;
                     }
 
                     return;
                 }
+            }
+
+            if (o is NetworkLines root && depth > 0)
+            {
+                if (!ReferenceEquals(root, r))
+                    strayBy[$"{from}: another set of lines"] = strayBy.GetValueOrDefault($"{from}: another set of lines") + 1;
+                return;
             }
 
             var t = o.GetType();
@@ -223,8 +240,7 @@ internal static partial class CellStore
             if (depth > 0 && t.Assembly == typeof(CellStore).Assembly && !t.IsValueType && SpreadFields.Any(f => Registered(f) && f.FieldType.GetGenericArguments()[0] == t) && !registered.Contains(o))
             {
                 strayThings++;
-                if (strayAt.Count < 8)
-                    strayAt.Add($"{from}: {t.Name}");
+                strayBy[$"{from}: {t.Name}"] = strayBy.GetValueOrDefault($"{from}: {t.Name}") + 1;
                 return;
             }
 
@@ -254,6 +270,6 @@ internal static partial class CellStore
                 Walk(f.GetValue(r), f.Name, 0);
         foreach (var line in merged.Made)
             Walk(line, "a line laid again", 0);
-        Log.Info($"Local check, references: {strayLines} to lines not in the merged lines, {strayThings} to things not in them{(strayAt.Count == 0 ? "" : $" (e.g. {string.Join("; ", strayAt)})")}; checked in {watch.ElapsedMilliseconds} ms");
+        Log.Info($"Local check, references: {strayLines} to lines not in the merged lines, {strayThings} to things not in them{(strayBy.Count == 0 ? "" : $" ({string.Join("; ", strayBy.OrderByDescending(s => s.Value).Take(12).Select(s => $"{s.Value} {s.Key}"))})")}; checked in {watch.ElapsedMilliseconds} ms");
     }
 }
