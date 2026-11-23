@@ -88,7 +88,7 @@ internal static partial class CellStore
         foreach (var w in window.Lines)
         {
             var p = w.Origin ?? (byName.TryGetValue(w.Name, out var named) ? named : null);
-            if (p is not null && !NetworkLines.TouchesDirty(w, local))
+            if (p is not null && p.Count == w.Count && !NetworkLines.TouchesDirty(w, local))
             {
                 outside.Add(w);
                 first[w] = (p, null);
