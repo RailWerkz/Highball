@@ -21,7 +21,7 @@ internal static class CompiledRoute
     private static string PathOf(RouteInfo route) => Path.Combine(route.Folder, "Cache", "Lines.bin");
 
     /// The files the lines are worked out from, read whole into the stamp.
-    private static readonly string[] Inputs = ["Route.json", "Network.json.gz", "Nodes.json.gz", "TrackEdits.bin.gz", "Bridges.json", "Switches.json", "SwitchCurves.json"];
+    private static readonly string[] Inputs = ["Route.json", "TrackEdits.bin.gz", "Bridges.json", "Switches.json", "SwitchCurves.json"];
 
     /// Fields left out: what the route's opened with anyway, put back from that (Restore).
     private static bool Skip(FieldInfo f) => (f.DeclaringType == typeof(NetworkLine) && f.Name == "_origin") || f.DeclaringType == typeof(NetworkLines) && f.Name is "Ways" or "Shapes" or "BuiltTiles" or "_crossingObjects" or "Before"
@@ -34,7 +34,7 @@ internal static class CompiledRoute
         hash.Add(BitConverter.ToUInt64(mvid, 0));
         hash.Add(BitConverter.ToUInt64(mvid, 8));
         hash.Add(Version);
-        foreach (var name in Inputs)
+        foreach (var name in Inputs.Concat(RouteNetwork.Files(route)))
         {
             var path = Path.Combine(route.Folder, name);
             if (!File.Exists(path))

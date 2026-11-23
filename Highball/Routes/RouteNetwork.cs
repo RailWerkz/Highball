@@ -180,6 +180,11 @@ public sealed class RouteNetwork
     public int Version { get; private set; }
 
     private static string PathIn(RouteInfo route) => Path.Combine(route.Folder, "Network.json.gz");
+
+    /// The files the network is stored in, relative to the route's folder, those that exist: what anything stamped with the
+    /// network hashes (CompiledRoute) and what a pack carries of it (WorldExport). Only this class knows how it's stored.
+    public static IReadOnlyList<string> Files(RouteInfo route) =>
+        [.. new[] { "Network.json.gz", "Nodes.json.gz" }.Where(name => File.Exists(Path.Combine(route.Folder, name)))];
     private static string NodesIn(RouteInfo route) => Path.Combine(route.Folder, "Nodes.json.gz");
 
     public void Merge(IEnumerable<NetworkWay> ways, IEnumerable<NetworkNode>? nodes = null)

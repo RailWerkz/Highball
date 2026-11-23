@@ -20,7 +20,7 @@ public static class WorldExport
 {
     /// The route files the client lays the track out from, as the editor does, kept whole in every pack.
     private static readonly string[] TrackFiles =
-        ["Route.json", "Network.json.gz", "Nodes.json.gz", "Switches.json", "SwitchCurves.json", "Bridges.json", "Objects.json", "Signalling.json", "TrackEdits.bin.gz"];
+        ["Route.json", "Switches.json", "SwitchCurves.json", "Bridges.json", "Objects.json", "Signalling.json", "TrackEdits.bin.gz"];
 
     public static string Root => Path.Combine(Path.GetDirectoryName(ContentPath.SourceRoot)!, "Export");
 
@@ -78,7 +78,7 @@ public static class WorldExport
         var groups = built.GroupBy(t => regions.Of(t)?.ToString() ?? (regions.Tiles.Count == 0 ? "World" : "Unassigned"))
             .ToDictionary(g => g.Key, g => g.OrderBy(t => -t.J).ThenBy(t => t.I).ToList());
 
-        var files = TrackFiles.Select(name => (name, path: Path.Combine(route.Folder, name))).Where(f => File.Exists(f.path))
+        var files = TrackFiles.Concat(RouteNetwork.Files(route)).Select(name => (name, path: Path.Combine(route.Folder, name))).Where(f => File.Exists(f.path))
             .Select(f => (f.name, data: File.ReadAllBytes(f.path))).ToList();
 
         var lines = new List<string>();
